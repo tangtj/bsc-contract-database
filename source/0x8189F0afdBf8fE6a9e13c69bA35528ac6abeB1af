@@ -1,0 +1,1110 @@
+
+// File: LpDepositor.sol
+pragma solidity 0.8.12;
+
+import "Ownable.sol";
+import "SafeERC20.sol";
+import "IERC20.sol";
+import "IEpsProxy.sol";
+import "IDepositToken.sol";
+import "IDddToken.sol";
+import "ILockedEPX.sol";
+import "IBondedFeeDistributor.sol";
+import "IDddIncentiveDistributor.sol";
+import "IDddLpStaker.sol";
+import "ILpStaker.sol";
+import "IRewardsToken.sol";
+import "IIncentiveVoting.sol";
+
+
+contract LpDepositor is Ownable {
+    using SafeERC20 for IERC20;
+
+    struct Amounts {
+        uint256 epx;
+        uint256 ddd;
+    }
+    struct ExtraReward {
+        address token;
+        uint256 amount;
+    }
+
+    IERC20 public immutable EPX;
+    IEllipsisLpStaking public immutable lpStaker;
+    IIncentiveVoting public immutable epsVoter;
+
+    IDddToken public DDD;
+    ILockedEPX public dEPX;
+    IBondedFeeDistributor public bondedDistributor;
+    IDddIncentiveDistributor public dddIncentiveDistributor;
+    IDddLpStaker public dddLpStaker;
+    IEllipsisProxy public proxy;
+    address public depositTokenImplementation;
+    address public fixedVoteLpToken;
+
+    // number of EPX an LP must earn via the protocol in order to receive 1 DDD
+    uint256 public immutable DDD_EARN_RATIO;
+    // DDD multiplier if LP locks entire earned EPX balance at time of claim
+    uint256 public immutable DDD_LOCK_MULTIPLIER;
+    // % of DDD minted for `dddLpStaker` relative to the amount earned by LPs
+    uint256 public immutable DDD_LP_PERCENT;
+
+    uint256 public pendingFeeEpx;
+    uint256 public pendingFeeDdd;
+    uint256 public lastFeeTransfer;
+
+    // pool -> DDD deposit token
+    mapping(address => address) public depositTokens;
+
+    // user -> pool -> deposit amount
+    mapping(address => mapping(address => uint256)) public userBalances;
+    // pool -> total deposit amount
+    mapping(address => uint256) public totalBalances;
+
+    // pool -> integrals
+    mapping(address => Amounts) rewardIntegral;
+    // user -> pool -> integrals
+    mapping(address => mapping(address => Amounts)) rewardIntegralFor;
+    // user -> pool -> claimable
+    mapping(address => mapping(address => Amounts)) unclaimedRewards;
+
+    // pool -> third party rewards
+    mapping(address => address[]) public extraRewards;
+    // pool -> third party reward integrals
+    mapping(address => uint256[]) extraRewardIntegral;
+    // user -> pool -> third party reward integrals
+    mapping(address => mapping(address => mapping(uint256 => uint256))) extraRewardIntegralFor;
+    // user -> pool -> unclaimed reward balances
+    mapping(address => mapping(address => mapping(uint256 => uint256))) unclaimedExtraRewards;
+
+    event Deposit(
+        address indexed caller,
+        address indexed receiver,
+        address indexed token,
+        uint256 amount
+    );
+    event Withdraw(
+        address indexed caller,
+        address indexed receiver,
+        address indexed token,
+        uint256 amount
+    );
+    event ClaimedAndBonded(
+        address indexed caller,
+        address indexed receiver,
+        uint256 bondAmount
+    );
+    event Claimed(
+        address indexed caller,
+        address indexed receiver,
+        address[] tokens,
+        uint256 epxAmount,
+        uint256 dddAmount
+    );
+    event ClaimedExtraRewards(
+        address indexed caller,
+        address indexed receiver,
+        address token
+    );
+    event ExtraRewardsUpdated(
+        address indexed token,
+        address[] rewards
+    );
+    event TransferDeposit(
+        address indexed token,
+        address indexed from,
+        address indexed to,
+        uint256 amount
+    );
+
+    constructor(
+        IERC20 _EPX,
+        IEllipsisLpStaking _lpStaker,
+        IIncentiveVoting _epsVoter,
+        uint256 _dddEarnRatio,
+        uint256 _dddLockMultiplier,
+        uint256 _dddLpPercent
+    ) {
+        EPX = _EPX;
+        lpStaker = _lpStaker;
+        epsVoter = _epsVoter;
+        DDD_EARN_RATIO = _dddEarnRatio;
+        DDD_LOCK_MULTIPLIER = _dddLockMultiplier;
+        DDD_LP_PERCENT = _dddLpPercent;
+    }
+
+    function setAddresses(
+        IDddToken _DDD,
+        ILockedEPX _dEPX,
+        IEllipsisProxy _proxy,
+        IBondedFeeDistributor _bondedDistributor,
+        IDddIncentiveDistributor _dddIncentiveDistributor,
+        IDddLpStaker _dddLpStaker,
+        address _depositTokenImplementation,
+        address _fixedVoteLpToken
+    ) external onlyOwner {
+        DDD = _DDD;
+        dEPX = _dEPX;
+        proxy = _proxy;
+
+        bondedDistributor = _bondedDistributor;
+        dddIncentiveDistributor = _dddIncentiveDistributor;
+        dddLpStaker = _dddLpStaker;
+        depositTokenImplementation = _depositTokenImplementation;
+        fixedVoteLpToken = _fixedVoteLpToken;
+
+        EPX.approve(address(_dEPX), type(uint256).max);
+        _dEPX.approve(address(_dddIncentiveDistributor), type(uint256).max);
+
+        renounceOwnership();
+    }
+
+    function extraRewardsLength(address _pool) external view returns (uint256) {
+        return extraRewards[_pool].length;
+    }
+
+    function claimable(address _user, address[] calldata _tokens) external view returns (Amounts[] memory) {
+        Amounts[] memory pending = new Amounts[](_tokens.length);
+        uint256[] memory totalClaimable = lpStaker.claimableReward(address(proxy), _tokens);
+        for (uint i = 0; i < _tokens.length; i++) {
+            address token = _tokens[i];
+            pending[i] = unclaimedRewards[_user][token];
+            uint256 balance = userBalances[_user][token];
+            if (balance == 0) continue;
+
+            Amounts memory integral = rewardIntegral[token];
+            uint256 total = totalBalances[token];
+            if (total > 0) {
+                uint256 reward = totalClaimable[i];
+                reward -= reward * 15 / 100;
+                integral.epx += 1e18 * reward / total;
+                integral.ddd += 1e18 * (reward / DDD_EARN_RATIO) / total;
+            }
+
+            Amounts storage integralFor = rewardIntegralFor[_user][token];
+            if (integralFor.epx < integral.epx) {
+                pending[i].epx += balance * (integral.epx - integralFor.epx) / 1e18;
+                pending[i].ddd += balance * (integral.ddd - integralFor.ddd) / 1e18;
+            }
+        }
+        return pending;
+    }
+
+    function claimableExtraRewards(address user, address pool) external view returns (ExtraReward[] memory) {
+        uint256 length = extraRewards[pool].length;
+        uint256 total = totalBalances[pool];
+        uint256 balance = userBalances[user][pool];
+        ExtraReward[] memory rewards = new ExtraReward[](length);
+        for (uint i = 0; i < length; i++) {
+            address token = extraRewards[pool][i];
+            uint256 amount = unclaimedExtraRewards[user][pool][i];
+            if (balance > 0) {
+                uint256 earned = IRewardsToken(pool).earned(address(proxy), token);
+                uint256 integral = extraRewardIntegral[pool][i] + 1e18 * earned / total;
+                uint256 integralFor = extraRewardIntegralFor[user][pool][i];
+                amount += balance * (integral - integralFor) / 1e18;
+            }
+            rewards[i] = ExtraReward({token: token, amount: amount});
+        }
+        return rewards;
+    }
+
+    function deposit(address _user, address _token, uint256 _amount) external {
+        IERC20(_token).safeTransferFrom(msg.sender, address(proxy), _amount);
+
+        uint256 balance = userBalances[_user][_token];
+        uint256 total = totalBalances[_token];
+
+        uint256 reward = proxy.deposit(_token, _amount);
+        _updateIntegrals(_user, _token, balance, total, reward);
+
+        userBalances[_user][_token] = balance + _amount;
+        totalBalances[_token] = total + _amount;
+
+        address depositToken = depositTokens[_token];
+        if (depositToken == address(0)) {
+            depositToken = _deployDepositToken(_token);
+            depositTokens[_token] = depositToken;
+        }
+        IDepositToken(depositToken).mint(_user, _amount);
+        emit Deposit(msg.sender, _user, _token, _amount);
+    }
+
+    function withdraw(address _receiver, address _token, uint256 _amount) external {
+        uint256 balance = userBalances[msg.sender][_token];
+        uint256 total = totalBalances[_token];
+        require(balance >= _amount, "Insufficient balance");
+
+        userBalances[msg.sender][_token] = balance - _amount;
+        totalBalances[_token] = total - _amount;
+
+        address depositToken = depositTokens[_token];
+        IDepositToken(depositToken).burn(msg.sender, _amount);
+
+        uint256 reward = proxy.withdraw(_receiver, _token, _amount);
+        _updateIntegrals(msg.sender, _token, balance, total, reward);
+        emit Withdraw(msg.sender, _receiver, _token, _amount);
+    }
+
+    /**
+        @notice Claim pending EPX and DDD rewards
+        @param _receiver Account to send claimed rewards to
+        @param _tokens List of LP tokens to claim for
+        @param _maxBondAmount Maximum amount of claimed EPX to convert to bonded dEPX.
+                              Converting to bonded dEPX earns a multiplier on DDD rewards.
+     */
+    function claim(address _receiver, address[] calldata _tokens, uint256 _maxBondAmount) external {
+        Amounts memory claims;
+        uint256 balance = EPX.balanceOf(address(this));
+        for (uint i = 0; i < _tokens.length; i++) {
+            address token = _tokens[i];
+            uint256 reward = proxy.claimEmissions(token);
+            _updateIntegrals(msg.sender, token, userBalances[msg.sender][token], totalBalances[token], reward);
+            claims.epx += unclaimedRewards[msg.sender][token].epx;
+            claims.ddd += unclaimedRewards[msg.sender][token].ddd;
+            delete unclaimedRewards[msg.sender][token];
+        }
+        if (_maxBondAmount > 0) {
+            // deposit and bond the claimable EPX, up to `_maxBondAmount`
+            uint256 bondAmount = _maxBondAmount > claims.epx ? claims.epx : _maxBondAmount;
+            dEPX.deposit(_receiver, bondAmount, true);
+            emit ClaimedAndBonded(msg.sender, _receiver, bondAmount);
+            // apply `DDD_LOCK_MULTIPLIER` to earned DDD, porportional to bonded EPX amount
+            uint256 dddBonusBase = claims.ddd * bondAmount / claims.epx;
+            claims.ddd = dddBonusBase * DDD_LOCK_MULTIPLIER + (claims.ddd - dddBonusBase);
+            claims.epx -= bondAmount;
+        }
+        if (claims.epx > 0) {
+            EPX.safeTransfer(_receiver, claims.epx);
+        }
+        if (claims.ddd > 0) {
+            DDD.mint(_receiver, claims.ddd);
+            pendingFeeDdd += claims.ddd * 100 / (100 - DDD_LP_PERCENT) - claims.ddd;
+        }
+        emit Claimed(msg.sender, _receiver, _tokens, claims.epx, claims.ddd);
+    }
+
+    /**
+        @notice Claim all third-party incentives earned from `pool`
+     */
+    function claimExtraRewards(address _receiver, address pool) external {
+        uint256 total = totalBalances[pool];
+        uint256 balance = userBalances[msg.sender][pool];
+        if (total > 0) _updateExtraIntegrals(msg.sender, pool, balance, total);
+        uint256 length = extraRewards[pool].length;
+        for (uint i = 0; i < length; i++) {
+            uint256 amount = unclaimedExtraRewards[msg.sender][pool][i];
+            if (amount > 0) {
+                unclaimedExtraRewards[msg.sender][pool][i] = 0;
+                IERC20(extraRewards[pool][i]).safeTransfer(_receiver, amount);
+            }
+        }
+        emit ClaimedExtraRewards(msg.sender, _receiver, pool);
+    }
+
+    /**
+        @notice Update the local cache of third-party rewards for a given LP token
+        @dev Must be called each time a new incentive token is added to a pool, in
+             order for the protocol to begin distributing that token.
+     */
+    function updatePoolExtraRewards(address pool) external {
+        uint256 count = IRewardsToken(pool).rewardCount();
+        address[] storage rewards = extraRewards[pool];
+        for (uint256 i = rewards.length; i < count; i ++) {
+            rewards.push(IRewardsToken(pool).rewardTokens(i));
+            extraRewardIntegral[pool].push();
+        }
+        emit ExtraRewardsUpdated(pool, rewards);
+    }
+
+    function transferDeposit(address _token, address _from, address _to, uint256 _amount) external returns (bool) {
+        require(msg.sender == depositTokens[_token], "Unauthorized caller");
+
+        uint256 total = totalBalances[_token];
+        uint256 balance = userBalances[_from][_token];
+        require(balance >= _amount, "Insufficient balance");
+
+        uint256 reward = proxy.claimEmissions(_token);
+        _updateIntegrals(_from, _token, balance, total, reward);
+        userBalances[_from][_token] = balance - _amount;
+
+        balance = userBalances[_to][_token];
+        _updateIntegrals(_to, _token, balance, total - _amount, 0);
+        userBalances[_to][_token] = balance + _amount;
+        emit TransferDeposit(_token, _from, _to, _amount);
+        return true;
+    }
+
+    /**
+        @notice Transfer accrued EPX and DDD fees to dEPX bonders, DDD lockers and DDD Lp Stakers
+        @dev Called once per day on normal interactions with the contract. With normal protocol
+             use it should not be a requirement to explicitly call this function.
+     */
+    function pushPendingProtocolFees() public {
+        lastFeeTransfer = block.timestamp;
+
+        uint256 pending = pendingFeeDdd;
+        if (pending > 0) {
+            // mint DDD for and DDD Lp Staker
+            pendingFeeDdd = 0;
+            DDD.mint(address(dddLpStaker), pending);
+            dddLpStaker.notifyFeeAmount(pending);
+        }
+
+        pending = pendingFeeEpx;
+        if (pending > 0) {
+            pendingFeeEpx = 0;
+
+            // mint DDD for dEPX bonders
+            uint256 pendingDdd = pending / DDD_EARN_RATIO;
+            DDD.mint(address(bondedDistributor), pendingDdd);
+            // transfer 2/3 of EPX to dEPX bonders
+            EPX.safeTransfer(address(bondedDistributor), pending / 3 * 2);
+            // notify bonded distributor
+            bondedDistributor.notifyFeeAmounts(pending / 3 * 2, pendingDdd);
+
+            // 1/3 of EPX is converted to dEPX
+            pending /= 3;
+            dEPX.deposit(address(this), pending, false);
+            if (epsVoter.isApproved(fixedVoteLpToken)) {
+                // if `fixedVoteLpToken` is approved for emisisons, 1/2 of the
+                // dEPX is used as a bribe for votes on that pool
+                pending /= 2;
+                dddIncentiveDistributor.depositIncentive(fixedVoteLpToken, address(dEPX), pending);
+            }
+            // remaining dEPX is given to all DDD lockers
+            dddIncentiveDistributor.depositIncentive(address(0), address(dEPX), pending);
+        }
+    }
+
+    function _deployDepositToken(address pool) internal returns (address token) {
+        // taken from https://solidity-by-example.org/app/minimal-proxy/
+        bytes20 targetBytes = bytes20(depositTokenImplementation);
+        assembly {
+            let clone := mload(0x40)
+            mstore(clone, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000)
+            mstore(add(clone, 0x14), targetBytes)
+            mstore(add(clone, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000)
+            token := create(0, clone, 0x37)
+        }
+        IDepositToken(token).initialize(pool);
+        return token;
+    }
+
+    function _updateIntegrals(
+        address user,
+        address pool,
+        uint256 balance,
+        uint256 total,
+        uint256 reward
+    ) internal {
+        Amounts memory integral = rewardIntegral[pool];
+        if (reward > 0) {
+            uint256 fee = reward * 15 / 100;
+            reward -= fee;
+            pendingFeeEpx += fee;
+
+            integral.epx += 1e18 * reward / total;
+            integral.ddd += 1e18 * (reward / DDD_EARN_RATIO) / total;
+            rewardIntegral[pool] = integral;
+        }
+        Amounts memory integralFor = rewardIntegralFor[user][pool];
+        if (integralFor.epx < integral.epx) {
+            Amounts storage claims = unclaimedRewards[user][pool];
+            claims.epx += balance * (integral.epx - integralFor.epx) / 1e18;
+            claims.ddd += balance * (integral.ddd - integralFor.ddd) / 1e18;
+            rewardIntegralFor[user][pool] = integral;
+        }
+
+        if (total > 0 && extraRewards[pool].length > 0) {
+            // if this token receives 3rd-party incentives, claim and update integrals
+            _updateExtraIntegrals(user, pool, balance, total);
+        } else if (lastFeeTransfer + 86400 < block.timestamp) {
+            // once a day, transfer pending rewards to dEPX bonders and DDD lockers
+            // we only do this on updates to pools without extra incentives because each
+            // operation can be gas intensive
+            pushPendingProtocolFees();
+        }
+    }
+
+    function _updateExtraIntegrals(
+        address user,
+        address pool,
+        uint256 balance,
+        uint256 total
+    ) internal {
+        address[] memory rewards = extraRewards[pool];
+        uint256[] memory balances = new uint256[](rewards.length);
+        for (uint i = 0; i < rewards.length; i++) {
+            balances[i] = IERC20(rewards[i]).balanceOf(address(this));
+        }
+        proxy.getReward(pool, rewards);
+        for (uint i = 0; i < rewards.length; i++) {
+            uint256 delta = IERC20(rewards[i]).balanceOf(address(this)) - balances[i];
+            uint256 integral = extraRewardIntegral[pool][i];
+            if (delta > 0) {
+                integral += 1e18 * delta / total;
+                extraRewardIntegral[pool][i] = integral;
+            }
+            uint256 integralFor = extraRewardIntegralFor[user][pool][i];
+            if (integralFor < integral) {
+                unclaimedExtraRewards[user][pool][i] += balance * (integral - integralFor) / 1e18;
+                extraRewardIntegralFor[user][pool][i] = integral;
+            }
+        }
+    }
+
+}
+
+
+// File: Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable {
+    address public owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(msg.sender);
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = owner;
+        owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: SafeERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (token/ERC20/utils/SafeERC20.sol)
+
+pragma solidity ^0.8.0;
+
+import "IERC20.sol";
+import "Address.sol";
+
+/**
+ * @title SafeERC20
+ * @dev Wrappers around ERC20 operations that throw on failure (when the token
+ * contract returns false). Tokens that return no value (and instead revert or
+ * throw on failure) are also supported, non-reverting calls are assumed to be
+ * successful.
+ * To use this library you can add a `using SafeERC20 for IERC20;` statement to your contract,
+ * which allows you to call the safe operations as `token.safeTransfer(...)`, etc.
+ */
+library SafeERC20 {
+    using Address for address;
+
+    function safeTransfer(
+        IERC20 token,
+        address to,
+        uint256 value
+    ) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+    }
+
+    function safeTransferFrom(
+        IERC20 token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+    }
+
+    /**
+     * @dev Deprecated. This function has issues similar to the ones found in
+     * {IERC20-approve}, and its usage is discouraged.
+     *
+     * Whenever possible, use {safeIncreaseAllowance} and
+     * {safeDecreaseAllowance} instead.
+     */
+    function safeApprove(
+        IERC20 token,
+        address spender,
+        uint256 value
+    ) internal {
+        // safeApprove should only be called when setting an initial allowance,
+        // or when resetting it to zero. To increase and decrease it, use
+        // 'safeIncreaseAllowance' and 'safeDecreaseAllowance'
+        require(
+            (value == 0) || (token.allowance(address(this), spender) == 0),
+            "SafeERC20: approve from non-zero to non-zero allowance"
+        );
+        _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+    }
+
+    function safeIncreaseAllowance(
+        IERC20 token,
+        address spender,
+        uint256 value
+    ) internal {
+        uint256 newAllowance = token.allowance(address(this), spender) + value;
+        _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+    }
+
+    function safeDecreaseAllowance(
+        IERC20 token,
+        address spender,
+        uint256 value
+    ) internal {
+        unchecked {
+            uint256 oldAllowance = token.allowance(address(this), spender);
+            require(oldAllowance >= value, "SafeERC20: decreased allowance below zero");
+            uint256 newAllowance = oldAllowance - value;
+            _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+        }
+    }
+
+    /**
+     * @dev Imitates a Solidity high-level call (i.e. a regular function call to a contract), relaxing the requirement
+     * on the return value: the return value is optional (but if data is returned, it must not be false).
+     * @param token The token targeted by the call.
+     * @param data The call data (encoded using abi.encode or one of its variants).
+     */
+    function _callOptionalReturn(IERC20 token, bytes memory data) private {
+        // We need to perform a low level call here, to bypass Solidity's return data size checking mechanism, since
+        // we're implementing it ourselves. We use {Address.functionCall} to perform this call, which verifies that
+        // the target address contains contract code and also asserts for success in the low-level call.
+
+        bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+        if (returndata.length > 0) {
+            // Return data is optional
+            require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+        }
+    }
+}
+
+
+// File: IERC20.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.12;
+
+/**
+ * Based on the OpenZeppelin IER20 interface:
+ * https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/IERC20.sol
+ *
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+// File: Address.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Address.sol)
+
+pragma solidity ^0.8.1;
+
+/**
+ * @dev Collection of functions related to the address type
+ */
+library Address {
+    /**
+     * @dev Returns true if `account` is a contract.
+     *
+     * [IMPORTANT]
+     * ====
+     * It is unsafe to assume that an address for which this function returns
+     * false is an externally-owned account (EOA) and not a contract.
+     *
+     * Among others, `isContract` will return false for the following
+     * types of addresses:
+     *
+     *  - an externally-owned account
+     *  - a contract in construction
+     *  - an address where a contract will be created
+     *  - an address where a contract lived, but was destroyed
+     * ====
+     *
+     * [IMPORTANT]
+     * ====
+     * You shouldn't rely on `isContract` to protect against flash loan attacks!
+     *
+     * Preventing calls from contracts is highly discouraged. It breaks composability, breaks support for smart wallets
+     * like Gnosis Safe, and does not provide security since it can be circumvented by calling from a contract
+     * constructor.
+     * ====
+     */
+    function isContract(address account) internal view returns (bool) {
+        // This method relies on extcodesize/address.code.length, which returns 0
+        // for contracts in construction, since the code is only stored at the end
+        // of the constructor execution.
+
+        return account.code.length > 0;
+    }
+
+    /**
+     * @dev Replacement for Solidity's `transfer`: sends `amount` wei to
+     * `recipient`, forwarding all available gas and reverting on errors.
+     *
+     * https://eips.ethereum.org/EIPS/eip-1884[EIP1884] increases the gas cost
+     * of certain opcodes, possibly making contracts go over the 2300 gas limit
+     * imposed by `transfer`, making them unable to receive funds via
+     * `transfer`. {sendValue} removes this limitation.
+     *
+     * https://diligence.consensys.net/posts/2019/09/stop-using-soliditys-transfer-now/[Learn more].
+     *
+     * IMPORTANT: because control is transferred to `recipient`, care must be
+     * taken to not create reentrancy vulnerabilities. Consider using
+     * {ReentrancyGuard} or the
+     * https://solidity.readthedocs.io/en/v0.5.11/security-considerations.html#use-the-checks-effects-interactions-pattern[checks-effects-interactions pattern].
+     */
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+
+        (bool success, ) = recipient.call{value: amount}("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+
+    /**
+     * @dev Performs a Solidity function call using a low level `call`. A
+     * plain `call` is an unsafe replacement for a function call: use this
+     * function instead.
+     *
+     * If `target` reverts with a revert reason, it is bubbled up by this
+     * function (like regular Solidity function calls).
+     *
+     * Returns the raw returned data. To convert to the expected return value,
+     * use https://solidity.readthedocs.io/en/latest/units-and-global-variables.html?highlight=abi.decode#abi-encoding-and-decoding-functions[`abi.decode`].
+     *
+     * Requirements:
+     *
+     * - `target` must be a contract.
+     * - calling `target` with `data` must not revert.
+     *
+     * _Available since v3.1._
+     */
+    function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+        return functionCall(target, data, "Address: low-level call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`], but with
+     * `errorMessage` as a fallback revert reason when `target` reverts.
+     *
+     * _Available since v3.1._
+     */
+    function functionCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but also transferring `value` wei to `target`.
+     *
+     * Requirements:
+     *
+     * - the calling contract must have an ETH balance of at least `value`.
+     * - the called Solidity function must be `payable`.
+     *
+     * _Available since v3.1._
+     */
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value
+    ) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCallWithValue-address-bytes-uint256-}[`functionCallWithValue`], but
+     * with `errorMessage` as a fallback revert reason when `target` reverts.
+     *
+     * _Available since v3.1._
+     */
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        require(isContract(target), "Address: call to non-contract");
+
+        (bool success, bytes memory returndata) = target.call{value: value}(data);
+        return verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but performing a static call.
+     *
+     * _Available since v3.3._
+     */
+    function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+        return functionStaticCall(target, data, "Address: low-level static call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],
+     * but performing a static call.
+     *
+     * _Available since v3.3._
+     */
+    function functionStaticCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal view returns (bytes memory) {
+        require(isContract(target), "Address: static call to non-contract");
+
+        (bool success, bytes memory returndata) = target.staticcall(data);
+        return verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but performing a delegate call.
+     *
+     * _Available since v3.4._
+     */
+    function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+        return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],
+     * but performing a delegate call.
+     *
+     * _Available since v3.4._
+     */
+    function functionDelegateCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        require(isContract(target), "Address: delegate call to non-contract");
+
+        (bool success, bytes memory returndata) = target.delegatecall(data);
+        return verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Tool to verifies that a low level call was successful, and revert if it wasn't, either by bubbling the
+     * revert reason using the provided one.
+     *
+     * _Available since v4.3._
+     */
+    function verifyCallResult(
+        bool success,
+        bytes memory returndata,
+        string memory errorMessage
+    ) internal pure returns (bytes memory) {
+        if (success) {
+            return returndata;
+        } else {
+            // Look for revert reason and bubble it up if present
+            if (returndata.length > 0) {
+                // The easiest way to bubble the revert reason is using memory via assembly
+
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+
+
+// File: IEpsProxy.sol
+pragma solidity 0.8.12;
+
+interface IEllipsisProxy {
+    function lock(uint256 _amount) external returns (bool);
+    function extendLock(uint256 _amount, uint256 _weeks) external returns (bool);
+    function deposit(address _token, uint256 _amount) external returns (uint256);
+    function withdraw(address _receiver, address _token, uint256 _amount) external returns (uint256);
+    function claimEmissions(address _token) external returns (uint256);
+    function claimFees(address[] calldata _tokens) external returns (bool);
+    function vote(address[] calldata _tokens, uint256[] calldata _votes) external returns (bool);
+    function createTokenApprovalVote(address _token) external returns (uint256 _voteIndex);
+    function voteForTokenApproval(uint256 _voteIndex, uint256 _yesVotes) external returns (bool);
+    function getReward(address _lpToken, address[] calldata _rewards) external returns (bool);
+}
+
+// File: IDepositToken.sol
+pragma solidity 0.8.12;
+
+interface IDepositToken {
+    function initialize(address _pool) external returns (bool);
+    function mint(address _to, uint256 _value) external returns (bool);
+    function burn(address _from, uint256 _value) external returns (bool);
+}
+
+
+// File: IDddToken.sol
+pragma solidity 0.8.12;
+
+import "IERC20.sol";
+
+interface IDddToken is IERC20 {
+    function mint(address _to, uint256 _value) external returns (bool);
+}
+
+// File: ILockedEPX.sol
+pragma solidity 0.8.12;
+
+import "IERC20.sol";
+
+interface ILockedEPX is IERC20 {
+    function deposit(address _receiver, uint256 _amount, bool _bond) external returns (bool);
+}
+
+// File: IBondedFeeDistributor.sol
+pragma solidity 0.8.12;
+
+interface IBondedFeeDistributor {
+    function notifyFeeAmounts(uint256 _epxAmount, uint256 _dddAmount) external returns (bool);
+    function deposit(address _user, uint256 _amount) external returns (bool);
+}
+
+// File: IDddIncentiveDistributor.sol
+pragma solidity 0.8.12;
+
+interface IDddIncentiveDistributor {
+    function depositIncentive(address lpToken, address incentive, uint256 amount) external returns (bool);
+}
+
+// File: IDddLpStaker.sol
+pragma solidity 0.8.12;
+
+interface IDddLpStaker {
+    function notifyFeeAmount(uint256 amount) external returns (bool);
+}
+
+
+// File: ILpStaker.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.12;
+
+
+interface IEllipsisLpStaking {
+
+    /**
+        @notice Set the claim receiver address for the caller
+        @param _receiver Claim receiver address
+     */
+    function setClaimReceiver(address _receiver) external;
+
+    /**
+        @notice Allow or block third-party calls to deposit, withdraw
+                or claim rewards on behalf of the caller
+     */
+    function setBlockThirdPartyActions(bool _block) external;
+
+    /**
+        @notice Get the current number of unclaimed rewards for a user on one or more token
+        @param _user User to query pending rewards for
+        @param _tokens Array of token addresses to query
+        @return uint256[] Unclaimed rewards
+     */
+    function claimableReward(address _user, address[] calldata _tokens) external view returns (uint256[] memory);
+
+    /**
+        @notice Deposit LP tokens into the contract
+        @param _token LP token address to deposit.
+        @param _amount Amount of tokens to deposit.
+        @param _claimRewards If true, also claim pending rewards on the token.
+     */
+    function deposit(address _token, uint256 _amount, bool _claimRewards) external returns (uint256);
+
+    /**
+        @notice Withdraw LP tokens from the contract
+        @param _token LP token address to withdraw.
+        @param _amount Amount of tokens to withdraw.
+        @param _claimRewards If true, also claim pending rewards on the token.
+     */
+    function withdraw(address _token, uint256 _amount, bool _claimRewards) external returns (uint256);
+
+    function claim(address _user, address[] calldata _tokens) external returns (uint256);
+
+    function emergencyWithdraw(address _token) external;
+
+}
+
+
+// File: IRewardsToken.sol
+pragma solidity 0.8.12;
+
+import "IERC20.sol";
+
+
+interface IRewardsToken is IERC20 {
+    function rewardCount() external view returns (uint256);
+    function rewardTokens(uint256 idx) external view returns (address);
+    function earned(address account, address _rewardsToken) external view returns (uint256);
+    function getReward() external;
+}
+
+
+// File: IIncentiveVoting.sol
+pragma solidity 0.8.12;
+
+interface IIncentiveVoting {
+
+    function NEW_TOKEN_APPROVAL_VOTE_MIN_WEIGHT() external view returns (uint256);
+    function startTime() external view returns (uint256);
+    function availableVotes(address _user) external view returns (uint256);
+    function availableTokenApprovalVotes(address _user, uint256 _voteIndex) external view returns (uint256);
+    function isApproved(address _token) external view returns (bool);
+    function approvedTokensLength() external view returns (uint256);
+    function approvedTokens(uint256) external view returns (address);
+
+    /**
+        @notice Allocate votes toward LP tokens to receive emissions in the following week
+        @param _tokens List of addresses of LP tokens to vote for
+        @param _votes Votes to allocate to `_tokens`
+     */
+    function vote(address[] calldata _tokens, uint256[] calldata _votes) external;
+
+    /**
+        @notice Create a new vote to enable protocol emissions on a given token
+        @param _token Token address to create a vote for
+        @return _voteIndex uint Index value used to reference the vote
+     */
+    function createTokenApprovalVote(address _token) external returns (uint256 _voteIndex);
+
+    /**
+        @notice Vote in favor of approving a new token for protocol emissions
+        @param _voteIndex Array index referencing the vote
+     */
+    function voteForTokenApproval(uint256 _voteIndex, uint256 _yesVotes) external;
+
+}
+
