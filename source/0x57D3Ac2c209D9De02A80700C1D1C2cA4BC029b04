@@ -1,0 +1,211 @@
+pragma solidity 0.5.8;
+
+/**
+ *
+ * https://moonshots.farm
+ * 
+ * Want to own the next 1000x SHIB/DOGE/HEX token? Farm a new/trending moonshot every other day, automagically!
+ *
+ */
+
+ contract BonesStaking {
+    using SafeMath for uint256;
+
+    ERC20 constant bones = ERC20(0x08426874d46f90e5E527604fA5E3e30486770Eb3);
+    WBNB constant wbnb = WBNB(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);
+    UniswapV2 constant cakeV2 = UniswapV2(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+
+    mapping(address => uint256) public balances;
+    mapping(address => int256) payoutsTo;
+    
+    uint256 public bnbPerEpoch;
+    uint256 public payoutInterval = 6 hours;
+    uint256 public payoutEndTime;
+    uint256 public lastDripTime;
+
+    uint256 public totalDeposits;
+    uint256 profitPerShare;
+    uint256 constant internal magnitude = 2 ** 64;
+    address blobby = msg.sender;
+    
+    constructor() public {
+        wbnb.approve(address(cakeV2), 2 ** 255);
+    }
+
+    function() payable external { /* Payable */ }
+
+    function receiveApproval(address player, uint256 amount, address, bytes calldata) external {
+        require(msg.sender == address(bones));
+        dripBones();
+        bones.transferFrom(player, address(this), amount);
+        depositInternal(player, (amount * 99) / 100);  // Account for 1% burn;
+    }
+    
+    function depositFor(address player, uint256 amount) external {
+        dripBones();
+        bones.transferFrom(msg.sender, address(this), amount);
+        depositInternal(player, (amount * 99) / 100);  // Account for 1% burn;
+    }
+
+    function depositInternal(address player, uint256 amount) internal {
+        totalDeposits += amount;
+        balances[player] += amount;
+        payoutsTo[player] += (int256) (profitPerShare * amount);
+    }
+
+    function cashout(uint256 amount) external {
+        address recipient = msg.sender;
+        claimYield();
+        balances[recipient] = balances[recipient].sub(amount);
+        totalDeposits = totalDeposits.sub(amount);
+        payoutsTo[recipient] -= (int256) (profitPerShare * amount);
+        bones.transfer(recipient, amount);
+    }
+
+    function claimYield() public {
+        dripBones();
+        address payable recipient = msg.sender;
+        uint256 dividends = (uint256) ((int256)(profitPerShare * balances[recipient]) - payoutsTo[recipient]) / magnitude;
+        if (dividends > 0) {
+            payoutsTo[recipient] += (int256) (dividends * magnitude);
+            wbnb.withdraw(dividends);
+            recipient.transfer(dividends);
+        }
+    }
+    
+    function depositYield(uint256 minBones) external {
+        dripBones();
+        address recipient = msg.sender;
+        uint256 dividends = (uint256) ((int256)(profitPerShare * balances[recipient]) - payoutsTo[recipient]) / magnitude;
+        
+        if (dividends > 0) {
+            payoutsTo[recipient] += (int256) (dividends * magnitude);
+
+            address[] memory path = new address[](2);
+            path[0] = address(wbnb);
+            path[1] = address(bones);
+            uint256 previousBones = bones.balanceOf(address(this));
+            cakeV2.swapExactTokensForTokens(dividends, minBones, path, address(this), 2 ** 255);
+            depositInternal(recipient, bones.balanceOf(address(this)) - previousBones);
+        }
+    }
+    
+    function changePayoutInterval(uint256 newTimer) external {
+        require(msg.sender == blobby);
+        require(newTimer <= 24 hours);
+        require(newTimer >= 2 hours);
+        payoutInterval = newTimer;
+    }
+
+    function distributeDivs(uint256 amount) external {
+        dripBones();
+        if (wbnb.allowance(msg.sender, address(this)) >= amount && wbnb.balanceOf(msg.sender) >= amount && amount > 0) {
+            require(wbnb.transferFrom(msg.sender, address(this), amount));
+
+            uint256 remainder;
+            if (now < payoutEndTime) {
+                remainder = bnbPerEpoch * (payoutEndTime - now);
+            }
+            bnbPerEpoch = (amount + remainder) / payoutInterval;
+            payoutEndTime = now + payoutInterval;
+        }
+    }
+    
+    function dripBones() internal {
+        uint256 divs;
+        if (now < payoutEndTime) {
+            divs = bnbPerEpoch * (now - lastDripTime);
+        } else if (lastDripTime < payoutEndTime) {
+            divs = bnbPerEpoch * (payoutEndTime - lastDripTime);
+        }
+        lastDripTime = now;
+
+        if (divs > 0) {
+            profitPerShare += divs * magnitude / totalDeposits;
+        }
+    }
+
+    function dividendsOf(address farmer) view public returns (uint256) {
+        uint256 totalProfitPerShare = profitPerShare;
+        uint256 divs;
+        if (now < payoutEndTime) {
+            divs = bnbPerEpoch * (now - lastDripTime);
+        } else if (lastDripTime < payoutEndTime) {
+            divs = bnbPerEpoch * (payoutEndTime - lastDripTime);
+        }
+        
+        if (divs > 0) {
+            totalProfitPerShare += divs * magnitude / totalDeposits;
+        }
+        return (uint256) ((int256)(totalProfitPerShare * balances[farmer]) - payoutsTo[farmer]) / magnitude;
+    }
+}
+
+
+interface ERC20 {
+  function totalSupply() external view returns (uint256);
+  function balanceOf(address who) external view returns (uint256);
+  function allowance(address owner, address spender) external view returns (uint256);
+  function transfer(address to, uint256 value) external returns (bool);
+  function approve(address spender, uint256 value) external returns (bool);
+  function approveAndCall(address spender, uint tokens, bytes calldata data) external returns (bool success);
+  function transferFrom(address from, address to, uint256 value) external returns (bool);
+  function burn(uint256 amount) external;
+
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract WBNB is ERC20 {
+    function withdraw(uint wad) external;
+}
+
+interface UniswapV2 {
+    function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+    function removeLiquidityETH(address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external returns (uint amountToken, uint amountETH);
+    function addLiquidityETH(address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+}
+
+
+
+library SafeMath {
+
+  /**
+  * @dev Multiplies two numbers, throws on overflow.
+  */
+  function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+    if (a == 0) {
+      return 0;
+    }
+    uint256 c = a * b;
+    assert(c / a == b);
+    return c;
+  }
+
+  /**
+  * @dev Integer division of two numbers, truncating the quotient.
+  */
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    // assert(b > 0); // Solidity automatically throws when dividing by 0
+    uint256 c = a / b;
+    // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+    return c;
+  }
+
+  /**
+  * @dev Substracts two numbers, throws on overflow (i.e. if subtrahend is greater than minuend).
+  */
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    assert(b <= a);
+    return a - b;
+  }
+
+  /**
+  * @dev Adds two numbers, throws on overflow.
+  */
+  function add(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a + b;
+    assert(c >= a);
+    return c;
+  }
+}

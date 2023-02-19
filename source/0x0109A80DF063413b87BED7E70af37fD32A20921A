@@ -1,0 +1,583 @@
+// SPDX-License-Identifier: SimPL-2.0
+pragma solidity >=0.8.0;
+
+interface IBUCCTOKEN {
+    function balanceOf(address account) external view returns (uint256);
+
+    function mint(address account, uint256 amount) external returns (bool);
+
+    function burn(address account, uint256 amount) external returns (bool);
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+}
+
+interface INFT {
+    function useNftPrice(address account) external returns (uint256);
+
+    function ownerOf(uint256 tokenId) external view returns (address);
+}
+
+library TransferHelper {
+    function safeTransfer(
+        address token,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(0xa9059cbb, to, value)
+        );
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            "TransferHelper: TRANSFER_FAILED"
+        );
+    }
+
+    function safeTransferFrom(
+        address token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(0x23b872dd, from, to, value)
+        );
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            "TransferHelper: TRANSFER_FROM_FAILED"
+        );
+    }
+}
+
+//BUCC游戏
+contract BUCCGAME {
+    string public name = "BUCCGAME";
+    string public symbol = "BUCCGAME";
+
+    uint256 public epoch_base = 86400; //Mint周期基数，不变
+    uint256 public epoch = 86400; //Mint周期，随着时间变化
+    uint256 public start_time; //Mint开始时间
+    uint256 public decimal_bucc = 1e3;
+
+    uint256 public totalReward; //总奖励
+    uint256 public totalPower; //总算力
+    uint256 public totalUsersAmount; //总用户数
+    uint256 public userMaxPower = 4999 * decimal_bucc; //最高算力
+    address payable public owner;
+    bool public is_mint = false; //是否开启Mint
+
+    address public daoAddress = 0x9C1e3E63631Ce60A6acE4Ce76B058415a975B849; //10% dao
+    address public rebackAddress = 0xcd32538A7d761008f7bCAd9D3BAEE13a2b40C8F2; //10% 回购
+    address public marketAddress = 0xEBAE1823CD33e74D2D099D3999E2052319946EBe; //30% 市场
+    address public starAddress = 0xB0d317131a93D332FC146d2A22e345850c6db1Af; //50% 星级
+
+    address public buccAddress;
+    address public quccAddress = 0x3c48e47703F16818d7368DBA98897FA35B80F53D;
+    address public nftAddress = 0x76806823840249007eE483433234DFC797DbbeA8;
+    address public usdAddress = 0x55d398326f99059fF775485246999027B3197955; //usdt合约
+
+    uint256 public startGameRequrieAmount = 10000; //开始游戏 需要消耗的数量(qucc)
+    address public burnAddress = 0x0000000000000000000000000000000000000010; //燃烧地址
+    uint256 public burnTokenAmount = 600; //每燃烧1个基础数字需要配合燃烧token的数量 600/10000
+    uint256 public basePrice = 1e18; //回购价格 u
+
+    mapping(uint8 => uint8) public levelFees; //等级对应手续费 n/100
+    mapping(uint8 => uint8) public levelReward; //对应收益 n/10000
+    mapping(uint8 => uint8) public levelFirstReward; //直推奖励 n/1000
+    mapping(uint8 => uint8) public levelSecondReward; //二级奖励 n/1000
+    mapping(address => uint256) public userMinPower; //用户当前等级Mint最低算力
+
+    /* This creates an array with all balances */
+    mapping(address => uint256) public goldBalanceOf; //待提现奖励
+    mapping(address => uint256) public userLand; //土地
+
+    mapping(address => address) public invite; //邀请
+    mapping(address => uint256) public power; //算力
+    mapping(address => uint256) public last_miner; //用户上次Mint时间
+    mapping(address => uint256) public inviteCount; //邀请人好友数
+    mapping(address => uint256) public rewardCount; //累计奖励
+
+    event Burn(address indexed operator, uint256 amount);
+    event Minted(address indexed operator, address indexed to, uint256 amount);
+    event WithdrawalReward(address indexed src, uint256 wad); //提现奖励
+    event RechargeCof(
+        address indexed spender,
+        address indexed account,
+        uint256 amount
+    );
+
+    /* Initializes contract with initial supply tokens to the creator of the contract */
+    constructor(address buccToken_) {
+        owner = payable(msg.sender);
+        buccAddress = buccToken_; //bucc
+
+        //初始化参数
+        initLevel();
+    }
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "caller is not the owner");
+        _;
+    }
+
+    function withdrawToken(address token, uint256 amount) public onlyOwner {
+        TransferHelper.safeTransfer(token, daoAddress, amount);
+    }
+
+    function burn(uint256 _value) public returns (bool success) {
+        require(userLand[msg.sender] > 0, "land status error");
+        require(_value > 0, "amount is zero");
+        require(
+            power[msg.sender] + _value * 3 <= userMaxPower,
+            "userMaxPower overflow"
+        );
+
+        uint256 balance = IBUCCTOKEN(buccAddress).balanceOf(msg.sender);
+        require(
+            balance + goldBalanceOf[msg.sender] >= _value,
+            "amount too many"
+        );
+
+        //混合燃烧
+        burnRequireToken(_value);
+
+        //如果可以Mint，先挖一次，避免多计算
+        if (
+            is_mint &&
+            power[msg.sender] > 0 &&
+            block.timestamp - last_miner[msg.sender] >= epoch
+        ) {
+            doMint(msg.sender);
+        }
+
+        //燃烧,先扣减待领取奖励,再扣减余额
+        if (goldBalanceOf[msg.sender] > _value) {
+            goldBalanceOf[msg.sender] -= _value;
+        } else {
+            uint256 sub_value = _value - goldBalanceOf[msg.sender];
+            goldBalanceOf[msg.sender] = 0;
+            IBUCCTOKEN(buccAddress).burn(msg.sender, sub_value);
+        }
+
+        _addPower(_value, msg.sender);
+
+        emit Burn(msg.sender, _value);
+        return true;
+    }
+
+    //兑换算力
+    function exchangePower(address _account, uint256 _value)
+        public
+        returns (bool success)
+    {
+        require(_value > 0, "amount is zero");
+        require(
+            power[_account] + _value * 3 <= userMaxPower,
+            "userMaxPower overflow"
+        );
+
+        //混合燃烧
+        burnRequireToken(_value);
+
+        //如果可以Mint，先挖一次，避免多计算
+        if (
+            is_mint &&
+            power[_account] > 0 &&
+            block.timestamp - last_miner[_account] >= epoch
+        ) {
+            doMint(_account);
+        }
+
+        //充值不使用游戏余额
+        IBUCCTOKEN(buccAddress).burn(msg.sender, _value);
+        _addPower(_value, _account);
+
+        emit Burn(_account, _value);
+        return true;
+    }
+
+    function _addPower(uint256 _value, address _account) private {
+        uint256 addPower = _value * 3;
+        power[_account] += addPower; //燃烧加3倍算力
+        totalPower += addPower; //累计总算力
+
+        // 算力不能低于当前等级最低算力的98%，无法挖矿，需要补充算力。
+        uint256 minPower = (power[_account] * 98) / 100;
+        if (userMinPower[_account] < minPower) {
+            userMinPower[_account] = minPower;
+        }
+
+        reward_upline(_account, _value); //给上级奖励
+    }
+
+    //充值
+    function rechargeGold(address _account, uint256 _value)
+        public
+        returns (bool success)
+    {
+        require(_value > 0, "amount is zero");
+
+        //充值不使用游戏余额
+        IBUCCTOKEN(buccAddress).burn(msg.sender, _value);
+
+        totalReward += _value;
+        goldBalanceOf[_account] += _value;
+        emit RechargeCof(msg.sender, _account, _value);
+        return true;
+    }
+
+    function reward_upline(address _account, uint256 _value)
+        private
+        returns (bool success)
+    {
+        //邀请人不能为空
+        if (invite[_account] != address(0)) {
+            address invite1 = invite[_account];
+            uint8 lv = getPowerLv(invite1);
+
+            uint8 scale = levelFirstReward[lv]; // n/1000 通证数量乘以精度单位
+            if (scale == 0) {
+                return true;
+            }
+
+            //小数支持不好，就先乘后除的方法
+            uint256 reward = (_value * scale) / 1000;
+
+            //如果本次算力大于上级
+            if (power[invite1] < reward) {
+                reward = power[invite1];
+            }
+
+            power[invite1] -= reward; //减少邀请人算力
+            totalPower -= reward; //减少总算力
+            rewardCount[invite1] += reward; //记录累计奖励
+            _mint(invite1, reward); //增加邀请人余额
+
+            address invite2 = invite[invite1];
+            if (invite2 != address(0)) {
+                lv = getPowerLv(invite2);
+                scale = levelSecondReward[lv]; // n/1000
+                if (scale == 0) {
+                    return true;
+                }
+
+                reward = (_value * scale) / 1000;
+                //Check
+                if (power[invite2] < reward) {
+                    reward = power[invite2];
+                }
+
+                power[invite2] -= reward; //减少邀请人算力
+                totalPower -= reward; //减少总算力
+                rewardCount[invite2] += reward; //记录累计奖励
+                _mint(invite2, reward); //增加邀请人余额
+                return true;
+            }
+            return true;
+        }
+        return true;
+    }
+
+    function transfer_fee(address _from, uint256 _value)
+        public
+        view
+        returns (uint256 fee)
+    {
+        uint8 lv = getPowerLv(_from);
+        uint8 scale = levelFees[lv];
+        if (scale == 0) {
+            return 0;
+        }
+        uint256 _fee = (_value * scale) / 100;
+        return _fee;
+    }
+
+    //出售给系统 所有用户可以向游戏合约回购池卖币
+    function sell(uint256 amount_) public {
+        uint256 getUSDTamount = (amount_ * basePrice) / decimal_bucc;
+        TransferHelper.safeTransferFrom(
+            buccAddress,
+            msg.sender,
+            address(this),
+            amount_
+        );
+        TransferHelper.safeTransfer(usdAddress, msg.sender, getUSDTamount);
+    }
+
+    // 提现奖励
+    function withdrawReward(uint256 _value) public returns (bool) {
+        require(_value > 0, "amount is zero error");
+        uint256 taxFee = transfer_fee(msg.sender, _value);
+        uint256 sub_value = _value - taxFee; //扣除余额需要计算手续费
+
+        require(goldBalanceOf[msg.sender] >= _value, "balanceOf error");
+        goldBalanceOf[msg.sender] -= _value;
+
+        IBUCCTOKEN(buccAddress).mint(msg.sender, sub_value);
+        if (taxFee > 0) {
+            IBUCCTOKEN(buccAddress).mint(address(this), taxFee);
+        }
+
+        emit WithdrawalReward(msg.sender, _value);
+        return true;
+    }
+
+    // 分配手续费
+    function takeFee() public {
+        uint256 taxFee = IBUCCTOKEN(buccAddress).balanceOf(address(this));
+        require(taxFee > 0, "fee is zero error");
+
+        uint256 daoFee = (taxFee * 10) / 100;
+        uint256 rebackFee = (taxFee * 10) / 100;
+        uint256 marketFee = (taxFee * 30) / 100;
+        IBUCCTOKEN(buccAddress).mint(daoAddress, daoFee); // 10
+        IBUCCTOKEN(buccAddress).mint(rebackAddress, rebackFee); // 10
+        IBUCCTOKEN(buccAddress).mint(marketAddress, marketFee); // 30
+        IBUCCTOKEN(buccAddress).mint(
+            starAddress,
+            taxFee - daoFee - rebackFee - marketFee
+        ); // 50
+    }
+
+    //需要混合燃烧
+    function burnRequireToken(uint256 burnAmount_) private {
+        if (burnAmount_ > 0 && burnTokenAmount > 0) {
+            TransferHelper.safeTransferFrom(
+                quccAddress,
+                msg.sender,
+                address(burnAddress),
+                (burnTokenAmount * burnAmount_) / 10000
+            );
+        }
+    }
+
+    //开启土地
+    function startGame() public {
+        require(userLand[msg.sender] == 0, "game has been start");
+
+        if (startGameRequrieAmount > 0) {
+            TransferHelper.safeTransferFrom(
+                quccAddress,
+                msg.sender,
+                address(burnAddress),
+                startGameRequrieAmount
+            );
+        }
+
+        //激活使用土地nft
+        uint256 tokenId_ = INFT(nftAddress).useNftPrice(msg.sender);
+
+        // 用户可以持有土地NFT就可以在游戏中开启农场,将NFT id存入游戏合约中，
+        // 并且有500算力（当用户开启农场后，就在此合约的回购池加上134U，
+        // 去除NFT合约的回购额度，所有用户可以向游戏合约回购池卖币）。
+
+        userLand[msg.sender] = tokenId_;
+        totalUsersAmount++;
+        power[msg.sender] = 500 * decimal_bucc;
+        totalPower += 500 * decimal_bucc;
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "mint to the zero address");
+        totalReward += amount;
+        goldBalanceOf[account] += amount;
+        emit Minted(address(this), account, amount);
+    }
+
+    function setOwner(address payable new_owner) public onlyOwner {
+        owner = new_owner;
+    }
+
+    //初始化等级参数
+    function initLevel() private {
+        levelReward[0] = 20;
+        levelReward[1] = 50;
+        levelReward[2] = 55;
+        levelReward[3] = 60;
+        levelReward[4] = 65;
+        levelReward[5] = 65;
+
+        levelFees[0] = 50;
+        levelFees[1] = 20;
+        levelFees[2] = 16;
+        levelFees[3] = 14;
+        levelFees[4] = 12;
+        levelFees[5] = 10;
+
+        levelFirstReward[0] = 0;
+        levelFirstReward[1] = 20;
+        levelFirstReward[2] = 30;
+        levelFirstReward[3] = 40;
+        levelFirstReward[4] = 50;
+        levelFirstReward[5] = 60;
+
+        levelSecondReward[0] = 0;
+        levelSecondReward[1] = 5;
+        levelSecondReward[2] = 10;
+        levelSecondReward[3] = 15;
+        levelSecondReward[4] = 20;
+        levelSecondReward[5] = 20;
+    }
+
+    //获取算力等级
+    function getPowerLv(address account_) public view returns (uint8 Lv) {
+        Lv = 0;
+        uint256 power_ = power[account_];
+        if (power_ < 502 * decimal_bucc) {
+            Lv = 0;
+        } else if (power_ < 5000 * decimal_bucc) {
+            Lv = 1;
+        } else if (power_ < 10000 * decimal_bucc) {
+            Lv = 2;
+        } else if (power_ < 20000 * decimal_bucc) {
+            Lv = 3;
+        } else if (power_ < 40000 * decimal_bucc) {
+            Lv = 4;
+        } else if (power_ >= 40000 * decimal_bucc) {
+            Lv = 5;
+        }
+    }
+
+    function setDao(address new_dao) public onlyOwner {
+        daoAddress = new_dao;
+    }
+
+    function setBurnAddr(address new_addr) public onlyOwner {
+        burnAddress = new_addr;
+    }
+
+    function setRebackAddr(address new_addr) public onlyOwner {
+        rebackAddress = new_addr;
+    }
+
+    function setMarketAddr(address new_addr) public onlyOwner {
+        marketAddress = new_addr;
+    }
+
+    function setStarAddr(address new_addr) public onlyOwner {
+        starAddress = new_addr;
+    }
+
+    // 设置用户最高算力
+    function setUserMaxPower(uint256 _value) public onlyOwner {
+        userMaxPower = _value;
+    }
+
+    function startMint() public onlyOwner {
+        is_mint = true;
+        start_time = block.timestamp;
+    }
+
+    function setBasePrice(uint256 _value)
+        public
+        onlyOwner
+        returns (bool success)
+    {
+        basePrice = _value;
+        return true;
+    }
+
+    function setStartGameRequireAmount(uint256 _value) public onlyOwner {
+        startGameRequrieAmount = _value;
+    }
+
+    function setburnTokenAmount(uint256 _value) public onlyOwner {
+        burnTokenAmount = _value;
+    }
+
+    function setUserLand(uint256 tokenId_, address account_) public onlyOwner {
+        require(
+            INFT(nftAddress).ownerOf(tokenId_) == account_,
+            "not owner error"
+        ); //需要持有者才能修改
+        userLand[account_] = tokenId_;
+    }
+
+    function update_epoch() private returns (bool success) {
+        epoch = epoch_base + (block.timestamp - start_time) / 365;
+        return true;
+    }
+
+    function registration(address invite_address)
+        public
+        returns (bool success)
+    {
+        require(invite[msg.sender] == address(0), "repeat registration"); //现在没有邀请人
+        require(msg.sender != invite_address, "not self"); //不能是自己
+
+        // 上级必须已经绑定过邀请人或者绑定管理员帐号
+        require(
+            invite_address == daoAddress ||
+                invite[invite_address] != address(0),
+            "The inviter must have been bound"
+        );
+
+        invite[msg.sender] = invite_address; //记录邀请人
+        inviteCount[invite_address] += 1; //邀请人的下级数加一
+        return true;
+    }
+
+    //Mint
+    function mint() public returns (bool success) {
+        doMint(msg.sender);
+        return true;
+    }
+
+    // Mint的时候，要检查用户是否持有此NFT，如果未持有，就不能Mint，Mint的条件：地址,NFT,游戏三个都要对应上。
+    function doMint(address _account) private {
+        uint256 tokenId_ = userLand[msg.sender];
+        require(tokenId_ > 0, "land status error");
+        require(
+            INFT(nftAddress).ownerOf(tokenId_) == _account,
+            "nft ownerOf error"
+        );
+        require(is_mint, "not start mint");
+        require(power[_account] > 0, "power is zero"); //算力不能为零
+        require(
+            block.timestamp - last_miner[_account] >= epoch,
+            "last_miner error"
+        ); //距离上次Mint大于一个周期
+
+        uint8 lv = getPowerLv(_account);
+
+        // 算力不能低于当前等级最低算力的98%，无法挖矿，需要补充算力。
+        if (power[_account] <= userMinPower[_account]) {
+            return;
+        }
+
+        uint8 scale = levelReward[lv];
+        if (scale == 0) {
+            return;
+        }
+
+        uint256 miner_days = (block.timestamp - last_miner[_account]) / epoch;
+
+        //v1及以上可以累计10天挖矿
+        if (lv < 1) {
+            miner_days = 1;
+        } else if (last_miner[_account] == 0) {
+            miner_days = 1; //第一次Mint只能1天
+        } else if (miner_days > 10) {
+            miner_days = 10; //单次最多领取10天的
+        }
+
+        //算力*比例*天数
+        uint256 reward = (power[_account] * miner_days * scale) / 10000;
+
+        update_epoch(); //每次都更新基础周期值
+        power[_account] -= reward; //算力减去本次转换的
+        totalPower -= reward; //减少总算力
+
+        last_miner[_account] = block.timestamp; //记录本次Mint时间
+        _mint(_account, reward); //增加邀请人余额
+    }
+}

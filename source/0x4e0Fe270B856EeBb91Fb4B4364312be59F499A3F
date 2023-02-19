@@ -1,0 +1,275 @@
+
+// File: contracts/DAFITokenBSC.sol
+
+
+pragma solidity 0.8.9;
+import "./standardtoken.sol";
+import "./ownable.sol";
+
+
+
+
+contract DAFITokenBSC is StandardToken, Ownable {
+    string public constant _name = "DAFI Token";
+    string public constant _symbol = "DAFI";
+    uint256 public constant _decimals = 18;
+
+    uint256 public immutable maxSupply;
+
+
+    constructor(address _owner, address _bridge)  Ownable(_owner,_bridge) {
+        maxSupply = 2250000000 * 10**_decimals;
+    }
+
+
+    function mint(uint256 _value, address _beneficiary) external onlyBridge {
+        require(_beneficiary != address(0),"Beneficiary cannot be ZERO ADDRESS");
+        require(_value > 0,"value should be more than 0");
+        require((_value + _totalSupply) <= maxSupply, "Minting amount exceeding max limit");
+        balances[_beneficiary] = balances[_beneficiary] + _value;
+        unchecked {
+            _totalSupply = _totalSupply + _value;
+            
+        }
+        
+
+        emit Transfer(address(0), _beneficiary, _value);
+    }
+
+    function burnFrom(uint256 _value, address _beneficiary) external onlyBridge {
+        require(_beneficiary != address(0),"Beneficiary cannot be ZERO ADDRESS");
+        require(balanceOf(_beneficiary) >= _value, "User does not have sufficient tokens to burn");
+        require(_value <= allowed[_beneficiary][msg.sender], "user did not approve the bridge to burn the said amount.");
+
+        _totalSupply = _totalSupply - _value;
+        balances[_beneficiary] = balances[_beneficiary] - _value;
+        allowed[_beneficiary][msg.sender] = allowed[_beneficiary][msg.sender] - _value;
+
+        emit Transfer(_beneficiary, address(0), _value);
+    }
+
+    function name() public pure returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the
+     * name.
+     */
+    function symbol() public pure returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     * For example, if `decimals` equals `2`, a balance of `505` tokens should
+     * be displayed to a user as `5,05` (`505 / 10 ** 2`).
+     *
+     * Tokens usually opt for a value of 18, imitating the relationship between
+     * Ether and Wei. This is the value {ERC20} uses, unless {_setupDecimals} is
+     * called.
+     *
+     * NOTE: This information is only used for _display_ purposes: it in
+     * no way affects any of the arithmetic of the contract, including
+     * {IERC20-balanceOf} and {IERC20-transfer}.
+     */
+    function decimals() public pure returns (uint256) {
+        return _decimals;
+    }
+}
+
+
+// File: contracts/standardtoken.sol
+pragma solidity 0.8.9;
+import "./basictoken.sol";
+import "./erc20.sol";
+
+contract StandardToken is ERC20, BasicToken {
+  mapping(address => mapping(address => uint256)) internal allowed;
+
+  function transferFrom(
+    address _from,
+    address _to,
+    uint256 _value
+  ) public returns (bool) {
+    require(_to != address(0), "To cannot be ZERO ADDRESS");
+    require(_from != address(0), "From cannot be Address 0");
+    require(_value <= balances[_from], "Insufficient Balance");
+    require(
+      _value <= allowed[_from][msg.sender],
+      "msg sender not approved of this amount"
+    );
+    unchecked {
+      balances[_from] = balances[_from] - _value;
+      allowed[_from][msg.sender] = allowed[_from][msg.sender] - _value;
+    }
+
+    balances[_to] = balances[_to] + _value;
+
+    emit Transfer(_from, _to, _value);
+    return true;
+  }
+
+  function approve(address _spender, uint256 _value)
+    public
+    override
+    returns (bool)
+  {
+    require(_spender != address(0), "Spender cannot be ZERO ADDRESS");
+    allowed[msg.sender][_spender] = _value;
+    emit Approval(msg.sender, _spender, _value);
+    return true;
+  }
+
+  function allowance(address _owner, address _spender)
+    public
+    view
+    override
+    returns (uint256)
+  {
+    return allowed[_owner][_spender];
+  }
+
+  function increaseApproval(address _spender, uint256 _addedValue)
+    public
+    returns (bool)
+  {
+    require(_spender != address(0), "Spender cannot be ZERO ADDRESS");
+    allowed[msg.sender][_spender] = allowed[msg.sender][_spender] + _addedValue;
+    emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+    return true;
+  }
+
+  function decreaseApproval(address _spender, uint256 _subtractedValue)
+    public
+    returns (bool)
+  {
+    require(_spender != address(0), "Spender cannot be ZERO ADDRESS");
+    uint256 oldValue = allowed[msg.sender][_spender];
+    if (_subtractedValue > oldValue) {
+      allowed[msg.sender][_spender] = 0;
+    } else {
+      unchecked { allowed[msg.sender][_spender] = oldValue - _subtractedValue; }
+    }
+    emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+    return true;
+  }
+}
+
+
+// File: contracts/ownable.sol
+pragma solidity 0.8.9;
+
+
+ contract Ownable {
+    address public owner;
+    address public bridge;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event BridgeChanged(address indexed previousBridge, address indexed newBridge);
+
+    constructor(address _owner,address _bridge)  {
+        owner = _owner;
+        bridge = _bridge;
+    }
+    
+
+    modifier onlyOwner() {
+        require(msg.sender == owner,"Only Owner can call this function");
+        _;
+    }
+    modifier onlyBridge() {
+        require(msg.sender == bridge, "only Bridge can call this function");
+        _;
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0),"new owner cannot be Address 0");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+
+    function changeBridge(address newBridgeAddress) public onlyOwner {
+        require(newBridgeAddress != address(0),"new owner cannot be address 0");
+        emit BridgeChanged(bridge, newBridgeAddress);
+        bridge = newBridgeAddress;
+    }
+}
+
+// File: contracts/basictoken.sol
+
+pragma solidity 0.8.9;
+import "./erc20basic.sol";
+ contract BasicToken is ERC20Basic {
+
+    mapping(address => uint256) internal balances;
+
+    uint256 internal _totalSupply;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function totalSupply() public override view returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev transfer token for a specified address
+     * @param _to The address to transfer to.
+     * @param _value The amount to be transferred.
+     */
+    function transfer(address _to, uint256 _value) public override returns (bool) {
+        require(_to != address(0),"Cannot call transfer with to as ZERO ADDRESS");
+        require(_value <= balances[msg.sender],"cannot transfer amount more than your balance");
+        unchecked {
+            balances[msg.sender] = balances[msg.sender] - _value;
+            
+        }
+        
+        balances[_to] = balances[_to] + _value;
+        emit Transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    /**
+     * @dev Gets the balance of the specified address.
+     * @param _owner The address to query the the balance of.
+     * @return balance An uint256 representing the amount owned by the passed address.
+     */
+    function balanceOf(address _owner) public override view returns (uint256 balance) {
+        return balances[_owner];
+    }
+}
+
+// File: contracts/erc20.sol
+pragma solidity 0.8.9;
+import "./erc20basic.sol";
+
+
+ interface ERC20 is ERC20Basic {
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+
+    function approve(address spender, uint256 value) external returns (bool);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+// File: contracts/erc20basic.sol
+pragma solidity 0.8.9;
+
+
+
+ interface ERC20Basic {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address who) external view returns (uint256);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+}
+
