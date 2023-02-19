@@ -1,0 +1,656 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.6;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event TransferFrom(address indexed from, address indexed to, uint256 value);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IUniswapV2Pair {
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function name() external pure returns (string memory);
+
+    function symbol() external pure returns (string memory);
+
+    function decimals() external pure returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 value) external returns (bool);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+
+    function factory() external view returns (address);
+
+    function token0() external view returns (address);
+
+    function token1() external view returns (address);
+
+    function getReserves()
+    external
+    view
+    returns (
+        uint112 reserve0,
+        uint112 reserve1,
+        uint32 blockTimestampLast
+    );
+}
+
+//抽象合约Ownable,继承Context
+abstract contract Ownable {
+    address private _owner;
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(msg.sender);
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "new owner is 0");
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+//RORA ERC20 智能合约
+contract RORA is IERC20, Ownable {
+    string private _name; //代币名称
+    string private _symbol; //代币符合
+    uint256 private _decimals; //小数点位数
+    uint256 private immutable _tTotal; //Rora Pro代币发行总量
+    mapping(address => uint256) private _balanceOf; //代币存放map
+    mapping(address => mapping(address => uint256)) private _allowances; //授权转账额度
+
+    IUniswapV2Pair pair;
+    address public pancakeV2Pair;
+    address public USDT = address(0x55d398326f99059fF775485246999027B3197955); // USDT代币存放地址
+
+    mapping(address => bool) private _whiteList; //白名单
+    mapping(address => bool) private _escapeFee; //免手续费
+    mapping(address => address) public inviter; //邀请人
+
+    mapping(uint256 => uint256) public _randomUsd; // 支付金额 Usd
+    mapping(uint256 => uint256) public _randomRora; // 支付金额 Rora
+
+    bool public _releaseControl = true;
+
+    // 研发
+    address[] public _researchArray;
+    mapping(address => uint256) public _researchMap;
+    // Play
+    address[] public _playArray;
+    mapping(address => uint256) public _playMap;
+    // 募资
+    address[] public _placementArray;
+    mapping(address => uint256) public _placementMap;
+
+    // LP Active 地址池
+    address[] public _activeArray;
+    mapping(address => uint256) public _activeMap;
+
+    // 质押挖矿
+    address[] public _pledgeArray;
+    mapping(address => uint256) public _pledgeMap;
+    uint256 public _totalPledge; // 总质押量
+
+    address public constant _zeroAddress = address(0x0); //零地址，特殊用途
+    address public _mintControlAddress = address(0x9E5712ad09408caA834378c5C0147C475E442541); // 挖矿控制地址
+
+    address public constant _blackHoleAddress = address(0x000000000000000000000000000000000000dEaD); // 黑洞销毁地址
+    address public constant _airdropAddress = 0x97EB01b32A4E0d9B050d5b9e1a1D7eA57FE9Aec8; // 极光空投地址(合约地址)
+    address public constant _researchAddress = address(0xF35Ac799011c6c654f0f0f72409f7479C819B238); // 极光研发地址
+    address public constant _playAddress = address(0xc56b3A97c6DE904703dc8AB08e4F2352be806307); // 极光play地址
+    address public constant _placementAddress = address(0x2FFdeB97eD1D2E4Aea946e8c3BBc576477c868AB); // 极光募资地址
+    address public constant _liquidityAddress = address(0xdc7344Ae381AcBB70bc401CBa03678AD104189E3); // 极光LP地址
+    address public constant _nftAddress = address(0xB2eB1CCe8dFdF49dF6e69E59faaC3D18661D4283); // 极光NFT地址
+
+    address public constant _rewardAddress = address(0x116f869918AD0BC4C4bDa553e3a8A75bd9905553); // 奖励地址
+    address public constant _platformGovernanceAddress = 0x97EB01b32A4E0d9B050d5b9e1a1D7eA57FE9Aec8; //平台治理技术维护地址(合约地址)
+
+    uint256 public constant _destroyFee = 4; // 销毁比例
+    uint256 public constant _rewardFee = 3; // 奖励比例
+    uint256 public constant _platformFee = 2; // 维护比例
+    uint256 public constant _backFee = 1; // 回流比例
+
+    event BuyNFTCard(uint256 amountRora, uint256 amountUsd, uint256 random);
+
+    constructor(address tokenOwner) {
+        _name = "Rora Pro";
+        _symbol = "RoraPro"; //代币简写符号需要产品提供
+        _decimals = 18;
+        _tTotal = 1000000 * 10**_decimals;
+        // 空投
+        _balanceOf[_airdropAddress] = 10000 * 10**_decimals;
+        emit Transfer(_zeroAddress, _airdropAddress, 10000 * 10**_decimals);
+        // 研发
+        _balanceOf[_researchAddress] = 20000 * 10**_decimals;
+        emit Transfer(_zeroAddress, _researchAddress, 20000 * 10**_decimals);
+        // Play
+        _balanceOf[_playAddress] = 30000 * 10**_decimals;
+        emit Transfer(_zeroAddress, _playAddress, 30000 * 10**_decimals);
+        // 募资
+        _balanceOf[_placementAddress] = 40000 * 10**_decimals;
+        emit Transfer(_zeroAddress, _placementAddress, 40000 * 10**_decimals);
+        // LP 10 万
+        _balanceOf[_liquidityAddress] = 10 * 10000 * 10**_decimals;
+        emit Transfer(_zeroAddress, _liquidityAddress, 10 * 10000 * 10**_decimals);
+        // NFT 30 万
+        _balanceOf[_nftAddress] = 30 * 10000 * 10**_decimals;
+        emit Transfer(_zeroAddress, _nftAddress, 20 * 10000 * 10**_decimals);
+        // 销毁 50 万
+        _balanceOf[_blackHoleAddress] = 50 * 10000 * 10**_decimals;
+        // _tTotal-=_balanceOf[_blackHoleAddress];
+        emit Transfer(_zeroAddress, _blackHoleAddress, 50 * 10000 * 10**_decimals);
+        //转移所有权
+        transferOwnership(tokenOwner);
+    }
+
+    modifier onlyController() {
+        require(msg.sender == _mintControlAddress, "permission denied");
+        _;
+    }
+
+    // 释放开关, 拥有控制权可切换
+    function releaseControl() public onlyOwner returns (bool) {
+        if (_releaseControl) {
+            _releaseControl = false;
+        } else {
+            _releaseControl = true;
+        }
+        return _releaseControl;
+    }
+
+    // 研发 增加线性释放
+    function researchAdd(address research, uint256 amounts) public onlyController returns (bool) {
+        require(research != address(0x0), "address = 0");
+        require(amounts != 0, "amounts = 0");
+        // 把 map 值 设置为1 可以不发, 且避免重复添加
+        if (_researchMap[research] == 0) {
+            _researchArray.push(research);
+        }
+        _researchMap[research] = amounts;
+        return true;
+    }
+
+    // 研发 线性释放
+    function researchRelease() public onlyController returns (bool) {
+        if (_releaseControl && _balanceOf[_researchAddress] > 0) {
+            for (uint256 i = 0; i < _researchArray.length; i++) {
+                address research = _researchArray[i];
+                uint256 amount = _researchMap[research];
+                if (amount > 1) {
+                    _balanceOf[_researchAddress] = _balanceOf[_researchAddress] - amount;
+                    _balanceOf[research] = _balanceOf[research] + amount;
+                    emit Transfer(_researchAddress, research, amount);
+                }
+            }
+        }
+        return true;
+    }
+
+    // Play 增加线性释放
+    function playAdd(address play, uint256 amounts) public onlyController returns (bool) {
+        require(play != address(0x0), "address = 0");
+        require(amounts != 0, "amounts = 0");
+        // 把 map 值 设置为1 可以不发, 且避免重复添加
+        if (_playMap[play] == 0) {
+            _playArray.push(play);
+        }
+        _playMap[play] = amounts;
+        return true;
+    }
+
+    // Play 线性释放
+    function playRelease() public onlyController returns (bool) {
+        if (_releaseControl && _balanceOf[_playAddress] > 0) {
+            for (uint256 i = 0; i < _playArray.length; i++) {
+                address play = _playArray[i];
+                uint256 amount = _playMap[play];
+                if (amount > 1) {
+                    _balanceOf[_playAddress] = _balanceOf[_playAddress] - amount;
+                    _balanceOf[play] = _balanceOf[play] + amount;
+                    emit Transfer(_playAddress, play, amount);
+                }
+            }
+        }
+        return true;
+    }
+
+    // 募资 增加线性释放
+    function placementAdd(address placement, uint256 amounts) public onlyController returns (bool) {
+        require(placement != address(0x0), "address = 0");
+        require(amounts != 0, "amounts = 0");
+        // 把 map 值 设置为1 可以不发, 且避免重复添加
+        if (_placementMap[placement] == 0) {
+            _placementArray.push(placement);
+        }
+        _placementMap[placement] = amounts;
+        return true;
+    }
+
+    // 募资 线性释放
+    function placementRelease() public onlyController returns (bool) {
+        if (_releaseControl && _balanceOf[_placementAddress] > 0) {
+            for (uint256 i = 0; i < _placementArray.length; i++) {
+                address placement = _placementArray[i];
+                uint256 amount = _placementMap[placement];
+                if (amount > 1) {
+                    _balanceOf[_placementAddress] = _balanceOf[_placementAddress] - amount;
+                    _balanceOf[placement] = _balanceOf[placement] + amount;
+                    emit Transfer(_placementAddress, placement, amount);
+                }
+            }
+        }
+        return true;
+    }
+
+    // 购买卡片下单
+    function buyNFTCard(
+        uint256 amountRora,
+        uint256 amountUsd,
+        uint256 random
+    ) public returns (bool) {
+        require(amountRora > 10**9, "amountRora <= 1 GWei");
+        require(amountUsd > 10**9, "amountUsd <= 1 GWei");
+        uint256 balance = _balanceOf[msg.sender];
+        require(balance >= amountRora, "balance is not enough");
+
+        bool success = IERC20(USDT).transferFrom(address(msg.sender), _platformGovernanceAddress, amountUsd);
+        // bool success = IERC20(USDT).transfer(_platformGovernanceAddress, amountUsd);
+        require(success,  "USDT transfer is failed");
+        if (success) {
+            _balanceOf[msg.sender] = _balanceOf[msg.sender] - amountRora;
+            _balanceOf[_blackHoleAddress] = _balanceOf[_blackHoleAddress] + amountRora;
+            emit Transfer(msg.sender, _blackHoleAddress, amountRora);
+            _randomRora[random] = amountRora;
+            _randomUsd[random] = amountUsd;
+            emit BuyNFTCard(amountRora, amountUsd, random);
+        }
+        return true;
+    }
+
+    function getRandomAmount(uint256 random) public view returns (uint256 rora, uint256 usd) {
+        return (_randomRora[random], _randomUsd[random]);
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint256) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balanceOf[account];
+    }
+
+    //转账交易
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        if (msg.sender == pancakeV2Pair) {
+            // pancake 合约
+            _transfer(msg.sender, recipient, amount);
+        } else {
+            //普通账号
+            _tokenOnlyTransfer(msg.sender, recipient, amount);
+        }
+        return true;
+    }
+
+    //授权转账
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        require(_allowances[sender][msg.sender] >= amount, "exceeds allowance"); //判断授权额度是否够
+        require(_balanceOf[sender] >= amount, "exceeds allowance"); //判断sender账户余额是否够
+        if (recipient == pancakeV2Pair) {
+            _transfer(sender, recipient, amount);
+        } else {
+            _tokenOnlyTransfer(sender, recipient, amount);
+        }
+
+        _allowances[sender][msg.sender] = _allowances[sender][msg.sender] - amount;
+        emit TransferFrom(sender, recipient, amount);
+
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        require(amount > 0, "amount <= 0");
+        require(_balanceOf[msg.sender] >= amount, "exceeds allowance");
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(msg.sender, spender, _allowances[msg.sender][spender] + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        require(_allowances[msg.sender][spender] >= subtractedValue, "ERC20: decreased allowance below zero");
+        _approve(msg.sender, spender, _allowances[msg.sender][spender] - subtractedValue);
+        return true;
+    }
+
+    //to recieve ETH from pancakeV2Router when swaping
+    receive() external payable {}
+
+    function claimTokens() public onlyOwner {
+        payable(owner()).transfer(address(this).balance);
+    }
+
+    //pancake交易转账
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) private {
+        // 判断发送、接收账号是否为0,转账数量是否大于0，发送账号代币持有数量是否大于等于转账数量
+        require(!_whiteList[from], "ERC20: transfer from the illegal address");
+        require(!_whiteList[to], "ERC20: transfer from the illegal address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+        require(amount > 10**9, "amount <= 1 GWei");
+        require(_balanceOf[from] >= amount, "exceeds allowance");
+
+        // 保存底池活跃地址
+        if (_activeMap[from] == 0 && from != pancakeV2Pair) {
+            _activeMap[from] = 1;
+            _activeArray.push(from);
+        }
+        if (_activeMap[to] == 0 && to != pancakeV2Pair) {
+            _activeMap[to] = 1;
+            _activeArray.push(to);
+        }
+
+        _balanceOf[from] = _balanceOf[from] - amount;
+        uint256 recipientRate = 90;
+        // destroy less than 10000 通缩至10000
+        if (_escapeFee[from] || _escapeFee[to] || balanceOf(_blackHoleAddress) >= 990000 * 10**_decimals) {
+            recipientRate = 100;
+        } else {
+            // 销毁 40%
+            _takeTransfer(from, _blackHoleAddress, (amount * _destroyFee) / 100);
+            // _tTotal = _tTotal - ((amount * _destroyFee) / 100);
+            // 奖励 30%
+            _takeTransfer(from, _rewardAddress, (amount * _rewardFee) / 100);
+            //  技术维护
+            _takeTransfer(from, _platformGovernanceAddress, (amount * _platformFee) / 100);
+            // 回流底池
+            _takeTransfer(from, _platformGovernanceAddress, (amount * _backFee) / 100);
+        }
+        _balanceOf[to] = _balanceOf[to] + ((amount * recipientRate) / 100);
+        emit Transfer(from, to, (amount * recipientRate) / 100);
+    }
+
+    //普通交易转账
+
+    function _tokenOnlyTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) private {
+        // 判断发送、接收账号是否为0,转账数量是否大于0，发送账号代币持有数量是否大于等于转账数量
+        require(!_whiteList[from], "ERC20: transfer from the illegal address");
+        require(!_whiteList[to], "ERC20: transfer from the illegal address");
+        require(amount > 10**9, "amount <= 1 GWei");
+        require(_balanceOf[from] >= amount, "exceeds allowance");
+
+        if(amount > 100000000000000){
+            if (inviter[to] == address(0)) {
+                inviter[to] = from;
+            }
+        }
+
+        _balanceOf[from] = _balanceOf[from] - amount;
+        uint256 recipientRate = 90;
+        // destroy less than 10000 通缩至10000
+        if (_escapeFee[from] || _escapeFee[to] || balanceOf(_blackHoleAddress) >= 990000 * 10**_decimals) {
+            recipientRate = 100;
+        } else {
+            // 销毁 40%
+            _takeTransfer(from, _blackHoleAddress, (amount * _destroyFee) / 100);
+            // _tTotal = _tTotal - ((amount * _destroyFee) / 100);
+            // 奖励 30%
+            _takeTransfer(from, _rewardAddress, (amount * _rewardFee) / 100);
+            // 技术维护
+            _takeTransfer(from, _platformGovernanceAddress, (amount * _platformFee) / 100);
+            // 回流底池
+            _takeTransfer(from, _platformGovernanceAddress, (amount * _backFee) / 100);
+        }
+        _balanceOf[to] = _balanceOf[to] + ((amount * recipientRate) / 100);
+        emit Transfer(from, to, (amount * recipientRate) / 100);
+    }
+
+    function _takeTransfer(
+        address sender,
+        address to,
+        uint256 tAmount
+    ) private {
+        _balanceOf[to] = _balanceOf[to] + tAmount;
+        emit Transfer(sender, to, tAmount);
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) private {
+        require(owner != address(0), "owner:0");
+        require(spender != address(0), "spender:0");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    // NFT Reward Release , NFT 奖励发放
+    function nftRewardRelease(
+        address to,
+        uint256 amount,
+        uint256 invite
+    ) public onlyController returns (bool) {
+        require(to != address(0x0), "zero address");
+        require(amount > 0, "amount must be greater than zero");
+        require(_balanceOf[_nftAddress] >= amount + invite, "exceeds allowance"); // 奖池余额不足
+
+        uint256 amountTotal = amount + invite; // 个人奖励 + 团队奖励
+
+        _balanceOf[to] = _balanceOf[to] + amountTotal; //增加个人余额
+        _balanceOf[_nftAddress] = _balanceOf[_nftAddress] - amountTotal; // 扣除奖池余额
+
+        emit Transfer(_nftAddress, to, amount);
+        if (invite > 0) {
+            emit Transfer(_nftAddress, to, invite);
+        }
+        return true;
+    }
+
+    // LP 挖矿奖励设置, 业务层控制begin, end 变量, 防止方法执行失败
+    function liquidityMintAll(uint256 begin, uint256 end) public onlyController returns (bool) {
+        uint256 dayMint = 200 * 10**_decimals;
+        if (_balanceOf[_liquidityAddress] >= dayMint) {
+            pair = IUniswapV2Pair(pancakeV2Pair);
+
+            uint256 lpTotal = pair.totalSupply();
+
+            for (uint256 i = begin; i < end; i++) {
+                address mint = _activeArray[i];
+                uint256 weight = pair.balanceOf(mint);
+                if (weight > 0) {
+                    uint256 amount = (dayMint * weight) / lpTotal;
+                    uint256 totalReceive = _activeMap[mint];
+                    if (totalReceive == 1) {
+                        _activeMap[mint] = amount;
+                    } else {
+                        _activeMap[mint] = amount + totalReceive;
+                    }
+                    _balanceOf[_liquidityAddress] = _balanceOf[_liquidityAddress] - amount;
+                }
+            }
+        }
+        return true;
+    }
+
+    // LP 挖矿奖励提取
+    function liquidityMint() public returns (bool) {
+        uint256 totalReceive = _activeMap[msg.sender];
+        if (totalReceive > 1) {
+            _activeMap[msg.sender] = 1;
+            _balanceOf[msg.sender] = _balanceOf[msg.sender] + totalReceive;
+            emit Transfer(_liquidityAddress, msg.sender, totalReceive);
+        }
+        return true;
+    }
+
+    // 添加质押奖励数据
+    function pledgeAdd(address pledge, uint256 amounts) public onlyController returns (bool) {
+        require(pledge != address(0x0), "address = 0");
+        require(amounts > 0, "amounts = 0");
+
+        // 把 map 值 设置为1 可以不发, 且避免重复添加
+        if (_pledgeMap[pledge] == 0) {
+            _pledgeArray.push(pledge);
+        }
+        _pledgeMap[pledge] = amounts;
+        return true;
+    }
+
+    // 添加总质押量
+    function pledgeTotal(uint256 amounts) public onlyController returns (bool) {
+        require(amounts > 0, "amounts = 0");
+        _totalPledge = amounts;
+        return true;
+    }
+
+    function pledgeRelease() public onlyController returns (bool) {
+        // 奖励数量为奖励地址余额
+        uint256 reward = _balanceOf[_rewardAddress];
+        for (uint256 i = 0; i < _pledgeArray.length; i++) {
+            address receiver = _pledgeArray[i];
+            if (reward > 0 && _totalPledge > 0) {
+                uint256 pledge = _pledgeMap[receiver];
+                if (pledge > 1) {
+                    uint256 amount = (reward * pledge) / _totalPledge;
+                    _balanceOf[receiver] = _balanceOf[receiver] + amount;
+                    emit Transfer(_rewardAddress, receiver, amount);
+                }
+            }
+        }
+        _balanceOf[_rewardAddress] = 0;
+        return true;
+    }
+
+    function changeRouter(address router) public onlyOwner {
+        require(router != address(0), "ERC20: transfer router to the zero address");
+        pancakeV2Pair = router;
+    }
+
+    function changeMintControl(address control) public onlyOwner {
+        require(control != address(0), "ERC20: transfer control to the zero address");
+        _mintControlAddress = control;
+    }
+
+    function setWhiteList(address whiteList) public onlyOwner {
+        _whiteList[whiteList] = true;
+    }
+
+    function unSetWhiteList(address whiteList) public onlyOwner {
+        _whiteList[whiteList] = false;
+    }
+
+    function setEscapeFee(address escape) public onlyOwner {
+        _escapeFee[escape] = true;
+    }
+
+    function unSetEscapeFee(address escape) public onlyOwner {
+        _escapeFee[escape] = false;
+    }
+
+    function setInviter(address _account,address _inviter) public onlyOwner {
+        inviter[_account] = _inviter;
+    }
+
+    function setUSDTAddress(address _account) public onlyOwner {
+        USDT = _account;
+    }
+
+    function getInviter(address account) public view returns (address) {
+        return inviter[account];
+    }
+
+    function getLpClaim(address account) public view returns (uint256) {
+        return _activeMap[account];
+    }
+
+    function getActiveLength() public view onlyController returns (uint256) {
+        return _activeArray.length;
+    }
+
+    // 可维护活跃数组地址
+    function addActiveArray(uint256 index, address account) public onlyController {
+         _activeArray[index] = account;
+    }
+
+}

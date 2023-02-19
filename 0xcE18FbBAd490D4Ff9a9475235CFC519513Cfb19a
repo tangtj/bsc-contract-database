@@ -1,0 +1,2819 @@
+
+// File: contracts/AaltoToken.sol
+// SPDX-License-Identifier: MIT
+pragma experimental ABIEncoderV2;
+pragma solidity 0.7.4;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
+import "./interfaces/IUniswapV2Router02.sol";
+import "./interfaces/IUniswapV2Pair.sol";
+import "./interfaces/IUniswapV2Factory.sol";
+import "./interfaces/IStaking.sol";
+import "./interfaces/IERC721.sol";
+import "./interfaces/IAaltoToken.sol";
+
+import "./libs/SafeMathInt.sol";
+import "./ERC20Detailed.sol";
+import "./ProtocolFees.sol";
+import "./structs.sol";
+
+/// @title Rebasing/Elastic supply token contract.
+/// @author 0xBriz
+/// @notice Modified flow of what started with Titano and expanded on by Safuu, Libero, etc.
+contract AaltoToken is
+    ERC20Detailed,
+    ProtocolFees,
+    ReentrancyGuard,
+    IAaltoToken
+{
+    using SafeMath for uint256;
+    using SafeMathInt for int256;
+
+    bool public initialDistributionFinished = false;
+
+    uint256 private constant MAX_UINT256 = ~uint256(0);
+
+    /* ================== TOKEN INFO =================== */
+
+    uint256 private constant DECIMALS = 18;
+
+    uint256 private constant INITIAL_FRAGMENTS_SUPPLY = 550000 * 10**DECIMALS; // 550,000
+
+    uint256 private constant MAX_SUPPLY = 55 * 10**8 * 10**DECIMALS; // 5,550,000,000
+
+    // TOTAL_GONS is a multiple of INITIAL_FRAGMENTS_SUPPLY so that _gonsPerFragment is an integer.
+    // Use the highest value that fits in a uint256 for max granularity.
+    uint256 private constant TOTAL_GONS =
+        MAX_UINT256 - (MAX_UINT256 % INITIAL_FRAGMENTS_SUPPLY);
+
+    // underscore to avoid clashing with base class
+    uint256 private _totalSupply;
+
+    // The divisor or multiplier used for math operations.
+    // Is set during each rebase as needed (= TOTAL_GONS / totalSupply)
+    uint256 private _gonsPerFragment;
+
+    // The threshold used to determine when we should be swapping the
+    // current contract balance to native/stable. See `shouldSwapBack`.
+    // Can be reset by admin in `setSwapBackSettings`.
+    uint256 private gonSwapThreshold = (TOTAL_GONS * 10) / 10000;
+
+    mapping(address => uint256) private _gonBalances;
+
+    mapping(address => uint256) private _lockedBalances;
+
+    // Mapping of contract approvals
+    mapping(address => mapping(address => uint256)) private _allowedFragments;
+
+    /* =================== BURN ADDRESSES =================== */
+
+    address constant DEAD = 0x000000000000000000000000000000000000dEaD;
+
+    address constant ZERO = 0x0000000000000000000000000000000000000000;
+
+    /* ============== REBASE/LP ITEMS =============== */
+
+    uint256 private constant MAX_REBASE_FREQUENCY = 1800;
+
+    // Adds on to block timestamp during rebase to set `nextRebase` time.
+    // nextRebase = block.timestamp + rebaseFrequency
+    uint256 public rebaseFrequencySeconds = 900;
+
+    uint256 public nextRebase = block.timestamp + 31536000;
+
+    // 0.0239% per 15 minute rebase cycle
+    uint256 public rewardYield = 239;
+    uint256 public rewardYieldDenominator = 1000000;
+
+    bool public autoRebase = true;
+
+    // Cap on amount one sell transfer can be
+    // Able to be updated by admin. Initial 10,000
+    // This does not prevent multiple sells back to back, etc. though
+    uint256 public maxSellTransactionAmount = 10000 * 10**18;
+
+    // Used to determine whether current liquidity is over/under a target threshold
+    uint256 public targetLiquidity = 50;
+    uint256 public targetLiquidityDenominator = 100;
+
+    // Determines whether swap backs are to native or stable
+    bool public isLiquidityInNative = true;
+
+    bool public swapEnabled = true;
+
+    /* ================ CORE CONTRACTS ================ */
+
+    // Array of the core(native/stable) pairs
+    address[] public corePairs;
+
+    // Mapping of the `corePairs` to simplify checks and reduce duplication
+    mapping(address => bool) public isCorePair;
+
+    // Native LP pairing for this token
+    IUniswapV2Pair public immutable nativeLiquidityPair;
+
+    // Stable coin based pairing for this token
+    IUniswapV2Pair public immutable stableLiquidityPair;
+
+    address public immutable stableCoinAddress;
+
+    // Address of NFT contract that provides incentives/benefits for owners
+    address public nftContractAddress;
+
+    // DEX router used for swaps and liquidity
+    IUniswapV2Router02 public router;
+
+    // The staking token contract
+    IStaking public staking;
+
+    bool public stakingEnabled = false;
+
+    constructor(
+        address _routerAddress,
+        address _stableCoinAddress,
+        address _treasuryFeeReceiver,
+        address _insuranceFeeReceiver,
+        address _nftFeeReceiver,
+        address _liquityTokensReceiver,
+        address _stakingContractAddress
+    )
+        ERC20Detailed("Aalto Protocol", "AALTO", uint8(DECIMALS))
+        ProtocolFees(
+            _treasuryFeeReceiver,
+            _insuranceFeeReceiver,
+            _nftFeeReceiver,
+            _stakingContractAddress,
+            _liquityTokensReceiver
+        )
+    {
+        require(_routerAddress != address(0), "AALTO: 0x0 _routerAddress");
+        require(
+            _stableCoinAddress != address(0),
+            "AALTO: 0x0 _stableCoinAddress"
+        );
+
+        // Staking currently possible zero address
+        if (_stakingContractAddress != address(0)) {
+            staking = IStaking(_stakingContractAddress);
+            stakingEnabled = true;
+            isFeeExempt[_stakingContractAddress] = true;
+        }
+
+        router = IUniswapV2Router02(_routerAddress);
+
+        // Create core native pairing
+        address _nativeLiquidityPairAddress = IUniswapV2Factory(
+            router.factory()
+        ).createPair(address(this), router.WETH());
+
+        nativeLiquidityPair = IUniswapV2Pair(_nativeLiquidityPairAddress);
+
+        // Create stable pair
+        address _stableLiquidityPairAddress = IUniswapV2Factory(
+            router.factory()
+        ).createPair(address(this), _stableCoinAddress);
+
+        stableCoinAddress = _stableCoinAddress;
+        stableLiquidityPair = IUniswapV2Pair(_stableLiquidityPairAddress);
+
+        // Set the two new pairs used as reference for liquidity backing
+        setAutomatedMarketMakerPair(_nativeLiquidityPairAddress, true);
+        setAutomatedMarketMakerPair(_stableLiquidityPairAddress, true);
+
+        _totalSupply = INITIAL_FRAGMENTS_SUPPLY;
+        _gonBalances[msg.sender] = TOTAL_GONS;
+        _gonsPerFragment = TOTAL_GONS.div(_totalSupply);
+
+        // Assign needed approvals to external contracts and self for stable coin
+        IERC20(_stableCoinAddress).approve(address(router), uint256(-1));
+        IERC20(_stableCoinAddress).approve(
+            address(_stableLiquidityPairAddress),
+            uint256(-1)
+        );
+        IERC20(_stableCoinAddress).approve(address(this), uint256(-1));
+
+        _allowedFragments[address(this)][address(router)] = uint256(-1);
+        _allowedFragments[address(this)][_nativeLiquidityPairAddress] = uint256(
+            -1
+        );
+        _allowedFragments[address(this)][address(this)] = uint256(-1);
+        _allowedFragments[address(this)][_stableLiquidityPairAddress] = uint256(
+            -1
+        );
+
+        emit Transfer(address(0x0), _treasuryFeeReceiver, _totalSupply);
+    }
+
+    // Accepting donations
+    receive() external payable {}
+
+    /**
+     * @dev Determines if a rebase should take place.
+     * In this implementation it is simply a check for whether enough time has passed.
+     */
+    function shouldRebase() internal view returns (bool) {
+        return nextRebase <= block.timestamp;
+    }
+
+    /**
+     * @dev Utility function to determine if a transfer should have fees taken.
+     */
+    function shouldTakeFee(address _sender, address _recipient)
+        internal
+        view
+        returns (bool)
+    {
+        // If an address on either side of the transfer is exempt,
+        // then the complete transfer is exempt.
+        if (isFeeExempt[_sender] || isFeeExempt[_recipient]) {
+            return false;
+        } else if (feesOnNormalTransfers) {
+            // This can be toggled by admins
+            return true;
+        } else {
+            // If passing through the pair in any way. Buy/Sell
+            return (isCorePair[_sender] || isCorePair[_recipient]);
+        }
+    }
+
+    function _rebase() private {
+        if (!inSwap) {
+            coreRebase(getSupplyDelta());
+        }
+    }
+
+    /**
+     * @dev Performs the core rebasing mechanism for the token supply.
+     * Updates the total supply based on circulating supply and reward yeild (provided through supply delta).
+     * Updates `_gonsPerFragment` according to new total supply and sets next rebase time.
+     */
+    function coreRebase(int256 _supplyDelta) private returns (uint256) {
+        uint256 epoch = block.timestamp;
+
+        if (_supplyDelta == 0) {
+            emit LogRebase(epoch, _totalSupply);
+            return _totalSupply;
+        }
+
+        if (_supplyDelta < 0) {
+            _totalSupply = _totalSupply.sub(uint256(-_supplyDelta));
+        } else {
+            _totalSupply = _totalSupply.add(uint256(_supplyDelta));
+        }
+
+        if (_totalSupply > MAX_SUPPLY) {
+            _totalSupply = MAX_SUPPLY;
+        }
+
+        // Setting this updates the base/divisor/multiplier used for important calculations across the contract.
+        _gonsPerFragment = TOTAL_GONS.div(_totalSupply);
+
+        nextRebase = epoch + rebaseFrequencySeconds;
+
+        emit LogRebase(epoch, _totalSupply);
+
+        return _totalSupply;
+    }
+
+    /**
+     * @dev Just a utility to run needed checks for `_transferFrom`.
+     * Code looked cluttered/harder to read in that function
+     */
+    function _canTransfer(
+        address _sender,
+        address _recipient,
+        uint256 _amount
+    ) private view returns (bool) {
+        // Avoid math overflow/underflow issues
+        require(
+            balanceOf(_sender) >= _amount,
+            "AALTO: transfer amount exceeds balance"
+        );
+
+        bool excludedAccount = isFeeExempt[_sender] || isFeeExempt[_recipient];
+        // fee exempt accounts are able to perform setup operations/transfers until distribution is complete
+        require(
+            initialDistributionFinished || excludedAccount,
+            "AALTO: Trading not started yet"
+        );
+
+        // If someone is transferring into a pair(_recipient = one of our pair addresses), then they are selling
+        if (isCorePair[_recipient] && !excludedAccount) {
+            require(
+                _amount <= maxSellTransactionAmount,
+                "AALTO: Exceeds max sell amount"
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev Runs checks to determine whether swapping to native/stable should take place.
+     * The current contract balance (of itself), is swapped into the native or stable token.
+     * Native or stable is determined by `isLiquidityInNative` in `swapBack()`
+     */
+    function shouldSwapBack() internal view returns (bool) {
+        return
+            !isCorePair[msg.sender] &&
+            !inSwap &&
+            swapEnabled &&
+            totalBuyFee.add(totalSellFee) > 0 &&
+            _gonBalances[address(this)] >= gonSwapThreshold;
+    }
+
+    /**
+     * @dev Reduces the amount of a transfer based on being a buy or sell transfer.
+     * Needed checks should happen before calling this function.
+     * Function only determines whether a buy or sell is in progress and reduces amount accordingly.
+     * Contracts own internal balance is updated by the fee amount taken.
+     */
+    function takeFee(
+        address _sender,
+        address _recipient,
+        uint256 _gonAmount
+    ) internal returns (uint256) {
+        // If _recipient is one of our pairs then someone is selling the token
+        uint256 realFee = isCorePair[_recipient] ? totalSellFee : totalBuyFee;
+
+        // _gonAmount is already multiplied by _gonPerFragment at this point
+        uint256 feeAmount = _gonAmount.mul(realFee).div(feeDenominator);
+
+        // Update balance of contract itself
+        // Contract accumulates fee amounts until threshold is hit to distribute
+        _gonBalances[address(this)] = _gonBalances[address(this)].add(
+            feeAmount
+        );
+
+        // format feeAmount back for outside viewing
+        emit Transfer(_sender, address(this), feeAmount.div(_gonsPerFragment));
+
+        return _gonAmount.sub(feeAmount);
+    }
+
+    /* ======================== TOKEN FUNCTIONS ========================= */
+
+    /**
+     * @dev Calculates the current change between circulating supply and reward yield.
+     * Changes to token supply through burns and previous rebase changes to `_gonsPerFragment`,
+     * will cause this delta to be always changing.
+     * This value determines the amount the total supply will be changed by.
+     * And by association determine the new value for `_gonsPerFragment`.
+     */
+    function getSupplyDelta() public view returns (int256) {
+        uint256 circulatingSupply = getCirculatingSupply();
+        int256 supplyDelta = int256(
+            circulatingSupply.mul(rewardYield).div(rewardYieldDenominator)
+        );
+
+        return supplyDelta;
+    }
+
+    /**
+     * @dev Calculates the current supply in circulation.
+     * The accounting for this is different than traditional ERC20
+     * due to the nature of the elastic supply and rebasing.
+     * Circulating supply is influenced by tokens burned and current value of `_gonsPerFragment`.
+     */
+    function getCirculatingSupply() public view returns (uint256) {
+        return
+            (TOTAL_GONS.sub(_gonBalances[DEAD]).sub(_gonBalances[ZERO])).div(
+                _gonsPerFragment
+            );
+    }
+
+    /**
+     * @dev Intercepts typical transfers to perform protocol operations.
+     * Delegates taking of fees and triggering a rebase as needed.
+     */
+    function _transferFrom(
+        address _sender,
+        address _recipient,
+        uint256 _amount
+    ) internal notBlacklisted(msg.sender) returns (bool) {
+        require(
+            _canTransfer(_sender, _recipient, _amount),
+            "Aalto: Transfer failed"
+        );
+
+        // Skip rest of process and basic transfer if we initiated this transfer
+        if (inSwap) {
+            return _basicTransfer(_sender, _recipient, _amount);
+        }
+
+        // Put the amount into proper formatting for our maths with `_gonsPerFragment`
+        uint256 gonAmount = _amount.mul(_gonsPerFragment);
+
+        if (shouldSwapBack()) {
+            swapBack();
+        }
+
+        _gonBalances[_sender] = _gonBalances[_sender].sub(gonAmount);
+
+        // Deduct fees as needed before updating receiver balance
+        uint256 gonAmountReceived = shouldTakeFee(_sender, _recipient)
+            ? takeFee(_sender, _recipient, gonAmount)
+            : gonAmount;
+
+        _gonBalances[_recipient] = _gonBalances[_recipient].add(
+            gonAmountReceived
+        );
+
+        emit Transfer(
+            _sender,
+            _recipient,
+            // div(_gonsPerFragment) to place back in outside format
+            gonAmountReceived.div(_gonsPerFragment)
+        );
+
+        // shouldRebase = nextRebase <= block.timestamp
+        if (shouldRebase() && autoRebase) {
+            _rebase();
+
+            // If one of our pairs was not involved in this transfer,
+            // then update the pairs last cumulative prices and blockTimestampLast
+            if (!isCorePair[_sender] && !isCorePair[_recipient]) {
+                manualSyncPairs();
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev The external facing transfer function.
+     * Simply delegates the process to internal `_transferFrom`.
+     */
+    function transfer(address _to, uint256 _amount)
+        external
+        override
+        validRecipient(_to)
+        returns (bool)
+    {
+        _transferFrom(msg.sender, _to, _amount);
+        return true;
+    }
+
+    /**
+     * @dev Performs a simple updating of balances.
+     * This is only used when transfers are happening as the result
+     * of swap operations we are performing internally.
+     */
+    function _basicTransfer(
+        address _from,
+        address _to,
+        uint256 _amount
+    ) internal returns (bool) {
+        uint256 gonAmount = _amount.mul(_gonsPerFragment);
+        _gonBalances[_from] = _gonBalances[_from].sub(gonAmount);
+        _gonBalances[_to] = _gonBalances[_to].add(gonAmount);
+
+        emit Transfer(_from, _to, _amount);
+
+        return true;
+    }
+
+    /**
+     * @dev The external facing transferFrom function.
+     * Only checks allowances and then delegates the rest of process to internal `_transferFrom`.
+     */
+    function transferFrom(
+        address _from,
+        address _to,
+        uint256 _value
+    ) external override validRecipient(_to) returns (bool) {
+        if (_allowedFragments[_from][msg.sender] != uint256(-1)) {
+            _allowedFragments[_from][msg.sender] = _allowedFragments[_from][
+                msg.sender
+            ].sub(_value, "Aalto: Insufficient Allowance");
+        }
+
+        _transferFrom(_from, _to, _value);
+        return true;
+    }
+
+    /**
+     * @dev Retrieves the amount that was used for INITIAL_FRAGMENTS_SUPPLY`.
+     */
+    function initialSupply() public pure returns (uint256) {
+        return INITIAL_FRAGMENTS_SUPPLY;
+    }
+
+    /**
+     * @dev Retrieves the value for `MAX_SUPPLY`.
+     */
+    function maxSupply() public pure returns (uint256) {
+        return MAX_SUPPLY;
+    }
+
+    /**
+     * @dev Retrieves the value for `TOTAL_GONS`.
+     */
+    function totalGons() public pure returns (uint256) {
+        return TOTAL_GONS;
+    }
+
+    function gonsPerFragment() public view override returns (uint256) {
+        return _gonsPerFragment;
+    }
+
+    /**
+     * @dev Retrieves the current value for `_totalSupply`.
+     */
+    function totalSupply() external view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+      @dev Retrieves the allowance amount of `_spender` for `_owner`s tokens.
+     */
+    function allowance(address _owner, address _spender)
+        external
+        view
+        override
+        returns (uint256)
+    {
+        return _allowedFragments[_owner][_spender];
+    }
+
+    /**
+     * @dev Retrieves the current amount of tokens held by `_who`.
+     */
+    function balanceOf(address _who) public view override returns (uint256) {
+        return _gonBalances[_who].div(_gonsPerFragment);
+    }
+
+    /**
+     * @dev Retrieves the total amount of tokens in lock staking by `_who`.
+     * Details of lock times and current locks are in the staking contract itself.
+     */
+    function lockedBalanceOf(address _who) public view returns (uint256) {
+        return _lockedBalances[_who].div(_gonsPerFragment);
+    }
+
+    /**
+     *  @dev Decreases allowance of `_spender` for callers tokens by `_subtractedValue`.
+     */
+    function decreaseAllowance(address _spender, uint256 _subtractedValue)
+        external
+        returns (bool)
+    {
+        uint256 oldValue = _allowedFragments[msg.sender][_spender];
+        if (_subtractedValue >= oldValue) {
+            _allowedFragments[msg.sender][_spender] = 0;
+        } else {
+            _allowedFragments[msg.sender][_spender] = oldValue.sub(
+                _subtractedValue
+            );
+        }
+        emit Approval(
+            msg.sender,
+            _spender,
+            _allowedFragments[msg.sender][_spender]
+        );
+        return true;
+    }
+
+    /**
+     * @dev Increases allowance of `_spender` for callers tokens for `_addedValue`.
+     */
+    function increaseAllowance(address _spender, uint256 _addedValue)
+        external
+        returns (bool)
+    {
+        _allowedFragments[msg.sender][_spender] = _allowedFragments[msg.sender][
+            _spender
+        ].add(_addedValue);
+
+        emit Approval(
+            msg.sender,
+            _spender,
+            _allowedFragments[msg.sender][_spender]
+        );
+
+        return true;
+    }
+
+    /**
+     * @dev Overrides default implementation of `approve` to manage approvals internally.
+     */
+    function approve(address spender, uint256 value)
+        external
+        override
+        returns (bool)
+    {
+        _allowedFragments[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    /* ======================== STAKING ========================= */
+
+    function stake(uint256 _poolId, uint256 _amount)
+        external
+        notBlacklisted(msg.sender)
+        nonReentrant
+        ifStakingEnabled
+    {
+        require(_amount > 0, "AALTO: Can not stake zero");
+        require(
+            balanceOf(msg.sender) >= _amount,
+            "AALTO: Insufficient balance"
+        );
+
+        _amount = _amount.mul(_gonsPerFragment);
+
+        // Locked balances still get the rebase effect
+        _gonBalances[msg.sender] = _gonBalances[msg.sender].sub(_amount);
+        _lockedBalances[msg.sender] = _lockedBalances[msg.sender].add(_amount);
+
+        // Any additional checks bubbled by staking contract
+        staking.stake(_poolId, _amount, msg.sender);
+    }
+
+    function withdrawStaking(uint256 _poolId) external nonReentrant {
+        // Any additional checks bubbled by staking contract
+        uint256 amountUnlocked = staking.withdraw(_poolId, msg.sender);
+
+        // Balances updated using the returned result
+        // Would ideally want this after.
+        // Function has guard and does not make untrusted external calls
+        _lockedBalances[msg.sender] = _lockedBalances[msg.sender].sub(
+            amountUnlocked
+        );
+        _gonBalances[msg.sender] = _gonBalances[msg.sender].add(amountUnlocked);
+    }
+
+    /**
+     * @dev Allows user to move a stake from one pool to a higher lock time pool
+     * User interacts through this contract for needed checks and balances
+     */
+    function moveToHigherPool(uint256 _currentPoolId, uint256 _newPoolId)
+        external
+        notBlacklisted(msg.sender)
+        nonReentrant
+        ifStakingEnabled
+    {
+        // Any additional checks bubbled by staking contract
+        staking.moveToHigherPool(_currentPoolId, _newPoolId, msg.sender);
+    }
+
+    function increaseStakeInCurrentPool(uint256 _poolId, uint256 _amount)
+        external
+        notBlacklisted(msg.sender)
+        nonReentrant
+        ifStakingEnabled
+    {
+        require(_amount > 0, "AALTO: Can not stake zero");
+        require(
+            balanceOf(msg.sender) >= _amount,
+            "AALTO: Insufficient balance"
+        );
+
+        _amount = _amount.mul(_gonsPerFragment);
+
+        // Shift balances
+        _gonBalances[msg.sender] = _gonBalances[msg.sender].sub(_amount);
+        _lockedBalances[msg.sender] = _lockedBalances[msg.sender].add(_amount);
+
+        // Any additional checks bubbled by staking contract
+        staking.increaseStakeInCurrentPool(_poolId, _amount, msg.sender);
+    }
+
+    /**
+     * @dev Allow team to provide stake for a user.
+     * Used for partnerships and such.
+     * Tokens are immediately staked according to agreeement to avoid dumping.
+     * Tokens need to come from Treasury
+     */
+    function stakeForUser(
+        uint256 _poolId,
+        address _forUser,
+        uint256 _amount
+    ) external notBlacklisted(_forUser) ifStakingEnabled onlyOwner {
+        require(_amount > 0, "AALTO: Can not stake zero");
+        require(
+            balanceOf(treasuryFeeReceiver) >= _amount,
+            "AALTO: Treasury has insufficient balance"
+        );
+
+        _amount = _amount.mul(_gonsPerFragment);
+
+        // Shift balances
+        _gonBalances[treasuryFeeReceiver] = _gonBalances[treasuryFeeReceiver]
+            .sub(_amount);
+        _lockedBalances[_forUser] = _lockedBalances[_forUser].add(_amount);
+
+        staking.stakeForUser(_poolId, _forUser, _amount);
+    }
+
+    // function transferStake(uint256 _poolId, address _toUser)
+    //     external
+    //     notBlacklisted(msg.sender)
+    //     notBlacklisted(_toUser)
+    // {
+
+    // }
+
+    /* ====================== SWAP/LP RELATED FUNCTIONS =====================  */
+
+    /**
+     * @dev Swaps current contract balance and provides liquidity.
+     * Balance is swapped into the native token or into the stable token,
+     * depending on current setting for `isLiquidityInNative`.
+     */
+    function _swapAndLiquify(uint256 _contractTokenAmount) private {
+        uint256 half = _contractTokenAmount.div(2);
+        uint256 otherHalf = _contractTokenAmount.sub(half);
+
+        if (isLiquidityInNative) {
+            uint256 initialBalance = address(this).balance;
+
+            _swapTokensForNative(half, address(this));
+
+            uint256 newBalance = address(this).balance.sub(initialBalance);
+
+            _addLiquidityNative(otherHalf, newBalance);
+
+            emit SwapAndLiquify(half, newBalance, otherHalf);
+        } else {
+            uint256 stableBalanceBefore = IERC20(stableCoinAddress).balanceOf(
+                address(this)
+            );
+
+            // Swap half to stable to setup adding liquidity
+            _swapTokensForStable(half, address(this));
+
+            uint256 stableBalanceAfter = IERC20(stableCoinAddress)
+                .balanceOf(address(this))
+                .sub(stableBalanceBefore);
+
+            _addLiquidityStable(otherHalf, stableBalanceAfter);
+
+            emit SwapAndLiquifyStable(half, stableBalanceAfter, otherHalf);
+        }
+    }
+
+    /**
+     * @dev Adds liquidity for native token and "this" token.
+     */
+    function _addLiquidityNative(uint256 _tokenAmount, uint256 _nativeAmount)
+        private
+    {
+        router.addLiquidityETH{value: _nativeAmount}(
+            address(this),
+            _tokenAmount,
+            0,
+            0,
+            liquidityTokensReceiver,
+            block.timestamp
+        );
+    }
+
+    /**
+     * @dev Adds liquidity for the stable token and "this" token.
+     */
+    function _addLiquidityStable(uint256 _tokenAmount, uint256 _stableAmount)
+        private
+    {
+        router.addLiquidity(
+            address(this),
+            stableCoinAddress,
+            _tokenAmount,
+            _stableAmount,
+            0,
+            0,
+            liquidityTokensReceiver,
+            block.timestamp
+        );
+    }
+
+    /**
+     * @dev Used to swap some amount of this token into the native token.
+     */
+    function _swapTokensForNative(uint256 _tokenAmount, address _receiver)
+        private
+    {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = router.WETH();
+
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            _tokenAmount,
+            0,
+            path,
+            _receiver,
+            block.timestamp
+        );
+    }
+
+    /**
+     * @dev Used to swap some amount of this token into the stable token.
+     */
+    function _swapTokensForStable(uint256 _tokenAmount, address _receiver)
+        private
+    {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = router.WETH();
+        path[2] = stableCoinAddress;
+
+        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            _tokenAmount,
+            0,
+            path,
+            _receiver,
+            block.timestamp
+        );
+    }
+
+    /**
+     * @dev Performs the swapping and transfer of contract balances to fee recipients.
+     * Transfers to recipients is handled through setting them as receiver of DEX outputs.
+     */
+    function swapBack() internal swapping {
+        uint256 realTotalFee = totalBuyFee.add(totalSellFee);
+
+        // targetLiquidity default is 50%
+        // liquidityFee is applied if we are over target threshold
+        uint256 dynamicLiquidityFee = isOverLiquified(
+            targetLiquidity,
+            targetLiquidityDenominator
+        )
+            ? 0
+            : liquidityFee;
+
+        uint256 contractTokenBalance = contractBalance();
+
+        uint256 amountToLiquify = contractTokenBalance
+            .mul(dynamicLiquidityFee.mul(2))
+            .div(realTotalFee);
+
+        uint256 amountToInsuranceFund = contractTokenBalance
+            .mul(buyFeeInsuranceFund.mul(2).add(sellFeeInsuranceFund))
+            .div(realTotalFee);
+
+        uint256 amountToStakers = contractTokenBalance
+            .mul(buyFeeStaking.mul(2).add(sellFeeStaking))
+            .div(realTotalFee);
+
+        uint256 amountToBurn = contractTokenBalance.mul(burnFee.mul(2)).div(
+            realTotalFee
+        );
+
+        uint256 amountToTreasury = contractTokenBalance
+            .sub(amountToLiquify)
+            .sub(amountToInsuranceFund)
+            .sub(amountToStakers)
+            .sub(amountToBurn);
+
+        if (amountToLiquify > 0) {
+            _swapAndLiquify(amountToLiquify);
+        }
+
+        if (amountToInsuranceFund > 0) {
+            _swapTokensForStable(amountToInsuranceFund, insuranceFeeReceiver);
+        }
+
+        if (amountToTreasury > 0) {
+            _swapTokensForStable(amountToTreasury, treasuryFeeReceiver);
+        }
+
+        if (amountToStakers > 0) {
+            _swapTokensForStable(amountToStakers, stakingFeeReceiver);
+        }
+
+        if (amountToBurn > 0) {
+            _basicTransfer(address(this), DEAD, amountToBurn);
+        }
+
+        emit SwapBack(
+            contractTokenBalance,
+            amountToLiquify,
+            amountToInsuranceFund,
+            amountToTreasury
+        );
+    }
+
+    /* ====================== SWAP/LP HELPERS =====================  */
+
+    /**
+     * @dev Function to check whether contract is over/under the target liquidity.
+     * The target liquidity threshold can be admin adjusted as needed.
+     */
+    function isOverLiquified(uint256 target, uint256 accuracy)
+        public
+        view
+        returns (bool)
+    {
+        return getLiquidityBacking(accuracy) > target;
+    }
+
+    /**
+     * @dev Totals up the amount of "this" token in each of the `corePairs` pairs.
+     */
+    function getLiquidityBacking(uint256 _accuracy)
+        public
+        view
+        returns (uint256)
+    {
+        uint256 liquidityBalance = 0;
+        uint256 divisor = 10**9;
+        for (uint256 i = 0; i < corePairs.length; i++) {
+            uint256 pairBalanceDivided = balanceOf(corePairs[i]).div(divisor);
+            liquidityBalance.add(pairBalanceDivided);
+        }
+
+        uint256 circulatingDivided = getCirculatingSupply().div(divisor);
+
+        return _accuracy.mul(liquidityBalance.mul(2)).div(circulatingDivided);
+    }
+
+    /**
+     * @dev Gets the `gonSwapThreshold` in format inline with current `_gonsPerFragment`
+     */
+    function checkSwapThreshold() external view returns (uint256) {
+        return gonSwapThreshold.div(_gonsPerFragment);
+    }
+
+    function manualSyncPairs() public {
+        for (uint256 i = 0; i < corePairs.length; i++) {
+            IUniswapV2Pair(corePairs[i]).sync();
+        }
+    }
+
+    /* ======================= ADMIN FUNCTIONS ========================= */
+
+    /**
+     * @dev Sets contract address for staking/locking contract.
+     */
+    function setStaking(address _stakingContractAddress) external onlyOwner {
+        require(
+            _stakingContractAddress != address(0),
+            "AALTO: 0x0 _stakingContractAddress"
+        );
+
+        staking = IStaking(_stakingContractAddress);
+        stakingEnabled = true;
+        isFeeExempt[_stakingContractAddress] = true;
+    }
+
+    function toggleStakingEnabled(bool _enabled) external onlyOwner {
+        require(stakingEnabled != _enabled, "AALTO: Value not changed");
+
+        stakingEnabled = _enabled;
+    }
+
+    /**
+     * @dev Sets value for `initialDistributionFinished`.
+     * @dev Transfers are not possible by anyone except those fee exempt until this is set.
+     * Ability to toggle enables pausing during setup/launch in case of any issues.
+     */
+    function setInitialDistributionFinished(bool _finished) external onlyOwner {
+        require(
+            initialDistributionFinished != _finished,
+            "AALTO: Value not changed"
+        );
+
+        initialDistributionFinished = _finished;
+    }
+
+    /**
+     * @dev Sets value for `targetLiquidity` and associated denominator `targetLiquidityDenominator`.
+     */
+    function setTargetLiquidity(uint256 _target, uint256 _denominator)
+        external
+        onlyOwner
+    {
+        targetLiquidity = _target;
+        targetLiquidityDenominator = _denominator;
+    }
+
+    function setSwapBackSettings(
+        bool _enabled,
+        uint256 _numerator,
+        uint256 _denomominator
+    ) external onlyOwner {
+        swapEnabled = _enabled;
+        // gonSwapThreshold = TOTAL_GONS.div(_denomominator).mul(_numerator);
+        // TODO: Audit recommendation (makes sense but test effects if any)
+        gonSwapThreshold = TOTAL_GONS.mul(_numerator).div(_denomominator);
+    }
+
+    /**
+     * @dev Sets the contract address for the protocol NFT project.
+     * NFT holders receive a portion of fees when active.
+     */
+    function setNftContract(address _nftContractAddress) external onlyOwner {
+        require(
+            _nftContractAddress != address(0),
+            "AALTO: 0x0 _nftContractAddress"
+        );
+
+        nftContractAddress = _nftContractAddress;
+    }
+
+    function clearStuckBalance(address _receiver) external onlyOwner {
+        uint256 balance = address(this).balance;
+        payable(_receiver).transfer(balance);
+    }
+
+    function rescueToken(address _tokenAddress, uint256 _amount)
+        external
+        onlyOwner
+        returns (bool success)
+    {
+        return ERC20Detailed(_tokenAddress).transfer(msg.sender, _amount);
+    }
+
+    /**
+     * @dev Toggles value for `autoRebase`.
+     */
+    function setAutoRebase(bool _autoRebase) external onlyOwner {
+        require(autoRebase != _autoRebase, "AALTO: Value not changed");
+
+        autoRebase = _autoRebase;
+    }
+
+    /**
+      @dev Sets `rebaseFrequency`. 
+      @param _rebaseFrequencySeconds must be smaller than `MAX_REBASE_FREQUENCY`
+     */
+    function setRebaseFrequencySeconds(uint256 _rebaseFrequencySeconds)
+        external
+        onlyOwner
+    {
+        require(
+            _rebaseFrequencySeconds <= MAX_REBASE_FREQUENCY,
+            "AALTO: Rebase frequencey too high"
+        );
+
+        rebaseFrequencySeconds = _rebaseFrequencySeconds;
+    }
+
+    /**
+     * @dev Sets both `rewardYield` and `rewardYieldDenominator`
+     */
+    function setRewardYield(
+        uint256 _rewardYield,
+        uint256 _rewardYieldDenominator
+    ) external onlyOwner {
+        rewardYield = _rewardYield;
+        rewardYieldDenominator = _rewardYieldDenominator;
+    }
+
+    /**
+      @dev Toggles value for `isLiquidityInNative`
+     */
+    function setIsLiquidityInNative(bool _value) external onlyOwner {
+        require(isLiquidityInNative != _value, "AALTO: Value not changed");
+
+        isLiquidityInNative = _value;
+    }
+
+    /**
+     * @dev Overrides current `nextRebase` time
+     */
+    function setNextRebase(uint256 _nextRebase) external onlyOwner {
+        nextRebase = _nextRebase;
+    }
+
+    /**
+     * @dev Sets `maxSellTransactionAmount`
+     */
+    function setMaxSellTransaction(uint256 _maxTxn) external onlyOwner {
+        // Should be some sort of bounds for this, an event, suttin
+        maxSellTransactionAmount = _maxTxn;
+    }
+
+    /**
+     * @dev Adds or removes an LP pair from the list used to track backing liquidity.
+     */
+    function setAutomatedMarketMakerPair(address _pair, bool _value)
+        public
+        onlyOwner
+    {
+        require(isCorePair[_pair] != _value, "Value already set");
+
+        isCorePair[_pair] = _value;
+
+        if (_value) {
+            corePairs.push(_pair);
+        } else {
+            require(
+                corePairs.length > 1,
+                "AALTO: Required at 1 pair in corePairs"
+            );
+
+            // Find the pair being set to false and remove from `_corePairs`
+            for (uint256 i = 0; i < corePairs.length; i++) {
+                if (corePairs[i] == _pair) {
+                    corePairs[i] = corePairs[corePairs.length - 1];
+                    corePairs.pop();
+                    break;
+                }
+            }
+        }
+
+        emit SetAutomatedMarketMakerPair(_pair, _value);
+    }
+
+    /**
+     * @dev Allows admins to manually trigger a rebase as needed.
+     */
+    function manualRebase() external onlyOwner {
+        require(!inSwap, "AALTO: In swap. Try again");
+        require(
+            nextRebase <= block.timestamp,
+            "AALTO: Next rebase already passed"
+        );
+
+        coreRebase(getSupplyDelta());
+        manualSyncPairs();
+    }
+
+    /* =================  UI HELPERS  ==================== */
+
+    function contractBalance() public view returns (uint256) {
+        return balanceOf(address(this));
+    }
+
+    /* ================= MODIFIERS ================= */
+
+    bool inSwap;
+
+    modifier swapping() {
+        inSwap = true;
+        _;
+        inSwap = false;
+    }
+
+    modifier validRecipient(address to) {
+        require(to != address(0x0), "Sending to zero address");
+        _;
+    }
+
+    modifier ifStakingEnabled() {
+        require(stakingEnabled, "AALTO: Staking not enabled");
+        _;
+    }
+
+    /* ================== EVENTS ==================== */
+
+    event SwapBack(
+        uint256 contractTokenBalance,
+        uint256 amountToLiquify,
+        uint256 amountToRFV,
+        uint256 amountToTreasury
+    );
+    event SwapAndLiquify(
+        uint256 tokensSwapped,
+        uint256 nativeReceived,
+        uint256 tokensIntoLiqudity
+    );
+    event SwapAndLiquifyStable(
+        uint256 tokensSwapped,
+        uint256 stableReceived,
+        uint256 tokensIntoLiqudity
+    );
+    event LogRebase(uint256 indexed epoch, uint256 totalSupply);
+    event SetAutomatedMarketMakerPair(address indexed pair, bool indexed value);
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/ERC20.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0 <0.8.0;
+
+import "../../utils/Context.sol";
+import "./IERC20.sol";
+import "../../math/SafeMath.sol";
+
+/**
+ * @dev Implementation of the {IERC20} interface.
+ *
+ * This implementation is agnostic to the way tokens are created. This means
+ * that a supply mechanism has to be added in a derived contract using {_mint}.
+ * For a generic mechanism see {ERC20PresetMinterPauser}.
+ *
+ * TIP: For a detailed writeup see our guide
+ * https://forum.zeppelin.solutions/t/how-to-implement-erc20-supply-mechanisms/226[How
+ * to implement supply mechanisms].
+ *
+ * We have followed general OpenZeppelin guidelines: functions revert instead
+ * of returning `false` on failure. This behavior is nonetheless conventional
+ * and does not conflict with the expectations of ERC20 applications.
+ *
+ * Additionally, an {Approval} event is emitted on calls to {transferFrom}.
+ * This allows applications to reconstruct the allowance for all accounts just
+ * by listening to said events. Other implementations of the EIP may not emit
+ * these events, as it isn't required by the specification.
+ *
+ * Finally, the non-standard {decreaseAllowance} and {increaseAllowance}
+ * functions have been added to mitigate the well-known issues around setting
+ * allowances. See {IERC20-approve}.
+ */
+contract ERC20 is Context, IERC20 {
+    using SafeMath for uint256;
+
+    mapping (address => uint256) private _balances;
+
+    mapping (address => mapping (address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    /**
+     * @dev Sets the values for {name} and {symbol}, initializes {decimals} with
+     * a default value of 18.
+     *
+     * To select a different value for {decimals}, use {_setupDecimals}.
+     *
+     * All three of these values are immutable: they can only be set once during
+     * construction.
+     */
+    constructor (string memory name_, string memory symbol_) public {
+        _name = name_;
+        _symbol = symbol_;
+        _decimals = 18;
+    }
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public view virtual returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the
+     * name.
+     */
+    function symbol() public view virtual returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     * For example, if `decimals` equals `2`, a balance of `505` tokens should
+     * be displayed to a user as `5,05` (`505 / 10 ** 2`).
+     *
+     * Tokens usually opt for a value of 18, imitating the relationship between
+     * Ether and Wei. This is the value {ERC20} uses, unless {_setupDecimals} is
+     * called.
+     *
+     * NOTE: This information is only used for _display_ purposes: it in
+     * no way affects any of the arithmetic of the contract, including
+     * {IERC20-balanceOf} and {IERC20-transfer}.
+     */
+    function decimals() public view virtual returns (uint8) {
+        return _decimals;
+    }
+
+    /**
+     * @dev See {IERC20-totalSupply}.
+     */
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev See {IERC20-balanceOf}.
+     */
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    /**
+     * @dev See {IERC20-transfer}.
+     *
+     * Requirements:
+     *
+     * - `recipient` cannot be the zero address.
+     * - the caller must have a balance of at least `amount`.
+     */
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-allowance}.
+     */
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    /**
+     * @dev See {IERC20-approve}.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-transferFrom}.
+     *
+     * Emits an {Approval} event indicating the updated allowance. This is not
+     * required by the EIP. See the note at the beginning of {ERC20}.
+     *
+     * Requirements:
+     *
+     * - `sender` and `recipient` cannot be the zero address.
+     * - `sender` must have a balance of at least `amount`.
+     * - the caller must have allowance for ``sender``'s tokens of at least
+     * `amount`.
+     */
+    function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+        return true;
+    }
+
+    /**
+     * @dev Atomically increases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+        return true;
+    }
+
+    /**
+     * @dev Atomically decreases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     * - `spender` must have allowance for the caller of at least
+     * `subtractedValue`.
+     */
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+        return true;
+    }
+
+    /**
+     * @dev Moves tokens `amount` from `sender` to `recipient`.
+     *
+     * This is internal function is equivalent to {transfer}, and can be used to
+     * e.g. implement automatic token fees, slashing mechanisms, etc.
+     *
+     * Emits a {Transfer} event.
+     *
+     * Requirements:
+     *
+     * - `sender` cannot be the zero address.
+     * - `recipient` cannot be the zero address.
+     * - `sender` must have a balance of at least `amount`.
+     */
+    function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        _beforeTokenTransfer(sender, recipient, amount);
+
+        _balances[sender] = _balances[sender].sub(amount, "ERC20: transfer amount exceeds balance");
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+    }
+
+    /** @dev Creates `amount` tokens and assigns them to `account`, increasing
+     * the total supply.
+     *
+     * Emits a {Transfer} event with `from` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `to` cannot be the zero address.
+     */
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _beforeTokenTransfer(address(0), account, amount);
+
+        _totalSupply = _totalSupply.add(amount);
+        _balances[account] = _balances[account].add(amount);
+        emit Transfer(address(0), account, amount);
+    }
+
+    /**
+     * @dev Destroys `amount` tokens from `account`, reducing the
+     * total supply.
+     *
+     * Emits a {Transfer} event with `to` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     * - `account` must have at least `amount` tokens.
+     */
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _beforeTokenTransfer(account, address(0), amount);
+
+        _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+        _totalSupply = _totalSupply.sub(amount);
+        emit Transfer(account, address(0), amount);
+    }
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
+     *
+     * This internal function is equivalent to `approve`, and can be used to
+     * e.g. set automatic allowances for certain subsystems, etc.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `owner` cannot be the zero address.
+     * - `spender` cannot be the zero address.
+     */
+    function _approve(address owner, address spender, uint256 amount) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    /**
+     * @dev Sets {decimals} to a value other than the default one of 18.
+     *
+     * WARNING: This function should only be called from the constructor. Most
+     * applications that interact with token contracts will not expect
+     * {decimals} to ever change, and may work incorrectly if it does.
+     */
+    function _setupDecimals(uint8 decimals_) internal virtual {
+        _decimals = decimals_;
+    }
+
+    /**
+     * @dev Hook that is called before any transfer of tokens. This includes
+     * minting and burning.
+     *
+     * Calling conditions:
+     *
+     * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+     * will be to transferred to `to`.
+     * - when `from` is zero, `amount` tokens will be minted for `to`.
+     * - when `to` is zero, `amount` of ``from``'s tokens will be burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual { }
+}
+
+
+// File: @openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0 <0.8.0;
+
+import "../utils/Context.sol";
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor () internal {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+
+// File: @openzeppelin/contracts/math/SafeMath.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0 <0.8.0;
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations with added overflow
+ * checks.
+ *
+ * Arithmetic operations in Solidity wrap on overflow. This can easily result
+ * in bugs, because programmers usually assume that an overflow raises an
+ * error, which is the standard behavior in high level programming languages.
+ * `SafeMath` restores this intuition by reverting the transaction when an
+ * operation overflows.
+ *
+ * Using this library instead of the unchecked operations eliminates an entire
+ * class of bugs, so it's recommended to use it always.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        uint256 c = a + b;
+        if (c < a) return (false, 0);
+        return (true, c);
+    }
+
+    /**
+     * @dev Returns the substraction of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        if (b > a) return (false, 0);
+        return (true, a - b);
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) return (true, 0);
+        uint256 c = a * b;
+        if (c / a != b) return (false, 0);
+        return (true, c);
+    }
+
+    /**
+     * @dev Returns the division of two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        if (b == 0) return (false, 0);
+        return (true, a / b);
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        if (b == 0) return (false, 0);
+        return (true, a % b);
+    }
+
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        return a - b;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) return 0;
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        return a / b;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: modulo by zero");
+        return a % b;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {trySub}.
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        return a - b;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {tryDiv}.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        return a / b;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting with custom message when dividing by zero.
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {tryMod}.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        return a % b;
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0 <0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor () internal {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and make it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+// File: contracts/interfaces/IUniswapV2Router02.sol
+//SPDX-License-Identifier: MIT
+pragma solidity 0.7.4;
+
+import "./IUniswapV2Router01.sol";
+
+interface IUniswapV2Router02 is IUniswapV2Router01 {
+    function removeLiquidityETHSupportingFeeOnTransferTokens(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountETH);
+
+    function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 amountETH);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+}
+
+
+// File: contracts/interfaces/IUniswapV2Pair.sol
+//SPDX-License-Identifier: MIT
+pragma solidity 0.7.4;
+
+interface IUniswapV2Pair {
+    function factory() external view returns (address);
+
+    function token0() external view returns (address);
+
+    function token1() external view returns (address);
+
+    function sync() external;
+
+    function name() external pure returns (string memory);
+
+    function symbol() external pure returns (string memory);
+
+    function decimals() external pure returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 value) external returns (bool);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+
+    function getReserves()
+        external
+        view
+        returns (
+            uint112 reserve0,
+            uint112 reserve1,
+            uint32 blockTimestampLast
+        );
+
+    function price0CumulativeLast() external view returns (uint256);
+
+    function price1CumulativeLast() external view returns (uint256);
+
+    function kLast() external view returns (uint256);
+}
+
+
+// File: contracts/interfaces/IUniswapV2Factory.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.7.4;
+
+interface IUniswapV2Factory {
+    event PairCreated(
+        address indexed token0,
+        address indexed token1,
+        address pair,
+        uint256
+    );
+
+    function feeTo() external view returns (address);
+
+    function feeToSetter() external view returns (address);
+
+    function getPair(address tokenA, address tokenB)
+        external
+        view
+        returns (address pair);
+
+    function allPairs(uint256) external view returns (address pair);
+
+    function allPairsLength() external view returns (uint256);
+
+    function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+
+    function setFeeTo(address) external;
+
+    function setFeeToSetter(address) external;
+}
+
+
+// File: contracts/interfaces/IStaking.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.7.4;
+
+interface IStaking {
+    function stake(
+        uint256 _poolId,
+        uint256 _amount,
+        address _user
+    ) external returns (bool);
+
+    function userCanWithdraw(uint256 _poolId, address _user)
+        external
+        view
+        returns (bool);
+
+    function withdraw(uint256 _poolId, address _user)
+        external
+        returns (uint256);
+
+    function increaseStakeInCurrentPool(
+        uint256 _poolId,
+        uint256 _amount,
+        address _user
+    ) external;
+
+    function moveToHigherPool(
+        uint256 _currentPoolId,
+        uint256 _newPoolId,
+        address _user
+    ) external;
+
+    function stakeForUser(
+        uint256 _poolId,
+        address _forUser,
+        uint256 _amount
+    ) external;
+
+    function transferStake(
+        uint256 _poolId,
+        address _fromUser,
+        address _toUser
+    ) external;
+}
+
+
+// File: contracts/interfaces/IERC721.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.7.4;
+
+/**
+ * @dev We do not need the bloat of the entire OpenZeppelin interface for this.
+ */
+interface IERC721 {
+    /**
+     * @dev Returns the number of tokens in ``owner``'s account.
+     */
+    function balanceOf(address owner) external view returns (uint256 balance);
+}
+
+
+// File: contracts/interfaces/IAaltoToken.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.7.4;
+
+interface IAaltoToken {
+    function gonsPerFragment() external view returns (uint256);
+}
+
+
+// File: contracts/libs/SafeMathInt.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.7.4;
+
+library SafeMathInt {
+    int256 private constant MIN_INT256 = int256(1) << 255;
+    int256 private constant MAX_INT256 = ~(int256(1) << 255);
+
+    function mul(int256 a, int256 b) internal pure returns (int256) {
+        int256 c = a * b;
+
+        require(c != MIN_INT256 || (a & MIN_INT256) != (b & MIN_INT256));
+        require((b == 0) || (c / b == a));
+        return c;
+    }
+
+    function div(int256 a, int256 b) internal pure returns (int256) {
+        require(b != -1 || a != MIN_INT256);
+
+        return a / b;
+    }
+
+    function sub(int256 a, int256 b) internal pure returns (int256) {
+        int256 c = a - b;
+        require((b >= 0 && c <= a) || (b < 0 && c > a));
+        return c;
+    }
+
+    function add(int256 a, int256 b) internal pure returns (int256) {
+        int256 c = a + b;
+        require((b >= 0 && c >= a) || (b < 0 && c < a));
+        return c;
+    }
+
+    function abs(int256 a) internal pure returns (int256) {
+        require(a != MIN_INT256);
+        return a < 0 ? -a : a;
+    }
+}
+
+
+// File: contracts/ERC20Detailed.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.7.4;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+abstract contract ERC20Detailed is IERC20 {
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    constructor(
+        string memory _tokenName,
+        string memory _tokenSymbol,
+        uint8 _tokenDecimals
+    ) {
+        _name = _tokenName;
+        _symbol = _tokenSymbol;
+        _decimals = _tokenDecimals;
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+}
+
+
+// File: contracts/ProtocolFees.sol
+// SPDX-License-Identifier: MIT
+pragma experimental ABIEncoderV2;
+pragma solidity 0.7.4;
+
+import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+import "./libs/SafeMathInt.sol";
+import "./structs.sol";
+
+contract ProtocolFees is Ownable {
+    using SafeMath for uint256;
+    using SafeMathInt for int256;
+
+    struct FeeInfo {
+        uint256 liquidityFee;
+        uint256 burnFee;
+        uint256 buyFeeTreasury;
+        uint256 buyFeeInsuranceFund;
+        uint256 buyFeeStakers;
+        uint256 buyFeeNFT;
+        uint256 buyFeeStaking;
+        uint256 sellFeeTreasury;
+        uint256 sellFeeInsuranceFund;
+        uint256 sellFeeStakers;
+        uint256 sellFeeNFT;
+        uint256 sellFeeStaking;
+        uint256 totalBuyFee;
+        uint256 totalSellFee;
+        uint256 feeDenominator;
+    }
+
+    struct FeeReceivers {
+        address treasuryFeeReceiver;
+        address liquidityTokensReceiver;
+        address insuranceFeeReceiver;
+        address nftFeeReceiver;
+        address stakingFeeReceiver;
+    }
+
+    /* ================ FEE RECEIVERS ================== */
+
+    // `Treasure Trove` treasury address
+    address public treasuryFeeReceiver;
+
+    // Receiver of LP tokens generated for protocol
+    address public liquidityTokensReceiver;
+
+    // `Coral Preservation` Insurance Fund
+    address public insuranceFeeReceiver;
+
+    // Address NFT holder incentive fees are sent to
+    address public nftFeeReceiver;
+
+    // Address where `AALTO Reflections`fees for stakers are sent
+    address public stakingFeeReceiver;
+
+    /* ================= FEES =================== */
+
+    // Max total fee % for any one buy/sell fee
+    uint256 public constant MAX_FEE_RATE = 25;
+
+    // Mapping of addresses that that will not be charges transfer fees
+    mapping(address => bool) internal isFeeExempt;
+
+    bool public feesOnNormalTransfers = true;
+
+    /* ================ NFT ITEMS ================== */
+
+    // Tier based protocol NFTs mapping
+    mapping(address => ProtocolNft) public protocolNfts;
+
+    // Index based
+    ProtocolNft[] public nfts;
+
+    uint256 public nftFeeDiscount = 2;
+
+    uint256 public nftFeeDiscountDenominator = 100;
+
+    bool public nftFeeDiscountEnabled = false;
+
+    /* =========== SHARED(BUY/SELL) FEES ============ */
+
+    // Rising Tide (Auto Liquidity) fee
+    uint256 public liquidityFee = 3;
+
+    // `Mariana Trench`
+    uint256 public burnFee = 2;
+
+    /* ================ BUY FEES ================== */
+
+    // Percentage of buy fee that goes to treasury
+    uint256 public buyFeeTreasury = 3;
+
+    // `Coral Preservation` Insurance Fund fee
+    uint256 public buyFeeInsuranceFund = 4;
+
+    // `AALTO Reflections`. Staking rewards
+    uint256 public buyFeeStaking = 1;
+
+    uint256 public buyFeeNFT = 0;
+
+    uint256 public totalBuyFee =
+        liquidityFee
+            .add(burnFee)
+            .add(buyFeeTreasury)
+            .add(buyFeeInsuranceFund)
+            .add(buyFeeStaking)
+            .add(buyFeeNFT);
+
+    /* ================ SELL FEES ================== */
+
+    // `Treasure Trove` treasury fee
+    uint256 public sellFeeTreasury = 8;
+
+    // `Coral Preservation` Insurance Fund fee
+    uint256 public sellFeeInsuranceFund = 8;
+
+    // `AALTO Reflections`. Staking rewards
+    uint256 public sellFeeStaking = 4;
+
+    uint256 public sellFeeNFT = 0;
+
+    // Sell fee is total of totalBuyFee + sell fees
+    uint256 public totalSellFee =
+        liquidityFee
+            .add(burnFee)
+            .add(sellFeeTreasury)
+            .add(sellFeeInsuranceFund)
+            .add(sellFeeStaking)
+            .add(sellFeeNFT);
+
+    uint256 public feeDenominator = 100;
+
+    /* ================ BLACKLIST/BONUS LIST ================== */
+
+    // Cause some people choose to be sucky
+    mapping(address => bool) internal blacklist;
+
+    // Addresses of early community members who helped along the way
+    mapping(address => bool) internal samaritans;
+
+    constructor(
+        address _treasuryFeeReceiver,
+        address _insuranceFeeReceiver,
+        address _nftFeeReceiver,
+        address _stakingFeeReceiver,
+        address _liquityTokensReceiver
+    ) {
+        require(
+            _treasuryFeeReceiver != address(0),
+            "AALTO: 0x0 treasuryFeeReceiver"
+        );
+        require(
+            _insuranceFeeReceiver != address(0),
+            "AALTO: 0x0 _insuranceFeeReceiver"
+        );
+        require(
+            _stakingFeeReceiver != address(0),
+            "AALTO: 0x0 _stakingFeeReceiver"
+        );
+        // require(
+        //     _liquityTokensReceiver != address(0),
+        //     "AALTO: 0x0 _liquityTokensReceiver"
+        // );
+        // _liquityTokensReceiver can be burned
+        // nftFeeReceiver can be address(0) from start
+
+        treasuryFeeReceiver = _treasuryFeeReceiver;
+        insuranceFeeReceiver = _insuranceFeeReceiver;
+        nftFeeReceiver = _nftFeeReceiver;
+        stakingFeeReceiver = _stakingFeeReceiver;
+        liquidityTokensReceiver = _liquityTokensReceiver;
+
+        // Set initial/default fee exemptions
+        isFeeExempt[treasuryFeeReceiver] = true;
+        isFeeExempt[insuranceFeeReceiver] = true;
+        isFeeExempt[stakingFeeReceiver] = true;
+        isFeeExempt[address(this)] = true;
+        isFeeExempt[msg.sender] = true;
+    }
+
+    function checkFeeExempt(address _addr) external view returns (bool) {
+        return isFeeExempt[_addr];
+    }
+
+    /* ======================== UI/API HELPERS ========================= */
+
+    function getFees() public view returns (FeeInfo memory info) {
+        info.liquidityFee = liquidityFee;
+        info.burnFee = burnFee;
+        info.buyFeeTreasury = buyFeeTreasury;
+        info.buyFeeInsuranceFund = buyFeeInsuranceFund;
+        info.buyFeeStakers = buyFeeStaking;
+        info.buyFeeNFT = buyFeeNFT;
+        info.buyFeeStaking = buyFeeStaking;
+        info.sellFeeTreasury = sellFeeTreasury;
+        info.sellFeeInsuranceFund = sellFeeInsuranceFund;
+        info.sellFeeStakers = sellFeeStaking;
+        info.sellFeeNFT = sellFeeNFT;
+        info.sellFeeStaking = sellFeeStaking;
+        info.totalBuyFee = totalBuyFee;
+        info.totalSellFee = totalSellFee;
+        info.feeDenominator = feeDenominator;
+    }
+
+    function getFeeReceivers() public view returns (FeeReceivers memory) {
+        return
+            FeeReceivers(
+                treasuryFeeReceiver,
+                liquidityTokensReceiver,
+                insuranceFeeReceiver,
+                nftFeeReceiver,
+                stakingFeeReceiver
+            );
+    }
+
+    /* ======================= ADMIN FUNCTIONS ======================= */
+
+    function updateBlacklist(address _who, bool _value) external onlyOwner {
+        require(_who != address(0), "AALTO: 0x0 who");
+        require(blacklist[_who] != _value, "AALTO: Value not changed");
+
+        blacklist[_who] = _value;
+    }
+
+    function updateSamaritanlist(address _who, bool _value) external onlyOwner {
+        require(_who != address(0), "AALTO: 0x0 who");
+        require(samaritans[_who] != _value, "AALTO: Value not changed");
+
+        samaritans[_who] = _value;
+    }
+
+    function setFeeExempt(address _addr, bool _value) external onlyOwner {
+        require(isFeeExempt[_addr] != _value, "AALTO: Value not changed");
+
+        isFeeExempt[_addr] = _value;
+    }
+
+    function setFeesOnNormalTransfers(bool _enabled) external onlyOwner {
+        require(feesOnNormalTransfers != _enabled, "AALTO: Value not changed");
+
+        feesOnNormalTransfers = _enabled;
+        emit UpdatFeeOnNormalTransferse(_enabled);
+    }
+
+    function setFeeReceivers(
+        address _treasuryReceiver,
+        address _insuranceFundReceiver,
+        address _nftFeeReceiver,
+        address _stakingFeeReceiver
+    ) external onlyOwner {
+        require(
+            _treasuryReceiver != address(0),
+            "AALTO: 0x0 _treasuryReceiver"
+        );
+        require(
+            _insuranceFundReceiver != address(0),
+            "AALTO: 0x0 _insuranceFundReceiver"
+        );
+        require(
+            _stakingFeeReceiver != address(0),
+            "AALTO: 0x0 stakingFeeReceiver"
+        );
+        // _nftFeeReceiver can be 0x0
+
+        treasuryFeeReceiver = _treasuryReceiver;
+        insuranceFeeReceiver = _insuranceFundReceiver;
+        nftFeeReceiver = _nftFeeReceiver;
+        stakingFeeReceiver = _stakingFeeReceiver;
+
+        emit UpdatFeeReceivers(
+            _treasuryReceiver,
+            _insuranceFundReceiver,
+            _nftFeeReceiver,
+            _stakingFeeReceiver
+        );
+    }
+
+    function setFees(
+        uint256 _liquidityFee,
+        uint256 _burnFee,
+        uint256 _buyFeeInsuranceFund,
+        uint256 _buyFeeTreasury,
+        uint256 _buyFeeStaking,
+        uint256 _buyFeeNFT,
+        uint256 _sellFeeTreasury,
+        uint256 _sellFeeInsuranceFund,
+        uint256 _sellFeeStakers,
+        uint256 _sellFeeNFT,
+        uint256 _sellFeeStaking,
+        uint256 _feeDenominator
+    ) external onlyOwner {
+        require(
+            _liquidityFee <= MAX_FEE_RATE &&
+                _burnFee <= MAX_FEE_RATE &&
+                _buyFeeInsuranceFund <= MAX_FEE_RATE &&
+                _buyFeeTreasury <= MAX_FEE_RATE &&
+                _buyFeeStaking <= MAX_FEE_RATE &&
+                _buyFeeNFT <= MAX_FEE_RATE &&
+                _sellFeeTreasury <= MAX_FEE_RATE &&
+                _sellFeeInsuranceFund <= MAX_FEE_RATE &&
+                _sellFeeStakers <= MAX_FEE_RATE &&
+                _sellFeeNFT <= MAX_FEE_RATE,
+            "AALTO: Max fee exceeded"
+        );
+
+        liquidityFee = _liquidityFee;
+
+        buyFeeTreasury = _buyFeeTreasury;
+        buyFeeInsuranceFund = _buyFeeInsuranceFund;
+        buyFeeStaking = _buyFeeStaking;
+        buyFeeNFT = _buyFeeNFT;
+        buyFeeStaking = _buyFeeStaking;
+
+        sellFeeTreasury = _sellFeeTreasury;
+        sellFeeInsuranceFund = _sellFeeInsuranceFund;
+        sellFeeNFT = _sellFeeNFT;
+        sellFeeStaking = _sellFeeStaking;
+
+        totalBuyFee = liquidityFee
+            .add(burnFee)
+            .add(buyFeeTreasury)
+            .add(buyFeeInsuranceFund)
+            .add(buyFeeStaking)
+            .add(buyFeeNFT);
+
+        totalSellFee = totalBuyFee
+            .add(sellFeeTreasury)
+            .add(sellFeeInsuranceFund)
+            .add(sellFeeStaking)
+            .add(sellFeeNFT);
+
+        feeDenominator = _feeDenominator;
+
+        require(
+            totalBuyFee < feeDenominator / 4,
+            "AALTO: New totalBuyFee is > feeDenominator / 4"
+        );
+    }
+
+    /* ================ MODIFIERS ================== */
+
+    modifier notBlacklisted(address _account) {
+        require(blacklist[_account] == false, "AALTO: Blacklisted account");
+        _;
+    }
+
+    /* ================ EVENTS ================== */
+
+    event UpdatFeeOnNormalTransferse(bool indexed setTo);
+    event UpdatFeeReceivers(
+        address treasuryReceiver,
+        address insuranceFundReceiver,
+        address nftFeeReceiver,
+        address stakingFeeReceiver
+    );
+    event UpdatNftDiscountEnabled(bool indexed setTo);
+    event UpdatSamaritanDiscount(
+        uint256 indexed _numerator,
+        uint256 indexed _denominator
+    );
+    event UpdatSmaritanDiscountEnabled(bool indexed setTo);
+    event UpdatNftDiscount(
+        uint256 indexed _numerator,
+        uint256 indexed _denominator
+    );
+}
+
+
+// File: contracts/structs.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.7.4;
+
+// TODO: pack any structs members for storage optimizations as needed once types are settled
+struct LockPool {
+    bool depositsEnabled;
+    uint256 lockTimeSeconds;
+    uint256 allocationPoints;
+    uint256 amountLocked;
+    uint256 lastRewardPaid; // Last time pool distributed rewards
+}
+
+/**
+ * @dev Record for a user lock deposit
+ */
+struct UserLockRecord {
+    // Restrict to one lock per pool/time lock
+    // But user can add to stake amount
+    uint256 poolId;
+    uint256 startTime;
+    uint256 endTime;
+    uint256 amountLocked;
+    uint256 startBlock;
+    uint256 lastTimeRewardClaimed;
+    uint256 lastBlockRewardClaimed;
+}
+
+/**
+ * @dev Interface to track protocol incentivized NFT's
+ */
+struct ProtocolNft {
+    bool active;
+    address contractAddress;
+    uint256 buyFeeDiscount;
+    uint256 sellFeeDiscount;
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0 <0.8.0;
+
+/*
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with GSN meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0 <0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+// File: contracts/interfaces/IUniswapV2Router01.sol
+//SPDX-License-Identifier: MIT
+pragma solidity 0.7.4;
+
+interface IUniswapV2Router01 {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        returns (
+            uint256 amountA,
+            uint256 amountB,
+            uint256 liquidity
+        );
+
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        payable
+        returns (
+            uint256 amountToken,
+            uint256 amountETH,
+            uint256 liquidity
+        );
+
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 liquidity,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountA, uint256 amountB);
+
+    function removeLiquidityETH(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountToken, uint256 amountETH);
+
+    function removeLiquidityWithPermit(
+        address tokenA,
+        address tokenB,
+        uint256 liquidity,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 amountA, uint256 amountB);
+
+    function removeLiquidityETHWithPermit(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 amountToken, uint256 amountETH);
+
+    function swapExactTokensForTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapTokensForExactTokens(
+        uint256 amountOut,
+        uint256 amountInMax,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapExactETHForTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable returns (uint256[] memory amounts);
+
+    function swapTokensForExactETH(
+        uint256 amountOut,
+        uint256 amountInMax,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapExactTokensForETH(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapETHForExactTokens(
+        uint256 amountOut,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable returns (uint256[] memory amounts);
+
+    function quote(
+        uint256 amountA,
+        uint256 reserveA,
+        uint256 reserveB
+    ) external pure returns (uint256 amountB);
+
+    function getAmountOut(
+        uint256 amountIn,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) external pure returns (uint256 amountOut);
+
+    function getAmountIn(
+        uint256 amountOut,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) external pure returns (uint256 amountIn);
+
+    function getAmountsOut(uint256 amountIn, address[] calldata path)
+        external
+        view
+        returns (uint256[] memory amounts);
+
+    function getAmountsIn(uint256 amountOut, address[] calldata path)
+        external
+        view
+        returns (uint256[] memory amounts);
+}
+
