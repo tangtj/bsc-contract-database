@@ -1,0 +1,597 @@
+//SPDX-License-Identifier: MIT
+pragma solidity 0.8.7;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _setOwner(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _setOwner(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _setOwner(newOwner);
+    }
+
+    function _setOwner(address newOwner) private {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+/// @title HotVip
+/// @notice A reflect token that takes a cut on each transfer and redistributes the fees back to the token holders
+/// @dev The contract is based on the concept of two spaces T and R and a converion rate between them. The reason
+/// is the contract gets a fee on each transfer and it needs to re-distribute to each token holder. However, this would
+/// be impossible if done via a naive for loop. Instead, a deflation mechanism is utilized so that the tokens you hold are worth more.
+/// This is similar to the concept of reserve ration from the traditional finance
+contract HotVip is IERC20, Ownable {
+  string public name;
+  string public symbol;
+  uint8 public immutable decimals;
+
+  uint256 private constant MAX = type(uint256).max;
+  // this is the base figure we divide to get a fine grained percentage 
+  uint256 constant public FEE_BASE = 10_000;
+
+  uint256 private immutable tTotal;
+  uint256 private rTotal;
+  uint256 public tFeeTotal;
+  uint256 public taxFee;
+  uint256 private prevTaxFee;
+  uint256 public immutable maxTaxFee;
+
+  mapping (address => uint256) private rOwned;
+  mapping (address => uint256) private tOwned;
+  
+  address[] private excluded;
+  mapping (address => bool) public isExcluded;
+  mapping (address => bool) public isExcludedFromFee;
+
+  mapping (address => mapping (address => uint256)) private allowances;
+
+  event TaxFeeUpdated(uint256 taxFee);
+
+  /// @notice Ctor
+  /// @param _name the token name
+  /// @param _symbol the token symbol
+  /// @param _decimals the token decimals
+  /// @param _totalSupply the total supply
+  /// @param _taxFee the fee applicable on each transfer and will be distributed to the holders
+  /// @param _maxTaxFee the max fee that can ever be applied
+  constructor(
+    string memory _name,
+    string memory _symbol,
+    uint8 _decimals,
+    uint256 _totalSupply,
+    uint256 _taxFee,
+    uint256 _maxTaxFee
+  ) {
+    name = _name;
+    symbol = _symbol;
+    decimals = _decimals;
+
+    tTotal = _totalSupply;
+    taxFee = _taxFee;
+    maxTaxFee = _maxTaxFee;
+    rTotal = (MAX - (MAX % _totalSupply));
+
+    rOwned[_msgSender()] = rTotal;
+    emit Transfer(address(0), _msgSender(), _totalSupply);
+  }
+
+  /* ----------------------- ERC20 Implementation----------------------- */
+  function totalSupply() public view override returns (uint256) {
+    return tTotal;
+  }
+
+  function balanceOf(address account) public view virtual override returns (uint256) {
+    if (isExcluded[account]) return tOwned[account];
+
+    return tokenFromReflection(rOwned[account]);
+  }
+
+  function transfer(address recipient, uint256 amount) public override returns (bool) {
+    _transfer(_msgSender(), recipient, amount);
+    return true;
+  }
+
+  function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+    _transfer(sender, recipient, amount);
+
+    uint256 currentAllowance = allowances[sender][_msgSender()];
+    require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+    unchecked {
+      _approve(sender, _msgSender(), currentAllowance - amount);
+    }
+
+    return true;
+  }
+
+  function allowance(address owner, address spender) public view override returns (uint256) {
+    return allowances[owner][spender];
+  }
+
+  function approve(address spender, uint256 amount) public override returns (bool) {
+    _approve(_msgSender(), spender, amount);
+    return true;
+  }
+
+  function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+    _approve(_msgSender(), spender, allowances[_msgSender()][spender] + addedValue);
+    return true;
+  }
+
+  function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+    uint256 currentAllowance = allowances[_msgSender()][spender];
+    require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+    unchecked {
+      _approve(_msgSender(), spender, currentAllowance - subtractedValue);
+    }
+
+    return true;
+  }
+
+  function _approve(address owner, address spender, uint256 amount) internal {
+    require(owner != address(0), "ERC20: approve from the zero address");
+    require(spender != address(0), "ERC20: approve to the zero address");
+
+    allowances[owner][spender] = amount;
+    emit Approval(owner, spender, amount);
+  }
+
+  /* ----------------------- Reflect logic Implementation----------------------- */
+
+  /// @dev Transfer the given amount to the recipient account
+  /// @param sender the account that sends the tokens
+  /// @param recipient the account that will receive the tokens
+  /// @param amount the amount that is sent
+  function _transfer(address sender, address recipient, uint256 amount) internal {
+    require(sender != address(0), "ERC20: transfer from the zero address");
+    require(recipient != address(0), "ERC20: transfer to the zero address");
+    require(amount > 0, "Transfer amount must be greater than zero");
+
+    if(isExcludedFromFee[sender] || isExcludedFromFee[recipient]) {
+      removeAllFee();
+    }
+
+    bool isSenderExcluded = isExcluded[sender];
+    bool isRecipientExcluded = isExcluded[recipient];
+
+    if (isSenderExcluded && !isRecipientExcluded) {
+      transferFromExcluded(sender, recipient, amount);
+    } else if (!isSenderExcluded && isRecipientExcluded) {
+      transferToExcluded(sender, recipient, amount);
+    } else if (isSenderExcluded && isRecipientExcluded) {
+      transferBothExcluded(sender, recipient, amount);
+    } else {
+      transferStandard(sender, recipient, amount);
+    }
+
+    if(isExcludedFromFee[sender] || isExcludedFromFee[recipient]) {
+      restoreAllFee();
+    }
+  }
+  
+  /// @dev Temporarily sets the fees to 0
+  function removeAllFee() private {
+    if(taxFee == 0) return;
+    
+    prevTaxFee = taxFee;
+    taxFee = 0;
+  }
+    
+  /// @dev Restores the previous values of the fees
+  function restoreAllFee() private {
+    taxFee = prevTaxFee;
+  }
+
+  /// @dev The standard transfer logic of the reflect token when none of sender or recipient is excluded
+  /// @param sender the account that sends the tokens
+  /// @param recipient the account that will receive the tokens
+  /// @param amount the amount that is sent
+  function transferStandard(address sender, address recipient, uint256 amount) private {
+    (
+      uint256 rAmount,
+      uint256 rTransferAmount,
+      uint256 rFee,
+      uint256 tTransferAmount,
+      uint256 tFee
+    ) = getValues(amount);
+
+    rOwned[sender] -= rAmount;
+    rOwned[recipient] += rTransferAmount;
+    reflectFee(rFee, tFee);
+
+    emit Transfer(sender, recipient, tTransferAmount);
+  }
+
+  /// @dev Transfer logic applied when the sender is an exluced account
+  /// exlcluded accounts need to update both the T and R balances i.e. tOwned and rOwned
+  /// @param sender the account that sends the tokens
+  /// @param recipient the account that will receive the tokens
+  /// @param amount the amount that is sent
+  function transferFromExcluded(address sender, address recipient, uint256 amount) private {
+    (
+      uint256 rAmount,
+      uint256 rTransferAmount,
+      uint256 rFee,
+      uint256 tTransferAmount,
+      uint256 tFee
+    ) = getValues(amount);
+
+    tOwned[sender] -= amount;
+    rOwned[sender] -= rAmount;
+    rOwned[recipient] += rTransferAmount;
+    reflectFee(rFee, tFee);
+
+    emit Transfer(sender, recipient, tTransferAmount);
+  }
+
+  /// @dev Transfer logic applied when the recipient is an exluced account
+  /// exlcluded accounts need to update both the T and R balances i.e. tOwned and rOwned
+  /// @param sender the account that sends the tokens
+  /// @param recipient the account that will receive the tokens
+  /// @param amount the amount that is sent
+  function transferToExcluded(address sender, address recipient, uint256 amount) private {
+    (
+      uint256 rAmount,
+      uint256 rTransferAmount,
+      uint256 rFee,
+      uint256 tTransferAmount,
+      uint256 tFee
+    ) = getValues(amount);
+
+    rOwned[sender] -= rAmount;
+    tOwned[recipient] += tTransferAmount;
+    rOwned[recipient] += rTransferAmount;
+    reflectFee(rFee, tFee);
+
+    emit Transfer(sender, recipient, tTransferAmount);
+  }
+
+  /// @dev Transfer logic applied when both sender and recipient are excluded
+  /// exlcluded accounts need to update both the T and R balances i.e. tOwned and rOwned
+  /// @param sender the account that sends the tokens
+  /// @param recipient the account that will receive the tokens
+  /// @param amount the amount that is sent
+  function transferBothExcluded(address sender, address recipient, uint256 amount) private {
+    (
+      uint256 rAmount,
+      uint256 rTransferAmount,
+      uint256 rFee,
+      uint256 tTransferAmount,
+      uint256 tFee
+    ) = getValues(amount);
+
+    tOwned[sender] -= amount;
+    rOwned[sender] -= rAmount;
+    tOwned[recipient] += tTransferAmount;
+    rOwned[recipient] += rTransferAmount;
+    reflectFee(rFee, tFee);
+
+    emit Transfer(sender, recipient, tTransferAmount);
+  }
+
+  /// @dev Returns the T and R current supply
+  /// @return the t and r current supply
+  function getCurrentSupply() private view returns(uint256, uint256) {
+    uint256 rSupply = rTotal;
+    uint256 tSupply = tTotal;
+
+    // excluded addresses and their balances should not be used. This is because
+    // those balances do fo require any conversion from rSpace to tSpace since their
+    // balances are already in the tSpace
+    for (uint256 i = 0; i < excluded.length; i++) {
+      if (rOwned[excluded[i]] > rSupply || tOwned[excluded[i]] > tSupply) { 
+        return (rTotal, tTotal);
+      }
+      
+      rSupply = rSupply - rOwned[excluded[i]];
+      tSupply = tSupply - tOwned[excluded[i]];
+    }
+
+    if (rSupply < rTotal / tTotal) {
+      return (rTotal, tTotal);
+    }
+
+    return (rSupply, tSupply);
+  }
+
+  /// @dev The current rate that does the transition between t and r spaces
+  /// @return The current rate
+  function getRate() private view returns(uint256) {
+    (uint256 rSupply, uint256 tSupply) = getCurrentSupply();
+    
+    return rSupply / tSupply;
+  }
+
+  /// @dev Calculates the values of the tSpace and rSpace
+  /// @param amount this is the amount of tokens transfered. This value is in the tSpace
+  /// @return tSpace and rSpace values values
+  function getValues(uint256 amount) private view returns (uint256, uint256, uint256, uint256, uint256) {
+    (uint256 tTransferAmount, uint256 tFee) = getTValues(amount);
+    (uint256 rAmount, uint256 rTransferAmount, uint256 rFee) = getRValues(amount, tFee);
+
+    return (rAmount, rTransferAmount, rFee, tTransferAmount, tFee);
+  }
+
+  /// @dev Calculates the values of the tSpace
+  /// @param amount this is the amount of tokens transfered. This value is in the tSpace
+  /// @return tSpace  values values
+  function getTValues(uint256 amount) private view returns (uint256, uint256) {
+    uint256 tFee = calculateFee(amount, taxFee);
+    uint256 tTransferAmount = amount - tFee;
+    return (tTransferAmount, tFee);
+  }
+
+  /// @dev Calculates the values of the rSpace
+  /// @param amount this is the amount of tokens transfered. This value is in the tSpace
+  /// @param tFee the reflect fee amount. This value is in the tSpace
+  /// @return tSpace  values values
+  function getRValues(uint256 amount, uint256 tFee) private view returns (uint256, uint256, uint256) {
+    uint256 currentRate = getRate();
+    uint256 rAmount = amount * currentRate;
+    uint256 rFee = tFee * currentRate;
+    uint256 rTransferAmount = rAmount - rFee;
+
+    return (rAmount, rTransferAmount, rFee);
+  }
+
+  /// @notice Allows any token holder to essentially donate an amount of tokens to all other token holders
+  /// @param amount amount to donate
+  function reflect(uint256 amount) external {
+    address sender = _msgSender();
+    require(!isExcluded[sender], "Excluded addresses cannot call this function");
+
+    (uint256 rAmount,,,,) = getValues(amount);
+    rOwned[sender] -= rAmount;
+    rTotal -= rAmount;
+    tFeeTotal += amount;
+  }
+
+  /// @dev Updates the values that define the conversion rate that will be used in the next interaction
+  /// @param rFee the fee amount. This value is in the rSpace
+  /// @param tFee the fee amount. This value is in the tSpace
+  function reflectFee(uint256 rFee, uint256 tFee) private {
+    rTotal -= rFee;
+    tFeeTotal += tFee;
+  }
+
+  /// @dev Finds total fee on the given amount
+  /// @param fee the fee value
+  /// @param amount the transfer amount
+  /// @return the fee amount in the tSpace
+  function calculateFee(uint256 amount, uint256 fee) private pure returns (uint256) {
+    return (amount * fee) / FEE_BASE;
+  }
+
+  /// @notice Conversion from the rSpace to the tSpace
+  /// @param rAmount the amount in the rSpace
+  /// @return the corresponding amount in the tSpace
+  function tokenFromReflection(uint256 rAmount) public view returns(uint256) {
+    require(rAmount <= rTotal, "Amount must be less than total reflections");
+    uint256 currentRate = getRate();
+
+    return rAmount / currentRate;
+  }
+
+  /// @notice The opposie of tokenFromReflection. Converts a value in the tSpace to the rSpace
+  /// @param tAmount amount in the tSpace
+  /// @param deductTransferFee this will dry-run a transfer that will calculate the net amount after the fee
+  /// @return the corresponding amount in the rSpace
+  function reflectionFromToken(uint256 tAmount, bool deductTransferFee) public view returns(uint256) {
+    require(tAmount <= tTotal, "Amount must be less than supply");
+    (uint256 rAmount, uint256 rTransferAmount,,,) = getValues(tAmount);
+    
+    return deductTransferFee 
+      ? rTransferAmount 
+      : rAmount;
+  }
+
+  /// @notice Adds the given account to the list of excluded accounts.
+  /// Excluded accounts are not going to receive any of the reflect fees
+  /// @param account account to be excluded
+  function excludeAccount(address account) public onlyOwner {
+    require(!isExcluded[account], "Account is already excluded");
+    
+    // excluded account operate in the T space, so we need to find and set the t balance
+    if(rOwned[account] > 0) {
+      tOwned[account] = tokenFromReflection(rOwned[account]);
+    }
+
+    isExcluded[account] = true;
+    excluded.push(account);
+  }
+
+  /// @notice Opposite of excludeAccount
+  /// @param account account to be included
+  function includeAccount(address account) external onlyOwner {
+    require(isExcluded[account], "Account is not excluded");
+
+    for (uint256 i = 0; i < excluded.length; i++) {
+      if (excluded[i] == account) {
+        excluded[i] = excluded[excluded.length - 1];
+        // recalculate rOwned. The reason we do this is because if the account is included again
+        // it will continue from the state it was left when it was excluded. More specifically,
+        // the rOwned will the based on the rate at the time of exclusion. However, when the accounts
+        // is included again the old rate is obsolete thus the user's R balance should also be updated
+        // accoording to the current rate
+        rOwned[account] = tOwned[account] * getRate();
+        tOwned[account] = 0;
+        isExcluded[account] = false;
+        excluded.pop();
+
+        break;
+      }
+    }
+  }
+
+  /// @notice Adds the given account to the list of excluded from fees accounts.
+  /// If an account is exluded from fees then their transfers do get taxed
+  /// @param account account to be excluded
+  function excludeFromFee(address account) public onlyOwner {
+    isExcludedFromFee[account] = true;
+  }
+  
+  /// @notice Opposite of excludeFromFee
+  /// @param account account to be included
+  function includeInFee(address account) public onlyOwner {
+    isExcludedFromFee[account] = false;
+  }
+
+  /// @notice Allows the owner to update the reflect fee
+  /// @param _taxFee the new tax fee
+  function updateTaxFee(uint256 _taxFee) external onlyOwner {
+    require(_taxFee <= maxTaxFee, "tax fee exceeds limit");
+    
+    taxFee = _taxFee;
+    emit TaxFeeUpdated(taxFee);
+  }
+}

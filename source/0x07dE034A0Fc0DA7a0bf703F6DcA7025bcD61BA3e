@@ -1,0 +1,927 @@
+// Dependency file: contracts/interfaces/IERC20.sol
+
+// SPDX-License-Identifier: MIT
+// pragma solidity >=0.5.0;
+
+interface IERC20 {
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+
+    function approve(address spender, uint value) external returns (bool);
+    function transfer(address to, uint value) external returns (bool);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+}
+
+
+// Dependency file: contracts/interfaces/IWETH.sol
+
+// pragma solidity >=0.5.0;
+
+interface IWETH {
+    function deposit() external payable;
+    function transfer(address to, uint value) external returns (bool);
+    function withdraw(uint) external;
+}
+
+
+// Dependency file: contracts/libraries/SafeMath.sol
+
+
+// pragma solidity >=0.6.0;
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations with added overflow
+ * checks.
+ *
+ * Arithmetic operations in Solidity wrap on overflow. This can easily result
+ * in bugs, because programmers usually assume that an overflow raises an
+ * error, which is the standard behavior in high level programming languages.
+ * `SafeMath` restores this intuition by reverting the transaction when an
+ * operation overflows.
+ *
+ * Using this library instead of the unchecked operations eliminates an entire
+ * class of bugs, so it's recommended to use it always.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts with custom message when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+// Dependency file: contracts/modules/Ownable.sol
+
+// pragma solidity >=0.6.0;
+
+contract Ownable {
+    address public owner;
+
+    event OwnerChanged(address indexed _oldOwner, address indexed _newOwner);
+
+    constructor () public {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, 'Ownable: FORBIDDEN');
+        _;
+    }
+
+    function changeOwner(address _newOwner) public onlyOwner {
+        require(_newOwner != address(0), 'Ownable: INVALID_ADDRESS');
+        emit OwnerChanged(owner, _newOwner);
+        owner = _newOwner;
+    }
+
+}
+
+
+// Dependency file: contracts/modules/ReentrancyGuard.sol
+
+
+// pragma solidity >=0.6.0 <0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor () internal {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and make it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+// Root file: contracts/DemaxShackChef.sol
+
+
+pragma solidity >=0.6.6;
+
+// import "contracts/interfaces/IERC20.sol";
+// import 'contracts/interfaces/IWETH.sol';
+// import 'contracts/libraries/SafeMath.sol';
+// import "contracts/modules/Ownable.sol";
+// import "contracts/modules/ReentrancyGuard.sol";
+
+interface IRewardToken {
+    function mint(address to, uint value) external returns (bool);
+}
+
+interface IShackChef {
+
+    /**
+     * @dev Get Pool infos
+     * If you want to get the pool's available quota, let "avail = depositCap - accShare"
+     */
+    function pools(uint256 pid) external view returns (
+        address token,              // Address of token contract
+        uint256 depositCap,         // Max deposit amount
+        uint256 depositClosed,      // Deposit closed
+        uint256 lastRewardBlock,    // Last block number that reward distributed
+        uint256 accRewardPerShare,  // Accumulated rewards per share
+        uint256 accShare,           // Accumulated Share
+        uint256 apy,                // APY, times 10000
+        uint256 used                // How many tokens used for farming
+    );
+
+    /**
+    * @dev Get pid of given token
+    */
+    function pidOfToken(address token) external view returns (uint256 pid);
+
+    /**
+    * @dev Get User infos
+    */
+    function users(uint256 pid, address user) external view returns (
+        uint256 amount,     // Deposited amount of user
+        uint256 rewardDebt  // Ignore
+    );
+
+    /**
+     * @dev Get user unclaimed reward
+     */
+    function unclaimedReward(uint256 pid, address user) external view returns (uint256 reward);
+
+    /**
+     * @dev Get user total claimed reward of all pools
+     */
+    function userStatistics(address user) external view returns (uint256 claimedReward);
+
+    /**
+     * @dev Deposit tokens and Claim rewards
+     * If you just want to claim rewards, call function: "deposit(pid, 0)"
+     */
+    function deposit(uint256 pid, uint256 amount) external;
+
+    /**
+     * @dev Withdraw tokens
+     */
+    function withdraw(uint256 pid, uint256 amount) external;
+
+}
+
+interface ISwapRouter {
+    function factory() external view returns (address);
+
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+}
+
+interface ISwapPair {
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+}
+
+interface ISwapFactory {
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+}
+
+
+// Note that it's ownable and the owner wields tremendous power. The ownership
+// will be transferred to a governance smart contract once mintToken is sufficiently
+// distributed and the community can show to govern itself.
+contract DemaxShackChef is Ownable, ReentrancyGuard {
+    using SafeMath for uint256;
+    uint256 public version = 1;
+
+    // Info of each user.
+    struct UserInfo {
+        uint256 amount;         // How many LP tokens the user has provided.
+        uint256 rewardDebt;     // Reward debt. See explanation below.
+        uint256 earnDebt;     // Earn debt. See explanation below.
+        //
+        // We do some fancy math here. Basically, any point in time, the amount of RewardTokens, the amount of EarnTokens
+        // entitled to a user but is pending to be distributed is:
+        //
+        //   pending reward = (user.amount * pool.accRewardPerShare) - user.rewardDebt
+        //   pending earn = (user.amount * pool.accEarnPerShare) - user.earnDebt
+        //
+        // Whenever a user deposits or withdraws LP tokens to a pool. Here's what happens:
+        //   1. The pool's `accRewardPerShare` (and `lastUpdateBlock`) gets updated.
+        //   2. User receives the pending reward and earn sent to his/her address.
+        //   3. User's `amount` gets updated.
+        //   4. User's `rewardDebt` gets updated.
+        //   5. User's `earnDebt` gets updated.
+    }
+
+    // Info of each pool.
+    struct PoolInfo {
+        uint256 pid;
+        IERC20 depositToken;           // Address of deposit token contract.
+        IERC20 earnToken;           // Address of earn token contract.
+        uint256 allocPoint;       // How many allocation points assigned to this pool. RewardTokens to distribute per block.
+        uint256 lastUpdateBlock;  // Last block number that RewardTokens distribution occurs.
+        uint256 lastRewardAmount; // Last RewardToken amunt that RewardTokens distribution occurs.
+        uint256 lastEarnAmount; // Last EarnToken amunt that EarnTokens distribution occurs.
+        uint256 accRewardPerShare;   // Accumulated RewardTokens per share, times 1e18. See below.
+        uint256 accEarnPerShare;   // Accumulated EarnTokens per share, times 1e18. See below.
+        uint16 tokenType;
+        bool added;
+    }
+
+    address public weth;
+    // The XBurger TOKEN!
+    address public mintToken;
+    // Dev address.
+    address public devaddr;
+    // mintToken tokens created per block.
+    uint256 public mintPerBlock;
+    // Bonus muliplier for early mintToken makers.
+    uint256 public constant BONUS_MULTIPLIER = 1;
+    // Shack Chef address
+    address public shackAddress;
+
+    uint256 public rewardTotal;
+    uint256 public devRewardRate = 0;
+    uint256 public devEarnRate = 0;
+    mapping(IERC20 => uint256) public earnTokensTotal;
+
+    // Info of each pool.
+    mapping(uint256 => PoolInfo) public poolInfo;
+    uint256[] public pids;
+    // Info of each user that stakes LP tokens.
+    mapping(uint256 => mapping(address => UserInfo)) public userInfo;
+    // Total allocation points. Must be the sum of all allocation points in all pools.
+    uint256 public totalAllocPoint = 0;
+    // The block number when mintToken mining starts.
+    uint256 public startBlock;
+    uint256 public accRewardShare;
+
+    mapping (address => address) public tokenRouters;
+    mapping (address => address) public swapTokens;
+
+    event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
+    event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event SetFeeAddress(address indexed user, address indexed newAddress);
+    event SetDevAddress(address indexed user, address indexed newAddress);
+    event UpdateEmissionRate(address indexed user, uint256 mintPerBlock);
+
+    constructor(
+        address _weth,
+        address _shackAddress,
+        address _mintToken,
+        address _devaddr,
+        uint256 _mintPerBlock,
+        uint256 _startBlock
+    ) public {
+        weth = _weth;
+        shackAddress = _shackAddress;
+        mintToken = _mintToken;
+        devaddr = _devaddr;
+        mintPerBlock = _mintPerBlock;
+        startBlock = _startBlock;
+    }
+
+    function poolLength() external view returns (uint256) {
+        return pids.length;
+    }
+
+    mapping(IERC20 => mapping(IERC20 => bool)) public poolExistence;
+    modifier nonDuplicated(IERC20 _depositToken, IERC20 _earnToken) {
+        require(poolExistence[_depositToken][_earnToken] == false, "nonDuplicated: duplicated");
+        _;
+    }
+
+    receive() external payable {
+        assert(msg.sender == weth);
+    }
+
+    // Set a new lp to the pool. Can only be called by the owner.
+    function add(bool _withUpdate, uint256 _pid, uint256 _allocPoint, IERC20 _depositToken, IERC20 _earnToken, uint16 _tokenType) public onlyOwner nonDuplicated(_depositToken, _earnToken) {
+        if (_withUpdate) {
+            massUpdatePools();
+        }
+
+        uint256 lastUpdateBlock = block.number > startBlock ? block.number : startBlock;
+        totalAllocPoint = totalAllocPoint.add(_allocPoint);
+        poolExistence[_depositToken][_earnToken] = true;
+        if(poolInfo[_pid].added == false) {
+            pids.push(_pid);
+        }
+        poolInfo[_pid] = PoolInfo({
+            pid: _pid,
+            depositToken : _depositToken,
+            earnToken: _earnToken,
+            allocPoint : _allocPoint,
+            lastUpdateBlock : lastUpdateBlock,
+            lastRewardAmount : 0,
+            lastEarnAmount : 0,
+            accRewardPerShare : 0,
+            accEarnPerShare: 0,
+            tokenType: _tokenType,
+            added: true
+        });
+    }
+
+    function set(uint256 _pid, uint256 _allocPoint, IERC20 _depositToken, IERC20 _earnToken, uint16 _tokenType) public onlyOwner nonDuplicated(_depositToken, _earnToken) {
+        add(true, _pid, _allocPoint, _depositToken, _earnToken, _tokenType);
+    }
+
+    function batchAdd(bool _withUpdate, uint256[] memory _pids, uint256[] memory _allocPoints, IERC20[] memory _depositTokens, IERC20[] memory _earnTokens, uint16[] memory _tokenTypes) public onlyOwner {
+        require(_pids.length == _allocPoints.length && _allocPoints.length == _depositTokens.length && _depositTokens.length == _earnTokens.length, 'invalid params');
+        for(uint256 i; i<_allocPoints.length; i++) {
+            add(false, _pids[i], _allocPoints[i], _depositTokens[i], _earnTokens[i], _tokenTypes[i]);
+        }
+        if (_withUpdate) {
+            massUpdatePools();
+        }
+    }
+
+    function batchSet(uint256[] memory _pids, uint256[] memory _allocPoints, IERC20[] memory _depositTokens, IERC20[] memory _earnTokens, uint16[] memory _tokenTypes) public onlyOwner {
+        require(_pids.length == _allocPoints.length && _allocPoints.length == _depositTokens.length && _depositTokens.length == _earnTokens.length, 'invalid params');
+        batchAdd(true, _pids, _allocPoints, _depositTokens, _earnTokens, _tokenTypes);
+    }
+
+    // Return reward multiplier over the given _from to _to block.
+    function getMultiplier(uint256 _from, uint256 _to) public pure returns (uint256) {
+        return _to.sub(_from).mul(BONUS_MULTIPLIER);
+    }
+
+    function getToBlock() public view returns (uint256) {
+        return block.number;
+    }
+
+    function getDepositTokenSupply(uint256 _pid) public view returns (uint256) {
+        PoolInfo memory pool = poolInfo[_pid];
+        if(shackAddress != address(0)) {
+            (uint256 balance, ) = IShackChef(shackAddress).users(_pid, address(this));
+            return balance;
+        }
+        return pool.depositToken.balanceOf(address(this));
+    }
+
+    function pendingRewardInfo(uint256 _pid) public view returns (uint256, uint256, uint256) {
+        PoolInfo storage pool = poolInfo[_pid];
+        if (getToBlock() > pool.lastUpdateBlock && totalAllocPoint > 0) {
+            uint256 multiplier = getMultiplier(pool.lastUpdateBlock, getToBlock());
+            uint256 reward = multiplier.mul(mintPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
+            uint256 devValue;
+            if(devRewardRate > 0) {
+                devValue = reward.div(devRewardRate);
+            }
+            return (reward, devValue, block.number);
+        }
+        return (0, 0, block.number);
+    }
+
+    function pendingEarnInfo(uint256 _pid) public view returns (uint256, uint256, uint256) {
+        PoolInfo memory pool = poolInfo[_pid];
+        if(shackAddress != address(0)) {
+            uint256 earn = IShackChef(shackAddress).unclaimedReward(_pid, address(this));
+            earn = getCurrentRate(address(pool.earnToken), earn);
+            uint256 devValue;
+            if(devEarnRate > 0) {
+                devValue = earn.div(devEarnRate);
+                earn = earn.sub(devValue);
+            }
+            return (earn, devValue, block.number);
+        }
+        return (0, 0, block.number);
+    }
+
+    // View function to see pending RewardTokens on frontend.
+    function pendingReward(uint256 _pid, address _user) external view returns (uint256) {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][_user];
+        uint256 accRewardPerShare = pool.accRewardPerShare;
+        uint256 depositTokenSupply = getDepositTokenSupply(_pid);
+        if (depositTokenSupply >0) {
+            (uint256 reward, ,) = pendingRewardInfo(_pid);
+            accRewardPerShare = accRewardPerShare.add(reward.mul(1e18).div(depositTokenSupply));
+        }
+        uint256 result = user.amount.mul(accRewardPerShare).div(1e18).sub(user.rewardDebt);
+        return result;
+    }
+
+    function pendingEarn(uint256 _pid, address _user) external view returns (uint256) {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][_user];
+        uint256 accEarnPerShare = pool.accEarnPerShare;
+        uint256 depositTokenSupply = getDepositTokenSupply(_pid);
+        if (depositTokenSupply != 0 && shackAddress != address(0)) {
+            (uint256 earn, ,) = pendingEarnInfo(_pid);
+            accEarnPerShare = accEarnPerShare.add(earn.mul(1e18).div(depositTokenSupply));
+        }
+        uint256 result = user.amount.mul(accEarnPerShare).div(1e18).sub(user.earnDebt);
+        return result;
+    }
+
+    function canDeposit(uint256 _pid, address _user) external view returns (uint256) {
+        PoolInfo memory pool = poolInfo[_pid];
+        uint256 amount = pool.depositToken.balanceOf(_user);
+        if(shackAddress != address(0)) {
+            (,uint256 depositCap, , , , uint256 accShare, ,) = IShackChef(shackAddress).pools(_pid);
+            if(depositCap > accShare) {
+                amount = depositCap.sub(accShare);
+            } else {
+                amount = 0;
+            }
+        }
+        return amount;
+    }
+
+    function shackPoolInfo(uint256 _pid) external view returns (
+        address token,              // Address of token contract
+        uint256 depositCap,         // Max deposit amount
+        uint256 depositClosed,      // Deposit closed
+        uint256 lastRewardBlock,    // Last block number that reward distributed
+        uint256 accRewardPerShare,  // Accumulated rewards per share
+        uint256 accShare,           // Accumulated Share
+        uint256 apy,                // APY, times 10000
+        uint256 used                // How many tokens used for farming
+    ) {
+        if(shackAddress != address(0)) {
+            (token, depositCap, depositClosed, lastRewardBlock, accRewardPerShare, accShare, apy, used) = IShackChef(shackAddress).pools(_pid);
+        }
+    }
+
+    // Update reward variables for all pools. Be careful of gas spending!
+    function massUpdatePools() internal {
+        uint256 length = pids.length;
+        for (uint256 i = 0; i < length; ++i) {
+            updatePool(pids[i]);
+        }
+    }
+
+    // Update reward variables of the given pool to be up-to-date.
+    function updatePool(uint256 _pid) internal {
+        PoolInfo storage pool = poolInfo[_pid];
+        uint256 toBlock = getToBlock();
+        if (toBlock <= pool.lastUpdateBlock) {
+            return;
+        }
+        uint256 depositTokenSupply = getDepositTokenSupply(_pid);
+        if (depositTokenSupply == 0 || pool.allocPoint == 0) {
+            pool.lastUpdateBlock = toBlock;
+            return;
+        }
+        
+        (uint256 reward, uint256 devReward,) = pendingRewardInfo(_pid);
+        pool.lastRewardAmount = reward;
+        IRewardToken(mintToken).mint(address(this), reward);
+        rewardTotal = rewardTotal.add(reward);
+        if(devReward > 0) {
+            IRewardToken(mintToken).mint(devaddr, devReward);
+            rewardTotal = rewardTotal.add(devReward);
+        }
+        pool.accRewardPerShare = pool.accRewardPerShare.add(reward.mul(1e18).div(depositTokenSupply));
+
+        (uint256 earn, uint256 devEarn,) = _mintEarnToken(_pid);
+        pool.lastEarnAmount = earn.add(devEarn);
+        pool.accEarnPerShare = pool.accEarnPerShare.add(earn.mul(1e18).div(depositTokenSupply));
+
+        pool.lastUpdateBlock = toBlock;
+    }
+
+    // Deposit LP tokens to MasterChef for mintToken allocation.
+    function deposit(uint256 _pid, uint256 _amount) payable public nonReentrant {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        updatePool(_pid);
+        _harvestMintToken(_pid);
+        _harvestEarnToken(_pid);
+        if(address(pool.depositToken) == weth) {
+            _amount = msg.value;
+        }
+        if (_amount > 0) {
+            if(address(pool.depositToken) == weth) {
+                IWETH(weth).deposit{value: _amount}();
+            } else {
+                pool.depositToken.transferFrom(address(msg.sender), address(this), _amount);
+            }
+            user.amount = user.amount.add(_amount);
+
+            if(shackAddress != address(0)) {
+                approveContract(address(pool.depositToken), shackAddress, _amount);
+                IShackChef(shackAddress).deposit(_pid, _amount);
+            }
+        }
+        user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(1e18);
+        user.earnDebt = user.amount.mul(pool.accEarnPerShare).div(1e18);
+        emit Deposit(msg.sender, _pid, _amount);
+    }
+
+    // Withdraw LP tokens from MasterChef.
+    function withdraw(uint256 _pid, uint256 _amount) public nonReentrant {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        require(user.amount >= _amount, "withdraw: not good");
+        updatePool(_pid);
+        _harvestMintToken(_pid);
+        _harvestEarnToken(_pid);
+        if (_amount > 0) {
+            if(shackAddress != address(0)) {
+                IShackChef(shackAddress).withdraw(_pid, _amount);
+            }
+            user.amount = user.amount.sub(_amount);
+            if(address(pool.depositToken) == weth) {
+                IWETH(weth).withdraw(_amount);
+                address(uint160(msg.sender)).transfer(_amount);
+            } else {
+                pool.depositToken.transfer(address(msg.sender), _amount);
+            }
+        }
+        user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(1e18);
+        user.earnDebt = user.amount.mul(pool.accEarnPerShare).div(1e18);
+        emit Withdraw(msg.sender, _pid, _amount);
+    }
+
+    // Withdraw without caring about rewards. EMERGENCY ONLY.
+    function emergencyWithdraw(uint256 _pid) public nonReentrant {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        uint256 amount = user.amount;
+        user.amount = 0;
+        user.rewardDebt = 0;
+        user.earnDebt = 0;
+        pool.depositToken.transfer(address(msg.sender), amount);
+        emit EmergencyWithdraw(msg.sender, _pid, amount);
+    }
+
+    function _mintEarnToken(uint256 _pid) internal returns (uint256, uint256, uint256) {
+        if(shackAddress == address(0)) {
+            return (0, 0, block.number);
+        }
+        (uint256 earn, uint256 devValue,) = pendingEarnInfo(_pid);
+        if(earn.add(devValue) == 0) {
+            return (0, 0, block.number);
+        }
+
+        PoolInfo memory pool = poolInfo[_pid];
+        uint256 beforeBalance = pool.earnToken.balanceOf(address(this));
+        IShackChef(shackAddress).deposit(_pid, 0);
+        uint256 afterBalance = pool.earnToken.balanceOf(address(this));
+        earn = afterBalance.sub(beforeBalance);
+        if(tokenRouters[address(pool.earnToken)] != address(0)) {
+            earn = swap(address(pool.earnToken), earn);
+        }
+        earnTokensTotal[pool.earnToken] = earnTokensTotal[pool.earnToken].add(earn);
+        devValue = 0;
+        if(devEarnRate > 0) {
+            devValue = earn.div(devEarnRate);
+            if(tokenRouters[address(pool.earnToken)] != address(0)) {
+                safeTokenTransfer(swapTokens[address(pool.earnToken)], devaddr, devValue);
+            } else {
+                safeTokenTransfer(address(pool.earnToken), devaddr, devValue);
+            }
+            earn = earn.sub(devValue);
+        }
+        return (earn, devValue, block.number);
+    }
+
+    function _harvestMintToken(uint256 _pid) internal returns(uint256 amount) {
+        PoolInfo memory pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        uint256 pending = user.amount.mul(pool.accRewardPerShare).div(1e18).sub(user.rewardDebt);
+        amount = safeTokenTransfer(mintToken, msg.sender, pending);
+        user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(1e18);
+        return amount;
+    }
+
+    function _harvestEarnToken(uint256 _pid) internal returns(uint256 amount) {
+        if(shackAddress == address(0)) {
+            return 0;
+        }
+        PoolInfo memory pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        uint256 pending = user.amount.mul(pool.accEarnPerShare).div(1e18).sub(user.earnDebt);
+        if(tokenRouters[address(pool.earnToken)] != address(0)) {
+            amount = safeTokenTransfer(swapTokens[address(pool.earnToken)], msg.sender, pending);
+        } else {
+            amount = safeTokenTransfer(address(pool.earnToken), msg.sender, pending);
+        }
+        user.earnDebt = user.amount.mul(pool.accEarnPerShare).div(1e18);
+        return amount;
+    }
+
+    function harvest(uint256 _pid) public nonReentrant {
+        updatePool(_pid);
+        _harvestMintToken(_pid);
+        _harvestEarnToken(_pid);
+    }
+
+    // Safe Token transfer function, just in case if rounding error causes pool to not have enough tokens.
+    function safeTokenTransfer(address _token, address _to, uint256 _amount) internal returns(uint256) {
+        uint256 tokenBal = IERC20(_token).balanceOf(address(this));
+        if(_amount > 0 && tokenBal > 0) {
+            if (_amount > tokenBal) {
+                _amount = tokenBal;
+            }
+            IERC20(_token).transfer(_to, _amount);
+        }
+        return _amount;
+    }
+
+    function emergencyExitShakChef(uint256 _pid) public onlyOwner {
+        require(shackAddress != address(0), "emergencyExitShakChef: Invalid Address");
+        (uint256 amount,) = IShackChef(shackAddress).users(_pid, address(this));
+        IShackChef(shackAddress).withdraw(_pid, amount);
+    }
+
+    function emergencyExitAllShakChef() public {
+        uint256 length = pids.length;
+        for (uint256 i = 0; i < length; ++i) {
+            emergencyExitShakChef(pids[i]);
+        }
+    }
+
+    // Update dev address by the previous dev.
+    function changeDev(address _devaddr) public {
+        require(msg.sender == devaddr || msg.sender == owner, "changeDev: FORBIDDEN");
+        devaddr = _devaddr;
+        emit SetDevAddress(msg.sender, _devaddr);
+    }
+
+    function setDevRewardRate(uint256 _value) public onlyOwner {
+        require(_value >=0 && _value <=10, 'invalid param');
+        devRewardRate = _value;
+    }
+
+    function setDevEarnRate(uint256 _value) public onlyOwner {
+        require(_value >=0 && _value <=10, 'invalid param');
+        devEarnRate = _value;
+    }
+
+    function setRate(uint256 _devRewardRate, uint256 _devEarnRate) public onlyOwner {
+        setDevRewardRate(_devRewardRate);
+        setDevEarnRate(_devEarnRate);
+    }
+
+    function setStartBlock(uint256 _value) public onlyOwner {
+        startBlock = _value;
+    }
+
+    //mintToken has to add hidden dummy pools inorder to alter the emission, here we make it simple and transparent to all.
+    function updateEmissionRate(uint256 _mintPerBlock) public onlyOwner {
+        massUpdatePools();
+        mintPerBlock = _mintPerBlock;
+        emit UpdateEmissionRate(msg.sender, _mintPerBlock);
+    }
+
+    function setRouter(address _token, address _router) external onlyOwner {
+        tokenRouters[_token] = _router;
+    }
+
+    function setSwapToken(address _token, address _tokenOut) external onlyOwner {
+        swapTokens[_token] = _tokenOut;
+    }
+
+    function setSwapTokenAndRouter(address _token, address _tokenOut, address _router) external onlyOwner {
+        swapTokens[_token] = _tokenOut;
+        tokenRouters[_token] = _router;
+    }
+
+    function approveContract(address _token, address _spender, uint _amount) internal {
+        uint allowAmount = IERC20(_token).totalSupply();
+        if(allowAmount < _amount) {
+            allowAmount = _amount;
+        }
+        if(IERC20(_token).allowance(address(this), _spender) < _amount) {
+            IERC20(_token).approve(_spender, allowAmount);
+        }
+    }
+
+    function swap(address _tokenIn, uint256 _amount) public returns (uint256) {
+        if(_amount == 0) {
+            return 0;
+        }
+        address _tokenOut = swapTokens[_tokenIn];
+        approveContract(_tokenIn, tokenRouters[_tokenIn], _amount);
+        address[] memory path = new address[](2);
+        path[0] = _tokenIn;
+        path[1] = _tokenOut;
+        uint256 beforeBalance = IERC20(_tokenOut).balanceOf(address(this));
+        ISwapRouter(tokenRouters[_tokenIn]).swapExactTokensForTokens(_amount, 1, path, address(this), block.timestamp+600);
+        uint256 afterBalance = IERC20(_tokenOut).balanceOf(address(this));
+        return afterBalance.sub(beforeBalance);
+    }
+
+    function getCurrentRate(address _tokenIn, uint256 _amount) public view returns (uint256) {
+        if(tokenRouters[_tokenIn] == address(0) || swapTokens[_tokenIn] == address(0)) {
+            return _amount;
+        }
+        address factory = ISwapRouter(tokenRouters[_tokenIn]).factory();
+        address pair = ISwapFactory(factory).getPair(_tokenIn, swapTokens[_tokenIn]);
+        (uint112 reserve0, uint112 reserve1, ) = ISwapPair(pair).getReserves();
+        if(reserve0 == 0 || reserve1 ==0) {
+            return 0;
+        }
+        uint256 tokenInReserve = uint256(reserve0);
+        uint256 tokenOutReserve = uint256(reserve1);
+        uint256 tokenInDecimals = uint256(IERC20(_tokenIn).decimals());
+        uint256 tokenOutDecimals = uint256(IERC20(swapTokens[_tokenIn]).decimals());
+        if(ISwapPair(pair).token0() != _tokenIn) {
+            tokenInDecimals = IERC20(swapTokens[_tokenIn]).decimals();
+            tokenOutDecimals = IERC20(_tokenIn).decimals();
+            tokenInReserve = uint256(reserve1);
+            tokenOutReserve = uint256(reserve0);
+        }
+        if(tokenInDecimals > tokenOutDecimals) {
+            tokenOutReserve = tokenOutReserve * 10** (tokenInDecimals - tokenOutDecimals);
+        } else if(tokenInDecimals < tokenOutDecimals) {
+            tokenInReserve = tokenInReserve * 10** (tokenOutDecimals - tokenInDecimals);
+        }
+
+        return _amount * tokenOutReserve / tokenInReserve;
+    }
+
+}

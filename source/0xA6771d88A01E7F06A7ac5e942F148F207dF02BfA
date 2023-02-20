@@ -1,0 +1,520 @@
+pragma solidity ^0.8.14;
+
+// SPDX-License-Identifier: MIT
+
+/*
+https://thelemonade.farm/
+
+.____                                            .___         _________ __                     .___
+|    |    ____   _____   ____   ____ _____     __| _/____    /   _____//  |______    ____    __| _/
+|    |  _/ __ \ /     \ /  _ \ /    \\__  \   / __ |/ __ \   \_____  \\   __\__  \  /    \  / __ | 
+|    |__\  ___/|  Y Y  (  <_> )   |  \/ __ \_/ /_/ \  ___/   /        \|  |  / __ \|   |  \/ /_/ | 
+|_______ \___  >__|_|  /\____/|___|  (____  /\____ |\___  > /_______  /|__| (____  /___|  /\____ | 
+        \/   \/      \/            \/     \/      \/    \/          \/           \/     \/      \/    
+Lemonade Stand - BUSD Lemonade Farm
+*/
+
+interface IToken {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+library SafeMath {
+  function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+    if (a == 0) {
+      return 0;
+    }
+    uint256 c = a * b;
+    assert(c / a == b);
+    return c;
+  }
+
+ function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a / b;
+    return c;
+  }
+
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    assert(b <= a);
+    return a - b;
+  }
+
+  function add(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a + b;
+    assert(c >= a);
+    return c;
+  }
+
+  function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+    require(b != 0);
+    return a % b;
+  }
+}
+
+contract BusdLemonadeFarm {
+    using SafeMath for uint256;
+
+    IToken public token;
+    address erctoken = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56; /** BUSD Mainnet **/
+    
+    /* Project scales to maintain sustainabililty and prolonged profitability for investors */
+    uint256 public LEMONS_TO_BUILD_1STAND = 2592000;
+    uint constant public MAX_MAPS = 12;
+    uint256 BALANCE_MAP = 0;
+    /* Contract balance to ROI map */
+    uint256[MAX_MAPS] private ROI_MAP = [      0 ether,     1000 ether,   2000 ether,   3000 ether,    5000 ether,
+                                           10000 ether,    50000 ether, 100000 ether, 500000 ether, 1000000 ether,
+                                         5000000 ether, 10000000 ether];
+    uint256[MAX_MAPS] private ROI_MAP_STANDS = [2592000 /* 3% */,   2160000 /* 4% */, 2160000 /* 4% */,   1728000 /* 5% */,
+                                                1728000 /* 5% */,   1728000 /* 5% */, 1584000 /* 5.5% */, 1440000 /* 6% */,
+                                                1320000 /* 6.5% */, 1200000 /* 7% */, 1140000 /* 7.5% */, 1080000 /* 8% */];
+    uint256[MAX_MAPS] private SLIDING_SCALE_MAP = [10, 20, 25, 30, 35, 40, 50, 50, 50, 50, 50, 50];
+    uint256[MAX_MAPS] private FEE_SCALE_MAP =     [ 5, 10, 15, 20, 25, 25, 25, 25, 25, 25, 25, 25];
+
+    uint256 public PERCENTS_DIVIDER = 1000;
+    uint256 public REFERRAL = 60;
+    uint256 public PROJECT_FEES = 25;
+    uint256 public MARKET_LEMONS_DIVISOR = 2; // 50%
+    uint256 public MARKET_LEMONS_DIVISOR_SELL = 1; // 100%
+    uint256 public MIN_INVEST_LIMIT = 1 ether;
+    uint256 public WITHDRAW_WHALE_LIMIT = 1000 ether;
+    uint256 public WITHDRAW_WINDOW = 1 days; 
+    uint256 public COMPOUND_DURATION = 12 hours;
+    uint256 public CUTOFF_STEP = 48 hours; 
+    uint256 public COMPOUND_BONUS = 25; /** 2.5% **/
+    uint256 public COMPOUND_BONUS_MAX_TIMES = 10; /** 10 times / 5 days. **/
+    uint256 public WITHDRAWAL_TAX = 800;
+    uint256 public COMPOUND_FOR_NO_TAX_WITHDRAWAL = 5;
+
+    uint256 public totalStaked;
+    uint256 public totalDeposits;
+    uint256 public totalCompound;
+    uint256 public totalRefBonus;
+    uint256 public totalWithdrawn;
+    uint256 public maxDailyWithdraw;
+
+    uint256 public marketLemons;
+    uint256 PSN = 10000;
+    uint256 PSNH = 5000;
+    bool public contractStarted;
+
+    address public owner;
+    address public dev1;
+    address public dev2;
+    address public proj;
+    address public lottery;
+
+    struct User {
+        uint256 initialDeposit;
+        uint256 userDeposit;
+        uint256 stands;
+        uint256 claimedLemons;
+        uint256 lastGrow;
+        address referrer;
+        uint256 referralsCount;
+        uint256 referralLemonRewards;
+        uint256 totalWithdrawn;
+        uint256 dailyCompoundBonus;
+        uint256 lastWithdrawTime;
+        uint256 withdrawWindowStart;
+        uint256 totalWithdrawInWindow;
+    }
+
+    mapping(address => User) public users;
+
+    event NewUser(address indexed user);
+    event NewDeposit(address indexed user, uint256 amount);
+    event ReinvestedDeposit(address indexed user, uint256 lemons, uint256 amount);
+    event Withdrawn(address indexed user, uint256 amount);
+    event RefBonus(address indexed referrer, address indexed referral, uint256 amount);
+
+    constructor(address _dev1, address _dev2, address _proj, address _lottery) {
+        require(!isContract(_dev1) && !isContract(_dev2) && !isContract(_proj) && !isContract(_lottery));
+        owner = msg.sender;
+        dev1 = _dev1;
+        dev2 = _dev2;
+        proj = _proj;
+        lottery = _lottery;
+
+        token = IToken(erctoken);
+    }
+
+    function initialize(uint256 amount) public {
+        if (!contractStarted) {
+            if (msg.sender == owner) {
+                require(marketLemons == 0);
+                contractStarted = true;
+                marketLemons = 86400000000;
+                buyStands(msg.sender, amount);
+            } else revert("Contract not started");
+        }
+    }
+
+function isContract(address addr) internal view returns (bool) {
+        uint size;
+        assembly { size := extcodesize(addr) }
+        return size > 0;
+    }
+
+    function buildStands() public {
+        require(contractStarted, "Contract not started");      
+        User storage user = users[msg.sender];
+        require(block.timestamp.sub(user.lastGrow) >= COMPOUND_DURATION, "Cannot build yet");
+        buildMaterial(true);
+        rebalanceProject();
+    }
+
+    function buildMaterial(bool isCompound) internal {
+        User storage user = users[msg.sender];
+        uint256 lemonsUsed = getMyLemons();
+        uint256 lemonsForCompound = lemonsUsed;
+
+        if (isCompound) {
+            uint256 dailyCompoundBonus = getDailyCompoundBonus(msg.sender, lemonsForCompound);
+            lemonsForCompound = lemonsForCompound.add(dailyCompoundBonus);
+            uint256 lemonsUsedValue = calculateLemonSell(lemonsForCompound);
+            user.userDeposit = user.userDeposit.add(lemonsUsedValue);
+            lemonsUsedValue = lemonsUsedValue.sub(takeFees(lemonsUsedValue));
+            totalCompound = totalCompound.add(lemonsUsedValue);
+
+            if(user.dailyCompoundBonus < COMPOUND_BONUS_MAX_TIMES) {
+                user.dailyCompoundBonus = user.dailyCompoundBonus.add(1);
+            }
+            emit ReinvestedDeposit(msg.sender, lemonsForCompound, lemonsUsedValue);        
+        }
+
+        user.stands = user.stands.add(lemonsForCompound.div(LEMONS_TO_BUILD_1STAND));
+        user.claimedLemons = 0;
+        user.lastGrow = block.timestamp;
+
+        marketLemons = marketLemons.add(lemonsUsed.div(MARKET_LEMONS_DIVISOR));
+    }
+
+    function sellLemonade() public {
+        require (contractStarted, "Contract not started");
+        User storage user = users[msg.sender];
+        require (user.stands > 0, "Nothing to sell");
+        uint256 hasLemons = getMyLemons();
+        uint256 lemonValue = calculateLemonSell(hasLemons);     
+        uint256 origLemonValue = lemonValue;
+
+        if (user.dailyCompoundBonus < COMPOUND_FOR_NO_TAX_WITHDRAWAL) {
+            lemonValue = lemonValue.sub(lemonValue.mul(WITHDRAWAL_TAX).div(PERCENTS_DIVIDER));
+            takeEarlyTaxFees(origLemonValue.sub(lemonValue));
+            /* Early withdraw taxes get returned to the contract */
+        } else {
+            user.dailyCompoundBonus = 0;
+        }
+
+        user.lastWithdrawTime = block.timestamp;
+        user.claimedLemons = 0;  
+        user.lastGrow = block.timestamp;
+        marketLemons = marketLemons.add(hasLemons.div(MARKET_LEMONS_DIVISOR_SELL));
+
+        /* Anti-whale dumping */
+        if (block.timestamp.sub(user.withdrawWindowStart) >= WITHDRAW_WINDOW) {
+            user.withdrawWindowStart = block.timestamp;
+            user.totalWithdrawInWindow = 0;
+        }
+
+        uint256 withdrawlimitCap = getWithdrawLimits();
+        origLemonValue = lemonValue;
+        lemonValue = min(lemonValue, withdrawlimitCap);
+
+        if (user.totalWithdrawInWindow.add(lemonValue) > withdrawlimitCap) {
+            lemonValue = withdrawlimitCap.sub(user.totalWithdrawInWindow);
+        }
+        user.totalWithdrawInWindow = user.totalWithdrawInWindow.add(lemonValue);
+
+        /* Send inclaimable rewards back to the account */
+        if (lemonValue < origLemonValue) {
+            buyMaterial(msg.sender, address(0), origLemonValue.sub(lemonValue));
+        }
+
+        if(lemonValue > getBalance()) {
+            buyMaterial(msg.sender, address(0), lemonValue.sub(getBalance()));
+            lemonValue = getBalance();
+        }
+
+        uint256 lemonsPayout = lemonValue.sub(takeFees(lemonValue));
+        token.transfer(msg.sender, lemonsPayout);
+        emit Withdrawn(msg.sender, lemonsPayout);
+        user.totalWithdrawn = user.totalWithdrawn.add(lemonsPayout);
+        totalWithdrawn = totalWithdrawn.add(lemonsPayout);
+        rebalanceProject();
+    }
+
+    function buyStands(address ref, uint256 amount) public {
+        require(contractStarted, "Contract not started");
+        require(amount >= MIN_INVEST_LIMIT, "Mininum investment not met");
+        User storage user = users[msg.sender];
+        token.transferFrom(address(msg.sender), address(this), amount);
+        if (user.stands > 0) {
+            uint256 prevCompoundBonus = user.dailyCompoundBonus;
+            buildMaterial(true);
+            user.dailyCompoundBonus = prevCompoundBonus;
+        }
+        buyMaterial(msg.sender, ref, amount);
+        rebalanceProject();
+    }
+
+    function buyMaterial(address _user, address ref, uint256 amount) internal {
+        User storage user = users[_user];        
+        uint256 lemonsBought = calculateLemonBuy(amount, getBalance().sub(amount));
+        user.userDeposit = user.userDeposit.add(amount);
+        user.initialDeposit = user.initialDeposit.add(amount);
+        user.claimedLemons = user.claimedLemons.add(lemonsBought);
+        if (user.stands == 0) {
+            emit NewUser(_user);
+        }
+
+        if (user.referrer == address(0)) {
+            if (ref != _user) {
+                user.referrer = ref;
+            }
+
+            address upline = user.referrer;
+            if (upline != address(0)) {
+                users[upline].referralsCount = users[upline].referralsCount.add(1);
+            }
+        }
+
+        if (user.referrer != address(0)) {
+            address upline = user.referrer;
+            uint256 refRewards = amount.mul(REFERRAL).div(PERCENTS_DIVIDER);
+            token.transfer(upline, refRewards);
+            emit RefBonus(_user, upline, refRewards);
+
+            users[upline].referralLemonRewards = users[upline].referralLemonRewards.add(refRewards);
+            totalRefBonus = totalRefBonus.add(refRewards);
+        }
+
+        uint256 lemonsPayout = takeFees(amount);
+        uint256 newAmount = amount.sub(lemonsPayout);
+        emit NewDeposit(_user, newAmount);
+        totalStaked = totalStaked.add(amount.sub(lemonsPayout));
+        totalDeposits = totalDeposits.add(1);
+        buildMaterial(false);
+    }
+
+    function getWithdrawLimits() public view returns (uint256) {
+        uint256 withdrawlimitCap = min(getBalance().mul(SLIDING_SCALE_MAP[BALANCE_MAP]).div(PERCENTS_DIVIDER), WITHDRAW_WHALE_LIMIT);
+        return withdrawlimitCap;
+    }
+
+    function rebalanceProject() internal {
+        uint map = getBalanceMap();
+        BALANCE_MAP = map;
+        LEMONS_TO_BUILD_1STAND = ROI_MAP_STANDS[BALANCE_MAP];
+    }
+    
+    function takeFees(uint256 lemonValue) internal returns (uint256) {
+        uint256 fee = lemonValue.mul(FEE_SCALE_MAP[BALANCE_MAP]).div(PERCENTS_DIVIDER);
+        uint256 total = fee.mul(2);
+        token.transfer(dev1, fee);
+        token.transfer(dev2, fee);
+        return total;
+    }
+
+    function takeEarlyTaxFees(uint256 taxValue) internal returns(uint256) {
+        uint256 fee = taxValue.mul(FEE_SCALE_MAP[BALANCE_MAP]).div(PERCENTS_DIVIDER);
+        uint256 total = fee.mul(2);
+        token.transfer(lottery, fee);
+        token.transfer(proj, fee);
+        return total;
+    }
+
+    function getDailyCompoundBonus(address _adr, uint256 amount) public view returns(uint256){
+        if(users[_adr].dailyCompoundBonus == 0) {
+            return 0;
+        } else {
+            uint256 totalBonus = users[_adr].dailyCompoundBonus.mul(COMPOUND_BONUS); 
+            uint256 result = amount.mul(totalBonus).div(PERCENTS_DIVIDER);
+            return result;
+        }
+    }
+
+    function getUserInfo(address _adr) public view returns(uint256 _initialDeposit, uint256 _userDeposit, uint256 _stands,
+     uint256 _claimedLemons, uint256 _lastGrow, address _referrer, uint256 _referrals,
+     uint256 _totalWithdrawn, uint256 _referralLemonRewards, uint256 _dailyCompoundBonus, uint256 _lastWithdrawTime,
+     uint256 _withdrawWindowStart, uint256 _totalWithdrawInWindow
+     ) {
+         _initialDeposit = users[_adr].initialDeposit;
+         _userDeposit = users[_adr].userDeposit;
+         _stands = users[_adr].stands;
+         _claimedLemons = users[_adr].claimedLemons;
+         _lastGrow = users[_adr].lastGrow;
+         _referrer = users[_adr].referrer;
+         _referrals = users[_adr].referralsCount;
+         _totalWithdrawn = users[_adr].totalWithdrawn;
+         _referralLemonRewards = users[_adr].referralLemonRewards;
+         _dailyCompoundBonus = users[_adr].dailyCompoundBonus;
+         _lastWithdrawTime = users[_adr].lastWithdrawTime;
+         _withdrawWindowStart = users[_adr].withdrawWindowStart;
+         _totalWithdrawInWindow = users[_adr].totalWithdrawInWindow;
+	}
+
+    function getBalanceMap() public view returns (uint) {
+        uint256 balance = getBalance();
+        for (uint i = MAX_MAPS - 1; i >= 0; i--) {
+            if (balance >= ROI_MAP[i]) {
+                return i;
+            }
+        }
+
+        return 0;
+    }
+
+    /* Find the next Stands APR tier */
+    function getNextStandsMap() public view returns (uint) {
+        uint map = getBalanceMap();
+        uint256 standsMap = ROI_MAP_STANDS[map];
+        for (uint i = map; i < MAX_MAPS; i++) {
+            if (ROI_MAP_STANDS[i] < standsMap) {
+                return i;
+            }
+        }
+
+        return MAX_MAPS - 1;
+    }
+
+    function getBalanceInfo(uint map) public view returns (uint256 _eth, uint256 _stands, uint256 _sliding, uint256 _fees, uint256 _lotteryBalance) {
+        require (map < MAX_MAPS, "Map is out of range");
+        _eth = ROI_MAP[map];
+        _stands = ROI_MAP_STANDS[map];
+        _sliding = SLIDING_SCALE_MAP[map];
+        _fees = FEE_SCALE_MAP[map];
+        _lotteryBalance = getLotteryBalance();
+    }
+
+    function getBalance() public view returns (uint256) {
+        return token.balanceOf(address(this));
+	}
+
+    function getLotteryBalance() public view returns (uint256) {
+        return token.balanceOf(lottery);
+	}
+
+    function getTimeStamp() public view returns (uint256) {
+        return block.timestamp;
+    }
+
+    function getAvailableEarnings(address _adr) public view returns(uint256) {
+        uint256 userLemons = users[_adr].claimedLemons.add(getLemonsSinceLastGrow(_adr));
+        return calculateLemonSell(userLemons);
+    }
+
+    /* Secret sauce for balancing the trades */
+    function calculateTrade(uint256 rt,uint256 rs, uint256 bs) public view returns(uint256){
+        // (PSN*bs)/(PSNH+((PSN*rs+PSNH*rt)/rt));
+        return SafeMath.div(
+                SafeMath.mul(PSN, bs), 
+                    SafeMath.add(PSNH, 
+                        SafeMath.div(
+                            SafeMath.add(
+                                SafeMath.mul(PSN, rs), 
+                                    SafeMath.mul(PSNH, rt)), 
+                                        rt)));
+    }
+
+    function calculateLemonSell(uint256 lemons) public view returns(uint256){
+        return calculateTrade(lemons, marketLemons, getBalance());
+    }
+
+    function calculateLemonBuy(uint256 eth,uint256 contractBalance) public view returns(uint256){
+        return calculateTrade(eth, contractBalance, marketLemons);
+    }
+
+    function calculateLemonBuySimple(uint256 eth) public view returns(uint256){
+        return calculateLemonBuy(eth, getBalance());
+    }
+
+    function getLemonsYield(uint256 amount) public view returns(uint256,uint256) {
+        uint256 lemonsAmount = calculateLemonBuy(amount , getBalance().add(amount).sub(amount));
+        uint256 stands = lemonsAmount.div(LEMONS_TO_BUILD_1STAND);
+        uint256 day = 1 days;
+        uint256 lemonsPerDay = day.mul(stands);
+        uint256 earningsPerDay = calculateLemonSellForYield(lemonsPerDay, amount);
+        return(stands, earningsPerDay);
+    }
+
+    function calculateLemonSellForYield(uint256 lemons,uint256 amount) public view returns(uint256){
+        return calculateTrade(lemons,marketLemons, getBalance().add(amount));
+    }
+
+    function getSiteInfo() public view returns (uint256 _totalStaked, uint256 _totalDeposits, uint256 _totalCompound, uint256 _totalRefBonus) {
+        return (totalStaked, totalDeposits, totalCompound, totalRefBonus);
+    }
+
+    function getMyStands() public view returns(uint256){
+        return users[msg.sender].stands;
+    }
+
+    function getMyLemons() public view returns(uint256){
+        return users[msg.sender].claimedLemons.add(getLemonsSinceLastGrow(msg.sender));
+    }
+
+    function getLemonsSinceLastGrow(address adr) public view returns(uint256){
+        uint256 secondsSinceLastGrow = block.timestamp.sub(users[adr].lastGrow);
+        /** get min time. **/
+        uint256 cutoffTime = min(secondsSinceLastGrow, CUTOFF_STEP);
+        uint256 secondsPassed = min(LEMONS_TO_BUILD_1STAND, cutoffTime);
+        return secondsPassed.mul(users[adr].stands);
+    }
+
+    function min(uint256 a, uint256 b) private pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+    /** wallet addresses setters **/
+    function CHANGE_OWNERSHIP(address value) external {
+        require(msg.sender == owner, "Admin use only.");
+        owner = value;
+    }
+
+    function CHANGE_DEV1(address value) external {
+        require(msg.sender == owner, "Admin use only.");
+        dev1 = value;
+    }
+
+    function CHANGE_DEV2(address value) external {
+        require(msg.sender == owner, "Admin use only.");
+        dev2 = value;
+    }
+
+    function CHANGE_LOTTERY(address value) external {
+        require(msg.sender == owner, "Admin use only.");
+        lottery = value;
+    }
+
+    function CHANGE_WITHDRAW_WHALE_LIMIT(uint256 amount) external {
+        require(msg.sender == owner, "Admin use only.");
+        require(amount >= 1000 ether, "Minimum ether is 1000");
+        WITHDRAW_WHALE_LIMIT = amount;
+    }
+}

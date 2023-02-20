@@ -1,0 +1,467 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity >0.8.10;
+
+interface IERC20 {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount ) external returns (bool);
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) { return msg.sender; }
+    function _msgData() internal view virtual returns (bytes calldata) { return msg.data; }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    constructor() { _transferOwnership(_msgSender()); }
+    function owner() public view virtual returns (address) { return _owner; }
+    modifier onlyOwner() { require(owner() == _msgSender(), "Ownable: caller is not the owner");  _; }
+    function renounceOwnership() public virtual onlyOwner { _transferOwnership(address(0)); }
+    function transferOwnership(address newOwner) public virtual onlyOwner { require(newOwner != address(0), "Ownable: new owner is the zero address"); _transferOwnership(newOwner); }
+    function _transferOwnership(address newOwner) internal virtual { address oldOwner = _owner; _owner = newOwner; emit OwnershipTransferred(oldOwner, newOwner); }
+}
+
+abstract contract Auth {
+    address internal owner;
+    mapping (address => bool) internal authorizations;
+    constructor(address _owner) { owner = _owner; authorizations[_owner] = true; }
+    modifier onlyOwner() { require(isOwner(msg.sender), "!OWNER"); _; }
+    modifier authorized() { require(isAuthorized(msg.sender), "!AUTHORIZED"); _; }
+    function authorize(address adr) public onlyOwner { authorizations[adr] = true; }
+    function unauthorize(address adr) public onlyOwner { authorizations[adr] = false; }
+    function isOwner(address account) public view returns (bool) { return account == owner; }
+    function isAuthorized(address adr) public view returns (bool) { return authorizations[adr]; }
+    function transferOwnership(address payable adr) public onlyOwner { owner = adr; authorizations[adr] = true; emit OwnershipTransferred(adr); }
+    event OwnershipTransferred(address owner);
+}
+
+contract A_SensiLockingV2 is Auth {
+    
+    struct LockStatus {
+        uint256 lockNumber;
+        address owner;
+        uint256 lockCreatedTimestamp;
+        uint256 lockEndedTimestamp;
+        uint256 amountLocked;
+        uint256 amountRewarded;
+        uint256 amountRelocked;
+        uint256 amountRedeemed;
+        uint256 timesRelocked;
+    }
+
+    //main contract properties
+    address public _lockTokenContractAddress;
+    uint public _lockTokenContractDecimals;
+    
+    //locking properties
+    bool public lockingEnabled;
+    uint256 public lockDurationSeconds;
+    uint256 public lockMinimumAmount;
+    uint256 public dailyRewardRate;
+    uint256 public dailyRewardRateFactor;
+    uint256 public dailyRewardLastCalculatedTimestamp;
+    uint256 public dailyRewardCooldownSeconds;
+
+    //accounting properties
+    LockStatus[] allLocks;
+    uint256 public totalLockedTokens;
+    uint256 public totalRewardPoolTokens;
+    uint256 totalRewardTokens;
+    
+    mapping (address => uint256) public userTotalLocked;
+    
+    event LockCreated(uint256 lockNumber, address inverstor, uint256 amount, uint256 createAt);
+    event LockRedeemed(uint256 amount, address wallet);
+    event LockExtended(uint256 lockNumber, address inverstor);
+    event DailyRewardCalculated(uint256 locksRewarded, uint256 estimatedReward, uint256 actualReward);
+
+    constructor() Auth(msg.sender) {
+        _lockTokenContractAddress = 0x63e77cF206801782239D4F126cfa22b517FB4eDb;
+        _lockTokenContractDecimals = 9;
+
+        lockDurationSeconds = 28 minutes;
+        dailyRewardRate = 10;
+        dailyRewardRateFactor = 1000;
+        lockMinimumAmount = 1000000000;
+        lockingEnabled = true;
+        dailyRewardLastCalculatedTimestamp = 0;
+        dailyRewardCooldownSeconds = 1 minutes;
+
+        totalRewardPoolTokens = 0;
+        totalLockedTokens = 0;
+        totalRewardTokens = 0;
+    }
+
+
+    /** 
+     * #####################################
+     *  Reward calculation functions
+     * #######################################
+     * */
+    
+    /**
+     * @dev Returns the pool size, locked token amount, total interest
+     */
+    function getLockingStatistics() external view authorized returns(uint256, uint256, uint256, uint256) {
+        return (totalRewardPoolTokens, totalLockedTokens, totalRewardTokens, allLocks.length);
+    }
+
+    /**
+     *  @dev calculates the daily distribution for all wallets
+     * */
+    function calculateDailyReward() public authorized  {
+        //don't allow this to run if we are still within the cooldown period
+        require(block.timestamp > (dailyRewardLastCalculatedTimestamp + dailyRewardCooldownSeconds), "Too early to distribute rewards again. Try again later.");
+
+        uint locksRewarded = 0;
+        uint256 estimatedTodayReward = (totalRewardPoolTokens * dailyRewardRate / dailyRewardRateFactor);
+        uint256 actualTodayReward = 0;
+        for (uint i = 0; i < allLocks.length; i ++) {
+            if (block.timestamp > allLocks[i].lockCreatedTimestamp && block.timestamp < allLocks[i].lockEndedTimestamp) {
+                //reward = ((locked+relocked)/totalLocked)*(estimatedTodayReward)
+                uint256 rewardAmount = (allLocks[i].amountLocked + allLocks[i].amountRelocked) * estimatedTodayReward / totalLockedTokens;
+                
+                allLocks[i].amountRewarded += rewardAmount;
+                actualTodayReward += rewardAmount;
+                locksRewarded++;
+            }
+        }
+
+        //adjust totals
+        totalRewardTokens += actualTodayReward;
+        totalRewardPoolTokens -= actualTodayReward;
+        dailyRewardLastCalculatedTimestamp = block.timestamp;
+        emit DailyRewardCalculated(locksRewarded, estimatedTodayReward, actualTodayReward);
+    }
+
+    /** 
+     * #####################################
+     *  Core locking functions
+     * #######################################
+     * */
+     
+    /**
+    * @dev Lock tokens into the contract
+    * @param _amount amount to lock
+    */
+    function _createLock(address _to, uint256 _amount) private {
+        require(lockingEnabled, "Locking is not currently enabled.");
+        require(_amount > lockMinimumAmount, "Deposit is below minimum level.");
+        require(IERC20(_lockTokenContractAddress).allowance(msg.sender, address(this)) >= _amount, "Deposit is greater than approved contract allowance.");
+        require(IERC20(_lockTokenContractAddress).transferFrom(msg.sender, address(this), _amount));
+        
+        //build new lock
+        LockStatus memory newLock;
+        newLock.lockNumber = allLocks.length;
+        newLock.owner = _to;
+        newLock.lockCreatedTimestamp = block.timestamp;
+        newLock.lockEndedTimestamp = block.timestamp + lockDurationSeconds;
+        newLock.amountLocked = _amount;
+        newLock.amountRelocked = 0;
+        newLock.amountRewarded = 0;
+        newLock.amountRedeemed = 0;
+        newLock.timesRelocked = 0;
+        allLocks.push(newLock);
+
+        //update internal counters
+        userTotalLocked[_to]++;
+        totalLockedTokens += _amount;
+
+        emit LockCreated(allLocks.length, _to, _amount, block.timestamp);
+    }
+
+    function createLock(uint256 _amount) public {
+        _createLock(msg.sender, _amount);
+    }
+
+    function giftLock(address _to, uint256 _amount) public {
+        _createLock(_to, _amount);
+    }
+
+    /**
+    * @dev extendLock - allows people with active locks to reinvest their tokens
+    * @param _lockNumber amount to stake
+    */
+    function extendLock(uint256 _lockNumber) public {
+        require(lockingEnabled, "Locking is not currently enabled.");
+
+        //lock number can't be negative or greater than allLocks.length
+        require(_lockNumber >= 0 && _lockNumber <= allLocks.length, "Invalid lock number.");
+
+        bool lockFound = false;
+        if (allLocks[_lockNumber].owner == msg.sender && allLocks[_lockNumber].lockNumber == _lockNumber) {
+            lockFound = true;
+
+            //only locks that are still active can extend
+            require(block.timestamp > allLocks[_lockNumber].lockCreatedTimestamp && block.timestamp < allLocks[_lockNumber].lockEndedTimestamp, "This lock is not currently active.");
+
+            //only locks that have reward tokens can extend
+            require(allLocks[_lockNumber].amountRewarded > 0, "This lock does not have rewards to extend with");
+
+            //adjust totals
+            totalLockedTokens += allLocks[_lockNumber].amountRewarded;
+            totalRewardTokens -= allLocks[_lockNumber].amountRewarded;
+
+            //move reward tokens to relocked balance, zero out reward tokens, extend lock duration
+            allLocks[_lockNumber].amountRelocked += allLocks[_lockNumber].amountRewarded;
+            allLocks[_lockNumber].amountRewarded = 0;
+            allLocks[_lockNumber].lockEndedTimestamp = block.timestamp + lockDurationSeconds;
+            allLocks[_lockNumber].timesRelocked++;
+        }
+        
+        require(lockFound, "Lock not owned by this address.");
+        emit LockExtended(_lockNumber, msg.sender);
+    }
+
+    /**
+    * @dev Withdraw tokens from lock
+    * @param _lockNumber amount to withdraw
+    */
+    function withdrawLock(uint256 _lockNumber) public  {
+        //lock number can't be negative or greater than allLocks.length
+        require(_lockNumber >= 0 && _lockNumber <= allLocks.length, "Invalid lock number.");
+
+        bool lockFound = false;
+        if (allLocks[_lockNumber].owner == msg.sender && allLocks[_lockNumber].lockNumber == _lockNumber) {
+            lockFound = true;
+            
+            //only allow withdrawls after withdrawl date
+            require(block.timestamp > allLocks[_lockNumber].lockCreatedTimestamp && block.timestamp > allLocks[_lockNumber].lockEndedTimestamp, "This lock is not ready to be withdrawn.");
+
+            //only allow withdrawls with more than 0 tokens available for withdrawl
+            //available reward = original lock + relocked + reward - any amount already redeemed
+            uint256 availableToWithdraw = (allLocks[_lockNumber].amountLocked + allLocks[_lockNumber].amountRelocked + allLocks[_lockNumber].amountRewarded - allLocks[_lockNumber].amountRedeemed);
+            require(availableToWithdraw > 0, "There are no tokens to withdraw on this lock.");
+
+            //only allow withdrawls that meet the contract token allowance
+            uint256 allowance = IERC20(_lockTokenContractAddress).allowance(msg.sender, address(this));
+            require(allowance >= availableToWithdraw, "Check the token allowance");
+
+            //perform withdrawl and update accounting values
+            require(IERC20(_lockTokenContractAddress).transfer(msg.sender, availableToWithdraw));
+            allLocks[_lockNumber].amountRedeemed = availableToWithdraw;
+
+            //update totals
+            totalLockedTokens -= (allLocks[_lockNumber].amountLocked + allLocks[_lockNumber].amountRelocked);
+            totalRewardTokens -= allLocks[_lockNumber].amountRewarded;
+            
+            emit LockRedeemed(availableToWithdraw, msg.sender);
+        }
+        
+        require(lockFound, "Lock not owned by this address.");
+    }
+
+
+    /** 
+     * #####################################
+     *  Anonymous functions
+     * #######################################
+     * */
+
+    /**
+     * Get all locks for a given address
+     * @param _address user address
+     *
+     * */
+    function getLocksForAddress(address _address) external view returns( LockStatus[] memory ) {
+        LockStatus[] memory history = new LockStatus[](userTotalLocked[_address]);
+        uint count = 0;
+        for (uint i = 0; i < allLocks.length; i ++) {
+            if (allLocks[i].owner == _address) {
+                history[count] = allLocks[i];
+                count++;
+            }
+        }
+        return history;
+    }
+
+    /**
+     * Returns all the lock numbers for a given address
+     *
+     * */
+    function getLockNumbersForAddress(address _address) external view returns( uint256[] memory ) {
+        uint256[] memory history = new uint256[](userTotalLocked[_address]);
+        uint count = 0;
+        for (uint i = 0; i < allLocks.length; i ++) {
+            if (allLocks[i].owner == _address) {
+                history[count] = allLocks[i].lockNumber;
+                count++;
+            }
+        }
+        return history;
+    }
+
+    /**
+     * Returns a lock for a given lockNumber
+     *
+     * */
+    function getLockByLockNumber(uint256 _lockNumber) external view returns( LockStatus memory ) {
+        //lock number can't be negative or greater than allLocks.length
+        require(_lockNumber >= 0 && _lockNumber <= allLocks.length, "Invalid lock number.");
+        
+        return allLocks[_lockNumber];
+    }
+
+
+    /**
+     * ####################################
+     * ADMIN FUNCTIONS ONLY BY OWNER 
+     * ####################################
+     *
+     * */
+
+    /**
+     * @dev Updates the daily reward rate
+     */
+    function setDailyRewardRate(uint256 _newDailyRewardRate) public onlyOwner {
+        dailyRewardRate = _newDailyRewardRate;
+    } 
+    
+    /**
+     * @dev Updates the daily reward rate
+     */
+    function setDailyRewardRateFactor(uint256 _factor) public onlyOwner {
+        dailyRewardRateFactor = _factor;
+    } 
+
+    /**
+     * @dev Updates the daily reward rate
+     */
+    function setDailyRewardCooldownSeconds(uint256 _cooldownSeconds) public onlyOwner {
+        dailyRewardCooldownSeconds = _cooldownSeconds;
+    } 
+    
+    /**
+     * @dev Updates the token used by locking contract
+     */
+    function setPaymentToken(address _newContractAddress, uint _decimals) public onlyOwner {
+        _lockTokenContractAddress = _newContractAddress;
+        _lockTokenContractDecimals = _decimals;
+    }
+
+    /**
+     * @dev Allows admin to enable/disable locking/relocking
+     */
+    function setLockingEnabled(bool _isEnabled) public onlyOwner {
+        lockingEnabled = _isEnabled;
+    }
+
+    /**
+     * @dev Allows admin to enable/disable locking/relocking
+     */
+    function setLockDuration(uint256 _durationSeconds) public onlyOwner {
+        lockDurationSeconds = _durationSeconds;
+    }
+
+    /**
+     * @dev Allows to change the minimum lock amount
+     */
+    function setLockMinimumAmount(uint256 _amount) public onlyOwner {
+        lockMinimumAmount = _amount;
+    }
+
+    /**
+    * @dev Withdraw tokens from lock
+    */
+    function forceWithdrawLock(uint256 _lockNumber, bool _includeReward) public onlyOwner  {
+        //lock number can't be negative or greater than allLocks.length
+        require(_lockNumber >= 0 && _lockNumber <= allLocks.length, "Invalid lock number.");
+        
+        //only allow withdrawls with more than 0 tokens available for withdrawl
+        //available reward = original lock + relocked + reward - any amount already redeemed
+        uint256 availableToWithdraw = (allLocks[_lockNumber].amountLocked + allLocks[_lockNumber].amountRelocked);
+        if (_includeReward) { availableToWithdraw = (availableToWithdraw + allLocks[_lockNumber].amountRewarded); }
+        availableToWithdraw = (availableToWithdraw - allLocks[_lockNumber].amountRedeemed);
+
+        require(availableToWithdraw > 0, "There are no tokens to withdraw on this lock.");
+
+        //only allow withdrawls that meet the contract token allowance
+        uint256 allowance = IERC20(_lockTokenContractAddress).allowance(allLocks[_lockNumber].owner, address(this));
+        require(allowance >= availableToWithdraw, "Check the token allowance.");
+
+        //perform withdrawl and update accounting values
+        require(IERC20(_lockTokenContractAddress).transfer(allLocks[_lockNumber].owner, availableToWithdraw));
+        allLocks[_lockNumber].amountRedeemed = availableToWithdraw;
+
+        //update totals
+        totalLockedTokens -= (allLocks[_lockNumber].amountLocked + allLocks[_lockNumber].amountRelocked);
+        totalRewardTokens -= allLocks[_lockNumber].amountRewarded;
+
+        //if the lock has had its tokens forfeited, the reward tokens are returned back to the reward pool
+        if (!_includeReward) {
+            totalRewardPoolTokens += allLocks[_lockNumber].amountRewarded;
+            allLocks[_lockNumber].amountRewarded = 0;
+        }
+
+        emit LockRedeemed(availableToWithdraw, msg.sender);
+    }
+
+    /**
+    * @dev Force withdrawl of all locks back to original wallets
+    */
+    function forceWithdrawAllLocks(bool _includeReward) public onlyOwner {
+        uint forcedWithdrawls = 0;
+        for (uint i = 0; i < allLocks.length; i ++) {
+            if ((allLocks[i].amountLocked + allLocks[i].amountRelocked + allLocks[i].amountRewarded - allLocks[i].amountRedeemed) > 0) {
+                forceWithdrawLock(i, _includeReward);
+                forcedWithdrawls++;
+            }
+        }
+    }
+
+    /**
+     * Add tokens to reward pool
+     * @param _amount token balance to add in reward pool
+     * */
+    function depositRewardPoolTokens(uint256 _amount) public payable onlyOwner {
+        require(_amount > 0, "You need to deposit at least 1 token.");
+        uint256 allowance = IERC20(_lockTokenContractAddress).allowance(msg.sender, address(this));
+        require(allowance >= _amount, "Check the token allowance.");
+        require(IERC20(_lockTokenContractAddress).transferFrom(msg.sender, address(this), _amount));
+        totalRewardPoolTokens += _amount;
+    }
+
+    /**
+     * @dev Add tokens to reward pool
+     * @param _wallet, target address to withdraw token
+     * @param _amount token amount to withdraw
+     * */
+    function withdrawRewardPoolTokens(address _wallet, uint256 _amount) public onlyOwner {
+        require(_amount > 0, "You need to withdraw at least 0 tokens.");
+
+        //only allow this function to withdraw tokens in the reward pool
+        require(totalRewardPoolTokens >= _amount, "You cannot withdraw more tokens than the current reward pool balance.");
+
+        //only allow this function to withdraw tokens that are actually assigned to this contract
+        require(IERC20(_lockTokenContractAddress).balanceOf(address(this)) > _amount, "Total contract balance is less than requested token amount.");
+    
+        //transfer tokens and remove amount from totalRewardPoolTokens balance
+        try IERC20(_lockTokenContractAddress).transfer(_wallet, _amount) {
+            totalRewardPoolTokens -= _amount;
+        }
+        //ensure we revert in case of failure 
+        catch {
+            require(false, "Failed to transfer tokens.");
+        }
+    }
+
+    function withdrawToken(address destinationAddress, IERC20 token, uint256 amount) external onlyOwner {
+        if (address(token) == address(0)) {
+            (bool success, ) = destinationAddress.call{value: (amount == 0 ? address(this).balance : amount)}(new bytes(0)); 
+            require(success, 'STE');
+        } else {
+            (bool success, bytes memory data) = address(token).call(abi.encodeWithSelector(IERC20.transfer.selector, destinationAddress, (amount == 0 ? token.balanceOf(address(this)) : amount))); 
+            require(success && (data.length == 0 || abi.decode(data, (bool))), 'ST');
+        }
+    }
+
+    receive() external payable {}
+}

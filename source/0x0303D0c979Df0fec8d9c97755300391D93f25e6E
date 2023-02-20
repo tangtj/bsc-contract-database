@@ -1,0 +1,1261 @@
+
+// File: /contracts/StakingV2.sol
+// SPDX-License-Identifier: MIT
+
+import "../node_modules/@openzeppelin/contracts/access/Ownable.sol";
+import "../node_modules/@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../node_modules/@openzeppelin/contracts/utils/math/SafeMath.sol";
+pragma solidity ^0.8.0;
+
+contract StakingV2 is Ownable {
+    function dummyFunctionVerify(uint256 dummy)
+        external
+        pure
+        returns (uint256)
+    {
+        return 5;
+    }
+
+    using SafeMath for uint256;
+
+    struct TokenDeposit {
+        uint256 id;
+        address depositOwner;
+        uint256 depositValue;
+        bool isWithdrawn;
+        uint256 timeLockInSeconds;
+        uint256 depositTime;
+    }
+
+    struct MintableNft {
+        uint256 id;
+        uint256 nftTier;
+        uint256 nftType;
+        address owner;
+        bool isRedeemed;
+    }
+
+    struct Request {
+        uint256 requestId;
+        address depositor;
+        uint256 numberOfCoinsWei;
+        uint256 timeLockInSeconds;
+        uint256 generatedRandomness;
+        bool isFulfilled;
+    }
+
+    TokenDeposit[] public tokenDeposits;
+    MintableNft[] public mintableNftQueue;
+    Request[] public stakingQueue;
+
+    uint256 limitOne = 100 * 10**18;
+    uint256 limitTwo = 200 * 10**18;
+    uint256 limitThree = 300 * 10**18;
+    uint256 limitFour = 400 * 10**18;
+
+    uint256 public timelockV1 = 1;
+    uint256 public timelockV2 = 10;
+    uint256 public timelockV3 = 100;
+    uint256 public timelockV4 = 1000;
+
+    uint256 public totalStakedV1 = 0;
+    uint256 public totalStakedV2 = 0;
+    uint256 public totalStakedV3 = 0;
+    uint256 public totalStakedV4 = 0;
+
+    uint256 public totalRewPoolV1 = 0;
+    uint256 public totalRewPoolV2 = 0;
+    uint256 public totalRewPoolV3 = 0;
+    uint256 public totalRewPoolV4 = 0;
+
+    bool public allChancesHit = true;
+
+    event NewClaimableNft(
+        uint256 queueId,
+        uint256 nftTier,
+        uint256 nftType,
+        address owner
+    );
+    event NewDeposit(
+        uint256 id,
+        address depositOwner,
+        uint256 depositValue,
+        uint256 timeLockInSeconds,
+        uint256 depositTime
+    );
+    event DepositWithdraw(uint256 id);
+
+    event StakingRequest(
+        uint256 requestId,
+        uint256 numberOfCoinsWei,
+        uint256 timeLockInSeconds,
+        address depositor
+    );
+
+    address randomnessProviderV1 = 0xBa0AB3b6Ae2a66059174326120D1e84028c83FD9;
+    address oracleWalletAddress = 0x44ff08941e7D25e2CB75De8d1444DE5F5611905A;
+
+    address public uimTokenAddress;
+
+    mapping(address => uint256) elligibleNftTierToMint;
+    mapping(address => uint256) elligibleItemTypeToMint;
+    mapping(address => uint256) public totalDepositedTokens;
+    mapping(address => bool) operators;
+    uint256 public totalDepositedTokensGlobally;
+
+    constructor(address _uimTokenAddress) {
+        uimTokenAddress = _uimTokenAddress;
+    }
+
+    function changeRandomnessProvider(address newRandomnessProvider)
+        external
+        onlyOwner
+    {
+        randomnessProviderV1 = newRandomnessProvider;
+    }
+
+    function changeTokenAddress(address newTokenAddress) external onlyOwner {
+        uimTokenAddress = newTokenAddress;
+    }
+
+    function switchChancesBool() external onlyOwner {
+        allChancesHit = !allChancesHit;
+    }
+
+    function setOperator(address operator, bool permission) external onlyOwner {
+        operators[operator] = permission;
+    }
+
+    function setDepositLimitsInWei(
+        uint256 _limitOne,
+        uint256 _limitTwo,
+        uint256 _limitThree,
+        uint256 _limitFour
+    ) external {
+        require(
+            operators[msg.sender] == true,
+            "You are not allowed to do this"
+        );
+
+        limitOne = _limitOne;
+        limitTwo = _limitTwo;
+        limitThree = _limitThree;
+        limitFour = _limitFour;
+    }
+
+    function setTimelockPeriods(
+        uint256 _timelockV1,
+        uint256 _timelockV2,
+        uint256 _timelockV3,
+        uint256 _timelockV4
+    ) external {
+        require(
+            operators[msg.sender] == true,
+            "You are not allowed to do this"
+        );
+
+        timelockV1 = _timelockV1;
+        timelockV2 = _timelockV2;
+        timelockV3 = _timelockV3;
+        timelockV4 = _timelockV4;
+    }
+
+    function incrementRewardPoolsValue(
+        uint256 _addedV1,
+        uint256 _addedV2,
+        uint256 _addedV3,
+        uint256 _addedV4
+    ) external {
+        require(
+            operators[msg.sender] == true,
+            "You are not allowed to do this"
+        );
+        totalRewPoolV1 += _addedV1;
+        totalRewPoolV2 += _addedV2;
+        totalRewPoolV3 += _addedV3;
+        totalRewPoolV4 += _addedV4;
+    }
+
+    function uint2str(uint256 _i)
+        internal
+        pure
+        returns (string memory _uintAsString)
+    {
+        if (_i == 0) {
+            return "0";
+        }
+        uint256 j = _i;
+        uint256 len;
+        while (j != 0) {
+            len++;
+            j /= 10;
+        }
+        bytes memory bstr = new bytes(len);
+        uint256 k = len;
+        while (_i != 0) {
+            k = k - 1;
+            uint8 temp = (48 + uint8(_i - (_i / 10) * 10));
+            bytes1 b1 = bytes1(temp);
+            bstr[k] = b1;
+            _i /= 10;
+        }
+        return string(bstr);
+    }
+
+    function uimBalance() public view returns (uint256) {
+        return IERC20(uimTokenAddress).balanceOf(address(this));
+    }
+
+    function verifyRandomness(
+        string memory message,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) internal pure returns (address signer) {
+        // The message header; we will fill in the length next
+        string memory header = "\x19Ethereum Signed Message:\n000000";
+        uint256 lengthOffset;
+        uint256 length;
+        assembly {
+            // The first word of a string is its length
+            length := mload(message)
+            // The beginning of the base-10 message length in the prefix
+            lengthOffset := add(header, 57)
+        }
+        // Maximum length we support
+        require(length <= 999999);
+        // The length of the message's length in base-10
+        uint256 lengthLength = 0;
+        // The divisor to get the next left-most message length digit
+        uint256 divisor = 100000;
+        // Move one digit of the message length to the right at a time
+        while (divisor != 0) {
+            // The place value at the divisor
+            uint256 digit = length / divisor;
+            if (digit == 0) {
+                // Skip leading zeros
+                if (lengthLength == 0) {
+                    divisor /= 10;
+                    continue;
+                }
+            }
+            // Found a non-zero digit or non-leading zero digit
+            lengthLength++;
+            // Remove this digit from the message length's current value
+            length -= digit * divisor;
+            // Shift our base-10 divisor over
+            divisor /= 10;
+
+            // Convert the digit to its ASCII representation (man ascii)
+            digit += 0x30;
+            // Move to the next character and write the digit
+            lengthOffset++;
+            assembly {
+                mstore8(lengthOffset, digit)
+            }
+        }
+        // The null string requires exactly 1 zero (unskip 1 leading 0)
+        if (lengthLength == 0) {
+            lengthLength = 1 + 0x19 + 1;
+        } else {
+            lengthLength += 1 + 0x19;
+        }
+        // Truncate the tailing zeros from the header
+        assembly {
+            mstore(header, lengthLength)
+        }
+        // Perform the elliptic curve recover operation
+        bytes32 check = keccak256(abi.encodePacked(header, message));
+        return ecrecover(check, v, r, s);
+    }
+
+    function unstakeDeposit(uint256 depositId) external {
+        require(
+            msg.sender == tokenDeposits[depositId].depositOwner,
+            "This deposit is not yours."
+        );
+        require(
+            block.timestamp >=
+                tokenDeposits[depositId].depositTime +
+                    tokenDeposits[depositId].timeLockInSeconds,
+            "You can't yet unlock this deposit"
+        );
+        require(
+            tokenDeposits[depositId].isWithdrawn == false,
+            "This deposit is has been already unstaked."
+        );
+
+        uint256 depositReward;
+
+        if (tokenDeposits[depositId].timeLockInSeconds == timelockV1) {
+            depositReward = (
+                (tokenDeposits[depositId].depositValue.mul(1000000)).div(
+                    totalStakedV1
+                )
+            ).mul(totalRewPoolV1).div(1000000);
+            totalStakedV1 -= tokenDeposits[depositId].depositValue;
+            totalRewPoolV1 -= depositReward;
+        }
+        if (tokenDeposits[depositId].timeLockInSeconds == timelockV2) {
+            depositReward = (
+                (tokenDeposits[depositId].depositValue.mul(1000000)).div(
+                    totalStakedV2
+                )
+            ).mul(totalRewPoolV2).div(1000000);
+            totalStakedV2 -= tokenDeposits[depositId].depositValue;
+            totalRewPoolV2 -= depositReward;
+        }
+        if (tokenDeposits[depositId].timeLockInSeconds == timelockV3) {
+            depositReward = (
+                (tokenDeposits[depositId].depositValue.mul(1000000)).div(
+                    totalStakedV3
+                )
+            ).mul(totalRewPoolV3).div(1000000);
+            totalStakedV3 -= tokenDeposits[depositId].depositValue;
+            totalRewPoolV3 -= depositReward;
+        }
+        if (tokenDeposits[depositId].timeLockInSeconds == timelockV4) {
+            depositReward = (
+                (tokenDeposits[depositId].depositValue.mul(1000000)).div(
+                    totalStakedV4
+                )
+            ).mul(totalRewPoolV4).div(1000000);
+            totalStakedV4 -= tokenDeposits[depositId].depositValue;
+            totalRewPoolV4 -= depositReward;
+        }
+
+        totalDepositedTokens[msg.sender] -= tokenDeposits[depositId]
+            .depositValue;
+        totalDepositedTokensGlobally -= tokenDeposits[depositId].depositValue;
+
+        IERC20(uimTokenAddress).transfer(
+            tokenDeposits[depositId].depositOwner,
+            tokenDeposits[depositId].depositValue
+        );
+
+        IERC20(uimTokenAddress).transfer(
+            tokenDeposits[depositId].depositOwner,
+            depositReward
+        );
+
+        tokenDeposits[depositId].isWithdrawn = true;
+
+        emit DepositWithdraw(depositId);
+    }
+
+    function stakeCoinsRequest(
+        uint256 numberOfCoinsWei,
+        uint256 timeLockInSeconds
+    ) external payable {
+        uint256 requestId = stakingQueue.length;
+
+        // 0.001 BNB + GAS FEES
+        require(
+            msg.value >= 0.005 * 1 ether,
+            "You haven't sent enough BNB for processing fees"
+        );
+
+        (bool sent, bytes memory data) = oracleWalletAddress.call{
+            value: msg.value
+        }("");
+        require(sent, "Failed to send Ether");
+
+        stakingQueue.push(
+            Request(
+                requestId,
+                msg.sender,
+                numberOfCoinsWei,
+                timeLockInSeconds,
+                0,
+                false
+            )
+        );
+
+        emit StakingRequest(
+            requestId,
+            numberOfCoinsWei,
+            timeLockInSeconds,
+            msg.sender
+        );
+    }
+
+    function executeStakeCoinsRequest(uint256 requestId, uint256 randomness)
+        external
+    {
+        // only oracle
+
+        uint256 newItemId = tokenDeposits.length;
+
+        require(msg.sender == oracleWalletAddress);
+        require(stakingQueue[requestId].isFulfilled == false);
+
+        stakingQueue[requestId].isFulfilled = true;
+        stakingQueue[requestId].generatedRandomness = randomness;
+
+        totalDepositedTokens[stakingQueue[requestId].depositor] += stakingQueue[
+            requestId
+        ].numberOfCoinsWei;
+        totalDepositedTokensGlobally += stakingQueue[requestId]
+            .numberOfCoinsWei;
+
+        IERC20(uimTokenAddress).transferFrom(
+            stakingQueue[requestId].depositor,
+            address(this),
+            stakingQueue[requestId].numberOfCoinsWei
+        );
+
+        tokenDeposits.push(
+            TokenDeposit(
+                newItemId,
+                stakingQueue[requestId].depositor,
+                stakingQueue[requestId].numberOfCoinsWei,
+                false,
+                stakingQueue[requestId].timeLockInSeconds,
+                block.timestamp
+            )
+        );
+
+        emit NewDeposit(
+            newItemId,
+            stakingQueue[requestId].depositor,
+            stakingQueue[requestId].numberOfCoinsWei,
+            stakingQueue[requestId].timeLockInSeconds,
+            block.timestamp
+        );
+
+        // One month deposit
+        if (stakingQueue[requestId].timeLockInSeconds == timelockV1) {
+            totalStakedV1 += stakingQueue[requestId].numberOfCoinsWei;
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitOne &&
+                stakingQueue[requestId].numberOfCoinsWei < limitTwo
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % 3) + 1;
+                if (dropChance == 1 || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        1,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            1,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitTwo &&
+                stakingQueue[requestId].numberOfCoinsWei < limitThree
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % 6) + 1;
+                if ((dropChance >= 1 && dropChance <= 10) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        2,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            2,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitThree &&
+                stakingQueue[requestId].numberOfCoinsWei < limitFour
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % (6 - 4 + 1)) + 4;
+                if ((dropChance >= 1 && dropChance <= 20) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        3,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            3,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (stakingQueue[requestId].numberOfCoinsWei >= limitFour) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % 3) + 1;
+                if ((dropChance >= 1 && dropChance <= 40) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        5,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            5,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+        }
+
+        // Two month deposit
+        if (stakingQueue[requestId].timeLockInSeconds == timelockV2) {
+            totalStakedV2 += stakingQueue[requestId].numberOfCoinsWei;
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitOne &&
+                stakingQueue[requestId].numberOfCoinsWei < limitTwo
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % 6) + 1;
+                if ((dropChance >= 1 && dropChance <= 2) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        1,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            1,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitTwo &&
+                stakingQueue[requestId].numberOfCoinsWei < limitThree
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % (6 - 4 + 1)) + 4;
+                if ((dropChance >= 1 && dropChance <= 12) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        2,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            2,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitThree &&
+                stakingQueue[requestId].numberOfCoinsWei < limitFour
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % 3) + 1;
+                if ((dropChance >= 1 && dropChance <= 24) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        4,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            4,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (stakingQueue[requestId].numberOfCoinsWei >= limitFour) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % 6) + 1;
+                if ((dropChance >= 1 && dropChance <= 48) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        5,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            5,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+        }
+
+        // Four month deposit
+        if (stakingQueue[requestId].timeLockInSeconds == timelockV3) {
+            totalStakedV3 += stakingQueue[requestId].numberOfCoinsWei;
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitOne &&
+                stakingQueue[requestId].numberOfCoinsWei < limitTwo
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % (6 - 4 + 1)) + 4;
+                if ((dropChance >= 1 && dropChance <= 4) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        1,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            1,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitTwo &&
+                stakingQueue[requestId].numberOfCoinsWei < limitThree
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % 3) + 1;
+                if ((dropChance >= 1 && dropChance <= 14) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        3,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            3,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitThree &&
+                stakingQueue[requestId].numberOfCoinsWei < limitFour
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % 6) + 1;
+                if ((dropChance >= 1 && dropChance <= 28) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        4,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            4,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (stakingQueue[requestId].numberOfCoinsWei >= limitFour) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % (6 - 4 + 1)) + 4;
+                if ((dropChance >= 1 && dropChance <= 56) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        5,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            5,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+        }
+
+        // Six month deposit
+        if (stakingQueue[requestId].timeLockInSeconds == timelockV4) {
+            totalStakedV4 += stakingQueue[requestId].numberOfCoinsWei;
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitOne &&
+                stakingQueue[requestId].numberOfCoinsWei < limitTwo
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % 3) + 1;
+                if ((dropChance >= 1 && dropChance <= 6) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        2,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            2,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitTwo &&
+                stakingQueue[requestId].numberOfCoinsWei < limitThree
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % 6) + 1;
+                if ((dropChance >= 1 && dropChance <= 16) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        3,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            3,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (
+                stakingQueue[requestId].numberOfCoinsWei >= limitThree &&
+                stakingQueue[requestId].numberOfCoinsWei < limitFour
+            ) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % (6 - 4 + 1)) + 4;
+                if ((dropChance >= 1 && dropChance <= 32) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        4,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            4,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+
+            if (stakingQueue[requestId].numberOfCoinsWei >= limitFour) {
+                uint256 dropChance = (randomness % 100) + 1;
+                uint256 itemTypeChance = (randomness % (6 - 4 + 1)) + 4;
+                if ((dropChance >= 1 && dropChance <= 64) || allChancesHit) {
+                    emit NewClaimableNft(
+                        mintableNftQueue.length,
+                        5,
+                        itemTypeChance,
+                        stakingQueue[requestId].depositor
+                    );
+                    mintableNftQueue.push(
+                        MintableNft(
+                            mintableNftQueue.length,
+                            5,
+                            itemTypeChance,
+                            stakingQueue[requestId].depositor,
+                            false
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    function stakeCoins(
+        uint256 numberOfCoinsWei,
+        uint256 timeLockInSeconds,
+        uint256 randomness,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external {}
+}
+
+
+// File: /node_modules/@openzeppelin/contracts/utils/math/SafeMath.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/math/SafeMath.sol)
+
+pragma solidity ^0.8.0;
+
+// CAUTION
+// This version of SafeMath should only be used with Solidity 0.8 or later,
+// because it relies on the compiler's built in overflow checks.
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations.
+ *
+ * NOTE: `SafeMath` is generally not needed starting with Solidity 0.8, since the compiler
+ * now has built in overflow checking.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the substraction of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the division of two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator.
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {trySub}.
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b <= a, errorMessage);
+            return a - b;
+        }
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a / b;
+        }
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting with custom message when dividing by zero.
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {tryMod}.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a % b;
+        }
+    }
+}
+
+
+// File: /node_modules/@openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+// File: /node_modules/@openzeppelin/contracts/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+// File: /node_modules/@openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+

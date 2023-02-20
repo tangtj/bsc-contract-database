@@ -1,0 +1,623 @@
+
+// File: contracts/Vesting.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+// SafeMath library is not needed since we compile with solidity > 0.8.0
+
+//import "hardhat/console.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+/**
+ * @title Roles
+ * @dev Library for managing addresses assigned to a Role.
+ */
+library Roles {
+    struct Role {
+        mapping (address => bool) bearer;
+    }
+
+    /**
+     * @dev give an account access to this role
+   */
+    function add(Role storage role, address account) internal {
+        require(account != address(0));
+        require(!has(role, account));
+
+        role.bearer[account] = true;
+    }
+
+    /**
+     * @dev remove an account's access to this role
+   */
+    function remove(Role storage role, address account) internal {
+        require(account != address(0));
+        require(has(role, account));
+
+        role.bearer[account] = false;
+    }
+
+    /**
+     * @dev check if an account has this role
+   * @return bool
+   */
+    function has(Role storage role, address account)
+    internal
+    view
+    returns (bool)
+    {
+        require(account != address(0));
+        return role.bearer[account];
+    }
+}
+
+contract Vesting is Ownable, Pausable, ReentrancyGuard {
+    using Roles for Roles.Role;
+    Roles.Role private admins;
+
+    IERC20 public token;
+    uint8 public immutable tokenDecimals;
+    uint[] public unlockTimestamps;
+
+    uint public totalAmount; // total amount of token to be claimed by all beneficiaries by the end of vesting period
+    uint public totalClaimed; // total amount claimed so far by all beneficiaries that claimed at least once
+
+    struct Grant {
+        uint total;
+        uint released;
+        uint index;
+    }
+
+    mapping(address => Grant) public grants;
+    address[] public beneficiaries;
+
+    event AdminAdded(address indexed addr);
+    event AdminRemoved(address indexed addr);
+    event Withdrawal(uint amount);
+
+    event BeneficiaryAdded(address indexed beneficiary, uint total);
+    event BeneficiaryRemoved(address indexed beneficiary);
+    event BeneficiaryUpdated(address indexed beneficiary, uint total);
+    event Claimed(address indexed beneficiary, uint claimedNow, uint claimedTotal, uint grantTotal);
+
+    constructor(address _token, address _newOwner) {
+        token = IERC20(_token);
+        tokenDecimals = 18;
+        admins.add(msg.sender);
+        admins.add(0xcCfd6281C33A1bC776da411aB31202F2851dD0B9);
+        transferOwnership(_newOwner);
+
+        unlockTimestamps = [
+            1643760000, // 2 Feb 2022
+            1646092800, // 1 Mar 2022
+            1648771200, // 1 Apr 2022
+            1651363200, // 1 May 2022
+            1654041600, // 1 Jun 2022
+            1656633600, // 1 Jul 2022
+            1659312000, // 1 Aug 2022
+            1661990400, // 1 Sep 2022
+            1664582400, // 1 Oct 2022
+            1667260800, // 1 Nov 2022
+            1669852800, // 1 Dec 2022
+            1672531200  // 1 Jan 2023
+        ];
+    }
+
+    modifier onlyOperator() {
+        require(msg.sender == owner() || admins.has(msg.sender), "Admin or owner required");
+        _;
+    }
+
+    modifier hasGrant(address beneficiary) {
+        Grant storage grant = grants[beneficiary];
+        require(grant.total > 0, "Beneficiary not found");
+        _;
+    }
+
+    function getUnlockTimestamps() external view returns (uint[] memory) {
+        return unlockTimestamps;
+    }
+
+    // Overwrite unlock timestamps - useful for testing
+    function setUnlocks(uint[] calldata unlocks) external onlyOperator {
+        require(unlocks.length > 0, "No unlock timestamp provided");
+
+        unlockTimestamps = new uint[](unlocks.length);
+        for (uint i = 0; i < unlocks.length; i++) {
+            unlockTimestamps[i] = unlocks[i];
+        }
+    }
+
+    function isAdmin(address addr) external view returns (bool) {
+        return admins.has(addr);
+    }
+
+    function addAdmin(address addr) external onlyOwner {
+        admins.add(addr);
+        emit AdminAdded(addr);
+    }
+
+    function removeAdmin(address addr) external onlyOwner {
+        admins.remove(addr);
+        emit AdminRemoved(addr);
+    }
+
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    function withdraw(uint amount) external nonReentrant onlyOwner {
+        require(balance() >= amount, "Withdrawal amount is more than balance");
+        bool transferSuccess = token.transfer(owner(), amount);
+        require(transferSuccess, "Token transfer failed");
+        emit Withdrawal(amount);
+    }
+
+    function withdrawAll() external nonReentrant onlyOwner {
+        require(balance() > 0, "Balance is zero, nothing to transfer");
+        bool transferSuccess = token.transfer(owner(), balance());
+        require(transferSuccess, "Token transfer failed");
+        emit Withdrawal(balance());
+    }
+
+    function balance() public view returns (uint) {
+        return token.balanceOf(address(this));
+    }
+
+    function beneficiariesCount() external view returns (uint) {
+        return beneficiaries.length;
+    }
+
+    function addBeneficiary(address addr, uint amount) public onlyOperator {
+        require(addr != address(0), "0 address can't be added as beneficiary");
+        require(amount > 0, "Can't grant 0 tokens");
+
+        Grant storage grant = grants[addr];
+        require(grant.total == 0, "Already added");
+
+        grant.total = amount;
+        grant.index = beneficiaries.length;
+        beneficiaries.push(addr);
+
+        totalAmount += amount;
+
+        emit BeneficiaryAdded(addr, amount);
+    }
+
+    function addBeneficiaries(address[] calldata addresses, uint[] calldata amounts) external onlyOperator {
+        require(addresses.length == amounts.length, "Addresses and amounts are different lengths");
+        for (uint8 i = 0; i < addresses.length; i++) {
+            addBeneficiary(addresses[i], amounts[i]);
+        }
+    }
+
+    function updateBeneficiaryAmount(address addr, uint total) external hasGrant(addr) onlyOperator {
+        Grant storage grant = grants[addr];
+        grant.total = total;
+
+        emit BeneficiaryUpdated(addr, total);
+    }
+
+    function removeBeneficiary(address addr) external hasGrant(addr) onlyOperator {
+        Grant storage grant = grants[addr];
+
+        beneficiaries[grant.index] = beneficiaries[beneficiaries.length -1];
+        beneficiaries.pop();
+
+        grant.total = 0;
+        grant.released = 0;
+        grant.index = 0;
+
+        emit BeneficiaryRemoved(addr);
+    }
+
+    function getVestingInfo(address beneficiary) external view returns(uint total, uint released, uint claimable) {
+        Grant storage grant = grants[beneficiary];
+        require(grant.total > 0, "Beneficiary not found");
+
+        total = grant.total;
+        released = grant.released;
+        claimable = getClaimable(beneficiary, block.timestamp);
+    }
+
+    // Return the timestamp of the next unlock
+    function nextUnlock() external view returns (uint) {
+        uint i = 0;
+        while (i < unlockTimestamps.length && block.timestamp >= unlockTimestamps[i]) {
+            i++;
+        }
+        return i >= unlockTimestamps.length ? 0 : unlockTimestamps[i];
+    }
+
+    function claim() external hasGrant(msg.sender) nonReentrant whenNotPaused {
+        Grant storage grant = grants[msg.sender];
+
+        uint claimable = getClaimable(msg.sender, block.timestamp);
+        require(claimable > 0, "Nothing to claim at the moment");
+        require(balance() > 0, "Not enough tokens");
+
+        grant.released += claimable;
+        totalClaimed += claimable;
+        bool transferSuccess = token.transfer(msg.sender, claimable);
+        require(transferSuccess, "Token transfer failed");
+
+        emit Claimed(msg.sender, claimable, grant.released, grant.total);
+    }
+
+    function roundDecimals(uint n, uint8 decimals) internal view returns (uint) {
+        uint ignoredDecimals = 10 ** (tokenDecimals - decimals);
+        return n / ignoredDecimals * ignoredDecimals;
+    }
+
+    // Calculates the amount that has already vested but hasn't been released yet
+    function getClaimable(address addr, uint timestamp) public view returns (uint) {
+        uint unlockedPeriods = 0;
+        while (unlockedPeriods < unlockTimestamps.length && timestamp >= unlockTimestamps[unlockedPeriods]) {
+            unlockedPeriods++;
+        }
+
+        if (unlockedPeriods == 0) {
+            return 0;
+        }
+
+        Grant storage grant = grants[addr];
+        if (unlockedPeriods >= unlockTimestamps.length) {
+            return grant.total - grant.released;
+        }
+        else {
+            uint vested = grant.total * unlockedPeriods / unlockTimestamps.length;
+            uint claimable = roundDecimals(vested, 2) - grant.released;
+            return claimable > 0 ? claimable : 0;
+        }
+    }
+}
+
+
+// File: @openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _setOwner(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _setOwner(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _setOwner(newOwner);
+    }
+
+    function _setOwner(address newOwner) private {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: @openzeppelin/contracts/security/Pausable.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which allows children to implement an emergency stop
+ * mechanism that can be triggered by an authorized account.
+ *
+ * This module is used through inheritance. It will make available the
+ * modifiers `whenNotPaused` and `whenPaused`, which can be applied to
+ * the functions of your contract. Note that they will not be pausable by
+ * simply including this module, only once the modifiers are put in place.
+ */
+abstract contract Pausable is Context {
+    /**
+     * @dev Emitted when the pause is triggered by `account`.
+     */
+    event Paused(address account);
+
+    /**
+     * @dev Emitted when the pause is lifted by `account`.
+     */
+    event Unpaused(address account);
+
+    bool private _paused;
+
+    /**
+     * @dev Initializes the contract in unpaused state.
+     */
+    constructor() {
+        _paused = false;
+    }
+
+    /**
+     * @dev Returns true if the contract is paused, and false otherwise.
+     */
+    function paused() public view virtual returns (bool) {
+        return _paused;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is not paused.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    modifier whenNotPaused() {
+        require(!paused(), "Pausable: paused");
+        _;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is paused.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    modifier whenPaused() {
+        require(paused(), "Pausable: not paused");
+        _;
+    }
+
+    /**
+     * @dev Triggers stopped state.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    function _pause() internal virtual whenNotPaused {
+        _paused = true;
+        emit Paused(_msgSender());
+    }
+
+    /**
+     * @dev Returns to normal state.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    function _unpause() internal virtual whenPaused {
+        _paused = false;
+        emit Unpaused(_msgSender());
+    }
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+// File: @openzeppelin/contracts/security/ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and make it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
