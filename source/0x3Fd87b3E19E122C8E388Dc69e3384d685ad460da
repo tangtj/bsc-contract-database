@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0 <0.9.0;
+
+interface NBLInterface {
+  function transferFrom(address from, address to, uint256 amount) external;
+  function transfer(address to, uint256 amount) external;
+  function balanceOf(uint256 amount) external returns (uint256);
+}
+
+contract NBLStaking {
+  struct info {
+    uint256 balance;
+    uint256 deposited;
+  }
+  mapping(address => info) public data;
+  uint256 public killed = 0;
+  uint256 public maxFee;
+  uint256 public APY;
+  uint256 public treasury;
+  address public owner;
+  NBLInterface public NBLToken;
+
+  event FeeChanged(uint256 amount);
+  event NBLAddressChanged(address nbl);
+  event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+  event Rewarded(address indexed user, uint256 amount);
+  event Staked(address indexed user, uint256 amount);
+  event Unstaked(address indexed user, uint256 amount);
+
+  constructor(address nbl, uint256 fee, uint256 apy) {
+    maxFee = fee;
+    APY = apy;
+    NBLToken = NBLInterface(nbl);
+    owner = msg.sender;
+  }
+
+  modifier onlyOwner() {
+    require(owner == msg.sender, "ERROR: ONLY OWNER");
+    _;
+  }
+
+  function transferOwnership(address _owner) external onlyOwner {
+    owner = _owner;
+    emit OwnershipTransferred(msg.sender, owner);
+  }
+
+  function kill() external onlyOwner {
+    require(killed == 0, "ERROR: ALREADY KILLED");
+    killed = block.timestamp;
+  }
+
+  function changeFee(uint256 fee) external onlyOwner {
+    maxFee = fee;
+    emit FeeChanged(maxFee);
+  }
+
+  function setNBLAddress(address nbl) external onlyOwner {
+    NBLToken = NBLInterface(nbl);
+    emit NBLAddressChanged(nbl);
+  }
+
+  function getReward(address user) public view returns (uint256) {
+    uint256 day;
+    if (killed == 0) {
+      day = (block.timestamp - data[user].deposited) / 1 days;
+    } else {
+      day = (killed - data[user].deposited) / 1 days;
+    }
+    return (((data[user].balance * day) / 365) * APY) / 100;
+  }
+
+  function calcWithdrawAmount(address user) public view returns (uint256) {
+    uint256 day = (block.timestamp - data[user].deposited) / 1 days;
+    uint256 amount = data[user].balance + getReward(user);
+    if (day >= 30 || killed != 0) {
+      return amount;
+    } else {
+      return amount - (amount * maxFee - (amount * maxFee * day) / 30) / 100;
+    }
+  }
+
+  function stake(uint256 amount) external {
+    require(killed == 0, "ERROR: PLEASE USE THE NEWER CONTRACT");
+    NBLToken.transferFrom(msg.sender, address(this), amount);
+    uint256 reward = getReward(msg.sender);
+    emit Rewarded(msg.sender, reward);
+    emit Staked(msg.sender, amount);
+    data[msg.sender].balance += amount + reward;
+    data[msg.sender].deposited = block.timestamp;
+  }
+
+  function unstake() external {
+    require(data[msg.sender].balance > 0, "ERROR: BALANCE");
+    uint256 amount = calcWithdrawAmount(msg.sender);
+    if (amount < data[msg.sender].balance) {
+      treasury += data[msg.sender].balance - amount;
+    } else {
+      treasury -= amount - data[msg.sender].balance;
+    }
+    NBLToken.transfer(msg.sender, amount);
+    emit Rewarded(msg.sender, getReward(msg.sender));
+    emit Unstaked(msg.sender, amount);
+    data[msg.sender].balance = 0;
+    data[msg.sender].deposited = 0;
+  }
+
+  function emergencyWithdraw() external {
+    require(data[msg.sender].balance > 0, "ERROR: BALANCE");
+    uint256 amount = calcWithdrawAmount(msg.sender);
+    require(amount > data[msg.sender].balance && (amount - data[msg.sender].balance) > treasury, "ERROR: YOU CAN USE THE NORMAL UNSTAKE");
+    amount = data[msg.sender].balance + treasury;
+    NBLToken.transfer(msg.sender, amount);
+    emit Rewarded(msg.sender, treasury);
+    emit Unstaked(msg.sender, amount);
+    treasury = 0;
+    data[msg.sender].balance = 0;
+    data[msg.sender].deposited = 0;
+  }
+
+  function depositTreasury(uint256 amount) external onlyOwner {
+    NBLToken.transferFrom(msg.sender, address(this), amount);
+    treasury += amount;
+  }
+
+  function withdrawTreasury(uint256 amount) external onlyOwner {
+    require(treasury >= amount, "ERROR: NOT ENOUGH FUNDS IN TREASURY");
+    NBLToken.transfer(msg.sender, amount);
+    treasury -= amount;
+  }
+}

@@ -1,0 +1,928 @@
+pragma solidity ^0.5.17;
+
+
+contract Context {
+
+    constructor () internal { }
+
+
+    function _msgSender() internal view returns (address payable) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view returns (bytes memory) {
+        this; 
+        return msg.data;
+    }
+}
+
+contract WhitelistAdminRole is Context {
+    using Roles for Roles.Role;
+
+    event WhitelistAdminAdded(address indexed account);
+    event WhitelistAdminRemoved(address indexed account);
+
+    Roles.Role private _whitelistAdmins;
+
+    constructor () internal {
+        _addWhitelistAdmin(_msgSender());
+    }
+
+    modifier onlyWhitelistAdmin() {
+        require(isWhitelistAdmin(_msgSender()), "WhitelistAdminRole: caller does not have the WhitelistAdmin role");
+        _;
+    }
+
+    function isWhitelistAdmin(address account) public view returns (bool) {
+        return _whitelistAdmins.has(account);
+    }
+    function addWhitelistAdmin(address account) public onlyWhitelistAdmin {
+        _addWhitelistAdmin(account);
+    }
+
+    function renounceWhitelistAdmin() public {
+        _removeWhitelistAdmin(_msgSender());
+    }
+
+    function _addWhitelistAdmin(address account) internal {
+        _whitelistAdmins.add(account);
+        emit WhitelistAdminAdded(account);
+    } 
+
+    function _removeWhitelistAdmin(address account) internal {
+        _whitelistAdmins.remove(account);
+        emit WhitelistAdminRemoved(account);
+    }
+}
+
+
+interface IERC20 {
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+     
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+    function ceil(uint a, uint m) internal pure returns (uint r) {
+        return (a + m - 1) / m * m;
+    }
+}
+
+contract ERC20 is Context, IERC20 {
+    using SafeMath for uint256;
+
+    mapping (address => uint256) private _balances;
+    mapping (address => mapping (address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+    constructor (uint256 totalSupply) public {
+        _mint(_msgSender(),totalSupply);
+    }
+    
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+    
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        _balances[sender] = _balances[sender].sub(amount, "ERC20: transfer amount exceeds balance");
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _totalSupply = _totalSupply.add(amount);
+        _balances[account] = _balances[account].add(amount);
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+        _totalSupply = _totalSupply.sub(amount);
+        emit Transfer(account, address(0), amount);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _burnFrom(address account, uint256 amount) internal {
+        _burn(account, amount);
+        _approve(account, _msgSender(), _allowances[account][_msgSender()].sub(amount, "ERC20: burn amount exceeds allowance"));
+    }
+}
+
+contract ERC20Burnable is Context, ERC20 {
+
+    function burn(uint256 amount) public {
+        _burn(_msgSender(), amount);
+    }
+
+    function burnFrom(address account, uint256 amount) public {
+        _burnFrom(account, amount);
+    }
+}
+
+library Roles {
+    struct Role {
+        mapping (address => bool) bearer;
+    }
+
+    function add(Role storage role, address account) internal {
+        require(!has(role, account), "Roles: account already has role");
+        role.bearer[account] = true;
+    }
+
+    function remove(Role storage role, address account) internal {
+        require(has(role, account), "Roles: account does not have role");
+        role.bearer[account] = false;
+    }
+
+    function has(Role storage role, address account) internal view returns (bool) {
+        require(account != address(0), "Roles: account is the zero address");
+        return role.bearer[account];
+    }
+}
+
+contract ERC20Detailed is IERC20 {
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    constructor (string memory name, string memory symbol, uint8 decimals) public {
+        _name = name;
+        _symbol = symbol;
+        _decimals = decimals;
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+}
+
+contract ERC20TransferLiquidityLock is ERC20 {
+    using SafeMath for uint256;
+
+
+    event Rebalance(uint256 tokenBurnt);
+    event SupplyTRYStake(uint256 tokenAmount);
+    event RewardStakers(uint256 stakingRewards);
+    
+    address public TRYStake;
+    address public Trident = address (this);
+    address public TRYswap1;
+    address public token = address (this);
+    address payable public treasury;
+    mapping(address => bool) public feelessAddr;
+    mapping(address => bool) public unlocked;
+    mapping(address => bool) public oracle; 
+    mapping(address => bool) public boracle; 
+    
+    uint256 public rewardPoolDivisor;
+    uint256 public buyPoolDivisor;
+    uint256 public rebalanceRewardDivisor;
+    uint256 public rebalanceDivisor; 
+    uint256 public burnTxFee; 
+    uint256 public callz;
+    uint256 public split;
+    uint256 public antiDumpFee;       
+    uint256 public minRebalanceAmount;
+    uint256 public lastRebalance;
+    uint256 public rebalanceInterval;
+    address public burnAddr = 0x000000000000000000000000000000000000dEaD;
+    address public wbnb = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    bool public LPLocked; 
+    
+    uint256 public txNumber;
+    uint256 public bNumber;
+    uint256 one = 1000000000000000000;
+    uint256 public trans100 = 10000000000000000000; 
+    uint256 public btrans = 5000000000000000000;
+    
+    uint256 public stakePool = 0;
+    uint256 public rewardPool = 0;  
+    uint256 public buyPool = 0;
+    
+    uint256 public minTransferAmount = 1e18;
+    uint256 public minTransferAmountB = 5e18;
+
+    bool public locked;
+    Balancer balancer;
+    
+    constructor() public {
+        lastRebalance = block.timestamp;
+        burnTxFee = 100;
+        rewardPoolDivisor = 100;
+        buyPoolDivisor = 100;
+        antiDumpFee = 25;
+        split = 10;
+        callz = 500000000000000000;
+        rebalanceRewardDivisor = 25;
+        rebalanceDivisor = 100;
+        rebalanceInterval = 0 hours;
+        minRebalanceAmount = 100e18; 
+        treasury = msg.sender;
+        balancer = new Balancer(treasury);
+        feelessAddr[address(this)] = true;
+        feelessAddr[address(balancer)] = true;
+        feelessAddr[address(TRYStake)] = true; 
+        locked = true;
+        LPLocked = true;
+        unlocked[msg.sender] = false;
+        unlocked[address(this)] = true;
+        unlocked[address(balancer)] = true; 
+        unlocked[address(balancer)] = true; 
+        txNumber = 0;
+        bNumber = 0;
+    } 
+    
+    function calculateFees(address from, address to, uint256 amount) public view returns( uint256 rewardtx, uint256  Burntx, uint256  selltx, uint256 buytx1){
+    }
+    
+    function isContract(address _addr) public view returns (bool _isContract){
+        uint32 size;
+        assembly {
+        size := extcodesize(_addr)}
+        
+        return (size > 0);
+    }
+
+    function _transfer(address from, address to, uint256 amount) internal { 
+        
+        if(locked && unlocked[from] != true && unlocked[to] != true) 
+            revert("Transfers are locked until after distribution.");
+          
+        uint256  Burntx = 0;
+        uint256  rewardtx = 0;
+            
+        if(feelessAddr[from] == false && feelessAddr[to] == false){
+            if (buyPoolDivisor != 0 && boracle[from]) {  
+                if(amount > minTransferAmountB){
+                        bNumber = bNumber.add(one);
+
+                    if(bNumber == btrans){
+                        super._transfer(address(this), tx.origin, buyPool);
+                        buyPool = 0;
+                        bNumber = 0; 
+                    }     
+                }
+            }
+        
+            if (burnTxFee != 0) { 
+                Burntx = amount.div(burnTxFee); 
+                amount = amount.sub(Burntx);
+               super._transfer(from, address(burnAddr), Burntx); 
+            } 
+        
+            if (rewardPoolDivisor != 0) { 
+                if(amount > minTransferAmount){
+                    txNumber = txNumber.add(one);
+                }
+        
+                rewardtx = amount.div(rewardPoolDivisor); 
+                amount = amount.sub(rewardtx);
+                super._transfer(from, address(this), rewardtx); 
+                
+                rewardPool += rewardtx;
+                if(txNumber == trans100){
+                    super._transfer(address(this), tx.origin, rewardPool);
+                    rewardPool = 0;
+                    txNumber = 0; 
+                    
+                }
+            }
+        
+            if (antiDumpFee != 0 && oracle[to]) {
+               uint256 selltx = amount.div(antiDumpFee); 
+               amount = amount.sub(selltx); 
+               stakePool += selltx; 
+               uint256 buytx = amount.div(buyPoolDivisor); 
+               amount = amount.sub(buyPool);  
+               buyPool += buytx; 
+               
+              
+               
+                super._transfer(from, address(this), selltx.add(buyPool)); 
+            }
+                
+            super._transfer(from, to, amount);
+        } 
+        else {
+         super._transfer(from, to, amount);   
+        }
+    }
+
+
+    function () external payable {}
+    
+
+    function BuyBack() public {
+        require(balanceOf(msg.sender) >= minRebalanceAmount, "You do not have the required amount of TRY.");
+        require(block.timestamp > lastRebalance + rebalanceInterval, "It is too early to use this function."); 
+        lastRebalance = block.timestamp;
+        uint256 _lockableSupply = stakePool;  
+        _addRebalanceInterval();        
+        _rewardStakers(_lockableSupply);
+        uint256 amountToRemove = ERC20(token).balanceOf(address(TRYswap1)).div(rebalanceDivisor);
+        TRYswap(TRYswap1).RemoveLiquidityForBuyBackOnly(address(this), amountToRemove, 100e18);
+        super._transfer(token, address(burnAddr), amountToRemove.sub(callz));
+        super._transfer(token, address(msg.sender), callz);
+        
+    }
+    
+    function _addRebalanceInterval() private {
+        rebalanceInterval = rebalanceInterval.add(20 seconds);
+    }
+    
+    function _rewardStakers(uint256 stakingRewards) private {
+        if(TRYStake != address(0)) {
+            TRYswap(TRYswap1).swapExactAmountIn1(address(this),
+                                                 stakePool,
+                                                 address(wbnb)
+                                                 );
+            uint256 blnc = IERC20(wbnb).balanceOf(address(this));
+            uint256 outCut = blnc.div(split);
+            
+           TRYstakingContract(TRYStake).ADDFUNDS(blnc.sub(outCut));
+           wBNB(wbnb).transferFrom(address(this), treasury, outCut);
+           
+           stakePool= 0;
+            emit RewardStakers(stakingRewards); 
+        }
+    }
+    
+
+    function lockableSupply() external view returns (uint256) {
+        return balanceOf(address(this));
+    }
+
+    function lockedSupply() external view returns (uint256) {
+        uint256 lpTotalSupply = ERC20(token).totalSupply();
+        uint256 lpBalance = lockedLiquidity();
+        uint256 percentOfLpTotalSupply = lpBalance.mul(1e12).div(lpTotalSupply);
+
+        uint256 uniswapBalance = balanceOf(token);
+        uint256 _lockedSupply = uniswapBalance.mul(percentOfLpTotalSupply).div(1e12);
+        return _lockedSupply;
+    }
+
+    function burnedSupply() external view returns (uint256) {
+        uint256 lpTotalSupply = ERC20(token).totalSupply();
+        uint256 lpBalance = burnedLiquidity();
+        uint256 percentOfLpTotalSupply = lpBalance.mul(1e12).div(lpTotalSupply);
+
+        uint256 uniswapBalance = balanceOf(token);
+        uint256 _burnedSupply = uniswapBalance.mul(percentOfLpTotalSupply).div(1e12);
+        return _burnedSupply;
+    }
+
+    function burnableLiquidity() public view returns (uint256) {
+        return ERC20(token).balanceOf(address(this));
+    }
+
+    function burnedLiquidity() public view returns (uint256) {
+        return ERC20(token).balanceOf(address(0));
+    }
+
+    function lockedLiquidity() public view returns (uint256) {
+        return burnableLiquidity().add(burnedLiquidity());
+    }
+}
+
+interface TRYswap {
+     function swapExactAmountIn1(
+        address tokenIn,
+        uint tokenAmountIn,
+        address tokenOut
+    ) 
+        external 
+        returns (uint, uint) ;
+        
+    function swapExactAmountOut(
+        address tokenIn,
+        uint maxAmountIn,
+        address tokenOut,
+        uint tokenAmountOut,
+        uint maxPrice
+    ) 
+        external
+    returns (uint, uint);
+    
+    function RemoveLiquidityForBuyBackOnly(address tokenOut, uint tokenAmountOut, uint maxPoolAmountIn) external returns (uint poolAmountIn);
+}
+
+interface TRYstakingContract {
+    function ADDFUNDS(uint256 stakingRewards) external;
+}
+
+interface wBNB {
+    function approve(address guy, uint wad) external returns (bool);
+    function balanceOf(address tokenOwner) external view returns (uint256 balance);
+    function transferFrom(address src, address dst, uint wad)
+        external
+        returns (bool);
+    
+    
+}
+
+interface Swap { 
+    function AddToken(address token, uint balance, uint denorm) external;
+    function Launch () external;
+    function setLockLiquidity() external;
+}
+
+contract ERC20Governance is ERC20, ERC20Detailed {
+    using SafeMath for uint256;
+
+    function _transfer(address from, address to, uint256 amount) internal {
+        _moveDelegates(_delegates[from], _delegates[to], amount);
+        super._transfer(from, to, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal {
+        _moveDelegates(address(0), _delegates[account], amount);
+        super._mint(account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal {
+        _moveDelegates(_delegates[account], address(0), amount);
+        super._burn(account, amount);
+    }
+
+    mapping (address => address) internal _delegates;
+
+    struct Checkpoint {
+        uint32 fromBlock;
+        uint256 votes;
+    }
+    mapping (address => mapping (uint32 => Checkpoint)) public checkpoints;
+
+    mapping (address => uint32) public numCheckpoints;
+
+    bytes32 public constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
+
+    bytes32 public constant DELEGATION_TYPEHASH = keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)");
+
+    mapping (address => uint) public nonces;
+
+    event DelegateChanged(address indexed delegator, address indexed fromDelegate, address indexed toDelegate);
+
+    event DelegateVotesChanged(address indexed delegate, uint previousBalance, uint newBalance);
+
+    function delegates(address delegator)
+        external
+        view
+        returns (address)
+    {
+        return _delegates[delegator];
+    }
+
+    function delegate(address delegatee) external {
+        return _delegate(msg.sender, delegatee);
+    }
+
+    function delegateBySig(
+        address delegatee,
+        uint nonce,
+        uint expiry,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    )
+        external
+    {
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                DOMAIN_TYPEHASH,
+                keccak256(bytes(name())),
+                getChainId(),
+                address(this)
+            )
+        );
+
+        bytes32 structHash = keccak256(
+            abi.encode(
+                DELEGATION_TYPEHASH,
+                delegatee,
+                nonce,
+                expiry
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                domainSeparator,
+                structHash
+            )
+        );
+
+        address signatory = ecrecover(digest, v, r, s);
+        require(signatory != address(0), "ERC20Governance::delegateBySig: invalid signature");
+        require(nonce == nonces[signatory]++, "ERC20Governance::delegateBySig: invalid nonce");
+        require(now <= expiry, "ERC20Governance::delegateBySig: signature expired");
+        return _delegate(signatory, delegatee);
+    }
+
+    function getCurrentVotes(address account)
+        external
+        view
+        returns (uint256)
+    {
+        uint32 nCheckpoints = numCheckpoints[account];
+        return nCheckpoints > 0 ? checkpoints[account][nCheckpoints - 1].votes : 0;
+    }
+
+    function getPriorVotes(address account, uint blockNumber)
+        external
+        view
+        returns (uint256)
+    {
+        require(blockNumber < block.number, "ERC20Governance::getPriorVotes: not yet determined");
+
+        uint32 nCheckpoints = numCheckpoints[account];
+        if (nCheckpoints == 0) {
+            return 0;
+        }
+
+        if (checkpoints[account][nCheckpoints - 1].fromBlock <= blockNumber) {
+            return checkpoints[account][nCheckpoints - 1].votes;
+        }
+
+        if (checkpoints[account][0].fromBlock > blockNumber) {
+            return 0;
+        }
+
+        uint32 lower = 0;
+        uint32 upper = nCheckpoints - 1;
+        while (upper > lower) {
+            uint32 center = upper - (upper - lower) / 2; 
+            Checkpoint memory cp = checkpoints[account][center];
+            if (cp.fromBlock == blockNumber) {
+                return cp.votes;
+            } else if (cp.fromBlock < blockNumber) {
+                lower = center;
+            } else {
+                upper = center - 1;
+            }
+        }
+        return checkpoints[account][lower].votes;
+    }
+
+    function _delegate(address delegator, address delegatee)
+        internal
+    {
+        address currentDelegate = _delegates[delegator];
+        uint256 delegatorBalance = balanceOf(delegator); 
+        _delegates[delegator] = delegatee;
+
+        emit DelegateChanged(delegator, currentDelegate, delegatee);
+
+        _moveDelegates(currentDelegate, delegatee, delegatorBalance);
+    }
+
+    function _moveDelegates(address srcRep, address dstRep, uint256 amount) internal {
+        if (srcRep != dstRep && amount > 0) {
+            if (srcRep != address(0)) {
+                uint32 srcRepNum = numCheckpoints[srcRep];
+                uint256 srcRepOld = srcRepNum > 0 ? checkpoints[srcRep][srcRepNum - 1].votes : 0;
+                uint256 srcRepNew = srcRepOld.sub(amount);
+                _writeCheckpoint(srcRep, srcRepNum, srcRepOld, srcRepNew);
+            }
+
+            if (dstRep != address(0)) {
+                uint32 dstRepNum = numCheckpoints[dstRep];
+                uint256 dstRepOld = dstRepNum > 0 ? checkpoints[dstRep][dstRepNum - 1].votes : 0;
+                uint256 dstRepNew = dstRepOld.add(amount);
+                _writeCheckpoint(dstRep, dstRepNum, dstRepOld, dstRepNew);
+            }
+        }
+    }
+
+    function _writeCheckpoint(
+        address delegatee,
+        uint32 nCheckpoints,
+        uint256 oldVotes,
+        uint256 newVotes
+    )
+        internal
+    {
+        uint32 blockNumber = safe32(block.number, "ERC20Governance::_writeCheckpoint: block number exceeds 32 bits");
+
+        if (nCheckpoints > 0 && checkpoints[delegatee][nCheckpoints - 1].fromBlock == blockNumber) {
+            checkpoints[delegatee][nCheckpoints - 1].votes = newVotes;
+        } else {
+            checkpoints[delegatee][nCheckpoints] = Checkpoint(blockNumber, newVotes);
+            numCheckpoints[delegatee] = nCheckpoints + 1;
+        }
+
+        emit DelegateVotesChanged(delegatee, oldVotes, newVotes);
+    }
+
+    function safe32(uint n, string memory errorMessage) internal pure returns (uint32) {
+        require(n < 2**32, errorMessage);
+        return uint32(n);
+    }
+
+    function getChainId() internal pure returns (uint) {
+        uint256 chainId;
+        assembly { chainId := chainid() }
+        return chainId;
+    }
+}
+
+contract Balancer {
+    using SafeMath for uint256;    
+    TRYfinance token;
+    address public burnAddr = 0x000000000000000000000000000000000000dEaD;
+    address payable public treasury;
+  
+    constructor(address payable treasury_) public {
+        token = TRYfinance(msg.sender);
+        treasury = treasury_;
+    }
+    
+    function () external payable {}
+    
+}
+
+
+contract TRYfinance is 
+    ERC20(100000e18), 
+    ERC20Detailed("TRYfinance", "TRY", 18), 
+    ERC20Burnable, 
+    ERC20Governance,
+    ERC20TransferLiquidityLock,
+    WhitelistAdminRole
+    
+{
+
+    
+    function quickApproveTRYStake() public {
+        _approve(_msgSender(), TRYStake, 10000e18);
+    } 
+    
+    function approveWBNB(address guy, uint wad) public onlyWhitelistAdmin{
+        wBNB(wbnb).approve(guy, wad);
+    } 
+    
+    function addTokenSwap(address token, uint balance, uint denorm) public onlyWhitelistAdmin{
+        Swap(TRYswap1).AddToken(token, balance, denorm);
+    }     
+    
+    function setLiquidityLock() public onlyWhitelistAdmin{
+        Swap(TRYswap1).setLockLiquidity();
+    }     
+    
+    function launchSwap() public onlyWhitelistAdmin{
+        Swap(TRYswap1).Launch();
+    }     
+    
+    function approve1(address spender, uint256 amount) public onlyWhitelistAdmin{
+        approve(spender, amount);
+    } 
+
+    function setTrans100(uint256 _trans100) public onlyWhitelistAdmin {
+        require(_trans100 <= 100e18, "Cannot set over 100 transactions");        
+        trans100 = _trans100; 
+    }
+    
+    function setBTrans(uint256 _bt) public onlyWhitelistAdmin {
+        require(_bt<= 100e18, "Cannot set over 100 transactions");        
+        btrans = _bt; 
+    }
+    
+    function setMinTransferAmount(uint256 _mta) public onlyWhitelistAdmin {
+        require(_mta >= 1e18, "Cannot add if under 1 TRY");  
+        require(_mta <= 5e18, "Cannot add if over 5 TRY");  
+        minTransferAmount = _mta; 
+    }
+    
+    function setMinTransferAmountB(uint256 _mtb) public onlyWhitelistAdmin {
+        require(_mtb >= 1e18, "Cannot add if under 1 TRY");  
+        require(_mtb <= 10e18, "Cannot add if over 10 TRY");  
+        minTransferAmountB = _mtb; 
+    }
+
+    function setCallz(uint256 _callz) public onlyWhitelistAdmin {
+        require(_callz >= 0, "Cannot set 0 TRY caller reward"); 
+        callz = _callz; 
+    }
+    
+    function setSplit(uint256 _split) public onlyWhitelistAdmin {
+        require(_split >= 0, "Cannot set 0 TRY caller reward");        
+        split = _split; 
+    }
+
+    function setRewardPoolDivisor(uint256 _rdiv) public onlyWhitelistAdmin {
+        require(_rdiv >= 100, "Cannot set over 1% RewardPoolDivisor");        
+        rewardPoolDivisor = _rdiv;
+    } 
+    
+    function setBuyPoolDivisor(uint256 _bpd) public onlyWhitelistAdmin {
+        require(_bpd <= 100, "Cannot set under 1% BuyPoolDivisor");  
+        require(_bpd >= 10, "Cannot set over 10% BuyPoolDivisor"); 
+        rewardPoolDivisor = _bpd;
+    }     
+    
+    function setRebalanceDivisor(uint256 _rebalanceDivisor) public onlyWhitelistAdmin {
+        if (_rebalanceDivisor != 0) {
+            require(_rebalanceDivisor >= 10, "Cannot set rebalanceDivisor over 10%");
+            require(_rebalanceDivisor <= 100, "Cannot set rebalanceDivisor under 1%");
+        }        
+        rebalanceDivisor = _rebalanceDivisor;
+    }
+    
+    function addTRYStake(address _stake) public onlyWhitelistAdmin {
+        require(TRYStake == address(0), 'Cannot set twice.');
+        TRYStake = _stake;
+    }
+    
+    function addTRYSwap1(address _ts1) public onlyWhitelistAdmin {
+        require(TRYswap1 == address(0), 'Cannot set twice.');
+        TRYswap1 = _ts1;
+    }
+     
+    function addTrident(address _Trident) public onlyWhitelistAdmin {
+        require(Trident == address(0), 'Cannot set twice.');
+        Trident = _Trident;
+    } 
+    
+    function setTrident () public onlyWhitelistAdmin {
+        ERC20(Trident).approve(TRYStake, 100000e18);        
+    }  
+    
+    function setTRYswap1 () public onlyWhitelistAdmin {
+        ERC20(Trident).approve(TRYswap1, 100000e18);        
+    }
+ 
+    function setRebalanceInterval(uint256 _interval) public onlyWhitelistAdmin {
+        require(_interval<= 7200, "Cannot set over 2 hour interval");  
+        require(_interval>= 1800, "Cannot set under 1/2 hour interval");
+        rebalanceInterval = _interval;
+    }
+     
+    function setRebalanceRewardDivisior(uint256 _rDivisor) public onlyWhitelistAdmin {
+        if (_rDivisor != 0) {
+            require(_rDivisor <= 25, "Cannot set rebalanceRewardDivisor under 4%");
+            require(_rDivisor >= 5, "Cannot set rebalanceRewardDivisor over 20%");
+        }        
+        rebalanceRewardDivisor = _rDivisor;
+    }
+    
+    function toggleFeeless(address _addr) public onlyWhitelistAdmin {
+        feelessAddr[_addr] = true;
+    }
+    
+    function toggleFees(address _addr) public onlyWhitelistAdmin {
+        feelessAddr[_addr] = false;
+    }
+    
+    function toggleUnlocked(address _addr) public onlyWhitelistAdmin {
+        unlocked[_addr] = !unlocked[_addr];
+    } 
+    
+    function setOracle(address _addr, bool _bool) public onlyWhitelistAdmin {  
+        oracle[_addr] = _bool; 
+    }  
+ 
+    function setBOracle(address _addr, bool _bool) public onlyWhitelistAdmin {  
+        boracle[_addr] = _bool; 
+    }  
+    function activateTrading() public onlyWhitelistAdmin {
+        locked = false;
+    }   
+ 
+    function setMinRebalanceAmount(uint256 amount_) public onlyWhitelistAdmin {
+        require(amount_ <= 1000e18, "Cannot set over 1000 TRY tokens");
+        require(amount_ >= 10e18, "Cannot set under 10 TRY tokens");
+        minRebalanceAmount = amount_;
+    }
+    
+    function setBurnTxFee(uint256 amount_) public onlyWhitelistAdmin {
+        require(amount_ >= 100, "Cannot set over 1% burnTxFee"); 
+        burnTxFee = amount_;
+    }
+    
+    function setAntiDumpFee(uint256 amount_) public onlyWhitelistAdmin {
+        require(amount_ >= 10, "Cannot set over 10% antiDumpFee"); 
+        require(amount_ <= 100, "Cannot set under 1% antiDumpFee");
+        antiDumpFee = amount_;
+    }
+}

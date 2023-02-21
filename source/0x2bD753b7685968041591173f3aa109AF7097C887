@@ -1,0 +1,547 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.8.6;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+}
+
+library SafeMath {
+    /**
+     * @dev 返回两个无符号整数的相加，在溢出时恢复。
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    /**
+     * @dev 返回两个无符号整数相除的余数。 (unsigned integer modulo),
+     * Reverts with custom message when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+library TransferHelper {
+    function safeTransfer(
+        address token,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(0xa9059cbb, to, value)
+        );
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            "TransferHelper: TRANSFER_FAILED"
+        );
+    }
+
+    function safeTransferFrom(
+        address token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(0x23b872dd, from, to, value)
+        );
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            "TransferHelper: TRANSFER_FROM_FAILED"
+        );
+    }
+}
+
+contract BFC_LP_Staking {
+    using SafeMath for uint256;
+    address public owner;
+
+    // 每个用户的信息。
+    struct UserInfo {
+        uint256 amount; // 用户提供了多少 LP 代币。
+        uint256 allotment; // 用户实际份额 (amount * (1 + durationRate))
+        uint256 rewardDebt; // 用户已经获取的奖励
+        uint256 duration; //质押周期
+        uint256 lastDepositAt; //最后质押时间
+        uint256 lastRewardAt; //最后领奖时间
+    }
+
+    // 每个池的信息。
+    struct PoolInfo {
+        uint256 supply; // 总股份
+        address lpToken; // LP 代币合约地址。
+        uint256 allocPoint; // 分配给此池的分配点数。
+        uint256 accPerShare; // 质押一个LPToken的全局收益
+    }
+
+    address public token; //bfc
+    uint256 public BASE_BONUS_REWARD = 8750 * 10**9; //基础每期产出
+    uint256 public REDUCE_BONUS_DURATION = 2592000; //30d
+    uint256 public BONUS_DURATION = 86400; //1d
+    uint256 public DEPOSIT_DURATION_1 = 2592000; //30d
+    uint256 public DEPOSIT_DURATION_2 = 5184000; //60d
+    uint256 public DEPOSIT_DURATION_3 = 7776000; //90d
+
+    uint256 public startBonusAt;
+    uint256 public lastBonusAt;
+    uint256 public pendingToken; //每期产出
+
+    // 每个池的信息。
+    address[] public pools;
+    mapping(address => PoolInfo) public poolInfo; //节点详情
+
+    // 每个持有 LP 代币的用户的信息。
+    mapping(address => mapping(address => UserInfo)) public userInfo;
+    mapping(address => uint256) public userReward;
+
+    // 总分配点数。 必须是所有池中所有分配点的总和。
+    uint256 public totalAllocPoint = 0;
+
+    event Deposit(
+        address indexed user,
+        address indexed lpToken,
+        uint256 amount
+    );
+    event Withdraw(
+        address indexed user,
+        address indexed lpToken,
+        uint256 amount
+    );
+    event EmergencyWithdraw(
+        address indexed user,
+        address indexed lpToken,
+        uint256 amount
+    );
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    function initalize(address _token) public {
+        require(token == address(0));
+        token = _token;
+        startBonusAt = block.timestamp;
+    }
+
+    function setOwner(address owner_) public onlyOwner {
+        owner = owner_;
+    }
+
+    function setTokenAddr(address _token) public onlyOwner {
+        token = _token;
+    }
+
+    function setBonusReward(uint256 _start, uint256 _reward) public onlyOwner {
+        startBonusAt = _start;
+        BASE_BONUS_REWARD = _reward;
+    }
+
+    function setBonusOption(
+        uint256 _reduce,
+        uint256 _bonus,
+        uint256 deposit1,
+        uint256 deposit2,
+        uint256 deposit3
+    ) public onlyOwner {
+        REDUCE_BONUS_DURATION = _reduce; //30d
+        BONUS_DURATION = _bonus; //1d
+        DEPOSIT_DURATION_1 = deposit1; //30d
+        DEPOSIT_DURATION_2 = deposit2; //60d
+        DEPOSIT_DURATION_3 = deposit3; //90d
+    }
+
+    function poolLength() external view returns (uint256) {
+        return pools.length;
+    }
+
+    function getPool(uint256 pid) public view returns (PoolInfo memory) {
+        return poolInfo[pools[pid]];
+    }
+
+    function getUserPools(uint256 pid, address _account)
+        public
+        view
+        returns (PoolInfo memory, UserInfo memory)
+    {
+        address _lpToken = pools[pid];
+        return (poolInfo[_lpToken], userInfo[_lpToken][_account]);
+    }
+
+    // 将新的 lp 添加到池中。 只能由所有者调用。
+    // XXX 不要多次添加相同的 LP 令牌。 如果你这样做，奖励会被搞砸。
+    // _allocPoint 分配点
+    function addPool(uint256 _allocPoint, address _lpToken) public onlyOwner {
+        require(poolInfo[_lpToken].lpToken == address(0)); //防呆，避免重复添加池
+        totalAllocPoint = totalAllocPoint.add(_allocPoint);
+        pools.push(_lpToken);
+        poolInfo[_lpToken] = PoolInfo({
+            supply: 0,
+            lpToken: _lpToken,
+            allocPoint: _allocPoint,
+            accPerShare: 0
+        });
+    }
+
+    // 更新给定池的 token 分配点。 只能由所有者调用。
+    function setPool(address _lpToken, uint256 _allocPoint) public onlyOwner {
+        totalAllocPoint = totalAllocPoint
+            .sub(poolInfo[_lpToken].allocPoint)
+            .add(_allocPoint);
+        poolInfo[_lpToken].allocPoint = _allocPoint;
+    }
+
+    // 更新所有池的奖励变量。 小心汽油消费！
+    function bonusReward() public {
+        require(
+            block.timestamp - lastBonusAt > BONUS_DURATION,
+            "Error: BONUS_DURATION"
+        );
+
+        uint256 _bonusReward = BASE_BONUS_REWARD;
+        uint256 _cycle = block.timestamp.sub(startBonusAt).div(
+            REDUCE_BONUS_DURATION
+        );
+        if (_cycle > 0) {
+            _bonusReward = _bonusReward.sub(
+                BASE_BONUS_REWARD.mul(5).mul(_cycle).div(1000)
+            );
+        }
+
+        pendingToken = _bonusReward / 30;
+        uint256 length = pools.length;
+        lastBonusAt = block.timestamp;
+
+        for (uint256 pid = 0; pid < length; ++pid) {
+            updatePool(pools[pid]);
+        }
+    }
+
+    function updatePool(address _lpToken) private {
+        PoolInfo storage pool = poolInfo[_lpToken];
+        if (pool.allocPoint > 0 && pool.supply > 0) {
+            uint256 _reward = pendingToken.mul(pool.allocPoint).div(
+                totalAllocPoint
+            );
+            pool.accPerShare = pool.accPerShare.add(
+                _reward.mul(1e12).div(pool.supply)
+            );
+        }
+    }
+
+    // 将 LP 代币存入
+    function deposit(
+        address _lpToken,
+        uint256 _duration,
+        uint256 _amount
+    ) public {
+        PoolInfo storage pool = poolInfo[_lpToken];
+        UserInfo storage user = userInfo[_lpToken][msg.sender];
+        if (user.allotment > 0) {
+            require(_duration == user.duration, "Error: User Duration");
+            _takeReward(msg.sender, _lpToken);
+        }
+
+        uint256 balanceBefore = IERC20(pool.lpToken).balanceOf(address(this)); //兼容有手续费的代币
+        TransferHelper.safeTransferFrom(
+            pool.lpToken,
+            msg.sender,
+            address(this),
+            _amount
+        );
+        uint256 balanceAdd = IERC20(pool.lpToken).balanceOf(address(this)) -
+            balanceBefore; //兼容有手续费的代币
+
+        uint256 _rate;
+        (_duration, _rate) = _depositRate(_duration);
+        user.duration = _duration;
+
+        uint256 _allotment = user.allotment;
+        user.amount = user.amount.add(balanceAdd);
+        user.allotment = user.amount.mul(_rate).div(100);
+        user.lastDepositAt = block.timestamp;
+        pool.supply = pool.supply.add(user.allotment.sub(_allotment));
+
+        user.rewardDebt = user.allotment.mul(pool.accPerShare).div(1e12);
+        emit Deposit(msg.sender, _lpToken, balanceAdd);
+    }
+
+    // 从 MasterChef 中提现 LP 代币。
+    function withdraw(address _lpToken, uint256 _amount) public {
+        PoolInfo storage pool = poolInfo[_lpToken];
+        UserInfo storage user = userInfo[_lpToken][msg.sender];
+        require(user.amount >= _amount, "withdraw: not good");
+        require(
+            block.timestamp - user.lastDepositAt >= user.duration,
+            "Error: User Duration"
+        );
+
+        _takeReward(msg.sender, _lpToken);
+
+        user.amount = user.amount.sub(_amount);
+        (, uint256 _rate) = _depositRate(user.duration);
+        if (user.amount == 0) {
+            pool.supply = pool.supply.sub(user.allotment);
+            user.duration = 0;
+            user.allotment = 0;
+            user.rewardDebt = 0;
+        } else {
+            uint256 _allotment = user.amount.mul(_rate).div(100);
+            pool.supply = pool.supply.sub(user.allotment.sub(_allotment));
+            user.allotment = _allotment;
+            user.rewardDebt = user.allotment.mul(pool.accPerShare).div(1e12);
+        }
+
+        TransferHelper.safeTransfer(pool.lpToken, msg.sender, _amount);
+
+        emit Withdraw(msg.sender, _lpToken, _amount);
+    }
+
+    // 提现而不关心奖励。 仅限紧急情况。
+    function emergencyWithdraw(address _lpToken) public {
+        PoolInfo storage pool = poolInfo[_lpToken];
+        UserInfo storage user = userInfo[_lpToken][msg.sender];
+        require(
+            block.timestamp - user.lastDepositAt >= user.duration,
+            "Error: User Duration"
+        );
+        TransferHelper.safeTransfer(pool.lpToken, msg.sender, user.amount);
+
+        pool.supply = pool.supply.sub(user.allotment);
+        user.amount = 0;
+        user.allotment = 0;
+        user.duration = 0;
+        user.rewardDebt = 0;
+        emit EmergencyWithdraw(msg.sender, _lpToken, user.amount);
+    }
+
+    function rewardAmount(address _account, address _lpToken)
+        public
+        view
+        returns (uint256)
+    {
+        PoolInfo storage pool = poolInfo[_lpToken];
+        UserInfo storage user = userInfo[_lpToken][_account];
+        uint256 pending;
+        if (
+            user.allotment > 0 &&
+            pool.supply > 0 &&
+            pool.allocPoint > 0 &&
+            pool.accPerShare > 0
+        ) {
+            pending = user.allotment.mul(pool.accPerShare).div(1e12).sub(
+                user.rewardDebt
+            );
+        }
+        return pending;
+    }
+
+    // 直接领取收益
+    function takeReward(address _lpToken) public {
+        PoolInfo storage pool = poolInfo[_lpToken];
+        UserInfo storage user = userInfo[_lpToken][msg.sender];
+        require(lastBonusAt > user.lastRewardAt, "Error: lastRewardAt");
+
+        // 质押到期时间
+        uint256 bonusTimes;
+        uint256 userDepositDuration = user.lastDepositAt + user.duration;
+        // 超期了
+        if (block.timestamp > userDepositDuration) {
+            //超过时间
+            uint256 overflowTime = block.timestamp - userDepositDuration;
+            //超期的时间内分红次数
+            bonusTimes = overflowTime.div(BONUS_DURATION);
+        }
+
+        if (bonusTimes > 5) {
+            user.lastDepositAt = block.timestamp;
+        } else if (bonusTimes > 1) {
+            withdraw(_lpToken, user.amount);
+        } else {
+            _takeReward(msg.sender, _lpToken);
+            user.rewardDebt = user.allotment.mul(pool.accPerShare).div(1e12);
+        }
+    }
+
+    function _takeReward(address _account, address _lpToken) private {
+        uint256 pending = rewardAmount(_account, _lpToken);
+        if (pending > 0) {
+            UserInfo storage user = userInfo[_lpToken][_account];
+            safeTransfer(_account, pending);
+            user.lastRewardAt = block.timestamp;
+        }
+    }
+
+    function _depositRate(uint256 _duration)
+        public
+        view
+        returns (uint256, uint256)
+    {
+        if (_duration == DEPOSIT_DURATION_2) {
+            return (DEPOSIT_DURATION_2, 110);
+        } else if (_duration == DEPOSIT_DURATION_3) {
+            return (DEPOSIT_DURATION_3, 120);
+        } else {
+            return (DEPOSIT_DURATION_1, 100);
+        }
+    }
+
+    // 安全的转账功能，以防万一如果舍入错误导致池没有足够的奖励。
+    function safeTransfer(address _to, uint256 _amount) internal {
+        if (_amount > 0) {
+            uint256 _reward = IERC20(token).balanceOf(address(this));
+            if (_amount > _reward) {
+                _amount = _reward;
+            }
+            userReward[_to] = userReward[_to].add(_amount);
+            TransferHelper.safeTransfer(token, _to, _amount);
+        }
+    }
+}

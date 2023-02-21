@@ -1,0 +1,76 @@
+
+// File: /contracts/BlucamonEvolution.sol
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.7.0 <0.9.0;
+
+contract BlucamonEvolution {
+    address public blucamonOwnershipContract;
+    address public graveyard;
+    mapping(address => uint256[]) evolvedBlucamonMapping;
+
+    constructor(address _ownershipContractAddress, address _graveyard) {
+        blucamonOwnershipContract = _ownershipContractAddress;
+        graveyard = _graveyard;
+    }
+
+    function evolve(uint256 _id) external {
+        uint256[] storage evolvedBlucamonList = evolvedBlucamonMapping[
+            msg.sender
+        ];
+        validateEvolving(evolvedBlucamonList, _id);
+        transferToGraveyard(_id, msg.sender);
+        updateEvolvedList(_id, msg.sender);
+    }
+
+    function validateEvolving(
+        uint256[] storage _evolvedBlucamonList,
+        uint256 _id
+    ) private {
+        (, bytes memory ownerData) = blucamonOwnershipContract.call(
+            abi.encodeWithSignature("getBlucamonOwner(uint256)", _id)
+        );
+        address owner = abi.decode(ownerData, (address));
+        require(owner == msg.sender, "S_EVO_100");
+        (, bytes memory isApprovedData) = blucamonOwnershipContract.call(
+            abi.encodeWithSignature(
+                "isApprovedForAll(address,address)",
+                msg.sender,
+                address(this)
+            )
+        );
+        bool isApproved = abi.decode(isApprovedData, (bool));
+        require(isApproved, "S_EVO_200");
+        bool isBlucamonEvolved = false;
+        for (uint256 i = 0; i < _evolvedBlucamonList.length; i++) {
+            if (_evolvedBlucamonList[i] == _id) {
+                isBlucamonEvolved = true;
+            }
+        }
+        require(!isBlucamonEvolved, "S_EVO_300");
+    }
+
+    function transferToGraveyard(uint256 _id, address _owner) private {
+        (bool result, ) = blucamonOwnershipContract.call(
+            abi.encodeWithSignature(
+                "transferFrom(address,address,uint256)",
+                _owner,
+                graveyard,
+                _id
+            )
+        );
+        require(result, "S_EVO_400");
+    }
+
+    function updateEvolvedList(uint256 _id, address _owner) private {
+        evolvedBlucamonMapping[_owner].push(_id);
+    }
+
+    function getEvolvedBlucamonList(address _address)
+        public
+        view
+        returns (uint256[] memory)
+    {
+        return evolvedBlucamonMapping[_address];
+    }
+}
+

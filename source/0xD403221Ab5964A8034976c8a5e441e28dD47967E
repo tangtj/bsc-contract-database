@@ -1,0 +1,313 @@
+// SPDX-License-Identifier: Unlicensed
+pragma solidity ^0.6.5;
+
+interface IBEP20 {
+
+  function totalSupply() external view returns (uint256);
+
+  function decimals() external view returns (uint8);
+
+  function symbol() external view returns (string memory);
+
+  function name() external view returns (string memory);
+
+  function getOwner() external view returns (address);
+
+  function balanceOf(address account) external view returns (uint256);
+
+  function transfer(address recipient, uint256 amount) external returns (bool);
+
+  function allowance(address _owner, address spender) external view returns (uint256);
+
+  function approve(address spender, uint256 amount) external returns (bool);
+
+  function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+  event Transfer(address indexed from, address indexed to, uint256 value);
+
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract Context {
+
+  constructor () internal { }
+
+  function _msgSender() internal view returns (address payable) {
+    return msg.sender;
+  }
+
+  function _msgData() internal view returns (bytes memory) {
+    this; 
+    return msg.data;
+  }
+}
+
+contract Ownable is Context {
+  address private _owner;
+
+  event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+  constructor () internal {
+    address msgSender = _msgSender();
+    _owner = msgSender;
+    emit OwnershipTransferred(address(0), msgSender);
+  }
+
+  function owner() public view returns (address) {
+    return _owner;
+  }
+
+  modifier onlyOwner() {
+    require(_owner == _msgSender(), "Ownable: caller is not the owner");
+    _;
+  }
+
+  function renounceOwnership() public onlyOwner {
+    emit OwnershipTransferred(_owner, address(0));
+    _owner = address(0);
+  }
+
+  function transferOwnership(address newOwner) public onlyOwner {
+    _transferOwnership(newOwner);
+  }
+
+  function _transferOwnership(address newOwner) internal {
+    require(newOwner != address(0), "Ownable: new owner is the zero address");
+    emit OwnershipTransferred(_owner, newOwner);
+    _owner = newOwner;
+  }
+}
+
+contract Pausable is Ownable {
+  event Pause();
+  event Unpause();
+
+  bool public paused = false;
+
+  modifier whenNotPaused() {
+    require(!paused);
+    _;
+  }
+
+  modifier whenPaused() {
+    require(paused);
+    _;
+  }
+
+  function pause() onlyOwner whenNotPaused public {
+    paused = true;
+    Pause();
+  }
+
+  function unpause() onlyOwner whenPaused public {
+    paused = false;
+    Unpause();
+  }
+}
+
+library SafeMath {
+
+  function add(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a + b;
+    require(c >= a, "SafeMath: addition overflow");
+
+    return c;
+  }
+
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    return sub(a, b, "SafeMath: subtraction overflow");
+  }
+
+  function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+    require(b <= a, errorMessage);
+    uint256 c = a - b;
+
+    return c;
+  }
+
+  function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+    // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+    // benefit is lost if 'b' is also tested.
+    // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+    if (a == 0) {
+      return 0;
+    }
+
+    uint256 c = a * b;
+    require(c / a == b, "SafeMath: multiplication overflow");
+
+    return c;
+  }
+
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    return div(a, b, "SafeMath: division by zero");
+  }
+
+  function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+    // Solidity only automatically asserts when dividing by 0
+    require(b > 0, errorMessage);
+    uint256 c = a / b;
+    // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+    return c;
+  }
+
+  function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+    return mod(a, b, "SafeMath: modulo by zero");
+  }
+
+  function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+    require(b != 0, errorMessage);
+    return a % b;
+  }
+}
+
+contract PledgeContract is  Context,  Pausable{
+  using SafeMath for uint;
+/*********************************************struct ******************************************************************/
+    //质押信息
+    struct PledgeData {
+        address userAddr; //质押地址
+        uint256 startTime;  //质押时间
+        uint256 duration; //质押时长，天
+        uint256 amount;    //质押币值
+        bool exist;   //是否已赎回
+    }
+
+    //用户信息
+    struct UserData {
+        uint256 tatolAmount;    //质押总币值
+        uint256 withdrawed;  //已提利息
+        uint256 waiting;  //待提利息
+        uint256 interestArg; //已计息参数
+        uint256[] pledges; //详细质押索引
+    }
+/********************************************mapping *****************************/
+    mapping(uint256 => PledgeData) public pledgeData;
+    mapping(address => UserData) private userData;
+/**********************************************values **********************************************/
+    string constant public Version = "PLEDGE V0.1.1";    
+    uint256 private totalPledge; //总质押币值
+    uint256 private interestArg;  //当前计息参数
+    uint256 private index;  //总质押笔数
+    address private token;  //支持的代币地址
+
+/*****************************************************events ****************************************************/
+    event Profit(uint256 _token, uint _price);
+    event NewPledge(address indexed _userAddr, uint256 _index, uint256 _amount, uint256 _duration);
+    event WithdrawPledge(address indexed _userAddr, uint256 _index, uint256 _amount);
+    event WithdrawInterest(address indexed _userAddr, uint256 _interest);
+/**************************************************** constructor *************************************/
+    constructor() public {}
+/**************************************************** public view function *************************************/
+    //获取全局信息
+    function getInfo() public view returns (uint256 _totalPledge, uint256 _interestArg, uint256 _index, address _token) {
+      return (totalPledge, interestArg, index, token);
+    }
+
+        //获取用户信息
+    function getUserData(address who) public view returns (        
+      uint256 _tatolAmount,    //质押总币值
+      uint256 _withdrawed,  //已提利息
+      uint256 _waiting,  //待提利息
+      uint256 _interestArg, //已计息参数
+      uint256[] memory _pledges //详细质押索引
+      ) {
+      return (userData[who].tatolAmount, userData[who].withdrawed, userData[who].waiting, userData[who].interestArg,userData[who].pledges);
+    }
+
+/************************************************* onlyOwner Set function **********************************************/
+    function SetContracts(address _token) public onlyOwner {
+        token = _token;
+    }
+
+    //提取指定
+    function WithdrawToken(address _token) public onlyOwner{
+        IBEP20(_token).transfer(msg.sender,IBEP20(_token).balanceOf(address(this)));
+    }
+/**************************************************************public function *****************************************************************/
+    //质押
+    function PledgeIn(address _userAddr, uint256 _amount, uint256 _duration) public{
+      transferIn(_userAddr, _amount);
+      updateUserData(_userAddr);
+      makePledgeData(_userAddr, _amount, _duration);
+    }
+    //赎回
+    function WithdrawPledgeOf(uint256 _index) public{
+      require(msg.sender == pledgeData[_index].userAddr, "not self pledge");
+      require(pledgeData[_index].startTime.add(pledgeData[_index].duration.mul(86400)) <= block.timestamp, "Unexpired");
+      require(!pledgeData[_index].exist, "pledge is exist!");
+      updateUserData(pledgeData[_index].userAddr);
+      pledgeOut(_index);
+    }
+    //提息
+    function WithdrawInterestAll() public{
+      updateUserData(msg.sender);
+      if(userData[msg.sender].waiting > 0) withdrawInterest(msg.sender);
+    }
+    //IRewardPool接口，用于收益发放
+    function DoReward(uint256 _token, uint _price) whenNotPaused public {
+      require(totalPledge > 0 && _token > 0 && _price > 0, "CAN-NOT-DO-REWARD");
+      uint256 increment = _token.mul(1e18).div(totalPledge);
+      require(increment > 0, "Reward amount too small");
+      transferIn(msg.sender, _token);
+      interestArg = interestArg.add(increment);
+      emit Profit(_token, _price);
+    }
+/****************************************************** private function **********************************************************/
+    function makePledgeData(address _userAddr, uint256 _amount, uint256 _duration) private{
+      pledgeData[index] = PledgeData({
+        userAddr: _userAddr, 
+        startTime: block.timestamp,
+        duration: _duration, 
+        amount: _amount,    
+        exist: false 
+      });
+
+      userData[_userAddr].tatolAmount = userData[_userAddr].tatolAmount.add(_amount);
+      userData[_userAddr].pledges.push(index);
+      totalPledge = totalPledge.add(_amount);
+      
+      emit NewPledge(_userAddr, index, _amount, _duration);
+      index++;
+    }
+
+    function transferOut(address _to, uint256 _token) private {
+      if (_token > 0) IBEP20(token).transfer(_to,_token);
+    }
+
+    function transferIn(address _from, uint256 _token) private {
+      if (_token > 0) IBEP20(token).transferFrom(_from,address(this),_token);
+    }
+
+    function pledgeOut(uint256 _index) private{      
+      pledgeData[_index].exist = true;
+      address _userAddr = pledgeData[_index].userAddr;
+      uint256 _amount = pledgeData[_index].amount;
+      userData[_userAddr].tatolAmount = userData[_userAddr].tatolAmount.sub(_amount);
+      totalPledge = totalPledge.sub(_amount);
+      transferOut(_userAddr,_amount);
+      emit WithdrawPledge(_userAddr, _index, _amount);
+    }
+
+    function withdrawInterest(address _userAddr) private{
+      uint256 interest = userData[_userAddr].waiting;
+      userData[_userAddr].waiting = 0;
+      userData[_userAddr].withdrawed = userData[_userAddr].withdrawed.add(interest);
+      transferOut(_userAddr, interest);
+      
+      emit WithdrawInterest(_userAddr, interest);
+    }
+
+    //更新状态
+    function updateUserData(address _userAddr) private {
+        if(interestArg > userData[_userAddr].interestArg){
+          uint256 increment = interestArg.sub(userData[_userAddr].interestArg);
+          uint256 incrementWaiting = userData[_userAddr].tatolAmount.mul(increment).div(1e18);
+          userData[_userAddr].waiting =  userData[_userAddr].waiting.add(incrementWaiting);          
+        }
+        userData[_userAddr].interestArg = interestArg; 
+    }
+/****************************************************** internal view function **********************************************************/
+   
+}

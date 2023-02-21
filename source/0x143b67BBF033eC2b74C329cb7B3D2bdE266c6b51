@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.6;
+
+abstract contract Ownable {
+    address public owner;
+
+    event OwnershipTransferred(address owner);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "!OWNER");
+        _;
+    }
+
+    function transferOwnership(address adr) external onlyOwner {
+        owner = adr;
+        emit OwnershipTransferred(adr);
+    }
+}
+
+    // for BOT protection 
+    abstract contract BPContract{
+    function protect( address sender, address receiver, uint256 amount ) external virtual;
+    }
+
+contract FLOKIFAM is Ownable {
+
+    string public constant name = "Floki Family";
+    string public constant symbol = "FLOKIFAM";
+    uint8 public constant decimals = 18;
+    uint256 public totalSupply = 1000000000000000 * 1e18;
+    address public taxCollector;
+    uint256 taxPercentage = 8;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    
+    BPContract public BP;
+    bool public bpEnabled;
+    bool public BPDisabledForever = false;    //BOT protection 
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    mapping(address => bool) public excludeFromTax;
+
+    constructor(address _taxCollector) {
+        taxCollector = _taxCollector;
+        balanceOf[msg.sender] = totalSupply;
+        emit Transfer(address(0), msg.sender, totalSupply);
+    }
+    
+    //BOT protection function
+    function setBPAddress(address _bp) external onlyOwner {
+     require(address(BP)== address(0), "Can only be initialized once");
+    BP = BPContract(_bp);
+    }
+    //BOT protection function
+    function setBpEnabled(bool _enabled) external onlyOwner {
+    bpEnabled = _enabled;
+    }
+    //BOT protection function
+    function setBotProtectionDisableForever() external onlyOwner{
+    require(BPDisabledForever == false);
+    BPDisabledForever = true;
+    }
+
+    function getOwner() external view returns (address) {
+        return owner;
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        return approve(spender, allowance[msg.sender][spender] + addedValue);
+    }
+
+    function decreaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        return approve(spender, allowance[msg.sender][spender] - addedValue);
+    }
+
+    function transfer(address recipient, uint256 amount) external returns (bool) {
+        return _transfer(msg.sender, recipient, amount);
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool) {
+        allowance[sender][msg.sender] -= amount;
+        return _transfer(sender, recipient, amount);
+    }
+
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal returns (bool) {
+        
+        //check for bot protection
+        if (bpEnabled && !BPDisabledForever){
+        BP.protect(sender, recipient, amount);
+        }
+        //no tax
+        if (excludeFromTax[sender] == true)
+        {
+        balanceOf[sender] -= amount;
+        balanceOf[recipient] += amount;
+        emit Transfer(sender, recipient, amount);    
+        }
+        else
+        {
+        //deduct tax
+        uint256 taxAmount = (taxPercentage*amount)/100;
+        uint256 amountAfterTax = amount - taxAmount;
+        balanceOf[sender] -= amount;
+        balanceOf[recipient] += amountAfterTax;
+        emit Transfer(sender, recipient, amountAfterTax);
+        balanceOf[taxCollector] += taxAmount;
+        emit Transfer(sender, taxCollector, taxAmount);
+        }
+        
+        return true;
+    }
+
+    function burn(uint256 amount) external onlyOwner returns (bool) {
+        balanceOf[msg.sender] -= amount;
+        totalSupply -= amount;
+        emit Transfer(msg.sender, address(0), amount);
+        return true;
+    }
+    
+    function updateTaxPercentage(uint256 _taxPercentage) public onlyOwner
+    {
+        require (_taxPercentage < 10);//putting an upper limit
+        taxPercentage = _taxPercentage;
+    }
+        
+    function updateTaxCollector(address _taxCollector) public onlyOwner
+    {
+        taxCollector = _taxCollector;
+    }
+    
+    function excludeFromFees(address _excludeAddress) public onlyOwner
+    {
+        excludeFromTax[_excludeAddress] = true;
+    }
+}

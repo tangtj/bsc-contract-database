@@ -1,0 +1,463 @@
+
+// File: /contracts/OPBorrowingDelegator.sol
+// SPDX-License-Identifier: BUSL-1.1
+
+pragma solidity >=0.8.0 <0.9.0;
+
+import "./common/DelegatorInterface.sol";
+import "./common/Adminable.sol";
+import "./IOPBorrowing.sol";
+
+contract OPBorrowingDelegator is DelegatorInterface, Adminable {
+    constructor(
+        OPBorrowingStorage.MarketConf memory _marketDefConf,
+        OPBorrowingStorage.LiquidationConf memory _liquidationConf,
+        address payable _admin,
+        address implementation_
+    ) {
+        admin = payable(msg.sender);
+        // Creator of the contract is admin during initialization
+        // First delegate gets to initialize the delegator (i.e. storage contract)
+        delegateTo(implementation_, abi.encodeWithSelector(IOPBorrowing(implementation_).initialize.selector, _marketDefConf, _liquidationConf));
+        implementation = implementation_;
+        // Set the proper admin now that initialization is done
+        admin = _admin;
+    }
+
+    /**
+     * Called by the admin to update the implementation of the delegator
+     * @param implementation_ The address of the new implementation for delegation
+     */
+    function setImplementation(address implementation_) public override onlyAdmin {
+        address oldImplementation = implementation;
+        implementation = implementation_;
+        emit NewImplementation(oldImplementation, implementation);
+    }
+}
+
+
+// File: /contracts/interfaces/XOLEInterface.sol
+// SPDX-License-Identifier: BUSL-1.1
+
+pragma solidity >0.7.6;
+
+interface XOLEInterface {
+    function balanceOf(address account) external view returns (uint256);
+}
+
+
+// File: /contracts/interfaces/OpenLevInterface.sol
+// SPDX-License-Identifier: BUSL-1.1
+
+pragma solidity >0.7.6;
+
+interface OpenLevInterface {
+    struct Market {
+        // Market info
+        address pool0; // Lending Pool 0
+        address pool1; // Lending Pool 1
+        address token0; // Lending Token 0
+        address token1; // Lending Token 1
+        uint16 marginLimit; // Margin ratio limit for specific trading pair. Two decimal in percentage, ex. 15.32% => 1532
+        uint16 feesRate; // feesRate 30=>0.3%
+        uint16 priceDiffientRatio;
+        address priceUpdater;
+        uint256 pool0Insurance; // Insurance balance for token 0
+        uint256 pool1Insurance; // Insurance balance for token 1
+    }
+
+    function markets(uint16 marketId) external view returns (Market memory market);
+
+    function taxes(uint16 marketId, address token, uint index) external view returns (uint24);
+
+    function getMarketSupportDexs(uint16 marketId) external view returns (uint32[] memory);
+}
+
+
+// File: /contracts/interfaces/OPBuyBackInterface.sol
+// SPDX-License-Identifier: BUSL-1.1
+
+pragma solidity >=0.8.0 <0.9.0;
+
+interface OPBuyBackInterface {
+    function transferIn(address token, uint amount) external;
+}
+
+
+// File: /contracts/interfaces/LPoolInterface.sol
+// SPDX-License-Identifier: BUSL-1.1
+
+pragma solidity >0.7.6;
+
+interface LPoolInterface {
+    function underlying() external view returns (address);
+
+    function totalBorrows() external view returns (uint);
+
+    function borrowBalanceCurrent(address account) external view returns (uint);
+
+    function borrowBalanceStored(address account) external view returns (uint);
+
+    function borrowBehalf(address borrower, uint borrowAmount) external;
+
+    function repayBorrowBehalf(address borrower, uint repayAmount) external;
+
+    function repayBorrowEndByOpenLev(address borrower, uint repayAmount) external;
+}
+
+
+// File: /contracts/interfaces/DexAggregatorInterface.sol
+// SPDX-License-Identifier: BUSL-1.1
+
+pragma solidity >0.7.6;
+
+interface DexAggregatorInterface {
+    function getPrice(address desToken, address quoteToken, bytes memory data) external view returns (uint256 price, uint8 decimals);
+
+    function getPriceCAvgPriceHAvgPrice(address desToken, address quoteToken, uint32 secondsAgo, bytes memory dexData) external view returns (uint256 price, uint256 cAvgPrice, uint256 hAvgPrice, uint8 decimals, uint256 timestamp);
+
+    function updatePriceOracle(address desToken, address quoteToken, uint32 timeWindow, bytes memory data) external returns (bool);
+
+    function getToken0Liquidity(address token0, address token1, bytes memory dexData) external view returns (uint);
+
+    function getPairLiquidity(address token0, address token1, bytes memory dexData) external view returns (uint token0Liq, uint token1Liq);
+
+    function buy(address buyToken, address sellToken, uint24 buyTax, uint24 sellTax, uint buyAmount, uint maxSellAmount, bytes memory data) external returns (uint sellAmount);
+
+    function sell(address buyToken, address sellToken, uint sellAmount, uint minBuyAmount, bytes memory data) external returns (uint buyAmount);
+}
+
+
+// File: /contracts/interfaces/ControllerInterface.sol
+// SPDX-License-Identifier: BUSL-1.1
+
+pragma solidity >0.7.6;
+
+interface ControllerInterface {
+    function collBorrowAllowed(uint marketId, address borrower, bool collateralIndex) external view returns (bool);
+
+    function collRepayAllowed(uint marketId) external view returns (bool);
+
+    function collRedeemAllowed(uint marketId) external view returns (bool);
+
+    function collLiquidateAllowed(uint marketId) external view returns (bool);
+}
+
+
+// File: /contracts/common/DelegatorInterface.sol
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity >0.7.6;
+
+abstract contract DelegatorInterface {
+    /**
+     * Implementation address for this contract
+     */
+    address public implementation;
+
+    /**
+     * Emitted when implementation is changed
+     */
+    event NewImplementation(address oldImplementation, address newImplementation);
+
+    /**
+     * Called by the admin to update the implementation of the delegator
+     * @param implementation_ The address of the new implementation for delegation
+     */
+    function setImplementation(address implementation_) public virtual;
+
+    /**
+     * Internal method to delegate execution to another contract
+     * @dev It returns to the external caller whatever the implementation returns or forwards reverts
+     * @param callee The contract to delegatecall
+     * @param data The raw data to delegatecall
+     * @return The returned bytes from the delegatecall
+     */
+    function delegateTo(address callee, bytes memory data) internal returns (bytes memory) {
+        (bool success, bytes memory returnData) = callee.delegatecall(data);
+        assembly {
+            if eq(success, 0) {
+                revert(add(returnData, 0x20), returndatasize())
+            }
+        }
+        return returnData;
+    }
+
+    /**
+     * Delegates execution to the implementation contract
+     * @dev It returns to the external caller whatever the implementation returns or forwards reverts
+     * @param data The raw data to delegatecall
+     * @return The returned bytes from the delegatecall
+     */
+    function delegateToImplementation(bytes memory data) public returns (bytes memory) {
+        return delegateTo(implementation, data);
+    }
+
+    /**
+     * Delegates execution to an implementation contract
+     * @dev It returns to the external caller whatever the implementation returns or forwards reverts
+     *  There are an additional 2 prefix uints from the wrapper returndata, which we ignore since we make an extra hop.
+     * @param data The raw data to delegatecall
+     * @return The returned bytes from the delegatecall
+     */
+    function delegateToViewImplementation(bytes memory data) public view returns (bytes memory) {
+        (bool success, bytes memory returnData) = address(this).staticcall(abi.encodeWithSignature("delegateToImplementation(bytes)", data));
+        assembly {
+            if eq(success, 0) {
+                revert(add(returnData, 0x20), returndatasize())
+            }
+        }
+        return abi.decode(returnData, (bytes));
+    }
+
+    /**
+     * Delegates execution to an implementation contract
+     * @dev It returns to the external caller whatever the implementation returns or forwards reverts
+     */
+    fallback() external payable {
+        _fallback();
+    }
+
+    receive() external payable {
+        _fallback();
+    }
+
+    function _fallback() internal {
+        // delegate all other functions to current implementation
+        if (msg.data.length > 0) {
+            (bool success, ) = implementation.delegatecall(msg.data);
+            assembly {
+                let free_mem_ptr := mload(0x40)
+                returndatacopy(free_mem_ptr, 0, returndatasize())
+                switch success
+                case 0 {
+                    revert(free_mem_ptr, returndatasize())
+                }
+                default {
+                    return(free_mem_ptr, returndatasize())
+                }
+            }
+        }
+    }
+}
+
+
+// File: /contracts/common/Adminable.sol
+// SPDX-License-Identifier: BUSL-1.1
+
+pragma solidity >0.7.6;
+
+abstract contract Adminable {
+    address payable public admin;
+    address payable public pendingAdmin;
+    address payable public developer;
+
+    event NewPendingAdmin(address oldPendingAdmin, address newPendingAdmin);
+
+    event NewAdmin(address oldAdmin, address newAdmin);
+
+    constructor() {
+        developer = payable(msg.sender);
+    }
+
+    modifier onlyAdmin() {
+        checkAdmin();
+        _;
+    }
+    modifier onlyAdminOrDeveloper() {
+        require(msg.sender == admin || msg.sender == developer, "caller must be admin or developer");
+        _;
+    }
+
+    function setPendingAdmin(address payable newPendingAdmin) external virtual onlyAdmin {
+        // Save current value, if any, for inclusion in log
+        address oldPendingAdmin = pendingAdmin;
+        // Store pendingAdmin with value newPendingAdmin
+        pendingAdmin = newPendingAdmin;
+        // Emit NewPendingAdmin(oldPendingAdmin, newPendingAdmin)
+        emit NewPendingAdmin(oldPendingAdmin, newPendingAdmin);
+    }
+
+    function acceptAdmin() external virtual {
+        require(msg.sender == pendingAdmin, "only pendingAdmin can accept admin");
+        // Save current values for inclusion in log
+        address oldAdmin = admin;
+        address oldPendingAdmin = pendingAdmin;
+        // Store admin with value pendingAdmin
+        admin = pendingAdmin;
+        // Clear the pending value
+        pendingAdmin = payable(0);
+        emit NewAdmin(oldAdmin, admin);
+        emit NewPendingAdmin(oldPendingAdmin, pendingAdmin);
+    }
+
+    function checkAdmin() private view {
+        require(msg.sender == admin, "caller must be admin");
+    }
+}
+
+
+// File: /contracts/IOPBorrowing.sol
+// SPDX-License-Identifier: BUSL-1.1
+
+pragma solidity >=0.8.0 <0.9.0;
+
+import "./interfaces/LPoolInterface.sol";
+import "./interfaces/OpenLevInterface.sol";
+import "./interfaces/ControllerInterface.sol";
+import "./interfaces/DexAggregatorInterface.sol";
+import "./interfaces/XOLEInterface.sol";
+import "./interfaces/OPBuyBackInterface.sol";
+
+contract OPBorrowingStorage {
+
+    event NewMarket(uint16 marketId, LPoolInterface pool0, LPoolInterface pool1, address token0, address token1, uint32 dex, uint token0Liq, uint token1Liq);
+
+    event CollBorrow(address indexed borrower, uint16 marketId, bool collateralIndex, uint collateral, uint borrow, uint borrowFees);
+
+    event CollRepay(address indexed borrower, uint16 marketId, bool collateralIndex, uint repayAmount, uint collateral);
+
+    event CollRedeem(address indexed borrower, uint16 marketId, bool collateralIndex, uint collateral);
+
+    event CollLiquidate(address indexed borrower, uint16 marketId, bool collateralIndex, address liquidator, uint collateralDecrease, uint repayAmount, uint outstandingAmount, uint liquidateFees, uint token0Price);
+
+    event NewLiquidity(uint16 marketId, uint oldToken0Liq, uint oldToken1Liq, uint newToken0Liq, uint newToken1Liq);
+
+    event NewMarketConf(
+        uint16 marketId,
+        uint16 collateralRatio,
+        uint16 maxLiquidityRatio,
+        uint16 borrowFeesRatio,
+        uint16 insuranceRatio,
+        uint16 poolReturnsRatio,
+        uint16 liquidateFeesRatio,
+        uint16 liquidatorReturnsRatio,
+        uint16 liquidateInsuranceRatio,
+        uint16 liquidatePoolReturnsRatio,
+        uint16 liquidateMaxLiquidityRatio,
+        uint16 twapDuration
+    );
+
+    struct Market {
+        LPoolInterface pool0;// pool0 address
+        LPoolInterface pool1;// pool1 address
+        address token0;// token0 address
+        address token1;// token1 address
+        uint32 dex;// decentralized exchange
+    }
+
+    struct MarketConf {
+        uint16 collateralRatio; //  the collateral ratio, 6000 => 60%
+        uint16 maxLiquidityRatio; // the maximum pool's total borrowed cannot be exceeded dex liquidity*ratio, 1000 => 10%
+        uint16 borrowFeesRatio; // the borrowing fees ratio, 30 => 0.3%
+        uint16 insuranceRatio; // the insurance percentage of the borrowing fees, 3000 => 30%
+        uint16 poolReturnsRatio; // the pool's returns percentage of the borrowing fees, 3000 => 30%
+        uint16 liquidateFeesRatio; // the liquidation fees ratio, 100 => 1%
+        uint16 liquidatorReturnsRatio; // the liquidator returns percentage of the liquidation fees, 3000 => 30%
+        uint16 liquidateInsuranceRatio; // the insurance percentage of the liquidation fees, 3000 => 30%
+        uint16 liquidatePoolReturnsRatio; // the pool's returns percentage of the liquidation fees, 3000 => 30%
+        uint16 liquidateMaxLiquidityRatio; // the maximum liquidation amount cannot be exceeded dex liquidity*ratio, 1000=> 10%
+        uint16 twapDuration; // the TWAP duration, 60 => 60s
+    }
+
+    struct Borrow {
+        uint collateral;// the collateral share
+        uint128 lastBlockNum;// the last updated block number
+    }
+
+    struct Liquidity {
+        uint token0Liq;// the token0 liquidity
+        uint token1Liq;// the token1 liquidity
+    }
+
+    struct Insurance {
+        uint insurance0; // the token0 insurance
+        uint insurance1;// the token1 insurance
+    }
+
+    struct LiquidationConf {
+        uint128 liquidatorXOLEHeld;//  the minimum amount of xole held by liquidator
+        uint8 priceDiffRatio; // the maximum ratio of real price diff TWAP, 10 => 10%
+        OPBuyBackInterface buyBack; // the ole buyback contract address
+    }
+
+    uint internal constant RATIO_DENOMINATOR = 10000;
+
+    address public immutable wETH;
+
+    OpenLevInterface public immutable openLev;
+
+    ControllerInterface public immutable controller;
+
+    DexAggregatorInterface public immutable dexAgg;
+
+    XOLEInterface public immutable xOLE;
+
+    // mapping of marketId to market info
+    mapping(uint16 => Market) public markets;
+
+    // mapping of marketId to market config
+    mapping(uint16 => MarketConf) public marketsConf;
+
+    // mapping of borrower, marketId, collateralIndex to collateral balances
+    mapping(address => mapping(uint16 => mapping(bool => Borrow))) public activeBorrows;
+
+    // mapping of marketId to insurances
+    mapping(uint16 => Insurance) public insurances;
+
+    // mapping of marketId to time weighted average liquidity
+    mapping(uint16 => Liquidity) public twaLiquidity;
+
+    // mapping of token address to total shares
+    mapping(address => uint) public totalShares;
+
+    MarketConf public marketDefConf;
+
+    LiquidationConf public liquidationConf;
+
+    constructor(OpenLevInterface _openLev,
+        ControllerInterface _controller,
+        DexAggregatorInterface _dexAgg,
+        XOLEInterface _xOLE,
+        address _wETH){
+        openLev = _openLev;
+        controller = _controller;
+        dexAgg = _dexAgg;
+        xOLE = _xOLE;
+        wETH = _wETH;
+    }
+}
+
+interface IOPBorrowing {
+    function initialize(
+        OPBorrowingStorage.MarketConf memory _marketDefConf,
+        OPBorrowingStorage.LiquidationConf memory _liquidationConf
+    ) external;
+
+    // only controller
+    function addMarket(uint16 marketId, LPoolInterface pool0, LPoolInterface pool1, bytes memory dexData) external;
+
+    /*** Borrower Functions ***/
+    function borrow(uint16 marketId, bool collateralIndex, uint collateral, uint borrowing) external payable;
+
+    function repay(uint16 marketId, bool collateralIndex, uint repayAmount, bool isRedeem) external payable;
+
+    function redeem(uint16 marketId, bool collateralIndex, uint collateral) external;
+
+    function liquidate(uint16 marketId, bool collateralIndex, address borrower) external;
+
+    function collateralRatio(uint16 marketId, bool collateralIndex, address borrower) external view returns (uint current);
+
+    /*** Admin Functions ***/
+    function migrateOpenLevMarkets(uint16 from, uint16 to) external;
+
+    function setTwaLiquidity(uint16[] calldata marketIds, OPBorrowingStorage.Liquidity[] calldata liquidity) external;
+
+    function setMarketDefConf(OPBorrowingStorage.MarketConf calldata _marketConf) external;
+
+    function setMarketConf(uint16 marketId, OPBorrowingStorage.MarketConf calldata _marketConf) external;
+
+    function setLiquidationConf(OPBorrowingStorage.LiquidationConf calldata _liquidationConf) external;
+
+    function moveInsurance(uint16 marketId, bool tokenIndex, address to, uint moveShare) external;
+}
+
