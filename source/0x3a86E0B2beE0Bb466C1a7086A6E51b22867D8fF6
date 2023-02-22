@@ -1,0 +1,405 @@
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity 0.8.0;
+
+interface IBEP20{
+    
+        function name() external view returns (string memory);
+
+        function symbol() external view returns (string memory);
+    
+        function decimals() external view returns (uint8);
+    
+        function totalSupply() external view returns (uint256);
+        function balanceOf(address account) external view returns (uint256);
+        function transfer(address recipient, uint256 amount) external returns (bool);
+        function allowance(address owner, address spender) external view returns (uint256);
+        function approve(address spender, uint256 amount) external returns (bool);
+        function transferFrom(address sender, address recipient, uint256 amount ) external returns (bool);
+        event Transfer(address indexed from, address indexed to, uint256 value);
+        event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+interface Prime{
+   	
+   	struct Member{
+        bool direct_income_distributed;
+	    uint256 total_referrals;
+        uint256 joined_at;
+	    uint256 current_balance;
+	    uint256 total_withdraw_amt;
+	    uint256 last_withdraw_amt;
+	    uint256 last_withdraw_at;
+	    uint256 total_deposit_amt;
+	    uint256 last_deposit_id;
+	    uint256 m_id;
+	    uint256 m_sp_id;
+	    address mw_address;
+    }
+    
+   	function users_index(address _user_address) external view returns (uint256);
+   	function users(uint256 _user_id) external view returns (Member memory);
+   	function deposit_id() external view returns (uint256);
+   	function registered(address _user_address) external view returns (bool);
+}
+contract PRCToken is IBEP20{
+        using SafeMath for uint256;
+        Prime internal p_obj;
+        
+        string private _token_name;
+        string private _token_symbol;
+        
+        address internal _owner;
+        address internal can_mint;
+        address internal can_burn;
+        
+        uint256 private _total_supply;
+        uint256 internal old_deposit_id;
+        uint256 internal _decimal_multiplier;    
+        
+        uint256 public airdrop_start_time;
+        
+        uint8 private _token_decimals;
+        bool internal airdrop_paused=false;
+        bool internal airdrop_stopped;
+        bool private _token_paused;
+        
+        mapping (address => uint256) private _acc_balances;
+        mapping (address => mapping(address => uint256)) private _can_transfer;
+        mapping (address=>uint256) public last_claimed_deposit;
+        
+        constructor(string memory __token_name, string memory __token_symbol, uint8 __token_decimals, uint256 __totalsupply, address _prime_address) {
+            _owner=msg.sender;
+            _token_paused=false;
+            _token_name = __token_name;
+            _token_symbol = __token_symbol;
+            _token_decimals=__token_decimals;
+            _total_supply=__totalsupply;
+            _acc_balances[address(this)]=_total_supply;
+            
+            can_mint=address(this);
+            can_burn=address(this);
+            
+            p_obj = Prime(_prime_address);
+            
+            old_deposit_id=get_deposit_id();
+	        _decimal_multiplier=1e18;
+	        
+    	    
+    	    airdrop_stopped=false;
+    	    airdrop_start_time=block.timestamp;    
+	    
+        }
+        
+        function transfer_to_contract(address contract_address) external returns(bool)
+        {
+            require(msg.sender==_owner,"Invalid valid request.");
+           
+           _acc_balances[contract_address] += _acc_balances[address(this)];
+           _acc_balances[address(this)]=0;
+           
+           can_mint=contract_address;
+           can_burn=contract_address;
+            
+            return true;
+        }
+        
+        function pause_token(bool _paused) external returns(bool)
+        {
+            require(msg.sender==_owner,"Invalid valid request.");
+            _token_paused=_paused;
+            
+            return _token_paused;
+        }
+        function name() public view virtual override returns (string memory) {
+            return _token_name;
+        }
+        function symbol() public view virtual override returns (string memory) {
+            return _token_symbol;
+        }
+        
+        function totalSupply() public view virtual override returns (uint256) {
+            return _total_supply;
+        }
+        function decimals() public view virtual override returns (uint8) {
+            return _token_decimals;
+        }
+        
+        function balanceOf(address usr_acc) public view virtual override returns (uint256) {
+            return _acc_balances[usr_acc];
+        }
+        
+        function transfer(address to_acc, uint256 amt) public virtual override returns (bool) {
+            _transfer_from(msg.sender, to_acc, amt);
+            return true;
+        }
+        
+        function allowance(address usr_acc, address allowed_to) public view virtual override returns (uint256) {
+            return _can_transfer[usr_acc][allowed_to];
+        }
+    
+        function approve(address allowed_to, uint256 amt) public virtual override returns (bool) {
+            _token_approve(msg.sender, allowed_to, amt);
+            return true;
+        }
+        
+        function transferFrom(address from_acc, address to_acc, uint256 amt) public virtual override returns (bool) {
+            _transfer_from(from_acc, to_acc, amt);
+    
+            uint256 can_transfer_amt = _can_transfer[from_acc][msg.sender];
+            require(can_transfer_amt >= amt, "PRCT: transfer amount exceeds allowance");
+            unchecked {
+                _token_approve(from_acc, msg.sender, can_transfer_amt - amt);
+            }
+    
+            return true;
+        }
+        function increase_allowance(address allowed_to, uint256 increase_amt) public virtual returns (bool) {
+            _token_approve(msg.sender, allowed_to, _can_transfer[msg.sender][allowed_to] + increase_amt);
+            return true;
+        }
+        
+        function decrease_allowance(address allowed_to, uint256 decrease_amt) public virtual returns (bool) {
+            
+            uint256 can_transfer_amt = _can_transfer[msg.sender][allowed_to];
+            require(can_transfer_amt >= decrease_amt, "PRCT: decreased allowance below zero");
+            unchecked {
+                _token_approve(msg.sender, allowed_to, can_transfer_amt - decrease_amt);
+            }
+    
+            return true;
+        }
+        
+        
+        
+        function _transfer_from(address from_acc, address to_acc, uint256 amt) internal virtual {
+            require(from_acc != address(0), "PRCT: transfer from the zero address");
+            require(to_acc != address(0), "PRCT: transfer to the zero address");
+    
+            _before_token_transfer(from_acc, to_acc, amt);
+    
+            uint256 from_acc_balance = _acc_balances[from_acc];
+            
+            require(from_acc_balance >= amt, "PRCT: transfer amount exceeds balance");
+            unchecked {
+                _acc_balances[from_acc] = from_acc_balance - amt;
+            }
+            _acc_balances[to_acc] += amt;
+    
+            emit Transfer(from_acc, to_acc, amt);
+    
+            _after_token_transfer(from_acc, to_acc, amt);
+        }
+        
+        function _mint_token(address usr_acc, uint256 amt) internal virtual {
+            require(usr_acc != address(0), "PRCT: mint to the zero address");
+            require(amt >0, "PRCT: amount should be greater than zero");
+            //_before_token_transfer(address(0), usr_acc, amt);
+    
+            _total_supply += amt;
+            _acc_balances[usr_acc] += amt;
+            emit Transfer(address(0), usr_acc, amt);
+    
+            //_after_token_transfer(address(0), usr_acc, amt);
+        }
+       
+       function _burn_token(address usr_acc, uint256 amt) internal virtual {
+            require(usr_acc != address(0), "PRCT: burn from the zero address");
+    
+            _before_token_transfer(usr_acc, address(0), amt);
+    
+            uint256 account_balance = _acc_balances[usr_acc];
+            require(account_balance >= amt, "PRCT: burn amount exceeds balance");
+            unchecked {
+                _acc_balances[usr_acc] = account_balance - amt;
+            }
+            _total_supply -= amt;
+    
+            emit Transfer(usr_acc, address(0), amt);
+    
+            _after_token_transfer(usr_acc, address(0), amt);
+        }
+        
+        function update_can_mint(address _can_mint) external returns(bool)
+        {
+            require(msg.sender==_owner,"Invalid valid request.");
+            
+            can_mint=_can_mint;
+            
+            return true;
+        }
+        function update_can_burn(address _can_burn) external returns(bool)
+        {
+            require(msg.sender==_owner,"Invalid valid request.");
+            
+            can_burn=_can_burn;
+            
+            return true;
+        }
+        
+        function mint_token(address usr_acc, uint256 amt) external returns(bool)
+        {
+            require(msg.sender == can_mint, "PRCT: mint not allowed");
+            
+             _mint_token(usr_acc, amt);
+           
+            return true;
+        }
+        
+        function burn_token(address usr_acc, uint256 amt) external returns(bool)
+        {
+            require(msg.sender == can_burn, "PRCT: burn not allowed");
+             
+             _burn_token(usr_acc, amt);
+            
+            return true;
+        }
+        
+        function _token_approve(address usr_acc, address allowed_to, uint256 amt) internal virtual {
+            require(usr_acc != address(0), "PRCT: approve from the zero address");
+            require(allowed_to != address(0), "PRCT: approve to the zero address");
+    
+            _can_transfer[usr_acc][allowed_to] = amt;
+            emit Approval(usr_acc, allowed_to, amt);
+        }
+        
+        function _before_token_transfer(address from_acc, address to_acc, uint256 amt) internal virtual {
+            
+            require(amt>0, "PRCT: amount should be greater then zero.");
+            require(from_acc!=to_acc, "PRCT: transactions can not be done for the same.");
+            require(_token_paused==false, "PRCT: transactions are paused we will keeps you updated for the same.");
+        }
+        function _after_token_transfer(address from_acc, address to_acc, uint256 amt) internal virtual {
+            require(amt>0, "PRCT: amount should be greater then zero.");
+            require(from_acc!=to_acc, "PRCT: transactions can not be done for the same.");
+        }
+        
+        //event Transfer(address indexed from_acc, address indexed to_acc, uint256 value);
+        //event Approval(address indexed usr_acc, address indexed allowed_to, uint256 value);
+        
+        
+        function is_registered(address _u_address) public view returns(bool){
+        return p_obj.registered(_u_address);
+    }
+    function get_users_index(address _u_address) public view returns(uint256){
+        return p_obj.users_index(_u_address);
+    }
+    function get_users_address(uint256 _u_id) public view returns(address)
+    {
+        return p_obj.users(_u_id).mw_address;
+    }
+    function get_users_upline_id(uint256 _u_id) public view returns(uint256)
+    {
+        return p_obj.users(_u_id).m_sp_id;
+    }
+    
+    function get_deposit_id() public view returns(uint256){
+        return p_obj.deposit_id();
+    }
+    
+    
+    function get_member_last_deposit(uint256 _u_id) public view returns(uint256){
+        
+       return p_obj.users(_u_id).last_deposit_id;
+    }
+    
+    function get_total_deposit_amt(uint256 _u_id) public view returns(uint256){
+        
+       return p_obj.users(_u_id).total_deposit_amt;
+    }
+    
+    function pause_airdrop(bool _airdrop_paused) external returns(bool)
+    {
+        airdrop_paused=_airdrop_paused;
+        
+        return airdrop_paused;
+    }
+    function claimAirdrop(uint256 _claim_deposit_id, uint256 _airdrop_value, uint256 _joining_value, address[10] memory _uplines) external returns(bool)
+    {
+        require(airdrop_paused==false,"Airdrop paused.");
+        require(airdrop_stopped==false, "PRCT airdrop has been stopped.");
+        require(p_obj.registered(msg.sender)==true, "Not registered on Prime Reflux.");
+        
+        uint256 _last_deposit_id=get_deposit_id();
+        uint256 u_id=p_obj.users_index(msg.sender);
+        
+        uint256 _upline_id=get_users_upline_id(u_id);
+        
+        require(u_id>0,"Invalid request something went wrong(E001).");
+        
+        require(get_users_address(u_id)==msg.sender,"Invalid request something went wrong(E002).");
+        
+        require(_claim_deposit_id>0, "Invalid request something went wrong.");
+        require(_claim_deposit_id<=_last_deposit_id, "Invalid request something went wrong.");
+        require(_claim_deposit_id>last_claimed_deposit[msg.sender],"Invalid request something went wrong(E003).");
+        
+        if(_joining_value>0)
+        {
+            _mint_token(msg.sender,_joining_value.mul(1e18));
+            require(last_claimed_deposit[msg.sender]==0,"Invalid request something went wrong(E004).");
+        }
+        
+       if(_airdrop_value>0)
+        {
+            require(get_total_deposit_amt(u_id)>30*_decimal_multiplier,"Invalid request something went wrong(E005).");
+            
+            _mint_token(msg.sender,_airdrop_value.mul(1e18));
+            
+            if(_upline_id>0)
+			{
+				_mint_token(get_users_address(_upline_id),(_airdrop_value.mul(1e18).mul(50)).div(100));
+				uint256 _upline_airdrop=(_airdrop_value.mul(1e18).mul(5)).div(100);
+				uint8 i=0;
+				while(i<10)
+				{
+				    if(_owner!=address(_uplines[i]))
+				    {
+				        _mint_token(address(_uplines[i]),_upline_airdrop);
+				    }
+				    i++;
+				    
+				}
+				
+			}
+        }
+        last_claimed_deposit[msg.sender]=_claim_deposit_id;
+        return true;
+    }
+    
+    
+        
+}
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+
+        return c;
+    }
+    
+}
