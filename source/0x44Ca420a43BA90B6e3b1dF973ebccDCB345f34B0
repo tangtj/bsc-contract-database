@@ -1,0 +1,163 @@
+
+// File: contracts/flashLoanArbitrage/swapTokenPancakeRoute1_Main.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+import "../interfaces/IERC20.sol";
+import "../interfaces/IWBNB.sol";
+import "../interfaces/IUniswapV2Router01.sol";
+
+contract SwapPancakeRoute1_Main {
+  address private owner;
+  address private constant WBNB_MAIN = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+  address private constant routerApe = 0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7;
+  address private constant routerPancake = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+  IWBNB wbnb = IWBNB(WBNB_MAIN);
+  constructor ( ) public {
+    owner = msg.sender;
+  }
+  receive() external payable {}
+  function excuteSwap (address _tokenOut) external {
+    require(msg.sender == owner, "not owner");
+    IERC20(WBNB_MAIN).approve(routerPancake, wbnb.balanceOf(address(this)));
+    address[] memory path;
+    address[] memory path_;
+    path = new address[](2);
+    path_ = new address[](2);
+    path[0] = WBNB_MAIN;
+    path[1] = _tokenOut;
+    path_[0] = _tokenOut;
+    path_[1] = WBNB_MAIN;
+    uint[] memory amounts = IUniswapV2Router01(routerPancake).swapExactTokensForTokens(wbnb.balanceOf(address(this)), 0, path, address(this), block.timestamp);
+    IERC20(_tokenOut).approve(routerApe, amounts[1]);
+    IUniswapV2Router01(routerApe).swapExactTokensForTokens(amounts[1], 0, path_ , address(this), block.timestamp);
+    uint pf_WBNB = wbnb.balanceOf(address(this)) - amounts[0];
+    wbnb.withdraw(pf_WBNB);
+    payable(msg.sender).transfer(pf_WBNB);
+  }
+
+  function withdrawWBNB( ) external {
+    require(msg.sender == owner, "not owner");
+    wbnb.transfer(msg.sender, wbnb.balanceOf(address(this)));
+  }
+}
+
+
+// File: contracts/interfaces/IERC20.sol
+interface IERC20 {
+  function totalSupply() external view returns (uint);
+  function balanceOf(address account) external view returns (uint);
+  function transfer(address recipient, uint amount) external returns (bool);
+  function allowance(address owner, address spender) external view returns (uint);
+  function approve(address spender, uint amount) external returns (bool);
+  function transferFrom(
+      address sender,
+      address recipient,
+      uint amount
+  ) external returns (bool);
+  event Transfer(address indexed from, address indexed to, uint value);
+  event Approval(address indexed owner, address indexed spender, uint value);
+}
+
+// File: contracts/interfaces/IUniswapV2Router01.sol
+interface IUniswapV2Router01 {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETH(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountToken, uint amountETH);
+    function removeLiquidityWithPermit(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETHWithPermit(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountToken, uint amountETH);
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapTokensForExactTokens(
+        uint amountOut,
+        uint amountInMax,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+    function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+
+    function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+// File: contracts/interfaces/IWBNB.sol
+interface IWBNB {
+  function deposit() external payable;
+  function withdraw(uint) external ;
+  function transfer(address dst, uint wad) external returns (bool);
+  function balanceOf(address account) external view returns (uint);
+
+}

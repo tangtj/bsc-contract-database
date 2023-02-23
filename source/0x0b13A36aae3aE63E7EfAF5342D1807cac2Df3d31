@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.6.6 <0.9.0;
+
+// From https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v3.0.0/contracts/token/ERC20/IERC20.sol"
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20
+{
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+}
+
+interface IPancakePair
+{
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    event Mint(address indexed sender, uint amount0, uint amount1);
+    event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+    event Swap(
+        address indexed sender,
+        uint amount0In,
+        uint amount1In,
+        uint amount0Out,
+        uint amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+}
+
+interface IWETH
+{
+    function withdraw(uint) external;
+}
+
+contract SimpleCakeSwap
+{
+    address private immutable owner;
+    
+    address private constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c; // real BSC
+    //address private constant WBNB = 0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd; // testnet
+    
+    constructor()
+    {
+        owner = msg.sender;
+    }
+
+    function simpleCakeSwapTokenZeroToOne(
+        address liquidityPair, address token0,
+        uint256 tokenZeroAmountIn,
+        uint256 tokenOneAmountOut,
+        address receiver) external
+    {
+        IERC20(token0).transferFrom(msg.sender, liquidityPair, tokenZeroAmountIn);
+        IPancakePair(liquidityPair).swap(0, tokenOneAmountOut, receiver, "");
+    }
+    
+    function simpleCakeSwapTokenZeroToOneAsBNB(
+        address liquidityPair, address token0,
+        uint256 tokenZeroAmountIn,
+        uint256 tokenOneAmountOut,
+        address receiver) external
+    {
+        IERC20(token0).transferFrom(msg.sender, liquidityPair, tokenZeroAmountIn);
+        IPancakePair(liquidityPair).swap(0, tokenOneAmountOut, address(this), "");
+        IWETH(WBNB).withdraw(tokenOneAmountOut);
+        payable(receiver).send(tokenOneAmountOut);
+    }
+        
+    function simpleCakeSwapTokenOneToZero(
+        address liquidityPair, address token1,
+        uint256 tokenOneAmountIn,
+        uint256 tokenZeroAmountOut,
+        address receiver) external
+    {
+        IERC20(token1).transferFrom(msg.sender, liquidityPair, tokenOneAmountIn);
+        IPancakePair(liquidityPair).swap(tokenZeroAmountOut, 0, receiver, "");
+    }
+        
+    function simpleCakeSwapTokenOneToZeroAsBNB(
+        address liquidityPair, address token1,
+        uint256 tokenOneAmountIn,
+        uint256 tokenZeroAmountOut,
+        address receiver) external
+    {
+        IERC20(token1).transferFrom(msg.sender, liquidityPair, tokenOneAmountIn);
+        IPancakePair(liquidityPair).swap(tokenZeroAmountOut, 0, address(this), "");
+        IWETH(WBNB).withdraw(tokenZeroAmountOut);
+        payable(receiver).send(tokenZeroAmountOut);
+    }
+   
+    receive() external payable {}
+    
+    function killme() external
+    {
+        require(msg.sender == owner, "not owner");
+        selfdestruct(payable(owner));
+    }
+}

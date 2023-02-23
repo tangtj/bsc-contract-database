@@ -1,0 +1,253 @@
+
+// File: contracts/PUBToken.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.5;
+
+contract Ownable {
+    address public owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner);
+        _;
+    }
+
+    function renounceOwnership() public onlyOwner {
+        emit OwnershipTransferred(owner, address(0));
+        owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0));
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+}
+
+contract PUBToken is Ownable {
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+    uint256 public totalSupply;
+    uint256 decimalfactor;
+    uint256 public Max_Token;
+
+    uint64 public burnPercent = 1000; // 10 %
+    uint64 public burnExtra = 1000;
+    uint64 public mintWalletBurnPercentage = 50;
+    uint128 public dailyMaxTransc = 100000000;
+    bool mintAllowed = true;
+    uint256 burnTime;
+    address public mintWallet = 0x1db1d33b9965d4A3225A3A6c48Aeeac703Fb008a;
+    address public otherWallet = 0xd34AdaF170fA04840604990B3e7C37530745f494;
+
+    uint64 public maxPercentage = 200; // percentage for cheking user transaction amount
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public excludeUser;
+    mapping(uint64 => uint64) transactionsPerDay;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+    constructor(
+        string memory SYMBOL,
+        string memory NAME,
+        uint8 DECIMALS
+    ) {
+        symbol = SYMBOL;
+        name = NAME;
+        decimals = DECIMALS;
+        decimalfactor = 10**uint256(decimals);
+        Max_Token = 1_11_111 * decimalfactor;
+        mint(mintWallet, ((70*Max_Token)/100));
+        mint(otherWallet, ((30*Max_Token)/100));
+        burnTime = block.timestamp;
+    }
+
+    function _transfer(
+        address _from,
+        address _to,
+        uint256 _value
+    ) internal {
+        uint256 dayValue = 1 days;
+        uint256 chekAmount = (maxPercentage * Max_Token) / 10000;
+        uint64 completeTime = uint64((block.timestamp / dayValue) * dayValue);
+        uint256 previousBalances;
+
+        require(
+            transactionsPerDay[completeTime] < dailyMaxTransc,
+            "per day transactions limit reached"
+        );
+        require(_from != address(0), "ERC20: transfer from the zero address");
+        require(_to != address(0), "ERC20: transfer to the zero address");
+        require(
+            balanceOf[_from] >= _value,
+            "ERC20: 'from' address balance is low"
+        );
+        require(
+            balanceOf[_to] + _value >= balanceOf[_to],
+            "ERC20: Value is negative"
+        );
+
+        uint256 burnValue;
+        if (excludeUser[msg.sender]) {
+            balanceOf[_from] -= _value;
+            balanceOf[_to] += _value;
+        } else {
+            if (_value <= chekAmount) {
+                burnValue = (burnPercent * _value) / 10000;
+            } else {
+                burnValue = (burnExtra * _value) / 10000;
+            }
+
+            previousBalances = balanceOf[_from] + balanceOf[_to];
+            balanceOf[_from] -= _value;
+            balanceOf[_to] += _value - (burnValue);
+            totalSupply -= burnValue;
+            mintAllowed = true;
+            emit Transfer(msg.sender, address(0), burnValue);
+        }
+
+        ++transactionsPerDay[completeTime];
+        burnWallet();
+        emit Transfer(_from, _to, (_value - (burnValue)));
+    }
+
+    function transfer(address _to, uint256 _value)
+        public
+        virtual
+        returns (bool)
+    {
+        _transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    function transferFrom(
+        address _from,
+        address _to,
+        uint256 _value
+    ) public virtual returns (bool success) {
+        require(
+            _value <= allowance[_from][msg.sender],
+            "ERC20: Allowance error"
+        );
+        allowance[_from][msg.sender] -= _value;
+        _transfer(_from, _to, _value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value)
+        public
+        returns (bool success)
+    {
+        allowance[msg.sender][spender] = value;
+        burnWallet();
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function burnWallet() internal {
+        uint256 oneDay = 1 days;
+        uint256 counter = (block.timestamp - burnTime) / oneDay;
+        if (balanceOf[mintWallet] > 0 && counter > 0) {
+            uint256 burnValue = (counter *
+                mintWalletBurnPercentage *
+                balanceOf[mintWallet]) / 10000; // 0.5%
+            if (burnValue > 0) {
+                balanceOf[mintWallet] -= burnValue;
+                totalSupply -= burnValue;
+                mintAllowed = true;
+                burnTime = burnTime + (counter * oneDay);
+                emit Transfer(mintWallet, address(0), burnValue);
+            }
+        }
+    }
+
+    function burn(uint256 _value) public returns (bool success) {
+        require(
+            balanceOf[msg.sender] >= _value,
+            "ERC20: Transfer amount exceeds user balance"
+        );
+
+        balanceOf[msg.sender] -= _value;
+        totalSupply -= _value;
+
+        mintAllowed = true;
+
+        emit Transfer(msg.sender, address(0), _value);
+        return true;
+    }
+
+    function mint(address to, uint256 value) public returns (bool success) {
+        require(
+            Max_Token >= (totalSupply + value),
+            "ERC20: Max Token limit exceeds"
+        );
+        require(mintAllowed, "ERC20: Max supply reached");
+
+        if (Max_Token == (totalSupply + value)) {
+            mintAllowed = false;
+        }
+
+        require(msg.sender == owner, "ERC20: Only Owner Can Mint");
+
+        balanceOf[to] += value;
+        totalSupply += value;
+
+        require(
+            balanceOf[to] >= value,
+            "ERC20: Transfer amount cannot be negative"
+        );
+
+        emit Transfer(address(0), to, value);
+        return true;
+    }
+
+    //   ****************************************        Setter Functions           *********************************************
+
+    function excludeAddressFromFee(address _user, bool _status)
+        external
+        onlyOwner
+    {
+        burnWallet();
+        excludeUser[_user] = _status;
+    }
+
+    function updateDailyMaxTrans(uint128 _transc) external onlyOwner {
+        burnWallet();
+        dailyMaxTransc = _transc;
+    }
+
+    function UpdateBurnPercent(uint64 _percent) external onlyOwner {
+        burnWallet();
+        burnPercent = _percent;
+    }
+
+    function updateBurnExtra(uint64 _burnExtra) external onlyOwner {
+        burnWallet();
+        burnExtra = _burnExtra;
+    }
+
+    function updateMintWalletBurnPercentage(uint64 _mintWalletBurnPercentage)
+        external
+        onlyOwner
+    {
+        burnWallet();
+        mintWalletBurnPercentage = _mintWalletBurnPercentage;
+    }
+}
+
