@@ -1,0 +1,579 @@
+pragma solidity ^0.6.12;
+// SPDX-License-Identifier: Unlicensed
+
+library Address {
+	function isContract(address account) internal view returns (bool) {
+		// According to EIP-1052, 0x0 is the value returned for not-yet created accounts
+		// and 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470 is returned
+		// for accounts without code, i.e. `keccak256('')`
+		bytes32 codehash;
+		bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+		// solhint-disable-next-line no-inline-assembly
+		assembly { codehash := extcodehash(account) }
+		return (codehash != accountHash && codehash != 0x0);
+	}
+
+	function sendValue(address payable recipient, uint256 amount) internal {
+		require(address(this).balance >= amount, "Address: insufficient balance");
+ 
+		// solhint-disable-next-line avoid-low-level-calls, avoid-call-value
+		(bool success, ) = recipient.call{ value: amount }("");
+		require(success, "Address: unable to send value, recipient may have reverted");
+	}
+
+	function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+		return functionCall(target, data, "Address: low-level call failed");
+	}
+
+	function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+		return _functionCallWithValue(target, data, 0, errorMessage);
+	}
+
+	function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+		return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+	}
+
+	function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+		require(address(this).balance >= value, "Address: insufficient balance for call");
+		return _functionCallWithValue(target, data, value, errorMessage);
+	}
+
+	function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+		require(isContract(target), "Address: call to non-contract");
+
+		// solhint-disable-next-line avoid-low-level-calls
+		(bool success, bytes memory returndata) = target.call{ value: weiValue }(data);
+		if (success) {
+			return returndata;
+		} else {
+			// Look for revert reason and bubble it up if present
+			if (returndata.length > 0) {
+				// The easiest way to bubble the revert reason is using memory via assembly
+				// solhint-disable-next-line no-inline-assembly
+				assembly {
+					let returndata_size := mload(returndata)
+					revert(add(32, returndata), returndata_size)
+				}
+			} else {
+				revert(errorMessage);
+			}
+		}
+	}
+}
+
+abstract contract Context {
+	function _msgSender() internal view virtual returns (address payable) {
+		return msg.sender;
+	}
+
+	function _msgData() internal view virtual returns (bytes memory) {
+		this; // silence state mutability warning without generating bytecode - issue 2691
+		return msg.data;
+	}
+}
+
+interface IERC20 {
+	function totalSupply() external view returns (uint256);
+	function balanceOf(address account) external view returns (uint256);
+	function transfer(address recipient, uint256 amount) external returns (bool);
+	function allowance(address owner, address spender) external view returns (uint256);
+	function approve(address spender, uint256 amount) external returns (bool);
+	function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+	event Transfer(address indexed from, address indexed to, uint256 value);
+	event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract Ownable is Context {
+	address private _owner;
+	address private _previousOwner;
+	address private _lockTime;
+
+	event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+	constructor () internal {
+		address msgSender = _msgSender();
+		_owner = msgSender;
+		emit OwnershipTransferred(address(0), msgSender);
+	}
+
+	function owner() public view returns (address) {
+		return _owner;
+	}
+
+	modifier onlyOwner() {
+		require(_owner == _msgSender(), "Ownable: caller is not the owner");
+		_;
+	}
+
+	function renounceOwnership() public virtual onlyOwner {
+		emit OwnershipTransferred(_owner, address(0));
+		_owner = address(0);
+	}
+
+	function transferOwnership(address newOwner) public virtual onlyOwner {
+		require(newOwner != address(0), "Ownable: new owner is the zero address");
+		emit OwnershipTransferred(_owner, newOwner);
+		_owner = newOwner;
+	}
+}
+
+library SafeMath {
+	function add(uint256 a, uint256 b) internal pure returns (uint256) {
+		uint256 c = a + b;
+		require(c >= a, "SafeMath: addition overflow");
+		return c;
+	}
+
+	function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+		require(b <= a, "SafeMath: subtraction overflow");
+		uint256 c = a - b;
+		return c;
+	}
+
+	function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+ 
+        return c;
+    }
+
+	function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+		if (a == 0) {
+			return 0;
+		}
+
+		uint256 c = a * b;
+		require(c / a == b, "SafeMath: multiplication overflow");
+		return c;
+	}
+
+	function div(uint256 a, uint256 b) internal pure returns (uint256) {
+		require(b > 0, "SafeMath: division by zero");
+		uint256 c = a / b;
+		return c;
+	}
+
+	function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+ 
+        return c;
+    }
+
+	function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+		require(b != 0, "SafeMath: modulo by zero");
+		uint256 c = a % b;
+		return c;
+	}
+}
+
+contract Discreet is Context, IERC20, Ownable {
+	using SafeMath for uint256;
+	using Address for address;
+
+	mapping (address => uint256) private _balances;
+	mapping (address => mapping (address => uint256)) private _allowances;
+
+	mapping (address => bool) private _functionWhitelist;
+	mapping (address => bool) private _transferWhitelist;
+
+	address public devlock;
+	uint256 public _devlockdate;
+	
+	uint256 private _total = 90 * 10**6 * 10**18; // 90 million
+
+	string private _name = "Discreet";
+	string private _symbol = "BDIS";
+	uint8 private _decimals = 18;
+
+	uint256 public preseedTokenSupply = 20 * 10**6 * 10**18;
+	uint256 public seedTokenSupply = 20 * 10**6 * 10**18;
+	uint256 public publicTokenSupply = 30 * 10**6 * 10**18;
+	uint256 public teamTokenSupply = 5 * 10**6 * 10**18;
+	uint256 public projectTokenSupply = 10 * 10**6 * 10**18;
+	uint256 public lockedTokenSupply = 5 * 10**6 * 10**18;
+
+	bool public _seedTokensReleased = false;
+	bool public _publicTokensReleased = false;
+	bool public _lockedTokensReleased = false;
+	bool public _preseedTokensReleased = false;
+
+	address public _preseedContract;	// pressed round contract; facilitate purchases
+	address public _seedContract;
+	address public _publicContract;		// public round contract
+
+	uint256 public _maxTxAmount = 10**6 * 10**18;
+
+	modifier onlyWhitelist() {
+		require(_functionWhitelist[_msgSender()] == true, "Address must be whitelisted to perform this");
+		_;
+	}
+
+	event Airdrop(address indexed from, uint256 numReceived, uint256 numTokens);
+
+	constructor (address _DEVLOCK_, address _TEAM_) public {
+		require (teamTokenSupply.add(projectTokenSupply.add(lockedTokenSupply.add(preseedTokenSupply.add(seedTokenSupply.add(publicTokenSupply))))) == _total, "Total tokens doesn't match!");
+		_balances[_DEVLOCK_] = lockedTokenSupply;
+		_balances[_TEAM_] = teamTokenSupply.add(projectTokenSupply);
+		_balances[address(this)] = preseedTokenSupply.add(seedTokenSupply.add(publicTokenSupply));
+
+		devlock = _DEVLOCK_;
+		_transferWhitelist[_msgSender()] = true;
+		_functionWhitelist[_msgSender()] = true;
+
+		emit Transfer(address(0), address(this), _balances[address(this)]);
+		emit Transfer(address(0), _DEVLOCK_, lockedTokenSupply);
+		emit Transfer(address(0), _TEAM_, teamTokenSupply.add(projectTokenSupply));
+
+		_devlockdate = now + 267 days;
+	}
+
+	function seedTokensReleased() public view returns (bool) {
+		return _seedTokensReleased;
+	}
+
+	function publicTokensReleased() public view returns (bool) {
+		return _publicTokensReleased;
+	}
+
+	function lockedTokensReleased() public view returns (bool) {
+		return _lockedTokensReleased;
+	}
+
+	function preseedTokensReleased() public view returns (bool) {
+		return _preseedTokensReleased;
+	}
+
+	function getPreseedTokenSupply() public view returns (uint256) {
+		return preseedTokenSupply;
+	}
+
+	function getSeedTokenSupply() public view returns (uint256) {
+		return seedTokenSupply;
+	}
+
+	function getPublicTokenSupply() public view returns (uint256) {
+		return publicTokenSupply;
+	}
+
+	function name() public view returns (string memory) {
+        return _name;
+    }
+ 
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+ 
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+ 
+    function totalSupply() public view override returns (uint256) {
+        return _total;
+    }
+ 
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+ 
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+ 
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+ 
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+ 
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+        return true;
+    }
+ 
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+        return true;
+    }
+ 
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+        return true;
+    }
+
+	function _approve(address owner, address spender, uint256 amount) private {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+ 
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+	function addTransferWhitelist(address addressToWhitelist) public onlyOwner() {
+		_transferWhitelist[addressToWhitelist] = true;
+	}
+
+	function removeTransferWhitelist(address addressToWhitelist) public onlyOwner() {
+		_transferWhitelist[addressToWhitelist] = false;
+	}
+
+	function isTransferWhitelisted(address addr) public view returns (bool) {
+		return _transferWhitelist[addr];
+	}
+
+	function addFunctionWhitelist(address addressToWhitelist) public onlyOwner() {
+		_functionWhitelist[addressToWhitelist] = true;
+	}
+
+	function removeFunctionWhitelist(address addressToWhitelist) public onlyOwner() {
+		_functionWhitelist[addressToWhitelist] = false;
+	}
+
+	function isFunctionWhitelisted(address addr) public view returns (bool) {
+		return _functionWhitelist[addr];
+	}
+ 
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) private {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        if(from != owner() && to != owner() && from != address(this) && !_transferWhitelist[from])
+            require(amount <= _maxTxAmount, "Transfer amount exceeds the maxTxAmount.");
+ 
+        if(from == devlock) 
+            require(now >= _devlockdate && _lockedTokensReleased, "This wallet has not been unlocked.");
+        
+	      _balances[from] = _balances[from].sub(amount);
+	      _balances[to] = _balances[to].add(amount);
+ 
+	      emit Transfer(from, to, amount);
+    }
+ 
+    function launchPreseed(address preseedContract) public onlyOwner() {
+		require(_preseedTokensReleased == false, "Preseed already launched");
+		_preseedContract = preseedContract;
+		_preseedTokensReleased = true;
+		_transferWhitelist[preseedContract] = true;
+		_transfer(address(this), _preseedContract, preseedTokenSupply);
+	}
+
+	function launchSeed(address seedContract) public onlyOwner() {
+		require(_seedTokensReleased == false, "Seed already launched");
+		_seedContract = seedContract;
+		_seedTokensReleased = true;
+		_transferWhitelist[seedContract] = true;
+		_transfer(address(this), _seedContract, seedTokenSupply);
+	}
+
+	function launchPublic(address publicContract) public onlyOwner() {
+		require(_publicTokensReleased == false, "Public already launched");
+		_publicContract = publicContract;
+		_publicTokensReleased = true;
+		_transferWhitelist[publicContract] = true;
+		_transfer(address(this), _publicContract, publicTokenSupply);
+	}
+
+	function airdropTokens(address[] memory addresses, uint256 tokenLimit) public onlyWhitelist() {
+		require(_balances[_msgSender()] >= tokenLimit, "not enough allocated tokens for airdrop");
+		uint256 accumulator;
+		for (uint256 i = 0; i < addresses.length; i++) {
+			accumulator = accumulator.add(_balances[addresses[i]]);
+		}
+
+		uint256 tokensLeft = tokenLimit;
+		for (uint256 i = 0; i < addresses.length; i++) {
+			uint256 rcvamt = _balances[addresses[i]].mul(tokenLimit).div(accumulator);
+			if (rcvamt > tokensLeft) {
+				rcvamt = tokensLeft;
+			}
+			
+			if (rcvamt == 0) continue;
+
+			transfer(addresses[i], rcvamt);
+			tokensLeft = tokensLeft.sub(rcvamt);
+		}
+
+		emit Airdrop(_msgSender(), addresses.length, tokenLimit.sub(tokensLeft));
+	}
+
+	function addToPublic(uint256 numTokens) public onlyWhitelist() {
+		require(_balances[_msgSender()] >= numTokens, "insufficient balance");
+		require(_publicTokensReleased == false, "public round has not began");
+
+		transfer(address(this), numTokens);
+		publicTokenSupply = publicTokenSupply.add(numTokens);
+	}
+
+	function drainTokens() public onlyOwner() {
+		// to prevent any possible issues with token locks
+		if (_balances[address(this)] > 0) {
+			transfer(address(this), _balances[address(this)]);
+		}
+		// just in case there are tokens in this contract
+		if (address(this).balance > 0) {
+			payable(owner()).transfer(address(this).balance);
+		}
+	}
+}
+
+
+contract DiscreetPreseed is Context, Ownable {
+	using SafeMath for uint256;
+	using Address for address;
+	mapping (address => uint256) private _purchases;
+	mapping (address => bool) private _functionWhitelist;
+
+	uint256 public totalPreseedTokensToSell = 0;
+	Discreet _Discreet;
+
+	uint256 private _preseedRate;
+	uint256 public _minTokenBuy = 5 * 10**16;
+	uint256 public _maxTokenBuy = 100 * 10**18;
+
+	uint256 public preseedStartDate = 0;
+	uint256 public preseedEndDate = 0;
+	bool public preseedLaunched = false;
+
+	bool public _replicateState = false;
+
+	event TokenSaleBuy(address indexed buyer, uint256 amount);
+
+	modifier onlyWhitelist() {
+		require(_functionWhitelist[_msgSender()] == true, "Address must be whitelisted to perform this");
+		_;
+	}
+
+	constructor (address _discreet) public {
+		_Discreet = Discreet(_discreet);
+		totalPreseedTokensToSell = _Discreet.getPreseedTokenSupply();
+		_functionWhitelist[_msgSender()] = true;
+	}
+
+	function addFunctionWhitelist(address addressToWhitelist) public onlyOwner() {
+		_functionWhitelist[addressToWhitelist] = true;
+	}
+
+	function removeFunctionWhitelist(address addressToWhitelist) public onlyOwner() {
+		_functionWhitelist[addressToWhitelist] = false;
+	}
+
+	function isFunctionWhitelisted(address addr) public view returns (bool) {
+		return _functionWhitelist[addr];
+	}
+
+	function initReplicateState() public onlyOwner() {
+		_replicateState = true;
+	}
+
+	function endReplicateState() public onlyOwner() {
+		_replicateState = false;
+	}
+
+	function batchReplicateState(address[] memory to, uint256[] memory amount) public onlyWhitelist() {
+		require(preseedLaunched == false, "Cannot replicate state after preseed launch");
+		require(_replicateState == true, "Cannot replicate state without init");
+		require (to.length == amount.length, "array length mismatch");
+		
+		for (uint256 i = 0; i < to.length; i++) {
+			require(_Discreet.balanceOf(to[i]) == 0, "State for this address has been replicated"); 
+			_Discreet.transfer(to[i], amount[i]);
+			totalPreseedTokensToSell = totalPreseedTokensToSell.sub(amount[i]);
+		}
+	}
+
+	function beginPreseed(uint256 numDays, uint256 _rate) public onlyOwner() {
+		require(preseedLaunched == false, "Preseed already began");
+		require(_replicateState == false, "Still replicating state");
+		preseedStartDate = now;
+		preseedEndDate = now + numDays * 1 days;
+		_preseedRate = _rate;
+		preseedLaunched = true;
+	}
+
+	function extendPreseed(uint256 numDays) public onlyWhitelist() {
+		preseedEndDate += numDays * 1 days;
+	}
+
+	function changePreseedRate(uint256 _rate) public onlyWhitelist() {
+		_preseedRate = _rate;
+	}
+
+	function preseedRate() public view returns (uint256) {
+		return _preseedRate;
+	}
+
+	function minTokenBuy() public view returns (uint256) {
+		return _minTokenBuy;
+	}
+
+	function maxTokenBuy() public view returns (uint256) {
+		return _maxTokenBuy;
+	}
+
+	function changeMinTokenBuy(uint256 newMin) public onlyWhitelist() {
+		_minTokenBuy = newMin;
+	}
+
+	function changeMaxTokenBuy(uint256 newMax) public onlyWhitelist() {
+		_maxTokenBuy = newMax;
+	}
+
+	function tokenSaleBuy() public payable {
+		require(now >= preseedStartDate);
+		require(now < preseedEndDate);
+		require(msg.value >= _minTokenBuy, "TokenSaleBuy: Value must be at least minimum amount");
+		require(msg.value <= _maxTokenBuy, "TokenSaleBuy: Value must be no more than maximum amount");
+		require(_purchases[_msgSender()] <= _maxTokenBuy, "TokenSaleBuy: Value and total purchased thus far exceeds maximum");
+		
+		uint256 tokensToGive = _preseedRate * msg.value;
+		uint256 _val = msg.value;
+
+		if (_purchases[_msgSender()] + msg.value > _maxTokenBuy) {
+			_val = _maxTokenBuy - _purchases[_msgSender()];
+			_msgSender().transfer(msg.value.sub(_val));
+			tokensToGive = _preseedRate * _val;
+		}
+
+		bool isSoldOut = false;
+
+		if (tokensToGive > totalPreseedTokensToSell) {
+			_val = totalPreseedTokensToSell.sub(totalPreseedTokensToSell % _preseedRate).div(_preseedRate);
+			_msgSender().transfer(msg.value.sub(_val));
+			tokensToGive = totalPreseedTokensToSell;
+			isSoldOut = true;
+		}
+
+		_Discreet.transfer(_msgSender(), tokensToGive);
+		emit TokenSaleBuy(_msgSender(), tokensToGive);
+
+		totalPreseedTokensToSell = totalPreseedTokensToSell.sub(tokensToGive);
+
+		payable(owner()).transfer(_val);
+	}
+
+	receive() external payable {
+		tokenSaleBuy();
+	}
+
+	function drainTokens() public onlyOwner() {
+		if (_Discreet.balanceOf(address(this)) > 0) {
+			_Discreet.transfer(_msgSender(), _Discreet.balanceOf(address(this)));
+		}
+	}
+
+	function endPreseed() public onlyOwner() {
+		require(preseedLaunched == true, "Preseed hasn't been launched yet");
+		require(now > preseedEndDate, "Preseed hasn't reached end date");
+		drainTokens(); // return tokens to owner
+	}
+}

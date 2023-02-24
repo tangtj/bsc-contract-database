@@ -1,0 +1,1176 @@
+
+// File: contracts/ZirconPylonRouter.sol
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity =0.6.6;
+
+import "./interfaces/IZirconPylonRouter.sol";
+import "@zircon/core/contracts/interfaces/IZirconPair.sol";
+import "@zircon/core/contracts/interfaces/IZirconPylonFactory.sol";
+import "@zircon/core/contracts/interfaces/IZirconFactory.sol";
+import "@zircon/core/contracts/interfaces/IZirconPoolToken.sol";
+import "@zircon/core/contracts/interfaces/IZirconPTFactory.sol";
+import "./libraries/ZirconPeripheralLibrary.sol";
+import "./libraries/UniswapV2Library.sol";
+//import "hardhat/console.sol";
+import "@uniswap/lib/contracts/libraries/TransferHelper.sol";
+import "@uniswap/v2-periphery/contracts/interfaces/IWETH.sol";
+
+contract ZirconPylonRouter is IZirconPylonRouter {
+
+    address public immutable override factory;
+    address public immutable override pylonFactory;
+    address public immutable override ptFactory;
+    address public immutable override WETH;
+    bytes4 private constant DEPOSIT = bytes4(keccak256(bytes('routerDeposit(uint256)')));
+
+    modifier ensure(uint deadline) {
+        require(deadline >= block.timestamp, 'UniswapV2Router: EXPIRED');
+        _;
+    }
+
+    // **** Constructor ****
+    constructor(address _factory, address _pylonFactory, address _ptFactory, address _WETH) public {
+        factory = _factory;
+        WETH = _WETH;
+        pylonFactory = _pylonFactory;
+        ptFactory = _ptFactory;
+    }
+
+    receive() external payable {
+        assert(msg.sender == WETH); // only accept ETH via fallback from the WETH contract
+    }
+
+    // *** HELPER FUNCTIONS *****
+    function _getPylon(address tokenA, address tokenB) internal view returns (address pylon){
+        pylon = ZirconPeripheralLibrary.pylonFor(pylonFactory, tokenA, tokenB, UniswapV2Library.pairFor(factory, tokenA, tokenB));
+    }
+
+    // Transfers token or utility
+    function _transfer(uint amountDesired, address token, address pylon) private {
+        if (token == WETH) {
+            IWETH(WETH).deposit{value: amountDesired}();
+            assert(IWETH(WETH).transfer(pylon, amountDesired));
+        }else{
+            TransferHelper.safeTransferFrom(token, msg.sender, pylon, amountDesired);
+        }
+    }
+
+
+
+    function _getAmounts(uint amountDesiredToken, uint amountDesiredETH, bool isAnchor, address tokenA, address tokenB) internal view returns (uint amountA, uint amountB){
+        uint atA =  !isAnchor ? amountDesiredToken : amountDesiredETH;
+        uint atB = !isAnchor ?  amountDesiredETH : amountDesiredToken;
+        //        uint aminA = !isAnchor ? amountTokenMin : amountETHMin;
+        //        uint aminB = !isAnchor ?  amountETHMin : amountTokenMin;
+        (amountA, amountB) = _addAsyncLiquidity(tokenA, tokenB, atA, atB);
+    }
+
+    // Transfers both tokens to pylon
+    function _transferAsync(address tokenA, address tokenB, uint amountA, uint amountB) internal returns (address pylon){
+        pylon = _getPylon(tokenA, tokenB);
+        TransferHelper.safeTransferFrom(tokenA, msg.sender, pylon, amountA);
+        TransferHelper.safeTransferFrom(tokenB, msg.sender, pylon, amountB);
+    }
+
+    // Modifier to check that pylon & pair are initialized
+    modifier _addLiquidityChecks(address tokenA, address tokenB) {
+        address pair = IZirconFactory(factory).getPair(tokenA, tokenB);
+        require(pair != address(0), "ZPR: Pair Not Created");
+        require(IZirconPylonFactory(pylonFactory).getPylon(tokenA, tokenB) != address(0), "ZPR: Pylon not created");
+        // Checking if pylon is initialized
+        require(ZirconPeripheralLibrary.isInitialized(pylonFactory, tokenA, tokenB, pair), "ZPR: Pylon Not Initialized");
+        _;
+    }
+    // function called only to use the modifier to restrict the usage
+    function restricted(address tokenA, address tokenB) internal _addLiquidityChecks(tokenA, tokenB){}
+
+    // **** INIT PYLON *****
+    function _initializePylon(address tokenA, address tokenB) internal virtual returns (address pair, address pylon) {
+        // If Pair is not initialized
+        pair = IZirconFactory(factory).getPair(tokenA, tokenB);
+
+        if (pair == address(0)) {
+            // Let's create it...
+            pair = IZirconFactory(factory).createPair(tokenA, tokenB, pylonFactory);
+        }
+
+        //Let's see if pylon is initialized
+        pylon = IZirconPylonFactory(pylonFactory).getPylon(tokenA, tokenB);
+        if (pylon == address(0)) {
+            // adds pylon
+            pylon = IZirconPylonFactory(pylonFactory).addPylon(pair, tokenA, tokenB);
+        }
+    }
+
+    // Init Function with two tokens
+    function init(
+        address tokenA,
+        address tokenB,
+        uint amountDesiredA,
+        uint amountDesiredB,
+        address to,
+        uint deadline
+    ) external virtual override ensure(deadline) returns (uint amountA, uint amountB){
+        // Initializes the pylon
+        (, address pylon) = _initializePylon(tokenA, tokenB);
+        // Desired amounts
+        amountA = amountDesiredA;
+        amountB = amountDesiredB;
+        // Let's transfer to pylon
+        TransferHelper.safeTransferFrom(tokenA, msg.sender, pylon, amountA);
+        TransferHelper.safeTransferFrom(tokenB, msg.sender, pylon, amountB);
+        // init Pylon
+        IZirconPylon(pylon).initPylon(to);
+    }
+
+    // Init Function with one token and utility token
+    function initETH(
+        address token,
+        uint amountDesiredToken,
+        bool isAnchor,
+        address to,
+        uint deadline
+    ) virtual override ensure(deadline)  external payable  returns (uint amountA, uint amountB){
+
+        // Initialize Pylon & Pair
+        address tokenA = isAnchor ? WETH : token;
+        address tokenB = isAnchor ? token : WETH;
+        (, address pylon) = _initializePylon(tokenA, tokenB);
+
+
+        amountA = isAnchor ? msg.value : amountDesiredToken;
+        amountB = isAnchor ? amountDesiredToken : msg.value;
+
+        // Transfering tokens to Pylon
+        TransferHelper.safeTransferFrom(token, msg.sender, pylon, amountDesiredToken);
+        IWETH(WETH).deposit{value: msg.value}();
+        assert(IWETH(WETH).transfer(pylon, msg.value));
+
+        // Calling init Pylon
+        IZirconPylon(pylon).initPylon(to);
+    }
+
+    // **** ADD SYNC LIQUIDITY ****
+    function stake(address farm, uint liquidity) internal {
+        (bool success, bytes memory data) = farm.call(abi.encodeWithSelector(DEPOSIT, uint256(liquidity)));
+        if (!success) {
+            if(data.length > 0){
+                assembly {
+                    let returndata_size := mload(data)
+                    revert(add(32, data), returndata_size)
+                }
+            }else{
+                require(success, 'ZP: FARM_FAILED');
+            }
+        }
+    }
+
+    function addSyncLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountDesired,
+        uint minLiquidity,
+        bool isAnchor,
+        address to,
+        address farm,
+        uint deadline
+    ) virtual override ensure(deadline)  external returns (uint amount, uint liquidity) {
+        // Checking Pylon and pair are initialized
+        restricted(tokenA, tokenB);
+        amount = amountDesired;
+        // Getting pylon address
+        address pylon = _getPylon(tokenA, tokenB);
+        // Transferring tokens
+        TransferHelper.safeTransferFrom(isAnchor ? tokenB : tokenA, msg.sender, pylon, amount);
+        liquidity = IZirconPylon(pylon).mintPoolTokens(to, isAnchor);
+        require(liquidity >= minLiquidity, "ZPR: Not enough liquidity");
+        // Adding liquidity
+        if (farm != address(0)) {
+            stake(farm, liquidity);
+        }
+    }
+
+    // @isAnchor indicates if the token should be the anchor or float
+    // it mints the ETH token, so the opposite of isAnchor
+    // In case where we want to mint the token we should use the classic addSyncLiquidity
+    // TODO: removing shouldMintAnchor change on FE
+    function addSyncLiquidityETH(
+        address token,
+        bool isAnchor,
+        uint minLiquidity,
+        address to,
+        address farm,
+        uint deadline
+    ) virtual override ensure(deadline) external payable returns (uint liquidity) {
+        require(msg.value > 0, "ZPR: ZERO-VALUE");
+        address tokenA = isAnchor ? WETH : token;
+        address tokenB = isAnchor ? token : WETH;
+        // Checking Pylon and pair are initialized
+        restricted(tokenA, tokenB);
+        // Getting Pylon Address
+        address pylon = _getPylon(tokenA, tokenB);
+        // transferring token or utility token
+        IWETH(WETH).deposit{value: msg.value}();
+        assert(IWETH(WETH).transfer(pylon, msg.value));
+        // minting tokens
+        liquidity = IZirconPylon(pylon).mintPoolTokens(to, !isAnchor);
+        require(liquidity >= minLiquidity, "ZPR: Not enough liquidity");
+        // Adding liquidity
+        if (farm != address(0)) {
+            stake(farm, liquidity);
+        }
+    }
+
+    // **** ASYNC-100 LIQUIDITY ******
+    //    function addAsyncLiquidity100(
+    //        address tokenA,
+    //        address tokenB,
+    //        uint amountDesired,
+    //        bool isAnchor,
+    //        address to,
+    //        address farm,
+    //        uint deadline
+    //    ) virtual override ensure(deadline) _addLiquidityChecks(tokenA, tokenB) external returns (uint liquidity){
+    //        // Getting Pylon Address
+    //        address pylon = _getPylon(tokenA, tokenB);
+    //        // sending tokens to pylon
+    //        TransferHelper.safeTransferFrom(isAnchor ? tokenB : tokenA, msg.sender, pylon, amountDesired);
+    //        // minting async-100
+    //        liquidity = IZirconPylon(pylon).mintAsync100(to, isAnchor);
+    //        // Adding liquidity
+    //        if (farm != address(0)) {
+    //            stake(farm, liquidity);
+    //        }
+    //    }
+
+    // @isAnchor indicates if the token should be the anchor or float
+    // This Function mints tokens for WETH in the contrary of @isAnchor
+    //    function addAsyncLiquidity100ETH(
+    //        address token,
+    //        bool isAnchor,
+    //        address to,
+    //        address farm,
+    //        uint deadline
+    //    ) virtual override ensure(deadline)  external payable returns (uint liquidity){
+    //        require(msg.value > 0, "ZPR: ZERO-VALUE");
+    //        address tokenA = isAnchor ? WETH : token;
+    //        address tokenB = isAnchor ? token : WETH;
+    //
+    //        restricted(tokenA, tokenB);
+    //        // getting pylon
+    //        address pylon = _getPylon(tokenA, tokenB);
+    //        // Transfering tokens
+    //        IWETH(WETH).deposit{value: msg.value}();
+    //        assert(IWETH(WETH).transfer(pylon,  msg.value));
+    //
+    //        // Miting Async-100
+    //        liquidity = IZirconPylon(pylon).mintAsync100(to, !isAnchor);
+    //        // Adding liquidity
+    //        if (farm != address(0)) {
+    //            stake(farm, liquidity);
+    //        }
+    //    }
+
+    // **** ADD ASYNC LIQUIDITY **** //
+
+    function _addAsyncLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired
+    ) internal virtual _addLiquidityChecks(tokenA, tokenB) view returns (uint amountA, uint amountB) {
+        // create the pair if it doesn't exist yet
+        (uint reserveA, uint reserveB) = UniswapV2Library.getReserves(factory, tokenA, tokenB);
+        if (reserveA == 0 && reserveB == 0) {
+            (amountA, amountB) = (amountADesired, amountBDesired);
+        } else {
+            uint amountBOptimal = UniswapV2Library.quote(amountADesired, reserveA, reserveB);
+            if (amountBOptimal <= amountBDesired) {
+                (amountA, amountB) = (amountADesired, amountBOptimal);
+            } else {
+                uint amountAOptimal = UniswapV2Library.quote(amountBDesired, reserveB, reserveA);
+                assert(amountAOptimal <= amountADesired);
+                (amountA, amountB) = (amountAOptimal, amountBDesired);
+            }
+        }
+
+    }
+
+    function addAsyncLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint minLiquidity,
+        bool isAnchor,
+        address to,
+        address farm,
+        uint deadline
+    ) virtual override ensure(deadline)  external returns (uint liquidity){
+        (uint amountA, uint amountB) = _addAsyncLiquidity(tokenA, tokenB, amountADesired, amountBDesired);
+        address pylon = _transferAsync(tokenA, tokenB, amountA, amountB);
+        liquidity = IZirconPylon(pylon).mintAsync(to, isAnchor);
+
+        require(liquidity >= minLiquidity,string(abi.encodePacked("MIN_LIQUIDITY: ", uint2str(liquidity), " ", uint2str(minLiquidity))));
+        // Adding liquidity
+        if (farm != address(0)) {
+            stake(farm, liquidity);
+        }
+    }
+
+
+    function uint2str(uint _i) internal pure returns (string memory _uintAsString) {
+        if (_i == 0) {
+            return "0";
+        }
+        uint j = _i;
+        uint len;
+        while (j != 0) {
+            len++;
+            j /= 10;
+        }
+        bytes memory bstr = new bytes(len);
+        uint k = len;
+        while (_i != 0) {
+            k = k-1;
+            uint8 temp = (48 + uint8(_i - _i / 10 * 10));
+            bytes1 b1 = bytes1(temp);
+            bstr[k] = b1;
+            _i /= 10;
+        }
+        return string(bstr);
+    }
+
+    function addAsyncLiquidityETH(
+        address token,
+        uint amountDesiredToken,
+        uint minLiquidity,
+        bool isAnchor,
+        bool shouldReceiveAnchor,
+        address to,
+        address farm,
+        uint deadline
+    ) virtual override ensure(deadline)  external payable returns (uint amountA, uint amountB, uint liquidity){
+        {
+            address _token = token;
+            bool _isAnchor = isAnchor;
+            (amountA, amountB) = _getAmounts(amountDesiredToken, msg.value, _isAnchor, _isAnchor ? WETH : _token, _isAnchor ?  _token : WETH);
+        }
+        {
+            address _token = token;
+            bool _isAnchor = isAnchor;
+
+            address pylon = _getPylon(_isAnchor ? WETH : _token, _isAnchor ?  _token : WETH);
+            TransferHelper.safeTransferFrom(_token, msg.sender, pylon, _isAnchor ? amountB : amountA);
+            IWETH(WETH).deposit{value: _isAnchor ? amountA : amountB}();
+            assert(IWETH(WETH).transfer(pylon, _isAnchor ? amountA : amountB));
+            liquidity = IZirconPylon(pylon).mintAsync(to, shouldReceiveAnchor);
+            require(liquidity >= minLiquidity, uint2str(liquidity));
+        }
+        // refund dust eth, if any
+        if (msg.value > (isAnchor ? amountA : amountB)) TransferHelper.safeTransferETH(msg.sender, msg.value - (isAnchor ? amountA : amountB));
+        // Adding liquidity
+        if (farm != address(0)) {
+            stake(farm, liquidity);
+        }
+    }
+
+    // *** remove Sync
+
+    function removeLiquiditySync(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountMin,
+        bool shouldReceiveAnchor,
+        address to,
+        uint deadline
+    ) virtual override ensure(deadline)  public returns (uint amount){
+        address pylon = _getPylon(tokenA, tokenB);
+        address poolToken = IZirconPTFactory(ptFactory).getPoolToken(pylon, shouldReceiveAnchor ? tokenB : tokenA);
+
+        IZirconPoolToken(poolToken).transferFrom(msg.sender, pylon, liquidity); // send liquidity to pylon
+        (amount) = IZirconPylon(pylon).burn(to, shouldReceiveAnchor);
+        require(amount >= amountMin, 'UniswapV2Router: INSUFFICIENT_AMOUNT');
+    }
+
+    function removeLiquiditySyncETH(
+        address token,
+        uint liquidity,
+        uint amountMin,
+        bool isAnchor,
+        bool shouldRemoveAnchor,
+        address to,
+        uint deadline
+    ) virtual override ensure(deadline)  external returns (uint amount){
+        address tokenA = isAnchor ? WETH : token;
+        address tokenB = isAnchor ? token : WETH;
+        (amount) = removeLiquiditySync(
+            tokenA,
+            tokenB,
+            liquidity,
+            amountMin,
+            shouldRemoveAnchor,
+            (isAnchor && shouldRemoveAnchor) || (!shouldRemoveAnchor && !isAnchor) ? to : address(this),
+            deadline
+        );
+        if ((isAnchor && !shouldRemoveAnchor) || (shouldRemoveAnchor && !isAnchor)) {
+            IWETH(WETH).withdraw(amount);
+            TransferHelper.safeTransferETH(to, amount);
+        }
+    }
+    function removeLiquidityAsync(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        bool isAnchor,
+        address to,
+        uint deadline
+    ) virtual override ensure(deadline)  public returns (uint amountA, uint amountB){
+        address pylon = _getPylon(tokenA, tokenB);
+        address poolToken = IZirconPTFactory(ptFactory).getPoolToken(pylon, isAnchor ? tokenB : tokenA);
+
+        IZirconPoolToken(poolToken).transferFrom(msg.sender, pylon, liquidity); // send liquidity to pair
+        (amountA, amountB) = IZirconPylon(pylon).burnAsync(to, isAnchor);
+
+
+        require(amountA >= amountAMin, string(abi.encodePacked("A_AMOUNT: ", uint2str(amountA), " ", uint2str(amountAMin))));
+        require(amountB >= amountBMin,  string(abi.encodePacked("B_AMOUNT: ", uint2str(amountB), " ", uint2str(amountBMin))));
+
+    }
+    function removeLiquidityAsyncETH(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        bool isAnchor,
+        bool shouldBurnAnchor,
+        address to,
+        uint deadline
+    ) virtual override ensure(deadline)  external returns (uint amountToken, uint amountETH){
+        {
+            (uint amountA, uint amountB) = removeLiquidityAsync(
+                !isAnchor ? token : WETH,
+                !isAnchor ? WETH : token,
+                liquidity,
+                !isAnchor ? amountTokenMin : amountETHMin,
+                !isAnchor ? amountETHMin : amountTokenMin,
+                shouldBurnAnchor,
+                address(this),
+                deadline
+            );
+            amountToken = !isAnchor ? amountA : amountB;
+            amountETH = !isAnchor ?  amountB : amountA;
+        }
+        TransferHelper.safeTransfer(token, to, amountToken);
+        IWETH(WETH).withdraw(amountETH);
+        TransferHelper.safeTransferETH(to, amountETH);
+    }
+
+    //    function removeLiquiditySyncWithPermit(
+    //        address tokenA,
+    //        address tokenB,
+    //        uint liquidity,
+    //        uint amountMin,
+    //        bool isAnchor,
+    //        address to,
+    //        uint deadline,
+    //        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    //    ) virtual override ensure(deadline)  external returns (uint amount){
+    //        address pylon = _getPylon(tokenA, tokenB);
+    //        uint value = approveMax ? uint(-1) : liquidity;
+    //        IZirconPoolToken(isAnchor ? IZirconPylon(pylon).anchorPoolTokenAddress() : IZirconPylon(pylon).floatPoolTokenAddress()).permit(msg.sender, address(this), value, deadline, v, r, s);
+    //        (amount) = removeLiquiditySync(tokenA, tokenB, liquidity, amountMin, isAnchor, to, deadline);
+    //    }
+    //
+    //    function removeLiquidityETHWithPermit(
+    //        address token,
+    //        uint liquidity,
+    //        uint amountMin,
+    //        bool isAnchor,
+    //        bool shouldRemoveAnchor,
+    //        address to,
+    //        uint deadline,
+    //        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    //    ) virtual override ensure(deadline) external returns (uint amount){
+    //        address pylon = UniswapV2Library.pairFor(factory, token, WETH);
+    //        uint value = approveMax ? uint(-1) : liquidity;
+    //        IZirconPoolToken(shouldRemoveAnchor ? IZirconPylon(pylon).anchorPoolTokenAddress() : IZirconPylon(pylon).floatPoolTokenAddress())
+    //        .permit(msg.sender, address(this), value, deadline, v, r, s);
+    //        (amount) = removeLiquiditySyncETH(
+    //            token,
+    //            liquidity,
+    //            amountMin,
+    //            isAnchor,
+    //            shouldRemoveAnchor,
+    //            to,
+    //            deadline);
+    //    }
+    //
+    //    function removeLiquidityAsyncWithPermit(
+    //        address token,
+    //        uint liquidity,
+    //        uint amountTokenMin,
+    //        uint amountETHMin,
+    //        bool isAnchor,
+    //        bool shouldBurnAnchor,
+    //        address to,
+    //        uint deadline,
+    //        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    //    ) virtual override ensure(deadline)  external returns (uint amountA, uint amountB){
+    //        address tokenA = !isAnchor ? token : WETH;
+    //        address tokenB = !isAnchor ?  WETH : token;
+    //
+    //        address pylon = _getPylon(tokenA, tokenB);
+    //        uint value = approveMax ? uint(-1) : liquidity;
+    //        IZirconPoolToken(shouldRemoveAnchor ? IZirconPylon(pylon).anchorPoolTokenAddress() : IZirconPylon(pylon).floatPoolTokenAddress())
+    //        .permit(msg.sender, address(this), value, deadline, v, r, s);
+    //        (amountA, amountB) = removeLiquidityAsyncETH(token, liquidity, amountAMin, amountBMin, isAnchor, to, deadline);
+    //
+    //    }
+
+    //    function removeLiquidityAsyncETHWithPermit(
+    //        address token,
+    //        uint liquidity,
+    //        uint amountTokenMin,
+    //        uint amountETHMin,
+    //    bool isAnchor,
+    //        bool shouldBurnAnchor,
+    //        address to,
+    //        uint deadline,
+    //        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    //    ) virtual override ensure(deadline) external returns (uint amountA, uint amountB){
+    //        address pylon = _getPylon(tokenA, tokenB);
+    //        uint value = approveMax ? uint(-1) : liquidity;
+    //        IZirconPoolToken(shouldRemoveAnchor ? IZirconPylon(pylon).anchorPoolTokenAddress() : IZirconPylon(pylon).floatPoolToken())
+    //        .permit(msg.sender, address(this), value, deadline, v, r, s);
+    //        (amountA, amountB) = removeLiquidityAsync(token, liquidity, amountTokenMin, amountETHMin, isAnchor, shouldBurnAnchor, to, deadline);
+    //
+    //    }
+}
+
+
+// File: contracts/interfaces/IZirconPylonRouter.sol
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity >=0.6.2;
+
+interface IZirconPylonRouter {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+    function pylonFactory() external pure returns (address);
+    function ptFactory() external pure returns (address);
+
+    function init(
+        address tokenA,
+        address tokenB,
+        uint amountDesiredA,
+        uint amountDesiredB,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+
+    function initETH(
+        address token,
+        uint amountDesiredToken,
+        bool isAnchor,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountA, uint amountB);
+
+    function addSyncLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountDesired,
+        uint minLiquidity,
+        bool isAnchor,
+        address to,
+        address farm,
+        uint deadline
+    ) external returns (uint amount, uint liquidity);
+
+    function addSyncLiquidityETH(
+        address token,
+        bool isAnchor,
+        uint minLiquidity,
+        address to,
+        address pool,
+        uint deadline
+    ) external payable returns (uint liquidity);
+
+    //    function addAsyncLiquidity100(
+    //        address tokenA,
+    //        address tokenB,
+    //        uint amountDesired,
+    //        uint minLiquidity,
+    //    bool isAnchor,
+    //        address to,
+    //        address pool,
+    //        uint deadline
+    //    ) external returns (uint liquidity);
+    //
+    //    function addAsyncLiquidity100ETH(
+    //        address token,
+    //        bool isAnchor,
+    //        uint minLiquidity,
+    //
+    //    address to,
+    //        address pool,
+    //        uint deadline
+    //    ) external payable returns (uint liquidity);
+
+    function addAsyncLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountA,
+        uint amountB,
+        uint minLiquidity,
+        bool isAnchor,
+        address to,
+        address farm,
+        uint deadline
+    ) external returns (uint liquidity);
+
+    function addAsyncLiquidityETH(
+        address token,
+        uint amountDesiredToken,
+        uint minLiquidity,
+        bool isAnchor,
+        bool shouldReceiveAnchor,
+        address to,
+        address farm,
+        uint deadline
+    ) external payable returns (uint amountA, uint amountB, uint liquidity);
+
+    function removeLiquiditySync(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountMin,
+        bool shouldReceiveAnchor,
+        address to,
+        uint deadline
+    ) external returns (uint amount);
+    function removeLiquiditySyncETH(
+        address token,
+        uint liquidity,
+        uint amountMin,
+        bool isAnchor,
+        bool shouldRemoveAnchor,
+        address to,
+        uint deadline
+    ) external returns (uint amount);
+    function removeLiquidityAsync(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        bool isAnchor,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityAsyncETH(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        bool isAnchor,
+        bool shouldBurnAnchor,
+        address to,
+        uint deadline
+    ) external returns (uint amountToken, uint amountETH);
+    //    function removeLiquidityWithPermit(
+    //        address tokenA,
+    //        address tokenB,
+    //        uint liquidity,
+    //        uint amountAMin,
+    //        uint amountBMin,
+    //        address to,
+    //        uint deadline,
+    //        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    //    ) external returns (uint amountA, uint amountB);
+    //    function removeLiquidityETHWithPermit(
+    //        address token,
+    //        uint liquidity,
+    //        uint amountTokenMin,
+    //        uint amountETHMin,
+    //        address to,
+    //        uint deadline,
+    //        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    //    ) external returns (uint amountToken, uint amountETH);
+}
+
+
+// File: @zircon/core/contracts/interfaces/IZirconPair.sol
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity >=0.5.16;
+
+interface IZirconPair {
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    function name() external pure returns (string memory);
+    function symbol() external pure returns (string memory);
+    function energyRevenueAddress() external pure returns (address);
+    function decimals() external pure returns (uint8);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+
+    function approve(address spender, uint value) external returns (bool);
+    function transfer(address to, uint value) external returns (bool);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+    function nonces(address owner) external view returns (uint);
+
+//    //again only for test
+//    function mintTest(address to, uint amount) external;
+
+    function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+
+    event Mint(address indexed sender, uint amount0, uint amount1);
+    event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+    event Swap(
+        address indexed sender,
+        uint amount0In,
+        uint amount1In,
+        uint amount0Out,
+        uint amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint);
+    function factory() external view returns (address);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function price0CumulativeLast() external view returns (uint);
+    function price1CumulativeLast() external view returns (uint);
+    function kLast() external view returns (uint);
+
+    function burnOneSide(address to, bool isReserve0) external returns (uint amount);
+    function mintOneSide(address to, bool isReserve0) external returns (uint liquidity, uint amount0, uint amount1);
+    function publicMintFee() external;
+    function mint(address to) external returns (uint liquidity);
+    function burn(address to) external returns (uint amount0, uint amount1);
+    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+//    function skim(address to) external;
+    function sync() external;
+
+    function tryLock() external;
+
+    function initialize(address, address, address) external;
+    function changeEnergyRevAddress(address _revAddress) external;
+
+}
+
+
+// File: @zircon/core/contracts/interfaces/IZirconPylonFactory.sol
+pragma solidity >=0.5.16;
+
+interface IZirconPylonFactory {
+    function maximumPercentageSync() external view returns (uint);
+
+    function deltaGammaThreshold() external view returns (uint);
+    function deltaGammaMinFee() external view returns (uint);
+    function muUpdatePeriod() external view returns (uint);
+    function muChangeFactor() external view returns (uint);
+//    function liquidityFee() external view returns (uint);
+    function EMASamples() external view returns (uint);
+    function oracleUpdateSecs() external view returns (uint);
+
+    function allPylons(uint p) external view returns (address);
+    function getPylon(address tokenA, address tokenB) external view returns (address pair);
+    function factory() external view returns (address);
+    function energyFactory() external view returns (address);
+    event PylonCreated(address indexed token0, address indexed token1, address poolToken0, address poolToken1, address pylon, address pair);
+    function allPylonsLength() external view returns (uint);
+    function paused() external view returns (bool);
+    // function setLiquidityFee(uint _liquidityFee) external;
+    // Adding Pylon
+    // First Token is always the Float and the second one is the Anchor
+    function addPylon(address _pairAddress, address _tokenA, address _tokenB) external returns (address pylonAddress);
+    function addPylonCustomPT(address _pairAddress, address _tokenA, address _tokenB, address floatPTAddress, address anchorPTAddress) external returns (address pylonAddress);
+    function setMigrator(address _migrator) external;
+    function setFeeToSetter(address _feeToSetter) external;
+    function setFees(uint _maximumPercentageSync, uint _deltaGammaThreshold, uint _deltaGammaMinFee, uint _muUpdatePeriod, uint _muChangeFactor, uint _EMASamples, uint _oracleUpdate) external;
+    function setPaused(bool _paused) external;
+
+    function changeEnergyAddress(address _newEnergyRev, address _pylonAddress, address _pairAddress, address _tokenA, address _tokenB) external returns (address energy);
+    function migrateLiquidity(address _oldPylon, address _newPylon) external;
+    function startPylon(address _pylon, uint _gamma, uint _vab, bool _formulaSwitch) external;
+    function changeEnergyFactoryAddress(address _newEnergyFactory) external;
+
+}
+
+
+// File: @zircon/core/contracts/interfaces/IZirconFactory.sol
+pragma solidity >=0.5.16;
+
+interface IZirconFactory {
+    function energyFactory() external view returns (address);
+
+    function getPair(address, address) external view returns (address pair);
+    function allPairs(uint) external view returns (address pair);
+    function allPairsLength() external view returns (uint);
+    function dynamicRatio() external view returns (uint);
+    function liquidityFee() external view returns (uint);
+    function setLiquidityFee(uint _liquidityFee) external;
+
+    function pairCodeHash() external pure returns (bytes32);
+    function createPair(address tokenA, address tokenB, address _pylonFactory) external returns (address pair);
+
+    function setMigrator(address _migrator) external;
+    function setFeeToSetter(address _feeToSetter) external;
+    function changeEnergyRevAddress(address _pairAddress, address _tokenA, address _tokenB, address _pylonFactory) external returns (address newEnergy);
+
+    function changeEnergyFactoryAddress(address _newEnergyFactory) external;
+    function setDynamicRatio(uint _dynamicRatio) external;
+}
+
+
+// File: @zircon/core/contracts/interfaces/IZirconPoolToken.sol
+pragma solidity >=0.5.16;
+
+interface IZirconPoolToken {
+    function factory() external view returns (address);
+    function isAnchor() external view returns (bool);
+    function token() external view returns (address);
+    function pair() external view returns (address);
+    function pylonFactory() external view returns (address);
+    function pylon() external view returns (address);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+
+    function mint(address account, uint256 amount) external;
+    function burn(address account, uint256 amount) external;
+    function initialize(address _token0, address _pair, address _pylon, bool _isAnchor) external;
+    function transferFrom(address from, address to, uint value) external returns (bool);
+}
+
+
+// File: @zircon/core/contracts/interfaces/IZirconPTFactory.sol
+pragma solidity >=0.5.16;
+
+interface IZirconPTFactory {
+    function getPoolToken(address pylon, address token) external view returns (address pt);
+    function createPTAddress(address _floatToken, address _anchorToken, address pylonAddress, bool isAnchor) external returns (address poolToken);
+    function changePylonAddress(address oldPylon, address tokenA, address tokenB, address newPylon, address pylonFactory) external;
+    function setMigrator(address _migrator) external;
+    function setFeeToSetter(address _feeToSetter) external;
+}
+
+
+// File: contracts/libraries/ZirconPeripheralLibrary.sol
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity >=0.6.6;
+
+import "./SafeMath.sol";
+import "@zircon/core/contracts/interfaces/IZirconPylon.sol";
+
+library ZirconPeripheralLibrary {
+    using SafeMath for uint256;
+    // calculates the CREATE2 address for a pair without making any external calls
+    //TODO: Update init code hash with Zircon Pylon code hash
+
+
+    // DO NOT CHANGE THIS FUNCTION WILL BE UPDATED BY 'yarn bytecode' inside zircon-core
+    function pylonFor(address pylonFactory, address tokenA, address tokenB, address pair) pure internal returns (address pylon){pylon=address(uint(keccak256(abi.encodePacked(hex'ff',pylonFactory,keccak256(abi.encodePacked(tokenA, tokenB,pair)),hex'3508acedf22fbd1cd58c77dab5a9a8fae96136a610450bd1d812b9bded1f882f'))));}
+
+
+    function isInitialized(address factory, address tokenA, address tokenB, address pair) view internal returns (bool initialized){
+        initialized = IZirconPylon(pylonFor(factory, tokenA, tokenB, pair)).initialized() == 1;
+    }
+
+    function translate(uint toConvert, uint ptt, uint ptb) pure public  returns (uint amount){
+        amount =  (ptt == 0 || ptb == 0) ? toConvert : toConvert.mul(ptb)/ptt;
+    }
+
+    // fetches and gets Reserves
+    function getSyncReserves(address factory, address tokenA, address tokenB, address pair) internal view returns (uint112 reserveF, uint112 reserveA) {
+        (reserveF, reserveA) = IZirconPylon(pylonFor(factory, tokenA, tokenB, pair)).getSyncReserves();
+    }
+
+
+    // fetches and sorts the reserves for a pair
+    function maximumSync(uint reserve, uint reservePylon, uint syncPercentage, uint maxBase, uint ptt, uint ptb) internal pure returns (uint maximum) {
+        uint pairReserveTranslated = translate(reserve, ptt, ptb);
+        maximum = (pairReserveTranslated == 0 || reservePylon > pairReserveTranslated) ? maxBase :
+        (pairReserveTranslated.mul(syncPercentage)/100).sub(reservePylon);
+    }
+
+}
+
+
+// File: contracts/libraries/UniswapV2Library.sol
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity >=0.5.0;
+
+import '@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol';
+//import "hardhat/console.sol";
+
+import "./SafeMath.sol";
+
+library UniswapV2Library {
+    using SafeMath for uint;
+
+    // returns sorted token addresses, used to handle return values from pairs sorted in this order
+    function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
+        require(tokenA != tokenB, 'UniswapV2Library: IDENTICAL_ADDRESSES');
+        (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        require(token0 != address(0), 'UniswapV2Library: ZERO_ADDRESS');
+    }
+
+    // calculates the CREATE2 address for a pair without making any external calls
+    // DO NOT CHANGE THIS FUNCTION WILL BE UPDATED BY 'yarn bytecode' inside zircon-core
+    function pairFor(address factory, address tokenA, address tokenB) internal pure returns (address pair) {(address token0, address token1) = sortTokens(tokenA, tokenB); pair = address(uint(keccak256(abi.encodePacked(hex'ff', factory, keccak256(abi.encodePacked(token0, token1)), hex'baa6ea4be64f3bfe8b8fcc9c1a7c13f4f9e20e696b9ad5f26854be9f0dca2e09'))));}
+
+    // fetches and sorts the reserves for a pair
+    function getReserves(address factory, address tokenA, address tokenB) internal view returns (uint reserveA, uint reserveB) {
+        (address token0,) = sortTokens(tokenA, tokenB);
+        (uint reserve0, uint reserve1,) = IUniswapV2Pair(pairFor(factory, tokenA, tokenB)).getReserves();
+        (reserveA, reserveB) = tokenA == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
+    }
+
+    // given some amount of an asset and pair reserves, returns an equivalent amount of the other asset
+    function quote(uint amountA, uint reserveA, uint reserveB) internal pure returns (uint amountB) {
+        require(amountA > 0, 'UniswapV2Library: INSUFFICIENT_AMOUNT');
+        require(reserveA > 0 && reserveB > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+        amountB = amountA.mul(reserveB) / reserveA;
+    }
+
+    // given an input amount of an asset and pair reserves, returns the maximum output amount of the other asset
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) internal pure returns (uint amountOut) {
+        require(amountIn > 0, 'UniswapV2Library: INSUFFICIENT_INPUT_AMOUNT');
+        require(reserveIn > 0 && reserveOut > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+        uint amountInWithFee = amountIn.mul(997);
+        uint numerator = amountInWithFee.mul(reserveOut);
+        uint denominator = reserveIn.mul(1000).add(amountInWithFee);
+        amountOut = numerator / denominator;
+    }
+
+    // given an output amount of an asset and pair reserves, returns a required input amount of the other asset
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) internal pure returns (uint amountIn) {
+        require(amountOut > 0, 'UniswapV2Library: INSUFFICIENT_OUTPUT_AMOUNT');
+        require(reserveIn > 0 && reserveOut > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+        uint numerator = reserveIn.mul(amountOut).mul(1000);
+        uint denominator = reserveOut.sub(amountOut).mul(997);
+        amountIn = (numerator / denominator).add(1);
+    }
+
+    // performs chained getAmountOut calculations on any number of pairs
+    function getAmountsOut(address factory, uint amountIn, address[] memory path) internal view returns (uint[] memory amounts) {
+        require(path.length >= 2, 'UniswapV2Library: INVALID_PATH');
+        amounts = new uint[](path.length);
+        amounts[0] = amountIn;
+        for (uint i; i < path.length - 1; i++) {
+            (uint reserveIn, uint reserveOut) = getReserves(factory, path[i], path[i + 1]);
+            amounts[i + 1] = getAmountOut(amounts[i], reserveIn, reserveOut);
+        }
+    }
+
+    // performs chained getAmountIn calculations on any number of pairs
+    function getAmountsIn(address factory, uint amountOut, address[] memory path) internal view returns (uint[] memory amounts) {
+        require(path.length >= 2, 'UniswapV2Library: INVALID_PATH');
+        amounts = new uint[](path.length);
+        amounts[amounts.length - 1] = amountOut;
+        for (uint i = path.length - 1; i > 0; i--) {
+            (uint reserveIn, uint reserveOut) = getReserves(factory, path[i - 1], path[i]);
+            amounts[i - 1] = getAmountIn(amounts[i], reserveIn, reserveOut);
+        }
+    }
+}
+
+
+// File: @uniswap/lib/contracts/libraries/TransferHelper.sol
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+pragma solidity >=0.6.0;
+
+// helper methods for interacting with ERC20 tokens and sending ETH that do not consistently return true/false
+library TransferHelper {
+    function safeApprove(
+        address token,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('approve(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            'TransferHelper::safeApprove: approve failed'
+        );
+    }
+
+    function safeTransfer(
+        address token,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            'TransferHelper::safeTransfer: transfer failed'
+        );
+    }
+
+    function safeTransferFrom(
+        address token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            'TransferHelper::transferFrom: transferFrom failed'
+        );
+    }
+
+    function safeTransferETH(address to, uint256 value) internal {
+        (bool success, ) = to.call{value: value}(new bytes(0));
+        require(success, 'TransferHelper::safeTransferETH: ETH transfer failed');
+    }
+}
+
+
+// File: @uniswap/v2-periphery/contracts/interfaces/IWETH.sol
+pragma solidity >=0.5.0;
+
+interface IWETH {
+    function deposit() external payable;
+    function transfer(address to, uint value) external returns (bool);
+    function withdraw(uint) external;
+}
+
+
+// File: contracts/libraries/SafeMath.sol
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity =0.6.6;
+
+// a library for performing overflow-safe math, courtesy of DappHub (https://github.com/dapphub/ds-math)
+
+library SafeMath {
+    function add(uint x, uint y) internal pure returns (uint z) {
+        require((z = x + y) >= x, 'ds-math-add-overflow');
+    }
+
+    function sub(uint x, uint y) internal pure returns (uint z) {
+        require((z = x - y) <= x, 'ds-math-sub-underflow');
+    }
+
+    function mul(uint x, uint y) internal pure returns (uint z) {
+        require(y == 0 || (z = x * y) / y == x, 'ds-math-mul-overflow');
+    }
+}
+
+
+// File: @zircon/core/contracts/interfaces/IZirconPylon.sol
+pragma solidity >=0.5.16;
+interface IZirconPylon {
+    function initialized() external view returns (uint);
+//    function anchorPoolTokenAddress() external view returns (address);
+//    function floatPoolTokenAddress() external view returns (address);
+//    function energyAddress() external view returns (address);
+    function gammaMulDecimals() external view returns (uint);
+    function isFloatReserve0() external view returns (bool);
+    function virtualAnchorBalance() external view returns (uint);
+    function virtualFloatBalance() external view returns (uint);
+    function p2x() external view returns (uint);
+    function p2y() external view returns (uint);
+    function lastRootKTranslated() external view returns (uint);
+    function formulaSwitch() external view returns (bool);
+    function lastPrice() external view returns (uint);
+    function EMABlockNumber() external view returns (bool);
+    function getSyncReserves() external view returns  (uint112 _reserve0, uint112 _reserve1);
+    // Called once by the factory at time of deployment
+    // @_floatPoolToken -> Contains Address Of Float PT
+    // @_anchorPoolToken -> Contains Address Of Anchor PT
+    // @token0 -> Float token
+    // @token1 -> Anchor token
+    function initMigratedPylon(uint _gamma, uint _vab, bool _formulaSwitch) external;
+    function initialize(address _floatPoolTokenAddress, address _anchorPoolTokenAddress, address _floatToken, address _anchorToken, address _pairAddress, address _pairFactoryAddress, address _energy, address _energyRev) external;
+    // On init pylon we have to handle two cases
+    // The first case is when we initialize the pair through the pylon
+    // And the second one is when initialize the pylon with a pair al ready existing
+    function initPylon(address _to) external returns (uint floatLiquidity, uint anchorLiquidity);
+    // External Function called to mint pool Token
+    // Liquidity have to be sent before
+    function mintPoolTokens(address to, bool isAnchor) external returns (uint liquidity);
+//    function mintAsync100(address to, bool isAnchor) external returns (uint liquidity);
+    function mintAsync(address to, bool shouldMintAnchor) external returns (uint liquidity);
+    // Burn Async send both tokens 50-50
+    // Liquidity has to be sent before
+    function burnAsync(address _to, bool _isAnchor) external returns (uint amount0, uint amount1);
+    // Burn send liquidity back to user burning Pool tokens
+    // The function first uses the reserves of the Pylon
+    // If not enough reserves it burns The Pool Tokens of the pylon
+    function burn(address _to, bool _isAnchor) external returns (uint amount);
+    function changeEnergyAddress(address _energyAddress, address _energyRevAddress) external;
+    function migrateLiquidity(address newPylon) external;
+
+    }
+
+
+// File: @uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol
+pragma solidity >=0.5.0;
+
+interface IUniswapV2Pair {
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    function name() external pure returns (string memory);
+    function symbol() external pure returns (string memory);
+    function decimals() external pure returns (uint8);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+
+    function approve(address spender, uint value) external returns (bool);
+    function transfer(address to, uint value) external returns (bool);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+    function nonces(address owner) external view returns (uint);
+
+    function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+
+    event Mint(address indexed sender, uint amount0, uint amount1);
+    event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+    event Swap(
+        address indexed sender,
+        uint amount0In,
+        uint amount1In,
+        uint amount0Out,
+        uint amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint);
+    function factory() external view returns (address);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function price0CumulativeLast() external view returns (uint);
+    function price1CumulativeLast() external view returns (uint);
+    function kLast() external view returns (uint);
+
+    function mint(address to) external returns (uint liquidity);
+    function burn(address to) external returns (uint amount0, uint amount1);
+    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+    function skim(address to) external;
+    function sync() external;
+
+    function initialize(address, address) external;
+}
+

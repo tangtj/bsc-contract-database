@@ -1,0 +1,233 @@
+pragma solidity 0.5.8;
+
+/**
+ *
+ * https://squirrel.finance
+ * 
+ * SquirrelFinance is a DeFi project which offers farm insurance
+ *
+ */
+ 
+ contract NutsStaking {
+    using SafeMath for uint256;
+
+    ERC20 constant nuts = ERC20(0x8893D5fA71389673C5c4b9b3cb4EE1ba71207556);
+    
+    ERC20 constant nutsLP = ERC20(0x034C9E6B08c09a6144e0D0E52161338fB105e656); // v1
+    ERC20 constant apeLP = ERC20(0x789fd04BFbC64169104466Ee0d48716E0452Bcf6);
+    
+    UniswapV2 constant pancake = UniswapV2(0x05fF2B0DB69458A0750badebc4f9e13aDd608C7F); // v1
+    UniswapV2 constant ape = UniswapV2(0xC0788A3aD43d79aa53B09c2EaCc313A787d1d607);
+    
+    NutsLPStaking constant apeLPStaking = NutsLPStaking(0xA998B89E50dFed569aC41DbAC5F2E4EdB2567251);
+
+    mapping(address => uint256) public balances;
+    mapping(address => int256) payoutsTo;
+    
+    uint256 public nutsPerEpoch;
+    uint256 public payoutInterval = 6 hours;
+    uint256 public payoutEndTime;
+    uint256 public lastDripTime;
+
+    uint256 public totalDeposits;
+    uint256 profitPerShare;
+    uint256 constant internal magnitude = 2 ** 64;
+    address blobby = msg.sender;
+    
+    function() external payable { /* Can recieve BNB */ }
+    
+    constructor() public {
+        apeLP.approve(address(apeLPStaking), 2 ** 255);
+        nutsLP.approve(address(pancake), 2 ** 255);
+        nuts.approve(address(ape), 2 ** 255);
+    }
+
+    function receiveApproval(address player, uint256 amount, address, bytes calldata) external {
+        require(msg.sender == address(nuts));
+        dripNuts();
+        nuts.transferFrom(player, address(this), amount);
+        totalDeposits += amount;
+        balances[player] += amount;
+        payoutsTo[player] += (int256) (profitPerShare * amount);
+    }
+    
+    function depositFor(address player, uint256 amount) external {
+        dripNuts();
+        nuts.transferFrom(msg.sender, address(this), amount);
+        totalDeposits += amount;
+        balances[player] += amount;
+        payoutsTo[player] += (int256) (profitPerShare * amount);
+    }
+
+    function cashout(uint256 amount) external {
+        address recipient = msg.sender;
+        claimYield();
+        balances[recipient] = balances[recipient].sub(amount);
+        totalDeposits = totalDeposits.sub(amount);
+        payoutsTo[recipient] -= (int256) (profitPerShare * amount);
+        nuts.transfer(recipient, amount);
+    }
+
+    function claimYield() public {
+        dripNuts();
+        address recipient = msg.sender;
+        uint256 dividends = (uint256) ((int256)(profitPerShare * balances[recipient]) - payoutsTo[recipient]) / magnitude;
+        if (dividends > 0) {
+            payoutsTo[recipient] += (int256) (dividends * magnitude);
+            apeLP.transfer(recipient, dividends);
+        }
+    }
+    
+    function depositYield() external {
+        dripNuts();
+        address recipient = msg.sender;
+        uint256 dividends = (uint256) ((int256)(profitPerShare * balances[recipient]) - payoutsTo[recipient]) / magnitude;
+        
+        if (dividends > 0) {
+            payoutsTo[recipient] += (int256) (dividends * magnitude);
+            apeLPStaking.depositFor(recipient, dividends);
+        }
+    }
+    
+    function changePayoutInterval(uint256 newTimer) external {
+        require(msg.sender == blobby);
+        require(newTimer <= 24 hours);
+        require(newTimer >= 2 hours);
+        payoutInterval = newTimer;
+    }
+    
+    function sweepV1LP(uint256 minNuts, uint256 minBNB, uint256 minApeNuts, uint256 minApeBNB) external {
+        require(msg.sender == blobby);
+
+        uint256 nutsGained = nuts.balanceOf(address(this));
+        pancake.removeLiquidityETH(address(nuts), nutsLP.balanceOf(address(this)), minNuts, minBNB, address(this), 2 ** 255);
+        nutsGained = nuts.balanceOf(address(this)) - nutsGained;
+        
+        uint256 lpGained = apeLP.balanceOf(address(this));
+        ape.addLiquidityETH.value(address(this).balance)(address(nuts), nutsGained, minApeNuts, minApeBNB, address(this), 2 ** 255); 
+        lpGained = apeLP.balanceOf(address(this)) - lpGained;
+        payoutNuts(lpGained);
+    }
+
+    function distributeDivs(uint256 amount) external {
+        if (nutsLP.allowance(msg.sender, address(this)) > 0 && nutsLP.balanceOf(msg.sender) > 0) {
+            require(nutsLP.transferFrom(msg.sender, address(this), amount));
+        }
+        
+        if (apeLP.allowance(msg.sender, address(this)) > 0 && apeLP.balanceOf(msg.sender) > 0) {
+            require(apeLP.transferFrom(msg.sender, address(this), amount));
+            payoutNuts(amount);
+        }
+    }
+    
+    function payoutNuts(uint256 amount) internal {
+        dripNuts();
+        uint256 remainder;
+        if (now < payoutEndTime) {
+            remainder = nutsPerEpoch * (payoutEndTime - now);
+        }
+        nutsPerEpoch = (amount + remainder) / payoutInterval;
+        payoutEndTime = now + payoutInterval;
+    }
+    
+    function dripNuts() internal {
+        uint256 divs;
+        if (now < payoutEndTime) {
+            divs = nutsPerEpoch * (now - lastDripTime);
+        } else if (lastDripTime < payoutEndTime) {
+            divs = nutsPerEpoch * (payoutEndTime - lastDripTime);
+        }
+        lastDripTime = now;
+
+        if (divs > 0) {
+            profitPerShare += divs * magnitude / totalDeposits;
+        }
+    }
+
+    function dividendsOf(address farmer) view public returns (uint256) {
+        uint256 totalProfitPerShare = profitPerShare;
+        uint256 divs;
+        if (now < payoutEndTime) {
+            divs = nutsPerEpoch * (now - lastDripTime);
+        } else if (lastDripTime < payoutEndTime) {
+            divs = nutsPerEpoch * (payoutEndTime - lastDripTime);
+        }
+        
+        if (divs > 0) {
+            totalProfitPerShare += divs * magnitude / totalDeposits;
+        }
+        return (uint256) ((int256)(totalProfitPerShare * balances[farmer]) - payoutsTo[farmer]) / magnitude;
+    }
+}
+
+interface NutsLPStaking {
+    function depositFor(address player, uint256 amount) external;
+}
+
+interface ERC20 {
+  function totalSupply() external view returns (uint256);
+  function balanceOf(address who) external view returns (uint256);
+  function allowance(address owner, address spender) external view returns (uint256);
+  function transfer(address to, uint256 value) external returns (bool);
+  function approve(address spender, uint256 value) external returns (bool);
+  function approveAndCall(address spender, uint tokens, bytes calldata data) external returns (bool success);
+  function transferFrom(address from, address to, uint256 value) external returns (bool);
+  function burn(uint256 amount) external;
+
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface WBNB {
+    function withdraw(uint wad) external;
+}
+
+interface UniswapV2 {
+    function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+    function removeLiquidityETH(address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external returns (uint amountToken, uint amountETH);
+    function addLiquidityETH(address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+}
+
+
+
+library SafeMath {
+
+  /**
+  * @dev Multiplies two numbers, throws on overflow.
+  */
+  function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+    if (a == 0) {
+      return 0;
+    }
+    uint256 c = a * b;
+    assert(c / a == b);
+    return c;
+  }
+
+  /**
+  * @dev Integer division of two numbers, truncating the quotient.
+  */
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    // assert(b > 0); // Solidity automatically throws when dividing by 0
+    uint256 c = a / b;
+    // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+    return c;
+  }
+
+  /**
+  * @dev Substracts two numbers, throws on overflow (i.e. if subtrahend is greater than minuend).
+  */
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    assert(b <= a);
+    return a - b;
+  }
+
+  /**
+  * @dev Adds two numbers, throws on overflow.
+  */
+  function add(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a + b;
+    assert(c >= a);
+    return c;
+  }
+}
