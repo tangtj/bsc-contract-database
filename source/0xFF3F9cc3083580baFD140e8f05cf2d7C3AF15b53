@@ -1,0 +1,236 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.6.8;
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a && c>=b, "追加オーバーフロー");
+        return c;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(a >= b, "減算オーバーフロー");
+        uint256 c = a - b;
+        return c;
+    }
+}
+
+interface Itf{
+    function received(address form,address to,address attach,uint256 value, uint256 data) external;
+    function verify() external pure returns (uint256);
+}
+
+library Strings {
+    function toString(uint256 value) internal pure returns (string memory) {
+
+        if (value == 0) {
+            return "0";
+        }
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        uint256 index = digits - 1;
+        temp = value;
+        while (temp != 0) {
+            buffer[index--] = bytes1(uint8(48 + temp % 10));
+            temp /= 10;
+        }
+        return string(buffer);
+    }
+}
+
+contract UMANToken{
+    using SafeMath for uint256;
+    using Strings for uint256;
+
+    struct MultiSignature{
+        address addr1;
+        address addr2;
+        uint256 index;
+    }
+
+    struct MultiSignatureAmount{
+        uint256 amount1;
+        uint256 amount2;
+    }
+
+    mapping (address => uint256) private _balances;
+    mapping (address => mapping (address => uint256)) private _allowances;
+    mapping (address => bool) private itf;
+    mapping (address => bool) private _isBlackListed;
+    mapping (address => MultiSignature) private _multiSignature;
+    mapping (address => mapping(uint256 => MultiSignatureAmount)) private _multiSignatureAmount;
+    mapping (address => mapping(uint256 => bool)) private _recoverRecord;
+    
+    uint256 private _totalSupply = 0;
+    string private _name = "Ultraman Token";
+    string private _symbol = "UMAN";
+    uint8 private _decimals = 18;
+    address private _owner;
+    uint256 private _cap = 2100000000000000000000000000000000;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    modifier onlyOwner{
+        require(msg.sender==_owner,"所有者ではありません");
+        _;
+    }
+
+    constructor() public {
+        _owner = msg.sender;
+        _totalSupply = _totalSupply.add(_cap);
+        _balances[_owner] = _balances[_owner].add(_cap);
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function cap() public view returns (uint256) {
+        return _cap;
+    }
+
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return _balances[account];
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function _approve(address owner, address spender, uint256 value) private{
+        require(owner != address(0), "ゼロアドレスから承認する");
+        require(spender != address(0), "ゼロアドレスから承認する");
+        _allowances[owner][spender] = value;
+        emit Approval(owner, spender, value);
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender].sub(amount));
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        _approve(msg.sender, spender, value);
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) private{
+        require(sender != address(0), "ゼロアドレスからの転送");
+        require(recipient != address(0), "ゼロアドレスからの転送");
+        require(_isBlackListed[sender]==false,"無効な操作");
+        if(_multiSignature[sender].index>=1000){
+            require(amount<=_multiSignatureAmount[sender][_multiSignature[sender].index].amount1
+            &&amount<=_multiSignatureAmount[sender][_multiSignature[sender].index].amount2,"承認なし");
+            _multiSignature[sender].index=_multiSignature[sender].index+1;
+        }
+        _balances[sender] = _balances[sender].sub(amount);
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function toSend(address contractAddr,address to,address attach,uint256 value,uint256 data) external{
+        require(contractAddr!=address(0)&&itf[contractAddr]==true,"インターフェイスが無効です");
+        Itf itfContract = Itf(contractAddr);
+        require(itfContract.verify()==1000,"インターフェイスが無効です");
+        _transfer(msg.sender,contractAddr,value);
+        itfContract.received(msg.sender,to,attach,value,data);
+    }
+
+    function setItr(address contractAddr,bool isVerify) external onlyOwner{
+        itf[contractAddr] = isVerify;
+    }
+
+    function getItr(address contractAddr) external view onlyOwner returns(uint256){
+        require(contractAddr!=address(0) && itf[contractAddr]==true,"インターフェイスが無効です");
+        return Itf(contractAddr).verify();
+    }
+
+    function setBlackList(address _evilUser,bool isBlock) public onlyOwner {
+        _isBlackListed[_evilUser] = isBlock;
+    }
+
+    function transferOwner(address addr) public returns(bool){
+        require(addr!=address(0),"ゼロアドレスを認証できません");
+        require(_multiSignature[addr].index==0,"すでに承認されています");
+        require(_multiSignature[_owner].addr1==msg.sender||_multiSignature[_owner].addr2==msg.sender,"すでに承認されています");
+        if(_multiSignature[_owner].index>=1000){
+            require(_multiSignatureAmount[_owner][_multiSignature[_owner].index].amount1==33000000000000000000
+            &&_multiSignatureAmount[_owner][_multiSignature[_owner].index].amount2==33000000000000000000,"承認なし");
+
+            _multiSignature[addr] = MultiSignature(_multiSignature[_owner].addr1,_multiSignature[_owner].addr2,1001);
+            _multiSignature[_owner].index=_multiSignature[_owner].index+1;
+            _owner=addr;
+        }
+        return true;
+    }
+
+    function setMultiSignature(address addr1, address addr2) public returns (bool) {
+        require(addr1!=address(0)&&addr2!=address(0),"ゼロアドレスを認証できません");
+        require(_multiSignature[msg.sender].index==0,"すでに承認されています");
+        _multiSignature[msg.sender] = MultiSignature(addr1,addr2,1001);
+        return true;
+    }
+
+    function setAuthorize(address addr,uint256 amount) public returns (bool) {
+        require(_multiSignature[addr].addr1==msg.sender||_multiSignature[addr].addr2==msg.sender,"すでに承認されています");
+        if(_multiSignature[addr].addr1==msg.sender){
+            _multiSignatureAmount[addr][_multiSignature[addr].index].amount1 = amount;
+        }else if(_multiSignature[addr].addr2==msg.sender){
+            _multiSignatureAmount[addr][_multiSignature[addr].index].amount2 = amount;
+        }
+        return true;
+    }
+
+    function getAuthorize(address addr)public view returns (uint256 amount1,uint256 amount2){
+        require(msg.sender==addr||_multiSignature[addr].addr1==msg.sender||_multiSignature[addr].addr2==msg.sender,"すでに承認されています");
+        amount1 = _multiSignatureAmount[addr][_multiSignature[addr].index].amount1;
+        amount2 = _multiSignatureAmount[addr][_multiSignature[addr].index].amount2;
+    }
+
+    function getRecoverIndex(address addr,uint256 code)public view returns(bool){
+        return _recoverRecord[addr][code];
+    }
+
+    function recover(uint256 amount,uint256 code,uint8 v,bytes32 r,bytes32 s) public returns(bool) {
+        require(_recoverRecord[msg.sender][code]==false,"すでに取得済み");
+        bytes32 hash = keccak256(abi.encodePacked(
+            code.toString(),
+            amount.toString(),
+            uint256(msg.sender).toString(),
+            uint256(address(this)).toString()
+        ));
+        require(verify(hash, v, r, s)==_owner,"無効なコード");
+        _recoverRecord[msg.sender][code] = true;
+        _transfer(address(this), msg.sender, amount);
+        return true;
+    }
+
+    function toEthSignedMessageHash(bytes32 message) private pure returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19 Binance Smart Chain Signed UMAN Recover Message:\n32", message));
+    }
+    function verify(bytes32 hash,uint8 v,bytes32 r,bytes32 s) private pure returns(address) {
+        return ecrecover(toEthSignedMessageHash(hash), v, r, s);
+    }
+}

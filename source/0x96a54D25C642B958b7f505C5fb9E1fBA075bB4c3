@@ -1,0 +1,638 @@
+// SPDX-License-Identifier: Unlicensed
+pragma solidity ^0.8.7;
+
+abstract contract Context {
+
+    function _msgSender() internal view virtual returns (address payable) {
+        return payable(msg.sender);
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this;
+        // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+interface IERC20 {
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+library Address {
+
+    function isContract(address account) internal view returns (bool) {
+        // According to EIP-1052, 0x0 is the value returned for not-yet created accounts
+        // and 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470 is returned
+        // for accounts without code, i.e. `keccak256('')`
+        bytes32 codehash;
+        bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+        // solhint-disable-next-line no-inline-assembly
+        assembly {codehash := extcodehash(account)}
+        return (codehash != accountHash && codehash != 0x0);
+    }
+
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+
+        // solhint-disable-next-line avoid-low-level-calls, avoid-call-value
+        (bool success,) = recipient.call{ value : amount}("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+
+    function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+        return functionCall(target, data, "Address: low-level call failed");
+    }
+
+    function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+        return _functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+    function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+    }
+
+    function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        return _functionCallWithValue(target, data, value, errorMessage);
+    }
+
+    function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+        require(isContract(target), "Address: call to non-contract");
+
+        (bool success, bytes memory returndata) = target.call{ value : weiValue}(data);
+        if (success) {
+            return returndata;
+        } else {
+
+            if (returndata.length > 0) {
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+
+contract Ownable is Context {
+    address public owner;
+    address private _previousOwner;
+    uint256 private _lockTime;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    modifier onlyOwner() {
+        require(owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function waiveOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(owner, address(0));
+        owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+
+    function getUnlockTime() public view returns (uint256) {
+        return _lockTime;
+    }
+
+    function getTime() public view returns (uint256) {
+        return block.timestamp;
+    }
+
+    function lock(uint256 time) public virtual onlyOwner {
+        _previousOwner = owner;
+        owner = address(0);
+        _lockTime = block.timestamp + time;
+        emit OwnershipTransferred(owner, address(0));
+    }
+
+    function unlock() public virtual {
+        require(_previousOwner == msg.sender, "You don't have permission to unlock");
+        require(block.timestamp > _lockTime, "Contract is locked until 7 days");
+        emit OwnershipTransferred(owner, _previousOwner);
+        owner = _previousOwner;
+    }
+}
+
+interface IUniswapV2Pair {
+    function balanceOf(address owner) external view returns (uint);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function token0() external view returns (address);
+}
+
+interface IUniswapV2Factory {
+    event PairCreated(address indexed token0, address indexed token1, address pair, uint);
+
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+interface IUniswapV2Router01 {
+    function factory() external pure returns (address);
+}
+
+contract YZFTOKEN is Context, IERC20, Ownable {
+    using SafeMath for uint256;
+    using Address for address;
+
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    uint256 private _totalSupply;
+
+    address payable marketAddress;
+    address payable marketingAddress;
+    address payable teamWalletAddress;
+    address payable ecologyWalletAddress;
+    address public immutable deadAddress = 0x000000000000000000000000000000000000dEaD;
+
+    uint256 _totalTax = 10;
+    uint256 _taxSpreadlv = 1;//*3
+    uint256 _taxPoollv = 3;
+    uint256 _burnlv = 2;
+
+    mapping (address => uint256) _balances;
+    mapping (address => mapping (address => uint256)) private _allowances;
+
+    mapping (address => bool) public isExcludedFromFee;
+    mapping (address => bool) public isMarketPair;
+
+    mapping (address => address[]) spreads;
+
+    mapping (address => uint256) pollAmount;
+    mapping (address => uint256) usdtAmount;
+    mapping (address => bool) ifPoolAddress;
+
+    mapping (address => uint256) public pollOnTime;
+
+    address[] public pollAddress;
+
+    address public newPollAddress;
+
+    IUniswapV2Router01 public uniswapV2Router;
+    address public uniswapPair;
+
+    address usdtToken = 0x55d398326f99059fF775485246999027B3197955;
+    address technologyAddress;
+    address pollWalletAddress;
+
+    event getReservesData(
+        uint112 reserve0,
+        uint112 reserve1,
+        uint32 blockTimestampLast,
+        uint256 pollUsdt
+    );
+
+    uint256 public monthAmount = 300000;
+
+    uint256 public sendMonthTime = 0;
+
+    uint256 public sendMarketInterval = 7;
+
+    uint256 public burnDayTime = 0;
+
+    uint256 public burnDayAmount = 0;
+
+    uint256 public burnMinAmount = 100000;
+
+    uint256 public burnDayLv = 2;
+
+    uint256 public dayLong = 86400;
+
+    uint8 private usdtWay = 0;
+
+    event BurnUniswapPair(address sender, uint256 amount0);
+
+    constructor (
+        string memory coinName,
+        string memory coinSymbol,
+        address _owner
+    ) payable {
+        _name = coinName;
+        _symbol = coinSymbol;
+        _decimals = 6;
+        owner = _owner;
+        _totalSupply = 1000000000 * 10 ** _decimals;
+
+        IUniswapV2Router01 _uniswapV2Router = IUniswapV2Router01(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        uniswapPair = IUniswapV2Factory(_uniswapV2Router.factory()).createPair(address(this), usdtToken);
+        uniswapV2Router = _uniswapV2Router;
+
+        address token0 = IUniswapV2Pair(uniswapPair).token0();
+        if(token0 == address(usdtToken)){
+            usdtWay = 1;
+        }
+
+        burnDayTime = block.timestamp;
+
+        sendMonthTime = block.timestamp.add(sendMarketInterval*dayLong);
+
+        _allowances[address(this)][address(uniswapV2Router)] = _totalSupply;
+        isMarketPair[address(uniswapPair)] = true;
+
+        technologyAddress = payable(0xC2Bc43797F73c802C0C55E9F4eA57324E7BA6169);
+        pollWalletAddress = payable(0xc0add561f8B7FF73edFeE5bBf3f8D0B57F545804);
+        ecologyWalletAddress = payable(0xCa2878f41f244093D10719E26b0C040C7cce106b);
+        marketAddress = payable(0xD3F6DC6ab7F975dD279e6B17686a09D1657E1094);
+        teamWalletAddress = payable(0x0c7ED9378f233980431a1BD4BcA2025Bc1b18183);
+        marketingAddress = payable(0x39459c384d19e7d68434202f464df5920DD3369c);
+
+        isExcludedFromFee[owner] = true;
+        isExcludedFromFee[address(uniswapPair)] = true;
+        isExcludedFromFee[address(this)] = true;
+        isExcludedFromFee[technologyAddress] = true;
+        isExcludedFromFee[pollWalletAddress] = true;
+        isExcludedFromFee[ecologyWalletAddress] = true;
+        isExcludedFromFee[marketAddress] = true;
+        isExcludedFromFee[marketingAddress] = true;
+        isExcludedFromFee[teamWalletAddress] = true;
+
+        _balances[technologyAddress] = _totalSupply.mul(20).div(100);
+        _balances[pollWalletAddress] = _totalSupply.mul(20).div(100);
+        _balances[ecologyWalletAddress] = _totalSupply.mul(10).div(100);
+        _balances[marketAddress] = _totalSupply.mul(30).div(100);
+        _balances[teamWalletAddress] = _totalSupply.mul(20).div(100);
+
+        emit Transfer(address(0), technologyAddress, _totalSupply.mul(20).div(100));
+        emit Transfer(address(0), pollWalletAddress, _totalSupply.mul(20).div(100));
+        emit Transfer(address(0), ecologyWalletAddress, _totalSupply.mul(10).div(100));
+        emit Transfer(address(0), marketAddress, _totalSupply.mul(30).div(100));
+        emit Transfer(address(0), teamWalletAddress, _totalSupply.mul(20).div(100));
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    //to recieve ETH from uniswapV2Router when swaping
+    receive() external payable {}
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+        return true;
+    }
+
+    function getPollInfo(address _address) public view returns (uint, uint256, bool, bool,uint256,uint256) {
+        IERC20 pairContent = IERC20(uniswapPair);
+        bool onTime = false;
+        if(sendMonthTime >= pollOnTime[_address].add(sendMarketInterval * dayLong)){
+            onTime = true;
+        }
+        return (
+            pairContent.balanceOf(_address),
+            pollAmount[_address],
+            ifPoolAddress[_address],
+            onTime,
+            sendMonthTime > pollOnTime[_address]?sendMonthTime.sub(pollOnTime[_address]):0,
+            sendMarketInterval * dayLong
+        );
+    }
+
+    function getSpreadFirst(address _address) public view returns (address) {
+        if(spreads[_address].length ==0){
+            return address(0);
+        }else{
+            return spreads[_address][0];
+        }
+    }
+
+    function getSpread(address _address) public view returns (address[] memory) {
+        return spreads[_address];
+    }
+
+    function getSpreadLength(address _address) private view returns (uint) {
+        return spreads[_address].length;
+    }
+
+    function setSpread(address _to, address _up) private returns (uint) {
+        if(spreads[_to].length == 0){
+            spreads[_to].push(_up);
+            if(spreads[_up].length>0){
+                for (uint i = 0; i < spreads[_up].length; i++) {
+                    if(i < 2){
+                        spreads[_to].push(spreads[_up][i]);
+                    }
+                }
+            }
+        }
+        return spreads[_to].length;
+    }
+
+    function sendMonth() public{
+        require(block.timestamp > sendMonthTime, "time not reached");
+        require(owner == _msgSender(), "caller is not the markket");
+        uint256 onTimeAmount = 0;
+        for (uint i = 0; i < pollAddress.length; i++) {
+            if( sendMonthTime >= pollOnTime[pollAddress[i]].add(sendMarketInterval * dayLong)){
+                onTimeAmount = onTimeAmount.add(pollAmount[pollAddress[i]]);
+            }
+        }
+        uint256 amount = 0;
+        if(onTimeAmount>0){
+            for (uint i = 0; i < pollAddress.length; i++) {
+                if( sendMonthTime >= pollOnTime[pollAddress[i]].add(sendMarketInterval * dayLong)){
+                    uint256 myAmount = pollAmount[pollAddress[i]].mul(10**_decimals).div(onTimeAmount).mul(monthAmount);
+                    if(myAmount>0){
+                        _balances[pollAddress[i]] = _balances[pollAddress[i]].add(myAmount);
+                        emit Transfer(marketAddress, pollAddress[i], myAmount);
+                        amount = amount.add(myAmount);
+                    }
+                }
+            }
+        }
+        _balances[marketAddress] = _balances[marketAddress].sub(amount);
+        sendMonthTime = sendMonthTime.add(sendMarketInterval * dayLong);
+        if(sendMonthTime<block.timestamp){
+            sendMonthTime = block.timestamp.add(sendMarketInterval * dayLong);
+        }
+    }
+
+    function setBurnDayLv(uint256 _val) public{
+        require(owner == _msgSender(), "Ownable: caller is not the owner");
+        burnDayLv = _val;
+    }
+
+    function setBurnDayLong(uint256 _val) public{
+        require(owner == _msgSender(), "Ownable: caller is not the owner");
+        dayLong = _val;
+    }
+
+    function setBurnMinAmount(uint256 _val) public{
+        require(owner == _msgSender(), "Ownable: caller is not the owner");
+        burnMinAmount = _val;
+    }
+
+    function setSendMonthTime(uint256 _val) public{
+        require(owner == _msgSender(), "Ownable: caller is not the owner");
+        sendMonthTime = _val;
+    }
+
+    function setBurnDayTime(uint256 _val) public{
+        require(owner == _msgSender(), "Ownable: caller is not the owner");
+        burnDayTime = _val;
+    }
+
+    function setMonthAmount(uint256 _val) public{
+        require(owner == _msgSender(), "Ownable: caller is not the owner");
+        monthAmount = _val;
+    }
+
+    function nextDayBurnTime() public view returns(uint256){
+        return burnDayTime.add(dayLong).sub(block.timestamp);
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) private returns (bool) {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        _balances[sender] = _balances[sender].sub(amount, "Insufficient Balance");
+
+        if(address(uniswapPair) != recipient && address(uniswapPair) != sender){
+            setSpread(recipient, sender);
+        }
+        if(amount == 0) return true;
+
+        IUniswapV2Pair pairContent = IUniswapV2Pair(uniswapPair);
+
+        if(newPollAddress != address(0)){
+            pollAmount[newPollAddress] = pairContent.balanceOf(newPollAddress);
+            delete newPollAddress;
+        }
+
+        uint112 reserve0 = 0;
+        uint112 reserve1 = 0;
+        uint32 blockTimestampLast = 0;
+        (reserve0, reserve1, blockTimestampLast) = pairContent.getReserves();
+        uint pollUsdt = IUniswapV2Pair(usdtToken).balanceOf(uniswapPair);
+        emit getReservesData(reserve0, reserve1, blockTimestampLast, pollUsdt);
+        uint256 reserve = usdtWay==1 ? reserve0 : reserve1;
+
+        if(isMarketPair[recipient]) {
+            uint pollNumber = pairContent.balanceOf(sender);
+            if(reserve < pollUsdt){
+                if(ifPoolAddress[sender] == false) {
+                    ifPoolAddress[sender] = true;
+                    pollAddress.push(sender);
+                }
+                if(pollOnTime[sender]==0){
+                    pollOnTime[sender] = block.timestamp;
+                }
+                newPollAddress = sender;
+                dayBurn(0);
+            }else{
+                dayBurn(amount);
+                if(isExcludedFromFee[sender]==false){
+                    uint256 finalAmount = amount;
+                    address _sender = sender;
+                    uint256 feeAmount = amount.mul(_totalTax).div(100);
+                    swapAndLiquify(finalAmount, feeAmount, _sender, _sender);
+                    amount = finalAmount.sub(feeAmount);
+                }
+            }
+            pollAmount[sender] = pollNumber;
+        }else if(isMarketPair[sender]){
+            uint pollNumber = pairContent.balanceOf(recipient);
+            if(pollNumber < pollAmount[recipient]){
+                newPollAddress = recipient;
+                pollOnTime[recipient] = 0;
+                dayBurn(0);
+            }else{
+                dayBurn(amount);
+            }
+            if(isExcludedFromFee[recipient] == false){
+                uint256 feeAmount = amount.mul(_totalTax).div(100);
+                swapAndLiquify(amount, feeAmount, sender, recipient);
+                amount = amount.sub(feeAmount);
+            }
+            pollAmount[recipient] = pollNumber;
+        }else{
+            dayBurn(0);
+        }
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function dayBurn(uint256 _addAmount) private{
+        if(block.timestamp > burnDayTime.add(dayLong)){
+            if(burnDayAmount >= burnMinAmount * 10 ** _decimals){
+                uint256 burnDay = burnDayAmount.mul(burnDayLv*100000).div(100*100000);
+                if(_balances[pollWalletAddress] > burnDay){
+                    _balances[pollWalletAddress] = _balances[pollWalletAddress].sub(burnDay);
+                    _totalSupply = _totalSupply.sub(burnDay);
+                    emit Transfer(pollWalletAddress, address(0), burnDay);
+                }
+            }
+            burnDayTime = burnDayTime.add(dayLong);
+            if(burnDayTime < block.timestamp){
+                burnDayTime = block.timestamp;
+            }
+            burnDayAmount = _addAmount;
+        }else{
+            if(_addAmount>0){
+                burnDayAmount = burnDayAmount.add(_addAmount);
+            }
+        }
+    }
+
+    function swapAndLiquify(uint256 amount, uint256 tAmount, address _from, address _to) private returns (uint256) {
+        uint256 divPollAmount = amount.mul(_taxPoollv).div(100);
+        uint256 spreadAmount = amount.mul(_taxSpreadlv).div(100);
+        uint256 burnAmount = amount.mul(_burnlv).div(100);
+        uint256 pollAmountTotal = IERC20(uniswapPair).totalSupply();
+        uint256 usdt_decimals = 18;
+        //item 1 -> 3%
+        uint256 spreadDeep = getSpreadLength(_to);
+        if(spreadDeep>0 && _taxSpreadlv>0 && spreadAmount>0){
+            address[] memory upAddress = getSpread(_to);
+            for (uint i = 0; i < spreadDeep; i++) {
+                _balances[upAddress[i]] = _balances[upAddress[i]].add(spreadAmount);
+                emit Transfer(_from, upAddress[i], spreadAmount);
+                tAmount = tAmount.sub(spreadAmount);
+            }
+        }
+        //item 2 -> 3%
+        if(pollAmountTotal > 0){
+            for (uint i = 0; i < pollAddress.length; i++) {
+                uint256 myAmount = pollAmount[pollAddress[i]].mul(10**usdt_decimals).div(pollAmountTotal).mul(divPollAmount).div(10**usdt_decimals);
+                if(myAmount>0){
+                    _balances[pollAddress[i]] = _balances[pollAddress[i]].add(myAmount);
+                    emit Transfer(_from, pollAddress[i], myAmount);
+                    tAmount = tAmount.sub(myAmount);
+                }
+            }
+        }
+        //item 3 -> 2%
+        if(burnAmount > 0){
+            tAmount = tAmount.sub(burnAmount);
+            _totalSupply = _totalSupply.sub(burnAmount);
+            emit Transfer(_from, address(0), burnAmount);
+        }
+        //item 4 shengyu
+        _balances[marketingAddress] = _balances[marketingAddress].add(tAmount);
+        emit Transfer(_from, marketingAddress, tAmount);
+        return tAmount;
+    }
+}

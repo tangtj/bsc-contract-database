@@ -1,0 +1,234 @@
+/**
+ *Submitted for verification at BscScan.com on 2021-10-24
+*/
+
+/**
+ *Submitted for verification at BscScan.com on 2021-10-08
+*/
+
+pragma solidity ^0.8.0;
+
+
+
+/**
+ * SAFEMATH LIBRARY
+ */
+library SafeMath {
+    
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b <= a, errorMessage);
+            return a - b;
+        }
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a / b;
+        }
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a % b;
+        }
+    }
+}
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function decimals() external view returns (uint8);
+    function symbol() external view returns (string memory);
+    function name() external view returns (string memory);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+
+
+
+
+
+
+
+
+contract Prpi is IBEP20 {
+    using SafeMath for uint256;
+
+
+    string constant _name = "ProtoPi Token";
+    string constant _symbol = "PRPI";
+    uint8 constant _decimals = 8;
+
+    uint256 _totalSupply = 31415926 * (10 ** _decimals);
+    mapping (address=>address) public parents;
+
+    mapping (address => uint256) _balances;
+    mapping (address => mapping (address => uint256)) _allowances;
+
+    address constant public marketAddr=0x358C8285EfD45609a84354529D83fBdFe39E6F8a;
+    address constant public burnAddr=0x000000000000000000000000000000000000dEaD;
+    address constant public whitelist=0xFFC2e7d5a475308c503dd2a8861eC30458036b29;
+
+    uint256 constant public marketFee=2;
+    uint256 constant public burnFee=2;
+    uint256 constant public rewardFee=1;
+    uint256 constant public maxFee=100;
+
+    constructor(){
+        _balances[whitelist]=_totalSupply;
+    }
+
+
+    function totalSupply() external view override returns (uint256) { return _totalSupply; }
+    function decimals() external pure override returns (uint8) { return _decimals; }
+    function symbol() external pure override returns (string memory) { return _symbol; }
+    function name() external pure override returns (string memory) { return _name; }
+    function balanceOf(address account) public view override returns (uint256) { return _balances[account]; }
+    function allowance(address holder, address spender) external view override returns (uint256) { return _allowances[holder][spender]; }
+
+    
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+
+    function approveMax(address spender) external returns (bool) {
+        return approve(spender, _totalSupply);
+    }
+
+    function transfer(address recipient, uint256 amount) external override returns (bool) {
+        return _transferFrom(msg.sender, recipient, amount);
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
+        if(_allowances[sender][msg.sender] != _totalSupply){
+            _allowances[sender][msg.sender] = _allowances[sender][msg.sender].sub(amount, "Insufficient Allowance");
+        }
+        return _transferFrom(sender, recipient, amount);
+    }
+
+    function _transferFrom(address sender, address recipient, uint256 amount) internal returns (bool) {
+        if(sender==whitelist){
+            _basicTransfer(sender, recipient, amount);
+            return true;
+        }
+        _balances[sender] = _balances[sender].sub(amount, "Insufficient Balance");
+        uint256 amountReceived=amount*(burnFee+marketFee+rewardFee)/maxFee;
+        _balances[recipient] = _balances[recipient].add(amount.sub(amountReceived));
+        if(parents[recipient]==address(0)){
+            parents[recipient]=sender;
+        }
+        _balances[marketAddr]=_balances[marketAddr].add(amount*marketFee/maxFee);
+        _balances[burnAddr]=_balances[burnAddr].add(amount*burnFee/maxFee);
+        if(parents[sender]!=address(0)){
+            _balances[parents[sender]]=_balances[parents[sender]].add(amount*rewardFee/maxFee);
+            emit Transfer(sender, parents[sender], amount*rewardFee/maxFee);
+        
+        }
+        _totalSupply-=amount*burnFee/maxFee;
+        emit Transfer(sender, recipient, amount);
+        emit Transfer(sender, marketAddr, amount*marketFee/maxFee);
+        emit Transfer(sender, burnAddr, amount*burnFee/maxFee);
+        return true;
+    }
+     function _basicTransfer(address sender, address recipient, uint256 amount) internal returns (bool) {
+        _balances[sender] = _balances[sender].sub(amount, "Insufficient Balance");
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+  
+
+
+
+   
+   
+
+   
+
+   
+
+    
+
+   
+
+   
+
+  
+
+
+
+}

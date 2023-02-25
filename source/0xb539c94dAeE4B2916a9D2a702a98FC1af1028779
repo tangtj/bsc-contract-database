@@ -1,0 +1,319 @@
+// SPDX-License-Identifier: No License
+pragma solidity ^0.8.13;
+// OpenZeppelin Contracts (last updated v4.5.0) (token/ERC20/IERC20.sol)
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+// OpenZeppelin Contracts v4.4.1 (interfaces/IERC1363.sol)
+interface IERC1363 is IERC20 {
+    function transferAndCall(address to, uint256 value) external returns (bool);
+    function transferAndCall(address to, uint256 value, bytes memory data) external returns (bool);
+    function transferFromAndCall(address from, address to, uint256 value) external returns (bool);
+    function transferFromAndCall(address from, address to, uint256 value, bytes memory data) external returns (bool);
+    function approveAndCall(address spender, uint256 value) external returns (bool);
+    function approveAndCall(address spender, uint256 value, bytes memory data) external returns (bool);
+}
+interface IERC1363Receiver {
+    function onTransferReceived(address operator, address sender, uint256 amount, bytes calldata data) external returns (bytes4);
+}
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+// OpenZeppelin Contracts v4.4.1 (security/ReentrancyGuard.sol)
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _status;
+    constructor () {
+        _status = _NOT_ENTERED;
+    }
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+        _;
+        _status = _NOT_ENTERED;
+    }
+}
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+        return c;
+    }
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        return c;
+    }
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+// OpenZeppelin Contracts v4.4.1 (access/Ownable.sol)
+abstract contract Ownable is Context {
+    address private _owner;
+    event OwnerAdded(address indexed previousOwner, address indexed newOwner);
+    constructor () {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnerAdded(address(0), msgSender);
+    }
+    function owner() public view returns (address) {
+        return _owner;
+    }
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "only owner allowed");
+        _;
+    }
+}
+
+contract InddaisFarm is IERC1363Receiver, ReentrancyGuard, Ownable {
+    using SafeMath for uint256;
+
+    IERC20 public harvestToken;
+    IERC20 public seedToken;
+    uint256 public SeasonEnd = 0;
+    uint256 public SeasonStart;
+    uint256 public harvestRate = 0;
+    uint256 public SeasonDuration;
+    uint256 public lastUpdateTime;
+    uint256 public harvestPerTokenStored;
+    uint256 public seedTokensDecimalRate;
+    bool private initialised;
+    mapping(address => uint256) public HarvestPerTokenMade;
+    mapping(address => uint256) public Yield;
+    mapping(address => uint8) public CurrentSeason;
+    uint256 private _totalSupply;
+    mapping(address => uint256) private _balances;
+    uint8 public SeasonID = 0;
+
+    constructor (
+        address _harvestToken,
+        address _seedToken,
+        uint256 _SeasonDuration,
+        uint256 _SeasonStart,
+        uint8 _seedTokensDecimal
+    )  {
+        seedTokensDecimalRate = pow(10, _seedTokensDecimal);
+        harvestToken = IERC20(_harvestToken);
+        seedToken = IERC20(_seedToken);
+        SeasonDuration = _SeasonDuration;
+        SeasonStart = _SeasonStart;
+    }
+
+    function totalSupply() external view returns (uint256) {
+        return _totalSupply;
+    }
+
+    function pow(uint n, uint e) internal pure returns (uint256) {
+
+        if (e == 0) {
+            return 1;
+        } else if (e == 1) {
+            return n;
+        } else {
+            uint p = pow(n, e.div(2));
+            p = p.mul(p);
+            if (e.mod(2) == 1) {
+                p = p.mul(n);
+            }
+            return p;
+        }
+    }
+
+    function balanceOf(address account) external view returns (uint256) {
+        return _balances[account];
+    }
+
+    function RecentHarvestUpdate() public view returns (uint256) {
+        return min(block.timestamp, SeasonEnd);
+    }
+
+    function HarvestPerToken() public view returns (uint256) {
+        if (_totalSupply == 0) {
+            return harvestPerTokenStored;
+        }
+        return
+        harvestPerTokenStored.add(
+            RecentHarvestUpdate()
+            .sub(lastUpdateTime)
+            .mul(harvestRate)
+            .mul(seedTokensDecimalRate)
+            .div(_totalSupply)
+        );
+    }
+
+    function YieldMade(address account) public view returns (uint256) {
+        return
+        _balances[account]
+        .mul(HarvestPerToken().sub(HarvestPerTokenMade[account]))
+        .div(seedTokensDecimalRate)
+        .add(Yield[account]);
+    }
+
+    function SeasonYield() external view returns (uint256) {
+        return harvestRate.mul(SeasonDuration);
+    }
+
+    function min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+    function onTransferReceived(address operator, address sender, uint256 amount, bytes memory data) public override returns (bytes4) {
+        require(_msgSender() == address(seedToken), "Only INIS accepted");
+        require(block.timestamp < SeasonEnd, "Farm is not active");
+        harvestPerTokenStored = HarvestPerToken();
+        lastUpdateTime = RecentHarvestUpdate();
+        if (SeasonID != CurrentSeason[sender]) {
+                HarvestPerTokenMade[sender] = 0;
+                CurrentSeason[sender] = SeasonID;
+            }
+        if (block.timestamp > SeasonStart && block.timestamp < SeasonEnd) {
+                Yield[sender] = YieldMade(sender);
+                HarvestPerTokenMade[sender] = harvestPerTokenStored;
+            }
+        _totalSupply = _totalSupply.add(amount);
+        _balances[sender] = _balances[sender].add(amount);
+        emit SeedsAdded(operator, sender, amount, data);
+        return IERC1363Receiver(this).onTransferReceived.selector;
+    }
+
+    function DrawSeed(uint256 amount) public nonReentrant updateYield(msg.sender) {
+        require(amount > 0, "no amount to draw");
+        require((SeasonEnd + 5 days) > block.timestamp, "allowed time limit exceeded");
+        require(_balances[msg.sender] >= amount, "amount exceeds balance");
+        _totalSupply = _totalSupply.sub(amount);
+        _balances[msg.sender] = _balances[msg.sender].sub(amount);
+        seedToken.transfer(msg.sender, amount);
+        emit SeedsRemoved(msg.sender, amount);
+    }
+
+    function HarvestYield() public nonReentrant updateYield(msg.sender) {
+        require((SeasonEnd + 5 days) > block.timestamp, "allowed time limit exceeded");
+        uint256 UserYield = Yield[msg.sender];
+        if (UserYield > 0) {
+            Yield[msg.sender] = 0;
+            harvestToken.transfer(msg.sender, UserYield);
+            emit YieldHarvested(msg.sender, UserYield);
+        }
+    }
+
+    function exitFarm() external {
+        DrawSeed(_balances[msg.sender]);
+        HarvestYield();
+    }
+
+/**
+* This implementation helps us zero the farm and manually settle the yield to holders before getting 
+* started with a new season. An admin fee of 25% of the yield is charged. Can be done only after
+* five days from the season end.
+*/
+
+    function YieldSettle(address holder, address collector) external nonReentrant onlyOwner updateYield(address(0)) {
+        require((SeasonEnd + 5 days) < block.timestamp, "allowed only after grace time complete");
+        Yield[holder] = YieldMade(holder);
+        HarvestPerTokenMade[holder] = harvestPerTokenStored;
+        uint256 UserBalance = _balances[holder];
+        uint256 UserYield = Yield[holder];
+        if (UserBalance > 0) {
+            _totalSupply = _totalSupply.sub(UserBalance);
+            _balances[holder] = _balances[holder].sub(UserBalance);
+            seedToken.transfer(holder, UserBalance);
+            emit SeedsRemoved(holder, UserBalance);
+        }
+        if (UserYield > 0) {
+            uint256 AdminFee = (UserYield * 25) / 100;
+            uint256 SettleYield = UserYield - AdminFee;
+            Yield[holder] = 0;
+            harvestToken.transfer(holder, SettleYield);
+            emit YieldHarvested(holder, SettleYield);
+            harvestToken.transfer(collector, AdminFee);
+            emit FeeCollected(collector, AdminFee);
+        }
+    }
+
+    function AddHarvestStock(uint256 NetYield) external nonReentrant onlyOwner updateYield(address(0)) {
+        require(block.timestamp > SeasonEnd, "Farm is active");
+        harvestRate = NetYield.div(SeasonDuration);
+        SeasonID = SeasonID + 1;
+        harvestPerTokenStored = 0;
+        if (block.timestamp > SeasonStart) {
+            SeasonStart = SeasonEnd + 30 days;
+        }
+        uint256 balance = harvestToken.balanceOf(address(this));
+        require(harvestRate <= balance.div(SeasonDuration), "Provided stock too high");
+        lastUpdateTime = block.timestamp;
+        SeasonEnd = SeasonStart.add(SeasonDuration);
+        emit HarvestStockAdded(NetYield);
+    }
+
+    function recoverERC20(address tokenAddress, uint256 tokenAmount) external onlyOwner {
+        require(tokenAddress != address(harvestToken), "Cannot withdraw the Yielding tokens");
+        if (_totalSupply != 0) {
+            require(tokenAddress != address(seedToken), "Cannot withdraw the staking tokens");
+        }
+        IERC20(tokenAddress).transfer(msg.sender, tokenAmount);
+        emit Recovered(tokenAddress, tokenAmount);
+    }
+
+    modifier updateYield(address account) {
+        harvestPerTokenStored = HarvestPerToken();
+        lastUpdateTime = RecentHarvestUpdate();
+        if (account != address(0)) {
+            if (SeasonID != CurrentSeason[account]) {
+                HarvestPerTokenMade[account] = 0;
+                CurrentSeason[account] = SeasonID;
+            }
+            if (block.timestamp > SeasonStart && block.timestamp < SeasonEnd) {
+                Yield[account] = YieldMade(account);
+                HarvestPerTokenMade[account] = harvestPerTokenStored;
+            }
+        }
+        _;
+    }
+
+    event HarvestStockAdded(uint256 stock);
+    event SeedsAdded(address indexed token, address indexed user, uint256 amount, bytes data);
+    event SeedsRemoved(address indexed user, uint256 amount);
+    event YieldHarvested(address indexed user, uint256 yield);
+    event FeeCollected(address indexed collector, uint256 amount);
+    event harvestDurationUpdated(uint256 newDuration);
+    event Recovered(address token, uint256 amount);
+}

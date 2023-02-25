@@ -1,0 +1,1535 @@
+
+// File: contracts/Soup4D.sol
+pragma solidity ^0.6.0;
+
+import "./library/SafeMath.sol";
+import "./library/UintCompressor.sol";
+import "./library/KeysCalcLong.sol";
+import "./library/Datasets.sol";
+import "./library/Utils.sol";
+import "./library/ReentrancyGuard.sol";
+import "./library/IERC20Burnable.sol";
+import "./library/IERC20.sol";
+import "./Uniswapv2Interface.sol";
+import './library/IWETH.sol';
+
+contract Soup4D is ReentrancyGuard {
+    using SafeMath for *;
+    using KeysCalcLong for uint256;
+	
+    string constant public name = "Soup4D";
+
+    // config
+    uint256 constant private rndInit_ = 1 hours;         // round timer starts at this
+    uint256 constant private rndInc_ = 3 seconds;       // every full key purchased adds this much to the timer
+    uint256 constant private rndMax_ = 1 hours;         // max length a round timer can be
+    uint256 constant private burnFundFee = 2;     // represent the key proceeds allocation percentage to the burn fund
+    uint256 constant private initialBurnFee = 2;  // represent the key proceeds allocation percentage that will be burn
+       
+    uint256 constant private playerFees = 93;  // represent the key proceeds allocation percentage to current players
+    uint256 public potWinnerShare = 90;  // represent the pot allocation percentage to winner
+
+    IERC20 public WBNB_;
+    IERC20Burnable public primaryToken_; // primary token accepted for Soup4D
+    UniswapRouterV2 public router_;      // pancake router
+
+    uint256 public rID_;      // round id number / total rounds that have happened
+    uint256 public burnFund_; // burn fund
+    address public owner_; 
+
+    mapping(address => bool) whitelist_; // tokens that are whitelisted for Soup4D
+    mapping (address => Datasets.Player) public plyr_;   // (pID => data) player data
+    mapping (address => mapping (uint256 => Datasets.PlayerRounds)) public plyrRnds_; 
+    mapping (uint256 => Datasets.Round) public round_;   // (rID => data) round data
+
+    constructor()
+        public
+    {
+        owner_ = msg.sender;
+    }
+
+    fallback() external payable {}
+
+    // modifiers
+    /**
+     * @dev used to make sure no one can interact with contract until it has 
+     * been activated. 
+     */
+    modifier isActivated() {
+        require(activated_ == true, "its not ready yet"); 
+        _;
+    }
+    
+    /**
+     * @dev prevents contracts from interacting with soup4d 
+     */
+    modifier isHuman() {
+        require(tx.origin == msg.sender, "sorry humans only");
+        _;
+    }
+
+    /**
+     * @dev sets boundaries for incoming tx 
+     */
+    modifier isWithinLimits(uint256 _value) {
+        requireIsWithinLimits(_value);
+        _;
+    }
+
+    function requireIsWithinLimits(uint256 _value) pure private {
+        require(_value >= 1000000000, "min 0.000000001"); // 0.000000001
+        require(_value <= 100000000000000000000000, "max 100000"); // 100000
+    }
+    
+    // external functions
+
+    /**
+     * @dev swaps burn fund to SOUP and burn
+     */
+    function burnFunds(uint256 _amount, uint256 _minAmountOut, address[] calldata _swapPath)
+        external
+        nonReentrant
+    {
+        require(msg.sender == owner_, "only owner");
+        require(_swapPath[_swapPath.length - 1] == address(primaryToken_), "invalid path output");
+        require(_swapPath[0] == address(WBNB_), "invalid path input");
+
+        burnFund_ = burnFund_.sub(_amount);
+
+        uint256 deadline = block.timestamp.add(360);
+        uint256[] memory amounts = router_.swapExactTokensForTokens(
+            _amount,
+            _minAmountOut,
+            _swapPath,
+            address(this),
+            deadline
+        );
+        uint256 _value = amounts[amounts.length - 1];
+        primaryToken_.burn(_value);
+    }
+
+    /**
+     * @dev sets the uniswap router for Soup4D
+     */
+    function setRouter(address _routerAddress) private nonReentrant {
+        router_ = UniswapRouterV2(_routerAddress);
+    }
+
+    /**
+     * @dev sets the wbnb address for Soup4D
+     */
+    function setWBNB(address _wbnbAddress) private nonReentrant {
+        WBNB_ = IERC20(_wbnbAddress);
+    }
+
+    /**
+     * @dev sets the primary token used for Soup4D purchases
+     */
+    function setPrimaryToken(address _primaryTokenAddress) private nonReentrant {
+        primaryToken_ = IERC20Burnable(_primaryTokenAddress);
+    }
+
+    /**
+     * @dev sets share of the pot the winner takes home
+     */
+    function setPotWinnerShare(uint256 _potWinnerShare) public nonReentrant {
+        require(msg.sender == owner_, "only owner");
+        require(_potWinnerShare >= 80, "min 80"); // 80%
+        require(_potWinnerShare <= 100, "max 100"); // 100%
+        potWinnerShare = _potWinnerShare;
+    }
+
+    /**
+     * @dev whitelist BEP20 token for Soup4D
+     */
+    function addWhitelist(address _tokenContract) public nonReentrant {
+        require(msg.sender == owner_, "only owner");
+        require(whitelist_[_tokenContract] != true, "token already whitelisted");
+        // approve this contract for infinite amount to call trading router contract
+        Utils.approveTokenTransfer(_tokenContract, address(router_), 2**256 - 1);
+        whitelist_[_tokenContract] = true;
+    }
+
+    /**
+     * @dev converts all incoming coins to keys.
+     * _initialBurnFee amount will be locked in the contract instead of burnt to support non Burnable BEP20 tokens
+     */
+    function buyXidBep20(address _tokenContract, uint256 _amountIn, uint256 _minAmountOut, address[] calldata _swapPath)
+        isActivated()
+        isHuman()
+        external
+        nonReentrant
+    {   
+        require(_swapPath.length > 1, "invalid path length");
+        require(whitelist_[_tokenContract] == true, "token not whitelisted");
+        require(_swapPath[_swapPath.length - 1] == address(WBNB_), "invalid path output");
+
+        // calculate burn amount
+        // setup local rID 
+        uint256 _rID = rID_;
+        uint256 _initialBurnFee = initialBurnFee;
+        uint256 _burnAmount = (_amountIn.mul(_initialBurnFee)).div(100);
+
+        // transfer bep20 tokens to contract
+        Utils.transferTokensIn(msg.sender, _tokenContract, _amountIn);
+
+        // update _amountIn
+        _amountIn = _amountIn.sub(_burnAmount);
+
+        uint256 deadline = block.timestamp.add(360);
+        uint256 wbnbBalanceBefore = WBNB_.balanceOf(address(this));
+
+        router_.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            _amountIn,
+            _minAmountOut,
+            _swapPath,
+            address(this),
+            deadline
+        );
+
+        uint256 wbnbBalanceAfter = WBNB_.balanceOf(address(this));
+        uint256 value = wbnbBalanceAfter.sub(wbnbBalanceBefore);
+        
+        requireIsWithinLimits(value); // check again its within limits, if not revert
+
+        // buy core 
+        buyCore(msg.sender, value);
+    }
+
+    /**
+     * @dev essentially the same as buy, but instead of you sending ether 
+     * from your wallet, it uses your unwithdrawn earnings.
+     * @param _eth amount of earnings to use (remainder returned to gen vault)
+     */
+    function reLoadXid(uint256 _eth)
+        isActivated()
+        isHuman()
+        isWithinLimits(_eth)
+        nonReentrant
+        external
+    {
+        // reload core
+        reLoadCore(msg.sender, _eth);
+    }
+
+    /**
+     * @dev withdraws all of your earnings.
+     */
+    function withdraw()
+        isActivated()
+        isHuman()
+        nonReentrant
+        external
+    {
+        // setup local rID 
+        uint256 _rID = rID_;
+        
+        // grab time
+        uint256 _now = now;
+        
+        // setup temp var for player eth
+        uint256 _eth;
+        
+        // check to see if round has ended and no one has run round end yet
+        if (_now > round_[_rID].end && round_[_rID].ended == false && round_[_rID].addr != address(0))
+        {
+            // end the round (distributes pot)
+			round_[_rID].ended = true;
+            
+			// get their earnings
+            _eth = withdrawEarnings(msg.sender);
+            
+            // give bnb
+            if (_eth > 0)
+                WBNB_.withdraw(_eth);
+                (bool success, ) = msg.sender.call{value: _eth}(new bytes(0));
+                require(success, 'safeTransferETH: BNB transfer failed');
+            
+        // in any other situation
+        } else {
+            // get their earnings
+            _eth = withdrawEarnings(msg.sender);
+            
+            // give bnb
+            if (_eth > 0)
+                WBNB_.withdraw(_eth);
+                (bool success, ) = msg.sender.call{value: _eth}(new bytes(0));
+                require(success, 'safeTransferETH: BNB transfer failed');
+        }
+    }
+    
+    // views
+
+    function isWhitelisted(address _tokenContract) public view returns(bool) {
+        return whitelist_[_tokenContract];
+    }
+
+    function viewRouter() public view returns(address) {
+        return address(router_);
+    }
+
+    /**
+     * @dev return the price buyer will pay for next 1 individual key.
+     * @return price for next key bought (in wei format)
+     */
+    function getBuyPrice()
+        public 
+        view 
+        returns(uint256)
+    {  
+        // setup local rID
+        uint256 _rID = rID_;
+        
+        // grab time
+        uint256 _now = now;
+        
+        // are we in a round?
+        if (_now > round_[_rID].strt && (_now <= round_[_rID].end || (_now > round_[_rID].end && round_[_rID].addr == address(0))))
+            return ( (round_[_rID].keys.add(1000000000000000000)).ethRec(1000000000000000000) );
+        else // rounds over.  need price for new round
+            return ( 75000000000000 ); // init
+    }
+    
+    /**
+     * @dev returns time left
+     * @return time left in seconds
+     */
+    function getTimeLeft()
+        public
+        view
+        returns(uint256)
+    {
+        // setup local rID
+        uint256 _rID = rID_;
+        
+        // grab time
+        uint256 _now = now;
+        
+        if (_now < round_[_rID].end)
+            if (_now > round_[_rID].strt)
+                return( (round_[_rID].end).sub(_now) );
+            else
+                return( (round_[_rID].strt).sub(_now) );
+        else
+            return(0);
+    }
+    
+    /**
+     * @dev returns player earnings per vaults 
+     * @return winnings vault
+     * @return general vault
+     */
+    function getPlayerVaults(address _pID)
+        public
+        view
+        returns(uint256 ,uint256)
+    {
+        // setup local rID
+        uint256 _rID = rID_;
+        
+        // if round has ended.  but round end has not been run (so contract has not distributed winnings)
+        if (now > round_[_rID].end && round_[_rID].ended == false && round_[_rID].addr != address(0))
+        {
+            // if player is winner 
+            if (round_[_rID].addr == _pID)
+            {
+                return
+                (
+                    (plyr_[_pID].win).add( ((round_[_rID].pot).mul(potWinnerShare)) / 100 ),
+                    (plyr_[_pID].gen).add(  getPlayerVaultsHelper(_pID, _rID).sub(plyrRnds_[_pID][_rID].mask)   )
+                );
+            // if player is not the winner
+            } else {
+                return
+                (
+                    plyr_[_pID].win,
+                    (plyr_[_pID].gen).add(  getPlayerVaultsHelper(_pID, _rID).sub(plyrRnds_[_pID][_rID].mask)  )
+                );
+            }
+            
+        // if round is still going on, or round has ended and round end has been ran
+        } else {
+            return
+            (
+                plyr_[_pID].win,
+                (plyr_[_pID].gen).add(calcUnMaskedEarnings(_pID, plyr_[_pID].lrnd))
+            );
+        }
+    }
+    
+    /**
+     * solidity hates stack limits.  this lets us avoid that hate 
+     */
+    function getPlayerVaultsHelper(address _pID, uint256 _rID)
+        private
+        view
+        returns(uint256)
+    {
+        return(  ((((round_[_rID].mask)).mul(plyrRnds_[_pID][_rID].keys)) / 1000000000000000000)  );
+    }
+    
+    /**
+     * @dev returns all current round info needed for front end
+     * @return round id 
+     * @return total keys for round 
+     * @return time round ends
+     * @return time round started
+     * @return current pot 
+     * @return total bnb spent
+     * @return current lead address
+     */
+    function getCurrentRoundInfo()
+        public
+        view
+        returns(uint256, uint256, uint256, uint256, uint256, uint256, address)
+    {
+        // setup local rID
+        uint256 _rID = rID_;
+        
+        return
+        (
+            _rID,                           //1
+            round_[_rID].keys,              //2
+            round_[_rID].end,               //3
+            round_[_rID].strt,              //4
+            round_[_rID].pot,               //5
+            round_[_rID].eth,               //6 
+            round_[_rID].addr               //7 
+        );
+    }
+
+    /**
+     * @dev returns player info based on address.  if no address is given, it will 
+     * use msg.sender 
+     * @param _addr address of the player you want to lookup 
+     * @return keys owned (current round)
+     * @return winnings vault
+     * @return general vault 
+	 * @return player round eth
+     */
+    function getPlayerInfoByAddress(address _addr)
+        public 
+        view 
+        returns(uint256, uint256, uint256, uint256)
+    {
+        // setup local rID
+        uint256 _rID = rID_;
+        
+        if (_addr == address(0))
+        {
+            _addr == msg.sender;
+        }
+        
+        return
+        (
+            plyrRnds_[_addr][_rID].keys,                                            //0
+            plyr_[_addr].win,                                                       //1
+            (plyr_[_addr].gen).add(calcUnMaskedEarnings(_addr, plyr_[_addr].lrnd)), //2
+            plyrRnds_[_addr][_rID].eth                                              //3
+        );
+    }
+
+
+    /**
+     * @dev logic runs whenever a buy order is executed.  determines how to handle 
+     * incoming eth depending on if we are in an active round or not
+     */
+    function buyCore(address _pID, uint256 value)
+        private
+    {
+        // setup local rID
+        uint256 _rID = rID_;
+        
+        // grab time
+        uint256 _now = now;
+        
+        // if round is active
+        if (_now > round_[_rID].strt && (_now <= round_[_rID].end || (_now > round_[_rID].end && round_[_rID].addr == address(0)))) 
+        {
+            // call core 
+            core(_rID, _pID, value);
+        
+        // if round is not active     
+        } else {
+            // check to see if end round needs to be ran
+            if (_now > round_[_rID].end && round_[_rID].ended == false) 
+            {
+                // end the round (distributes pot) & start new round
+			    round_[_rID].ended = true;
+                endRound();
+            }
+            
+            // put eth in players vault 
+            plyr_[_pID].gen = plyr_[_pID].gen.add(value);
+        }
+    }
+    
+    /**
+     * @dev logic runs whenever a reload order is executed.  determines how to handle 
+     * incoming eth depending on if we are in an active round or not 
+     */
+    function reLoadCore(address _pID, uint256 _eth)
+        private
+    {
+        // setup local rID
+        uint256 _rID = rID_;
+        
+        // grab time
+        uint256 _now = now;
+        
+        // if round is active
+        if (_now > round_[_rID].strt && (_now <= round_[_rID].end || (_now > round_[_rID].end && round_[_rID].addr == address(0)))) 
+        {
+            // get earnings from all vaults and return unused to gen vault
+            // because we use a custom safemath library.  this will throw if player 
+            // tried to spend more eth than they have.
+            plyr_[_pID].gen = withdrawEarnings(_pID).sub(_eth);
+            
+            // call core 
+            core(_rID, _pID, _eth);
+        
+        // if round is not active and end round needs to be ran   
+        } else if (_now > round_[_rID].end && round_[_rID].ended == false) {
+            // end the round (distributes pot) & start new round
+            round_[_rID].ended = true;
+            endRound();
+
+        }
+    }
+    
+    /**
+     * @dev this is the core logic for any buy/reload that happens while a round 
+     * is live.
+     */
+    function core(uint256 _rID, address _pID, uint256 _eth)
+        private
+    {
+        // if player is new to round
+        if (plyrRnds_[_pID][_rID].keys == 0)
+            managePlayer(_pID);
+        
+        // if eth left is greater than min eth allowed
+        if (_eth > 1000000000) 
+        {
+            
+            // mint the new keys
+            uint256 _keys = (round_[_rID].eth).keysRec(_eth);
+            
+            // if they bought at least 1 whole key
+            if (_keys >= 1000000000000000000)
+            {
+                updateTimer(_keys, _rID);
+
+                // set new leaders
+                if (round_[_rID].addr != _pID)
+                    round_[_rID].addr = _pID;  
+            }
+         
+            // update player 
+            plyrRnds_[_pID][_rID].keys = _keys.add(plyrRnds_[_pID][_rID].keys);
+            plyrRnds_[_pID][_rID].eth = _eth.add(plyrRnds_[_pID][_rID].eth);
+            
+            // update round
+            round_[_rID].keys = _keys.add(round_[_rID].keys);
+            round_[_rID].eth = _eth.add(round_[_rID].eth);
+
+            // distribute eth
+            distributeExternal(_eth);
+            distributeInternal(_rID, _pID, _eth, _keys);
+        }
+    }
+
+    // calculators
+
+    /**
+     * @dev calculates unmasked earnings (just calculates, does not update mask)
+     * @return earnings in wei format
+     */
+    function calcUnMaskedEarnings(address _pID, uint256 _rIDlast)
+        private
+        view
+        returns(uint256)
+    {
+        return(  (((round_[_rIDlast].mask).mul(plyrRnds_[_pID][_rIDlast].keys)) / (1000000000000000000)).sub(plyrRnds_[_pID][_rIDlast].mask)  );
+    }
+    
+    /** 
+     * @dev returns the amount of keys you would get given an amount of eth. 
+     * @param _rID round ID you want price for
+     * @param _eth amount of eth sent in 
+     * @return keys received 
+     */
+    function calcKeysReceived(uint256 _rID, uint256 _eth)
+        public
+        view
+        returns(uint256)
+    {
+        // grab time
+        uint256 _now = now;
+        
+        // are we in a round?
+        if (_now > round_[_rID].strt && (_now <= round_[_rID].end || (_now > round_[_rID].end && round_[_rID].addr == address(0))))
+            return ( (round_[_rID].eth).keysRec(_eth) );
+        else // rounds over.  need keys for new round
+            return ( (_eth).keys() );
+    }
+    
+    /** 
+     * @dev returns current eth price for X keys.  
+     * @param _keys number of keys desired (in 18 decimal format)
+     * @return amount of eth needed to send
+     */
+    function iWantXKeys(uint256 _keys)
+        public
+        view
+        returns(uint256)
+    {
+        // setup local rID
+        uint256 _rID = rID_;
+        
+        // grab time
+        uint256 _now = now;
+        
+        // are we in a round?
+        if (_now > round_[_rID].strt && (_now <= round_[_rID].end || (_now > round_[_rID].end && round_[_rID].addr == address(0))))
+            return ( (round_[_rID].keys.add(_keys)).ethRec(_keys) );
+        else // rounds over.  need price for new round
+            return ( (_keys).eth() );
+    }
+
+
+    // tools
+
+    /**
+     * @dev decides if round end needs to be run & new round started.  and if 
+     * player unmasked earnings from previously played rounds need to be moved.
+     */
+    function managePlayer(address _pID)
+        private
+    {
+        // if player has played a previous round, move their unmasked earnings
+        // from that round to gen vault.
+        if (plyr_[_pID].lrnd != 0)
+            updateGenVault(_pID, plyr_[_pID].lrnd);
+            
+        // update player's last round played
+        plyr_[_pID].lrnd = rID_;
+    }
+    
+    /**
+     * @dev ends the round. manages paying out winner/splitting up pot
+     */
+    function endRound()
+        private
+    {
+        // setup local rID
+        uint256 _rID = rID_;
+        
+        // grab our winning player and team id's
+        address _winPID = round_[_rID].addr;
+        
+        // grab our pot amount
+        uint256 _pot = round_[_rID].pot;
+        
+        // calculate our winner share, community rewards, gen share, 
+        // and amount reserved for next pot 
+        uint256 _win = (_pot.mul(potWinnerShare)) / 100;
+        uint256 _res = _pot.sub(_win);
+        
+        // pay our winner
+        plyr_[_winPID].win = _win.add(plyr_[_winPID].win);
+        
+        // start next round
+        rID_++;
+        _rID++;
+        round_[_rID].strt = now;
+        round_[_rID].end = now.add(rndInit_);
+        round_[_rID].pot = _res;
+    }
+    
+    /**
+     * @dev moves any unmasked earnings to gen vault.  updates earnings mask
+     */
+    function updateGenVault(address _pID, uint256 _rIDlast)
+        private 
+    {
+        uint256 _earnings = calcUnMaskedEarnings(_pID, _rIDlast);
+        if (_earnings > 0)
+        {
+            // put in gen vault
+            plyr_[_pID].gen = _earnings.add(plyr_[_pID].gen);
+            // zero out their earnings by updating mask
+            plyrRnds_[_pID][_rIDlast].mask = _earnings.add(plyrRnds_[_pID][_rIDlast].mask);
+        }
+    }
+    
+    /**
+     * @dev updates round timer based on number of whole keys bought.
+     */
+    function updateTimer(uint256 _keys, uint256 _rID)
+        private
+    {
+        // grab time
+        uint256 _now = now;
+        
+        // calculate time based on number of keys bought
+        uint256 _newTime;
+        if (_now > round_[_rID].end && round_[_rID].addr == address(0)) // new round
+            _newTime = (((_keys) / (1000000000000000000)).mul(rndInc_)).add(_now);
+        else
+            _newTime = (((_keys) / (1000000000000000000)).mul(rndInc_)).add(round_[_rID].end);
+        
+        // compare to max and set new end time
+        if (_newTime < (rndMax_).add(_now))
+            round_[_rID].end = _newTime;
+        else
+            round_[_rID].end = rndMax_.add(_now);
+    }
+
+    /**
+     * @dev distributes eth based on fees to com
+     */
+    function distributeExternal(uint256 _eth)
+        private
+    {
+        uint256 _com = _eth.div(20);
+        burnFund_ = burnFund_.add(_com);
+    }
+    
+    /**
+     * @dev distributes eth based on fees to gen and pot
+     */
+    function distributeInternal(uint256 _rID, address _pID, uint256 _eth, uint256 _keys)
+        private
+    {
+        // calculate gen share
+        uint256 _gen = (_eth.mul(playerFees)) / 100;
+        
+        // update eth balance (eth = eth - com share)
+        _eth = _eth.sub((_eth.mul(burnFundFee)) / 100);
+        
+        // calculate pot 
+        uint256 _pot = _eth.sub(_gen);
+        
+        // distribute gen share (thats what updateMasks() does) and adjust
+        // balances for dust.
+        uint256 _dust = updateMasks(_rID, _pID, _gen, _keys);
+        if (_dust > 0)
+            _gen = _gen.sub(_dust);
+        
+        // add eth to pot
+        round_[_rID].pot = _pot.add(_dust).add(round_[_rID].pot);
+    }
+
+    /**
+     * @dev updates masks for round and player when keys are bought
+     * @return dust left over 
+     */
+    function updateMasks(uint256 _rID, address _pID, uint256 _gen, uint256 _keys)
+        private
+        returns(uint256)
+    {
+        /* MASKING NOTES
+            earnings masks are a tricky thing for people to wrap their minds around.
+            the basic thing to understand here.  is were going to have a global
+            tracker based on profit per share for each round, that increases in
+            relevant proportion to the increase in share supply.
+            
+            the player will have an additional mask that basically says "based
+            on the rounds mask, my shares, and how much i've already withdrawn,
+            how much is still owed to me?"
+        */
+        
+        // calc profit per key & round mask based on this buy:  (dust goes to pot)
+        uint256 _ppt = (_gen.mul(1000000000000000000)) / (round_[_rID].keys);
+        round_[_rID].mask = _ppt.add(round_[_rID].mask);
+            
+        // calculate player earning from their own buy (only based on the keys
+        // they just bought).  & update player earnings mask
+        uint256 _pearn = (_ppt.mul(_keys)) / (1000000000000000000);
+        plyrRnds_[_pID][_rID].mask = (((round_[_rID].mask.mul(_keys)) / (1000000000000000000)).sub(_pearn)).add(plyrRnds_[_pID][_rID].mask);
+        
+        // calculate & return dust
+        return(_gen.sub((_ppt.mul(round_[_rID].keys)) / (1000000000000000000)));
+    }
+    
+    /**
+     * @dev adds up unmasked earnings, & vault earnings, sets them all to 0
+     * @return earnings in wei format
+     */
+    function withdrawEarnings(address _pID)
+        private
+        returns(uint256)
+    {
+        // update gen vault
+        updateGenVault(_pID, plyr_[_pID].lrnd);
+        
+        // from vaults 
+        uint256 _earnings = (plyr_[_pID].win).add(plyr_[_pID].gen);
+        if (_earnings > 0)
+        {
+            plyr_[_pID].win = 0;
+            plyr_[_pID].gen = 0;
+        }
+
+        return(_earnings);
+    }
+
+    // security
+
+    /** upon contract deploy, it will be deactivated.  this is a one time
+     * use function that will activate the contract.  we do this so devs 
+     * have time to set things up on the web end                            
+     **/
+    bool public activated_ = false;
+    function activate(address _primaryToken, address _wbnbAddress, address _routerAddress)
+        public
+    {
+        // only owner can activate 
+        require(
+            msg.sender == owner_,
+            "only owner just can activate"
+        );
+        
+        // can only be ran once
+        require(activated_ == false, "soup3 already activated");
+
+        // approve uniswap router to spend our wbnb
+        Utils.approveTokenTransfer(_wbnbAddress, _routerAddress, 2**256 - 1);
+        
+        // Add router
+        setRouter(_routerAddress);
+
+        // set WBNB address
+        setWBNB(_wbnbAddress);
+
+        // add to whitelist
+        addWhitelist(_primaryToken);
+
+        // set primary token
+        setPrimaryToken(_primaryToken);
+        
+        // activate the contract 
+        activated_ = true;
+        
+        // lets start first round
+		rID_ = 1;
+        round_[1].strt = now;
+        round_[1].end = now + rndInit_;
+    }
+}
+
+// File: contracts/library/SafeMath.sol
+pragma solidity ^0.6.0;
+
+/**
+ * @title SafeMath v0.1.9
+ * @dev Math operations with safety checks that throw on error
+ * change notes:  original SafeMath library from OpenZeppelin modified by Inventor
+ * - added sqrt
+ * - added sq
+ * - added pwr 
+ * - changed asserts to requires with error log outputs
+ * - removed div, its useless
+ */
+library SafeMath {
+    
+    /**
+    * @dev Multiplies two numbers, throws on overflow.
+    */
+    function mul(uint256 a, uint256 b) 
+        internal 
+        pure 
+        returns (uint256 c) 
+    {
+        if (a == 0) {
+            return 0;
+        }
+        c = a * b;
+        require(c / a == b, "SafeMath mul failed");
+        return c;
+    }
+
+    /**
+    * @dev Integer division of two numbers, truncating the quotient.
+    */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        // assert(b > 0); // Solidity automatically throws when dividing by 0
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+        return c;
+    }
+    
+    /**
+    * @dev Subtracts two numbers, throws on overflow (i.e. if subtrahend is greater than minuend).
+    */
+    function sub(uint256 a, uint256 b)
+        internal
+        pure
+        returns (uint256) 
+    {
+        require(b <= a, "SafeMath sub failed");
+        return a - b;
+    }
+
+    /**
+    * @dev Adds two numbers, throws on overflow.
+    */
+    function add(uint256 a, uint256 b)
+        internal
+        pure
+        returns (uint256 c) 
+    {
+        c = a + b;
+        require(c >= a, "SafeMath add failed");
+        return c;
+    }
+    
+    /**
+     * @dev gives square root of given x.
+     */
+    function sqrt(uint256 x)
+        internal
+        pure
+        returns (uint256 y) 
+    {
+        uint256 z = ((add(x,1)) / 2);
+        y = x;
+        while (z < y) 
+        {
+            y = z;
+            z = ((add((x / z),z)) / 2);
+        }
+    }
+    
+    /**
+     * @dev gives square. multiplies x by x
+     */
+    function sq(uint256 x)
+        internal
+        pure
+        returns (uint256)
+    {
+        return (mul(x,x));
+    }
+    
+    /**
+     * @dev x to the power of y 
+     */
+    function pwr(uint256 x, uint256 y)
+        internal 
+        pure 
+        returns (uint256)
+    {
+        if (x==0)
+            return (0);
+        else if (y==0)
+            return (1);
+        else 
+        {
+            uint256 z = x;
+            for (uint256 i=1; i < y; i++)
+                z = mul(z,x);
+            return (z);
+        }
+    }
+}
+
+// File: contracts/library/UintCompressor.sol
+pragma solidity ^0.6.0;
+
+import "./SafeMath.sol";
+
+library UintCompressor {
+    using SafeMath for *;
+    
+    function insert(uint256 _var, uint256 _include, uint256 _start, uint256 _end)
+        internal
+        pure
+        returns(uint256)
+    {
+        // check conditions 
+        require(_end < 77 && _start < 77, "start/end must be less than 77");
+        require(_end >= _start, "end must be >= start");
+        
+        // format our start/end points
+        _end = exponent(_end).mul(10);
+        _start = exponent(_start);
+        
+        // check that the include data fits into its segment 
+        require(_include < (_end / _start));
+        
+        // build middle
+        if (_include > 0)
+            _include = _include.mul(_start);
+        
+        return((_var.sub((_var / _start).mul(_start))).add(_include).add((_var / _end).mul(_end)));
+    }
+    
+    function extract(uint256 _input, uint256 _start, uint256 _end)
+	    internal
+	    pure
+	    returns(uint256)
+    {
+        // check conditions
+        require(_end < 77 && _start < 77, "start/end must be less than 77");
+        require(_end >= _start, "end must be >= start");
+        
+        // format our start/end points
+        _end = exponent(_end).mul(10);
+        _start = exponent(_start);
+        
+        // return requested section
+        return((((_input / _start).mul(_start)).sub((_input / _end).mul(_end))) / _start);
+    }
+    
+    function exponent(uint256 _position)
+        private
+        pure
+        returns(uint256)
+    {
+        return((10).pwr(_position));
+    }
+}
+
+// File: contracts/library/KeysCalcLong.sol
+pragma solidity ^0.6.0;
+
+import './SafeMath.sol';
+
+library KeysCalcLong {
+    using SafeMath for *;
+    /**
+     * @dev calculates number of keys received given X eth 
+     * @param _curEth current amount of eth in contract 
+     * @param _newEth eth being spent
+     * @return amount of ticket purchased
+     */
+    function keysRec(uint256 _curEth, uint256 _newEth)
+        internal
+        pure
+        returns (uint256)
+    {
+        return(keys((_curEth).add(_newEth)).sub(keys(_curEth)));
+    }
+    
+    /**
+     * @dev calculates amount of eth received if you sold X keys 
+     * @param _curKeys current amount of keys that exist 
+     * @param _sellKeys amount of keys you wish to sell
+     * @return amount of eth received
+     */
+    function ethRec(uint256 _curKeys, uint256 _sellKeys)
+        internal
+        pure
+        returns (uint256)
+    {
+        return((eth(_curKeys)).sub(eth(_curKeys.sub(_sellKeys))));
+    }
+
+    /**
+     * @dev calculates how many keys would exist with given an amount of eth
+     * @param _eth eth "in contract"
+     * @return number of keys that would exist
+     */
+    function keys(uint256 _eth) 
+        internal
+        pure
+        returns(uint256)
+    {
+        return ((((((_eth).mul(1000000000000000000)).mul(312500000000000000000000000)).add(5624988281256103515625000000000000000000000000000000000000000000)).sqrt()).sub(74999921875000000000000000000000)) / (156250000);
+    }
+    
+    /**
+     * @dev calculates how much eth would be in contract given a number of keys
+     * @param _keys number of keys "in contract" 
+     * @return eth that would exists
+     */
+    function eth(uint256 _keys) 
+        internal
+        pure
+        returns(uint256)  
+    {
+        return ((78125000).mul(_keys.sq()).add(((149999843750000).mul(_keys.mul(1000000000000000000))) / (2))) / ((1000000000000000000).sq());
+    }
+}
+
+// File: contracts/library/Datasets.sol
+pragma solidity ^0.6.0;
+
+library Datasets {
+    struct Player {
+        uint256 win;    // winnings vault
+        uint256 gen;    // general vault
+        uint256 lrnd;   // last round played
+    }
+    struct PlayerRounds {
+        uint256 eth;    // eth player has added to round (used for eth limiter)
+        uint256 keys;   // keys
+        uint256 mask;   // player mask 
+        uint256 ico;    // ICO phase investment
+    }
+    struct Round {
+        address addr;   // address of player in lead
+        uint256 end;    // time ends/ended
+        bool ended;     // has round end function been ran
+        uint256 strt;   // time round started
+        uint256 keys;   // keys
+        uint256 eth;    // total eth in
+        uint256 pot;    // eth to pot (during round) / final amount paid to winner (after round ends)
+        uint256 mask;   // global mask
+    }
+}
+
+// File: contracts/library/Utils.sol
+pragma solidity ^0.6.0;
+
+import "./SafeMath.sol";
+
+interface ERC20 {
+    function balanceOf(address account) external view returns (uint256);
+}
+
+/// @title Util functions
+/// @author hiddenmikasa
+library Utils {
+    using SafeMath for uint256;
+
+    // The Ether token address is set as the constant 0x00 for backwards
+    // compatibility
+    address private constant DEFAULT_BNB_ADDR = address(0);
+
+    /// @notice Approves a token transfer
+    /// @param _assetId The address of the token to approve
+    /// @param _spender The address of the spender to approve
+    /// @param _amount The number of tokens to approve
+    function approveTokenTransfer(
+        address _assetId,
+        address _spender,
+        uint256 _amount
+    )
+        public
+    {
+        _validateContractAddress(_assetId);
+
+        // Some tokens have an `approve` which returns a boolean and some do not.
+        // The ERC20 interface cannot be used here because it requires specifying
+        // an explicit return value, and an EVM exception would be raised when calling
+        // a token with the mismatched return value.
+        bytes memory payload = abi.encodeWithSignature(
+            "approve(address,uint256)",
+            _spender,
+            _amount
+        );
+        bytes memory returnData = _callContract(_assetId, payload);
+        // Ensure that the asset transfer succeeded
+        _validateContractCallResult(returnData);
+    }
+
+    /// @notice Transfers tokens into the contract
+    /// @param _user The address to transfer the tokens from
+    /// @param _assetId The address of the token to transfer
+    /// @param _amount The number of tokens to transfer
+    /// this may not match `_amount`, for example, tokens which have a
+    /// proportion burnt on transfer will have a different amount received.
+    function transferTokensIn(
+        address _user,
+        address _assetId,
+        uint256 _amount
+    )
+        public
+    {
+        _validateContractAddress(_assetId);
+
+        uint256 initialBalance = tokenBalance(_assetId);
+
+        // Some tokens have a `transferFrom` which returns a boolean and some do not.
+        // The ERC20 interface cannot be used here because it requires specifying
+        // an explicit return value, and an EVM exception would be raised when calling
+        // a token with the mismatched return value.
+        bytes memory payload = abi.encodeWithSignature(
+            "transferFrom(address,address,uint256)",
+            _user,
+            address(this),
+            _amount
+        );
+        bytes memory returnData = _callContract(_assetId, payload);
+        // Ensure that the asset transfer succeeded
+        _validateContractCallResult(returnData);
+
+        uint256 finalBalance = tokenBalance(_assetId);
+        uint256 transferredAmount = finalBalance.sub(initialBalance);
+    }
+
+    /// @notice Transfers tokens from the contract to a user
+    /// @param _receivingAddress The address to transfer the tokens to
+    /// @param _assetId The address of the token to transfer
+    /// @param _amount The number of tokens to transfer
+    function transferTokensOut(
+        address _receivingAddress,
+        address _assetId,
+        uint256 _amount
+    )
+        public
+    {
+        _validateContractAddress(_assetId);
+
+        // Some tokens have a `transfer` which returns a boolean and some do not.
+        // The ERC20 interface cannot be used here because it requires specifying
+        // an explicit return value, and an EVM exception would be raised when calling
+        // a token with the mismatched return value.
+        bytes memory payload = abi.encodeWithSignature(
+                                   "transfer(address,uint256)",
+                                   _receivingAddress,
+                                   _amount
+                               );
+        bytes memory returnData = _callContract(_assetId, payload);
+
+        // Ensure that the asset transfer succeeded
+        _validateContractCallResult(returnData);
+    }
+
+    /// @notice Returns the number of tokens owned by this contract
+    /// @param _assetId The address of the token to query
+    function externalBalance(address _assetId) public view returns (uint256) {
+        if (_assetId == DEFAULT_BNB_ADDR) {
+            return address(this).balance;
+        }
+        return tokenBalance(_assetId);
+    }
+
+    /// @notice Returns the number of tokens owned by this contract.
+    /// @dev This will not work for Ether tokens, use `externalBalance` for
+    /// Ether tokens.
+    /// @param _assetId The address of the token to query
+    function tokenBalance(address _assetId) public view returns (uint256) {
+        return ERC20(_assetId).balanceOf(address(this));
+    }
+
+
+    /// @dev A thin wrapper around the native `call` function, to
+    /// validate that the contract `call` must be successful.
+    /// See https://solidity.readthedocs.io/en/v0.5.1/050-breaking-changes.html
+    /// for details on constructing the `_payload`
+    /// @param _contract Address of the contract to call
+    /// @param _payload The data to call the contract with
+    /// @return The data returned from the contract call
+    function _callContract(
+        address _contract,
+        bytes memory _payload
+    )
+        private
+        returns (bytes memory)
+    {
+        bool success;
+        bytes memory returnData;
+
+        (success, returnData) = _contract.call(_payload);
+        require(success, "Contract call failed");
+
+        return returnData;
+    }
+
+    /// @dev Converts data of type `bytes` into its corresponding `uint256` value
+    /// @param _data The data in bytes
+    /// @return The corresponding `uint256` value
+    function _getUint256FromBytes(
+        bytes memory _data
+    )
+        private
+        pure
+        returns (uint256)
+    {
+        uint256 parsed;
+        assembly { parsed := mload(add(_data, 32)) }
+        return parsed;
+    }
+
+    /// @dev Fix for ERC-20 tokens that do not have proper return type
+    /// See: https://github.com/ethereum/solidity/issues/4116
+    /// https://medium.com/loopring-protocol/an-incompatibility-in-smart-contract-threatening-dapp-ecosystem-72b8ca5db4da
+    /// https://github.com/sec-bit/badERC20Fix/blob/master/badERC20Fix.sol
+    /// @param _data The data returned from a transfer call
+    function _validateContractCallResult(bytes memory _data) private pure {
+        require(
+            _data.length == 0 ||
+            (_data.length == 32 && _getUint256FromBytes(_data) != 0),
+            "Invalid contract call result"
+        );
+    }
+
+    /// @dev Ensure that the address is a deployed contract
+    /// @param _contract The address to check
+    function _validateContractAddress(address _contract) private view {
+        assembly {
+            if iszero(extcodesize(_contract)) { revert(0, 0) }
+        }
+    }
+}
+
+// File: contracts/library/ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.6.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor () public {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and make it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+// File: contracts/library/IERC20Burnable.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.6.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20Burnable {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+
+    function burn(uint256 amount) external virtual;
+}
+
+// File: contracts/library/IERC20.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.6.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP. modified to support WBNB's withdraw!
+ */
+interface IERC20 {
+    function withdraw(uint) external;
+    function deposit(uint) external;
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+// File: contracts/Uniswapv2Interface.sol
+pragma solidity ^0.6.0;
+
+interface UniswapRouterV2 {
+    function WETH() external pure returns (address);
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+
+// File: contracts/library/IWETH.sol
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity ^0.6.0;
+
+interface IWETH {
+    function deposit() external payable;
+    function transfer(address to, uint value) external returns (bool);
+    function withdraw(uint) external;
+}

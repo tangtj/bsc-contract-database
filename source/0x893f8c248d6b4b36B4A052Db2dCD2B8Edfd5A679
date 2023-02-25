@@ -1,0 +1,104 @@
+
+// File: contracts/DepositWallet.sol
+//SPDX-License-Identifier: Unlicense
+pragma solidity ^0.8.0;
+
+contract DepositWallet {
+    address public owner;
+
+    constructor(address _owner) {
+        owner = _owner;
+    }
+
+    receive() external payable {}
+
+    function call(
+        address[] memory _logicContractAddress,
+        bytes[] memory _payload,
+        uint256[] memory _value
+    ) public {
+        require(msg.sender == owner, "Only owner can call");
+
+        for (uint8 i = 0; i < _logicContractAddress.length; i++) {
+            functionCallWithValue(_logicContractAddress[i], _payload[i], _value[i]);
+        }
+    }
+
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value
+    ) internal returns (bytes memory) {
+        (bool success, bytes memory returndata) = target.call{value: value}(data);
+        return verifyCallResult(success, returndata);
+    }
+
+    function verifyCallResult(
+        bool success,
+        bytes memory returndata
+    ) internal pure returns (bytes memory) {
+        if (success) {
+            return returndata;
+        } else {
+            if (returndata.length > 0) {
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert();
+            }
+        }
+    }
+}
+
+
+// File: contracts/Factory.sol
+//SPDX-License-Identifier: Unlicense
+pragma solidity ^0.8.0;
+
+import "./DepositWallet.sol";
+
+contract Factory {
+    address public owner;
+
+    constructor(address _owner) {
+        owner = _owner;
+    }
+
+    function changeOwner(address _owner) public {
+        require(msg.sender == owner, "Only owner can change owner");
+        owner = _owner;
+    }
+
+    function call(
+        uint256 _i,
+        address[] memory _logicContractAddress,
+        bytes[] memory _payload,
+        uint256[] memory _value
+    ) public {
+        address addr = getAddress(_i);
+        if (addr.code.length == 0) {
+            create(_i);
+        }
+
+        DepositWallet(payable(addr)).call(_logicContractAddress, _payload, _value);
+    }
+
+    function getAddress(uint256 _i) public view returns (address) {
+        bytes32 hash = keccak256(
+            abi.encodePacked(bytes1(0xff), address(this), bytes32(_i), keccak256(getBytecode()))
+        );
+
+        return address(uint160(uint(hash)));
+    }
+
+    function getBytecode() public view returns (bytes memory) {
+        return abi.encodePacked(type(DepositWallet).creationCode, abi.encode(address(this)));
+    }
+
+    function create(uint256 _i) public {
+        new DepositWallet{salt: bytes32(_i)}(address(this));
+    }
+}
+
