@@ -1,0 +1,262 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.17;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+   
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface ILiquidityMining {
+    function isUserExists(address addr) external view returns (bool);
+    function users(address addr) external view returns (uint256, address, uint256, uint256, uint256, uint256, uint256, uint256, uint256);
+}
+
+contract Ownable {
+    address public owner;
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        owner = newOwner;
+    }
+}
+
+contract LianGoPay is Ownable {
+    IERC20 private constant c_erc20 = IERC20(0x55d398326f99059fF775485246999027B3197955);
+    ILiquidityMining private constant c_lpMining = ILiquidityMining(0x83362243028a84b2B390945D1C682F33f2aBA158);
+    address private constant firstAddress = 0x1cceC87FE96E940e9027fc3c9127118199F1cC10;
+
+    struct User {
+        address upline;
+        uint128 totalPayAmount;
+        uint128 totalStakeAmount;
+        uint128 adaptAmount;
+        uint128 lastAdaptTime;
+
+        uint128 withdrawnAmount;
+        uint128 withdrawnPay;
+
+        uint128 refReward;
+    }
+    mapping(address => User) public users; 
+
+    address private constant feeAddress1 = 0xa24bbc4c45aa305C44D2A7104f0E699Fd4790E7C;
+    address private constant feeAddress2 = 0x6a8fE3B7b725342a712FbC4f297847f496DD6880;
+    uint128 private constant shopRate = 87;
+    uint256 public totalPayIn;
+    uint256 public totalPoint;
+    
+    struct RefInfo {
+        uint128 minAmount;
+        uint128 refRewardRate;
+    }
+    mapping (uint256 => RefInfo) public refRewardRates;
+    
+    constructor() {
+        refRewardRates[0] = RefInfo(2500*10**18, 50);
+        refRewardRates[1] = RefInfo(5000*10**18, 50);
+        refRewardRates[2] = RefInfo(7500*10**18, 50);
+        refRewardRates[3] = RefInfo(10000*10**18, 50);
+        refRewardRates[4] = RefInfo(12500*10**18, 50);
+        refRewardRates[5] = RefInfo(15000*10**18, 50);
+        refRewardRates[6] = RefInfo(17500*10**18, 50);
+        refRewardRates[7] = RefInfo(20000*10**18, 50);
+        refRewardRates[8] = RefInfo(22500*10**18, 50);
+        refRewardRates[9] = RefInfo(25000*10**18, 50);
+        refRewardRates[10] = RefInfo(27500*10**18, 50);
+        refRewardRates[11] = RefInfo(30000*10**18, 50);
+        refRewardRates[12] = RefInfo(32500*10**18, 50);
+        refRewardRates[13] = RefInfo(35000*10**18, 50);
+        refRewardRates[14] = RefInfo(37500*10**18, 50);
+        refRewardRates[15] = RefInfo(40000*10**18, 50);
+        refRewardRates[16] = RefInfo(42500*10**18, 50);
+        refRewardRates[17] = RefInfo(45000*10**18, 50);
+        refRewardRates[18] = RefInfo(47500*10**18, 50);
+        refRewardRates[19] = RefInfo(50000*10**18, 50);
+    }
+
+    function isUserExists(address addr) public view returns(bool) {
+        if(users[addr].upline != address(0)){
+            return true;
+        }
+        if (addr == firstAddress) {
+            return true;
+        }
+        return c_lpMining.isUserExists(addr);
+    }
+
+    function _upline(address addr) private returns(address) {
+        address up = users[addr].upline;
+        if(up != address(0)) {
+            return up;
+        }
+        if (addr == firstAddress) {
+            return address(0);
+        }
+
+        (, up, , , , , , , ) = c_lpMining.users(addr);
+        users[addr].upline = up;
+        return up;
+    }
+    
+    function pay(address shopkeeper, uint128 amount) external {
+        require(isUserExists(shopkeeper), "shopkeeper not exists");
+        require(isUserExists(msg.sender), "msgsender not exists");
+        unchecked{
+            uint128 shopAmount = amount * shopRate/100;
+            uint128 dayReleaseRate = calDayReleaseRate();
+
+            User storage s = users[shopkeeper];
+
+            uint128 interval = uint128(block.timestamp - s.lastAdaptTime);
+            uint128 adaptAmount = getReleaseAmount(interval, s.totalStakeAmount, dayReleaseRate);
+            s.adaptAmount += adaptAmount;
+            s.lastAdaptTime = uint128(block.timestamp);
+            s.totalStakeAmount = s.totalStakeAmount - adaptAmount + amount - shopAmount;
+            s.withdrawnPay += shopAmount;
+            uint256 t = totalPoint - adaptAmount + amount - shopAmount;
+    
+            User storage m = users[msg.sender];
+            
+            interval = uint128(block.timestamp - m.lastAdaptTime);
+            adaptAmount = getReleaseAmount(interval, m.totalStakeAmount, dayReleaseRate);
+            m.adaptAmount += adaptAmount;
+            m.lastAdaptTime = uint128(block.timestamp);
+            m.totalStakeAmount = m.totalStakeAmount - adaptAmount + amount;
+            m.totalPayAmount += amount;
+            t = t - adaptAmount + amount;
+    
+            totalPayIn += uint256(amount);
+            totalPoint = t;
+            c_erc20.transferFrom(msg.sender, address(this), amount);
+            c_erc20.transfer(shopkeeper, shopAmount);
+            c_erc20.transfer(feeAddress1, amount/100);
+            c_erc20.transfer(feeAddress2, amount/50);
+        }
+    }
+
+    function getReleaseAmount(uint128 intervalSeconds, uint128 stakeAmount, uint128 dayReleaseRate) public pure returns(uint128) {
+        unchecked{
+            if (intervalSeconds == 0 || stakeAmount == 0 || dayReleaseRate == 0) {
+                return 0;
+            }
+
+            uint128 intervalDays = intervalSeconds/(24*3600);
+            if (intervalDays == 0) {
+                return uint128(stakeAmount * dayReleaseRate * intervalSeconds/(100000*24*3600));
+            }   
+
+            uint128 amount = 0;
+            for (uint128 i = 0; i < intervalDays; i++) {
+                uint128 oneReleaseAmount = uint128(stakeAmount * dayReleaseRate/100000);
+                amount += oneReleaseAmount;
+                stakeAmount -= oneReleaseAmount;
+            }   
+
+            amount += uint128((intervalSeconds-24*3600*intervalDays)*stakeAmount*dayReleaseRate/(100000*24*3600));
+            return amount;
+        }
+    }
+
+    function calDayReleaseRate() public view returns(uint128) {
+        uint256 contractBalance = c_erc20.balanceOf(address(this));
+        uint256 t = totalPoint;
+        if (t == 0) {
+            return 0;
+        }
+
+        unchecked{
+            uint256 rate = 100 * contractBalance/t;
+            if (rate < 2) {
+                return 5;
+            }else if (rate < 3) {
+                return 10;
+            }else if (rate < 4) {
+                return 20;
+            }else if (rate < 5) {
+                return 30;
+            }
+            return 40;
+        }
+    }
+    
+    function withdraw() external {
+        require(isUserExists(msg.sender), "addr not exists");
+        unchecked{
+            User storage m = users[msg.sender];
+            uint128 interval = uint128(block.timestamp - m.lastAdaptTime);
+            uint128 dayReleaseRate = calDayReleaseRate();
+            uint128 adaptAmount = getReleaseAmount(interval, m.totalStakeAmount, dayReleaseRate);
+            uint128 withdrawableAmount = m.adaptAmount + adaptAmount;
+            m.adaptAmount = 0;
+            m.lastAdaptTime = uint128(block.timestamp); 
+
+            _refPayout(msg.sender, withdrawableAmount); 
+
+            interval = m.refReward;
+            withdrawableAmount += interval;
+            c_erc20.transfer(msg.sender, withdrawableAmount);
+            m.withdrawnAmount += withdrawableAmount;    
+
+            interval += adaptAmount;
+            if(m.totalStakeAmount > interval) {
+                m.totalStakeAmount -= interval;
+                totalPoint -= interval;
+            } else {
+                totalPoint -= m.totalStakeAmount;
+                m.totalStakeAmount = 0;
+            }
+            m.refReward = 0;
+        }  
+    }
+
+    function _refPayout(address addr, uint128 amount) private {
+        unchecked{
+            address up = _upline(addr);
+            for(uint128 i; i < 20; ++i) {
+                if(up == address(0)) break;
+                if (users[up].totalStakeAmount >= refRewardRates[i].minAmount){
+                    users[up].refReward += amount * refRewardRates[i].refRewardRate / 1000;
+                }
+                up = _upline(up);
+            }
+        }
+    }
+
+    function setRefRate(uint256 i, uint128 m, uint128 newR) external onlyOwner {
+        require(50 <= newR && newR <= 3000, "invalid rate");
+        refRewardRates[i].minAmount = m;
+        refRewardRates[i].refRewardRate = newR;
+    }
+
+    function contractInfo() external view returns(uint256, uint256, uint256, uint128) {
+        uint128 dayReleaseRate = calDayReleaseRate();
+        return (c_erc20.balanceOf(address(this)), totalPoint, totalPayIn, dayReleaseRate);
+    }
+
+    function userInfo(address addr) public view returns(uint128, uint128, uint128, uint128, uint128, uint128) {
+        User storage o = users[addr];
+        uint128 interval;
+        if (o.lastAdaptTime != 0){
+            uint128 dayReleaseRate = calDayReleaseRate();
+            interval = uint128(block.timestamp - o.lastAdaptTime);
+            interval = getReleaseAmount(interval, o.totalStakeAmount, dayReleaseRate);
+        }
+        return (o.totalPayAmount, o.totalStakeAmount, o.adaptAmount+interval, o.refReward, o.withdrawnAmount, o.withdrawnPay);
+    }
+}

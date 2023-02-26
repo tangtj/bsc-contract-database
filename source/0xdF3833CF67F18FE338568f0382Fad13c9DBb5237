@@ -1,0 +1,680 @@
+
+// File: contracts/CryptoWorldICO.sol
+//SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+import "./libraries/TransferHelper.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "./libraries/ReentrancyGuard.sol";
+import "./interfaces/IERC20.sol";
+import "./interfaces/OracleWrapper.sol";
+
+contract CryptoWorldICO is Ownable, ReentrancyGuard {
+    uint256 public totalTokenSold;
+    uint256 public totalUSDRaised;
+    uint128 public tokenDecimal;
+    uint128 public referralBonus; // total referral bonus distributed among users
+    uint64 public referralPercentage; // 15 %
+    uint8 public defaultPhase;
+    uint8 public totalPhases;
+    address public receiverAddress;
+    address constant BUSDtoUSD = 0xcBb98864Ef56E9042e7d2efef76141f15731B82f; // decimal  8
+    address constant BNBtoUSD = 0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE; // decima 8
+
+    IERC20 public BUSD;
+    IERC20 public Token;
+
+    /* ================ STRUCT SECTION ================ */
+    // Stores phases
+    struct Phases {
+        uint256 tokenSold;
+        uint256 tokenLimit;
+        uint32 startTime;
+        uint32 expirationTimestamp;
+        uint32 price; // 10 ** 8
+        bool isComplete;
+    }
+    mapping(uint256 => Phases) public phaseInfo;
+    mapping(address => bool) public isWalletOldUser;
+
+    /* ================ EVENT SECTION ================ */
+    // Emits when tokens are bought
+    event TokensBought(
+        address buyerAddress,
+        uint256 buyAmount,
+        uint256 tokenAmount,
+        uint32 buyTime,
+        uint8 buyType
+    );
+
+    //Emits when referralUsed
+    event ReferralBonus(
+        address referelAddres,
+        address reffereAddress,
+        uint256 bonusAmount
+    );
+
+    /* ================ CONSTRUCTOR SECTION ================ */
+    constructor(
+        address _tokenAddress,
+        address _receiverAddress,
+        address _BUSD
+    ) {
+        Token = IERC20(_tokenAddress);
+        BUSD = IERC20(_BUSD);
+        receiverAddress = _receiverAddress;
+        totalPhases = 3;
+        tokenDecimal = uint128(10 ** Token.decimals());
+        referralBonus = uint128(250000000 * tokenDecimal);
+        referralPercentage = 1500; //15%
+
+        uint32 currenTimeStamp = uint32(block.timestamp);
+
+        phaseInfo[0] = Phases({
+            tokenLimit: 250_000_000 * tokenDecimal,
+            tokenSold: 0,
+            startTime: currenTimeStamp,
+            expirationTimestamp: 1677628799,
+            price: 1000000, // 0.01000000 (token price =0.010$)
+            isComplete: false
+        });
+        phaseInfo[1] = Phases({
+            tokenLimit: 500_000_000 * tokenDecimal,
+            tokenSold: 0,
+            startTime: phaseInfo[0].expirationTimestamp,
+            expirationTimestamp: 1680307199,
+            isComplete: false,
+            price: 1500000 //0.01500000  (token price =0.015$)
+        });
+        phaseInfo[2] = Phases({
+            tokenLimit: 500_000_000 * tokenDecimal,
+            tokenSold: 0,
+            startTime: phaseInfo[1].expirationTimestamp,
+            expirationTimestamp: 1682899199,
+            isComplete: false,
+            price: 2000000 //0.02000000   (token price =0.020$)
+        });
+    }
+
+    /* ================ BUYING TOKENS SECTION ================ */
+
+    // Receive Function
+    receive() external payable {
+        // Sending deposited currency to the receiver address
+        TransferHelper.safeTransferETH(receiverAddress, msg.value);
+    }
+
+    // Function lets user buy CWC tokens || Type 1 = BNB , Type = 2 for BUSD
+    function buyTokens(
+        uint8 _type,
+        uint256 _amount,
+        address _refferelAddress
+    ) external payable nonReentrant {
+        if (_refferelAddress != address(0)) {
+            require(
+                isWalletOldUser[_refferelAddress],
+                "Invalid referrel Address."
+            );
+            require(
+                !isWalletOldUser[msg.sender],
+                "Referral bonus already claimed. Cannot claim anymore."
+            );
+        }
+        require(
+            block.timestamp < phaseInfo[(totalPhases - 1)].expirationTimestamp,
+            "Buying Phases are over"
+        );
+
+        uint256 _buyAmount;
+        uint256 _bonusAmount;
+
+        // If type == 1
+        if (_type == 1) {
+            _buyAmount = msg.value;
+        }
+        // If type == 2
+        else {
+            _buyAmount = _amount;
+            // Balance Check
+
+            require(
+                BUSD.balanceOf(msg.sender) >= _buyAmount,
+                "User doesn't have enough balance"
+            );
+
+            // Allowance Check
+            require(
+                BUSD.allowance(msg.sender, address(this)) >= _buyAmount,
+                "Allowance provided is low"
+            );
+        }
+        require(_buyAmount > 0, "Please enter value more than 0");
+
+        // Token calculation
+        (
+            uint256 _tokenAmount,
+            uint8 _phaseNo,
+            uint256 _amountToUSD
+        ) = calculateTokens(_type, _buyAmount);
+
+        // Phase info setting
+        setPhaseInfo(_tokenAmount, defaultPhase);
+
+        // Update Phase number and add token amount
+        if (phaseInfo[_phaseNo].tokenLimit == phaseInfo[_phaseNo].tokenSold) {
+            defaultPhase = _phaseNo + 1;
+        } else {
+            defaultPhase = _phaseNo;
+        }
+
+        totalTokenSold += _tokenAmount;
+        totalUSDRaised += _amountToUSD;
+        isWalletOldUser[msg.sender] = true;
+
+        // Transfers CryptoWorld to user
+        TransferHelper.safeTransfer(address(Token), msg.sender, _tokenAmount);
+
+        if (_type == 1) {
+            // Sending deposited currency to the receiver address
+            TransferHelper.safeTransferETH(receiverAddress, _buyAmount);
+        } else {
+            // Sending deposited currency to the receiver address
+            TransferHelper.safeTransferFrom(
+                address(BUSD),
+                msg.sender,
+                receiverAddress,
+                _buyAmount
+            );
+        }
+
+        // 15% of the referral bonus will be given to referrar and referral
+        if (_refferelAddress != address(0)) {
+            _bonusAmount = (_tokenAmount * referralPercentage) / (10 ** 4);
+
+            if (referralBonus >= _bonusAmount) {
+                // 15% Bonus to the Referrer
+                TransferHelper.safeTransfer(
+                    address(Token),
+                    _refferelAddress,
+                    _bonusAmount
+                );
+
+                referralBonus -= uint128(_bonusAmount);
+            }
+
+            // Emits event
+            emit ReferralBonus(_refferelAddress, msg.sender, _bonusAmount);
+        }
+
+        // Emits event
+        emit TokensBought(
+            msg.sender,
+            _buyAmount,
+            _tokenAmount,
+            uint32(block.timestamp),
+            _type
+        );
+    }
+
+    // Function calculates tokens according to user's given amount
+    function calculateTokens(
+        uint8 _type,
+        uint256 _amount
+    ) public view returns (uint256, uint8, uint256) {
+        (uint256 _amountToUSD, uint256 _typeDecimal) = cryptoValues(_type);
+        uint256 _amountGivenInUsd = ((_amount * _amountToUSD) / _typeDecimal);
+        (uint256 tokenAmount, uint8 phaseNo) = calculateTokensInternal(
+            _amountGivenInUsd,
+            defaultPhase,
+            0
+        );
+        return (tokenAmount, phaseNo, _amountGivenInUsd);
+    }
+
+    // Internal function to calculatye tokens
+    function calculateTokensInternal(
+        uint256 _amount,
+        uint8 _phaseNo,
+        uint256 _previousTokens
+    ) internal view returns (uint256, uint8) {
+        // Phases cannot exceed totalPhases
+        require(
+            _phaseNo < totalPhases,
+            "Not enough tokens in the contract or Phase expired"
+        );
+
+        Phases memory pInfo = phaseInfo[_phaseNo];
+
+        // If phase is still going on
+        if (pInfo.expirationTimestamp > block.timestamp) {
+            uint256 _tokensAmount = tokensUserWillGet(_amount, pInfo.price);
+            uint256 _tokensLeftToSell = (pInfo.tokenLimit + _previousTokens) -
+                pInfo.tokenSold;
+
+            // If token left are 0. Next phase will be executed
+            if (_tokensLeftToSell == 0) {
+                return
+                    calculateTokensInternal(
+                        _amount,
+                        _phaseNo + 1,
+                        _previousTokens
+                    );
+            }
+            // If the phase have enough tokens left
+            else if (_tokensLeftToSell >= _tokensAmount) {
+                return (_tokensAmount, _phaseNo);
+            }
+            // If the phase doesn't have enough tokens
+            else {
+                _tokensAmount =
+                    pInfo.tokenLimit +
+                    _previousTokens -
+                    pInfo.tokenSold;
+
+                uint256 _tokenPriceInPhase = tokenValueInPhase(
+                    pInfo.price,
+                    _tokensAmount
+                );
+
+                (
+                    uint256 _remainingTokens,
+                    uint8 _newPhase
+                ) = calculateTokensInternal(
+                        _amount - _tokenPriceInPhase,
+                        _phaseNo + 1,
+                        0
+                    );
+
+                return (_remainingTokens + _tokensAmount, _newPhase);
+            }
+        }
+        // In case the phase is expired. New will begin after sending the left tokens to the next phase
+        else {
+            uint256 _remainingTokens = pInfo.tokenLimit - pInfo.tokenSold;
+
+            return
+                calculateTokensInternal(
+                    _amount,
+                    _phaseNo + 1,
+                    _remainingTokens + _previousTokens
+                );
+        }
+    }
+
+    // Returns the value of tokens in the phase in dollors
+    function tokenValueInPhase(
+        uint32 _price,
+        uint256 _tokenAmount
+    ) internal view returns (uint256) {
+        return ((_tokenAmount * uint256(_price) * (10 ** 8)) /
+            ((10 ** 8) * tokenDecimal));
+    }
+
+    // Tokens user will get according to the price
+    function tokensUserWillGet(
+        uint256 _amount,
+        uint32 _price
+    ) internal view returns (uint256) {
+        return ((_amount * tokenDecimal * (10 ** 8)) /
+            ((10 ** 8) * uint256(_price)));
+    }
+
+    // Returns the crypto values used
+    function cryptoValues(
+        uint8 _type
+    ) internal view returns (uint256, uint256) {
+        uint256 _amountToUSD;
+        uint256 _typeDecimal;
+
+        if (_type == 1) {
+            _amountToUSD = OracleWrapper(BNBtoUSD).latestAnswer();
+            _typeDecimal = 10 ** 18;
+        } else {
+            _amountToUSD = OracleWrapper(BUSDtoUSD).latestAnswer();
+            _typeDecimal = uint256(10 ** BUSD.decimals());
+        }
+        return (_amountToUSD, _typeDecimal);
+    }
+
+    // Sets phase info according to the tokens bought
+    function setPhaseInfo(uint256 _tokensUserWillGet, uint8 _phaseNo) internal {
+        require(_phaseNo < totalPhases, "All tokens have been exhausted");
+
+        Phases storage pInfo = phaseInfo[_phaseNo];
+
+        if (block.timestamp < pInfo.expirationTimestamp) {
+            //  when phase has more tokens than reuired
+            if ((pInfo.tokenLimit - pInfo.tokenSold) > _tokensUserWillGet) {
+                pInfo.tokenSold += _tokensUserWillGet;
+            }
+            //  when  phase has equal tokens as reuired
+            else if (
+                (pInfo.tokenLimit - pInfo.tokenSold) == _tokensUserWillGet
+            ) {
+                pInfo.tokenSold = pInfo.tokenLimit;
+                pInfo.isComplete = true;
+            }
+            // when tokens required are more than left tokens in phase
+            else {
+                uint256 tokensLeft = _tokensUserWillGet -
+                    (pInfo.tokenLimit - pInfo.tokenSold);
+                pInfo.tokenSold = pInfo.tokenLimit;
+                pInfo.isComplete = true;
+
+                setPhaseInfo(tokensLeft, _phaseNo + 1);
+            }
+        }
+        // if tokens left in phase afterb completion of expiration time
+        else {
+            uint256 remainingTokens = pInfo.tokenLimit - pInfo.tokenSold;
+            pInfo.tokenLimit = pInfo.tokenSold;
+            pInfo.isComplete = true;
+
+            phaseInfo[_phaseNo + 1].tokenLimit += remainingTokens;
+            setPhaseInfo(_tokensUserWillGet, _phaseNo + 1);
+        }
+    }
+
+    // Function sends the left over tokens to the receiving address, only after phases are over
+    function sendLeftoverTokensToReceiver() external onlyOwner {
+        require(
+            block.timestamp > phaseInfo[(totalPhases - 1)].expirationTimestamp,
+            "Phases are not over yet"
+        );
+
+        uint256 _balance = Token.balanceOf(address(this));
+        require(_balance > 0, "No tokens left to send");
+
+        TransferHelper.safeTransfer(address(Token), receiverAddress, _balance);
+    }
+
+    /* ================ OTHER FUNCTIONS SECTION ================ */
+
+    // Updates Receiver Address
+    function updateReceiverAddress(
+        address _receiverAddress
+    ) external onlyOwner {
+        receiverAddress = _receiverAddress;
+    }
+
+    function updateReferralPercentage(uint64 _percentage) external onlyOwner {
+        referralPercentage = _percentage;
+    }
+}
+
+
+// File: contracts/libraries/TransferHelper.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.6;
+
+// helper methods for interacting with ERC20 tokens and sending ETH that do not consistently return true/false
+library TransferHelper {
+    function safeApprove(
+        address token,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('approve(address,uint256)')));
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(0x095ea7b3, to, value)
+        );
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            "TransferHelper::safeApprove: approve failed"
+        );
+    }
+
+    function safeTransfer(
+        address token,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(0xa9059cbb, to, value)
+        );
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            "TransferHelper::safeTransfer: transfer failed"
+        );
+    }
+
+    function safeTransferFrom(
+        address token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(0x23b872dd, from, to, value)
+        );
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            "TransferHelper::transferFrom: transferFrom failed"
+        );
+    }
+
+    function safeTransferETH(address to, uint256 value) internal {
+        (bool success, ) = to.call{value: value}(new bytes(0));
+        require(
+            success,
+            "TransferHelper::safeTransferETH: ETH transfer failed"
+        );
+    }
+}
+
+// File: contracts/interfaces/OracleWrapper.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.6;
+
+interface OracleWrapper {
+    function latestAnswer() external view returns (uint256);
+}
+
+
+// File: contracts/libraries/ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor () {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and make it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+
+
+// File: contracts/interfaces/IERC20.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.6;
+
+interface IERC20 {
+    function decimals() external view returns (uint256);
+
+    function symbol() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address who) external view returns (uint256);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+}
+
+
+// File: @openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.7.0) (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+

