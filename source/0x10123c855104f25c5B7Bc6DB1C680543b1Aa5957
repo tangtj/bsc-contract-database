@@ -1,0 +1,280 @@
+// SPDX-License-Identifier: GNU AGPLv3
+pragma solidity ^0.8.0;
+
+/// LooksCoinEscrow BSC
+
+interface IBEP20 {
+  /**
+   * @dev Returns the amount of tokens in existence.
+   */
+  function totalSupply() external view returns (uint256);
+
+  /**
+   * @dev Returns the token decimals.
+   */
+  function decimals() external view returns (uint8);
+
+  /**
+   * @dev Returns the token symbol.
+   */
+  function symbol() external view returns (string memory);
+
+  /**
+  * @dev Returns the token name.
+  */
+  function name() external view returns (string memory);
+
+  /**
+   * @dev Returns the bep token owner.
+   */
+  function getOwner() external view returns (address);
+
+  /**
+   * @dev Returns the amount of tokens owned by `account`.
+   */
+  function balanceOf(address account) external view returns (uint256);
+
+  /**
+   * @dev Moves `amount` tokens from the caller's account to `recipient`.
+   *
+   * Returns a boolean value indicating whether the operation succeeded.
+   *
+   * Emits a {Transfer} event.
+   */
+  function transfer(address recipient, uint256 amount) external returns (bool);
+
+  /**
+   * @dev Returns the remaining number of tokens that `spender` will be
+   * allowed to spend on behalf of `owner` through {transferFrom}. This is
+   * zero by default.
+   *
+   * This value changes when {approve} or {transferFrom} are called.
+   */
+  function allowance(address _owner, address spender) external view returns (uint256);
+
+  /**
+   * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+   *
+   * Returns a boolean value indicating whether the operation succeeded.
+   *
+   * IMPORTANT: Beware that changing an allowance with this method brings the risk
+   * that someone may use both the old and the new allowance by unfortunate
+   * transaction ordering. One possible solution to mitigate this race
+   * condition is to first reduce the spender's allowance to 0 and set the
+   * desired value afterwards:
+   * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+   *
+   * Emits an {Approval} event.
+   */
+  function approve(address spender, uint256 amount) external returns (bool);
+
+  /**
+   * @dev Moves `amount` tokens from `sender` to `recipient` using the
+   * allowance mechanism. `amount` is then deducted from the caller's
+   * allowance.
+   *
+   * Returns a boolean value indicating whether the operation succeeded.
+   *
+   * Emits a {Transfer} event.
+   */
+  function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+  /**
+   * @dev Emitted when `value` tokens are moved from one account (`from`) to
+   * another (`to`).
+   *
+   * Note that `value` may be zero.
+   */
+  event Transfer(address indexed from, address indexed to, uint256 value);
+
+  /**
+   * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+   * a call to {approve}. `value` is the new allowance.
+   */
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+// File: node_modules\@openzeppelin\contracts\math\SafeMath.sol
+
+/**
+ * @dev Patched. Wrappers over Solidity's arithmetic operations with added overflow
+ * checks. Patched.
+ *
+ * Arithmetic operations in Solidity wrap on overflow. This can easily result
+ * in bugs, because programmers usually assume that an overflow raises an
+ * error, which is the standard behavior in high level programming languages.
+ * `SafeMath` restores this intuition by reverting the transaction when an
+ * operation overflows.
+ *
+ * Using this library instead of the unchecked operations eliminates an entire
+ * class of bugs, so it's recommended to use it always.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a && c >= b, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0 || b == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+}
+
+/// LooksCoin escrow contract BSC
+/// https://lookscoin.com
+/// This contract helps buyers to purchase LooksCoin using the escrow.
+
+contract LooksCoinEscrow {
+
+    bool public escrowStatus;
+    
+    /// LooksCoin contract
+    address public _looksCoin;
+    /// Price rate
+    uint256 public PRICE_RATE = 26500;
+    /// Minimum amount of BNB in wei (BEP20) to send
+    uint256 constant public MINIMUM_AMOUNT = 1 * (10**15);
+    /// Maximum amount of BNB in wei (BEP20) to send
+    uint256 constant public MAXIMUM_AMOUNT = 1 * (10**24);
+            
+    address public admin;
+    address private cfo;
+    address payable private coldStorage;
+            
+    uint8 public version = 1;
+
+    event TokenAddressUpdated(
+        string indexed str,
+        address indexed newaddress
+    );
+
+    constructor() {
+        admin = msg.sender;
+        escrowStatus = true;
+    }
+    
+    function buy() external payable {
+        require(escrowStatus == true, "LooksCoinEscrow: Escrow is currently not open");
+        require(msg.value >= MINIMUM_AMOUNT, "LooksCoinEscrow: Amount is too small");
+        require(msg.value <= MAXIMUM_AMOUNT, "LooksCoinEscrow: Amount is too big");
+        
+        uint256 _count = SafeMath.mul(msg.value, PRICE_RATE);
+        uint256 _coinBalance = IBEP20(_looksCoin).balanceOf(address(this));
+        require(_count <= _coinBalance, "LooksCoinEscrow: Coin amount is too big");
+        
+        IBEP20(_looksCoin).transfer(msg.sender, _count);
+        payable(coldStorage).transfer(address(this).balance);
+    }
+            
+    function getCoinBalance() external view returns(uint256) {
+        return IBEP20(_looksCoin).balanceOf(address(this));
+    }
+
+    ///===============================
+    /// Maintenance methods for admin
+    ///===============================
+    
+    function withdrawCoins() public {
+        require(msg.sender == admin || msg.sender == cfo, "LooksCoinEscrow: Not authorized");
+        IBEP20(_looksCoin).transfer(msg.sender, IBEP20(_looksCoin).balanceOf(address(this)));
+    }
+            
+    function updateStatus(bool _to) public {
+        require(msg.sender == admin || msg.sender == cfo, "LooksCoinEscrow: Not authorized");
+        escrowStatus = _to;
+    }
+
+    function updateRole(uint256 _role, address payable _new) public {
+        require(msg.sender == admin || msg.sender == cfo, "LooksCoinEscrow: Not authorized");
+        if (_role == 0) {
+            admin = _new;
+        }  else if (_role == 1) {
+            cfo = _new;
+        }  else if (_role == 2) {
+            coldStorage = _new;
+        }
+    }
+    
+    function getRoles() public view returns (address[] memory) {
+        require(msg.sender == admin || msg.sender == cfo, "LooksCoinEscrow: Not authorized");
+        address[] memory _roles = new address[](3);
+        _roles[0] = admin;
+        _roles[1] = cfo;
+        _roles[2] = coldStorage;
+        return _roles;
+    }
+
+    // Adjust price rate based on the market rate of BNB
+    function updatePriceRate(uint256 rate) public {
+        require(msg.sender == admin || msg.sender == cfo, "LooksCoinEscrow: Not authorized");
+        PRICE_RATE = rate;
+    }
+            
+    function updateCoinVersion(address _token) public {
+        require(msg.sender == admin || msg.sender == cfo, "LooksCoinEscrow: Not authorized");
+        _looksCoin = _token;
+        emit TokenAddressUpdated("Coin Version Updated", _token);
+    }
+    
+    function getBalance() public view returns (uint256) {
+       return address(this).balance;
+    }
+
+    function deposit() payable public {
+    }
+
+    function withdraw() public {
+        require(msg.sender == admin || msg.sender == cfo, "LooksCoinEscrow: Not authorized");
+        payable(coldStorage).transfer(address(this).balance);
+    }
+}

@@ -1,0 +1,409 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts with custom message when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+ interface BEP20Interface {
+    function transfer(address to, uint tokens) external returns (bool success);
+    function transferFrom(address from, address to, uint256 tokens) external returns (bool success);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+
+
+contract PresalePNFT {
+	using SafeMath for uint256;
+	
+	uint256 constant public PERCENTS_DIVIDER = 1000;
+    
+	uint256 constant public TIME_STEP = 24 hours;
+
+	uint256 public totalUsers;
+	uint256 public totalInvested;
+	uint256 public totalWithdrawn;
+	uint256 public totalDeposits;
+	
+	address payable ownerAddress;
+    BEP20Interface public BUSDAddress = BEP20Interface(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);
+    BEP20Interface public USDTAddress = BEP20Interface(0x55d398326f99059fF775485246999027B3197955);
+    BEP20Interface public tokenAddress=BEP20Interface(0x098465a9Df1d9d42D37eAAEed987A9bC66259CF6);
+    uint256 public priceInUsdt;
+    bool public isPublicSaleOn = false;
+    
+    struct PoolDetails
+    {
+        uint256 life_days;
+        uint256 maturityPercentage;
+    }
+
+	struct Deposit {
+		uint256 amount;
+		uint256 withdrawn;
+		uint256 start;
+		uint256 checkpoint;
+	}
+	
+	struct User {
+		Deposit[] deposits;
+		uint256 staked;
+		uint256 withdrawn;
+		bool isExist;
+	}
+
+	mapping (address => User) internal users;
+	mapping (address => bool) public isBlocked;
+	PoolDetails public pool;
+    bool public isRunningSwap=true;
+    
+	event Newbie(address user);
+	event NewDeposit(address indexed user, uint256 amount);
+	event Withdrawn(address indexed user, uint256 amount);
+	event priceChange(address indexed user,uint256 price,uint256 date);
+    event buyCNN(address indexed user,uint256 priceInUsdt,uint256 tokens);
+    
+
+	constructor(address payable marketingAddr) {
+       	require(!isContract(marketingAddr));
+		ownerAddress = marketingAddr;
+		users[ownerAddress].isExist = true;
+		priceInUsdt = 10**18;
+       
+        pool.maturityPercentage = 100;
+        pool.life_days = 365;
+	}
+	
+	
+
+    function setPrice(uint256 amount) public
+    {
+        require(msg.sender==ownerAddress,"Invalid user");
+        require(amount>0,"Invalid amount or plan");
+        priceInUsdt=amount;
+    }
+
+
+	/*******Swapping ********/
+	  function exchange(uint256 amount,uint256 _type) public payable
+    {
+        require(isRunningSwap,"Swap not available right now");
+        require(amount>0,"Invalid Amount");
+        require(_type==1 || _type==2,"Invalid type");
+        address payable userAddress = payable(msg.sender);
+        
+        convertToToken(amount,userAddress,_type);
+    }
+
+    
+    function convertToToken(uint256 usdtAmount,address userAddress,uint256 _type) private
+    {
+        if(_type==1){
+            require(BEP20Interface(BUSDAddress).transferFrom(userAddress,ownerAddress,usdtAmount),"Token transfer failed");
+        }
+        else if(_type==2){
+            require(BEP20Interface(USDTAddress).transferFrom(userAddress,ownerAddress,usdtAmount),"Token transfer failed");
+        }
+        uint256 tokenAmount=usdtAmount.div(priceInUsdt).mul(1e18);
+        invest(userAddress,tokenAmount);
+        emit buyCNN(userAddress,usdtAmount,tokenAmount);
+       
+    }
+    
+    
+    
+	
+	function invest(address userAddress,uint256 totalAmount) internal {
+		User storage user = users[userAddress];
+        if(!users[userAddress].isExist){
+        totalUsers = totalUsers.add(1);
+			emit Newbie(userAddress);
+            users[userAddress].isExist = true;
+        }
+        totalInvested = totalInvested.add(totalAmount);
+
+        users[userAddress].staked = users[userAddress].staked.add(totalAmount);
+		user.deposits.push(Deposit(totalAmount, 0, block.timestamp,block.timestamp));
+	}
+	
+
+	
+	
+
+	function claim() public {
+	    require(!isBlocked[msg.sender],"You are blocked");
+        require(isPublicSaleOn,"Claim not available yet");
+		User storage user = users[msg.sender];
+		uint256 totalAmount;
+		uint256 dividends;
+
+		for (uint256 i = 0; i < user.deposits.length; i++) {
+            Deposit storage dep = user.deposits[i];
+    			if (dep.withdrawn < dep.amount.mul(pool.maturityPercentage).div(100)) {
+    			    
+		        uint256 time_end = dep.start + pool.life_days * 86400;
+            uint256 from = dep.checkpoint > dep.start ? dep.checkpoint : dep.start;
+            uint256 to = block.timestamp > time_end ? time_end : uint256(block.timestamp);
+
+			
+					dividends = (dep.amount.mul(pool.maturityPercentage).div(pool.life_days).div(100))
+						.mul(to.sub(from))
+						.div(TIME_STEP);
+						
+		        
+				if (dep.withdrawn.add(dividends) >= dep.amount.mul(pool.maturityPercentage).div(100)) {
+					dividends = (dep.amount.mul(pool.maturityPercentage).div(100)).sub(dep.withdrawn);
+				}
+				
+				dep.withdrawn = dep.withdrawn.add(dividends); /// changing of storage data
+				totalAmount = totalAmount.add(dividends);
+				dep.checkpoint = block.timestamp;
+			}
+		}
+    
+		
+		require(totalAmount > 0, "User has no dividends");
+        users[msg.sender].withdrawn = users[msg.sender].withdrawn.add(totalAmount);
+		require(BEP20Interface(tokenAddress).transfer(msg.sender,totalAmount),"Token transfer failed");
+
+		totalWithdrawn = totalWithdrawn.add(totalAmount);
+
+        
+
+		emit Withdrawn(msg.sender, totalAmount);
+
+	}
+	
+
+	function getContractBalance() public view returns (uint256) {
+		return address(this).balance;
+	}
+	
+	function getContractBalanceBUSD() public view returns (uint256) {
+		return BEP20Interface(BUSDAddress).balanceOf(address(this));
+	}
+
+	function getUserDividends(address userAddress) public view returns (uint256) {
+		User storage user = users[userAddress];
+        
+		
+		uint256 totalDividends;
+		uint256 dividends;
+        for (uint256 i = 0; i < user.deposits.length; i++) {
+            Deposit memory dep = user.deposits[i];
+			if (dep.withdrawn <dep.amount.mul(pool.maturityPercentage).div(100)) {
+			 uint256 time_end = dep.start + pool.life_days * 86400;
+            uint256 from = dep.checkpoint > dep.start ? dep.checkpoint : dep.start;
+            uint256 to = block.timestamp > time_end ? time_end : uint256(block.timestamp);
+
+			
+					dividends = (dep.amount.mul(pool.maturityPercentage).div(pool.life_days).div(100))
+						.mul(to.sub(from))
+						.div(TIME_STEP);
+
+				if (dep.withdrawn.add(dividends) > dep.amount.mul(pool.maturityPercentage).div(100)) {
+					dividends = (dep.amount.mul(pool.maturityPercentage).div(100)).sub(dep.withdrawn);
+				}
+				
+				totalDividends = totalDividends.add(dividends);
+
+				/// no update of withdrawn because that is view function
+			}
+        }
+		return totalDividends;
+	}
+	
+
+
+    function getUserInfo(address userAddress) external view returns(uint256 invested,uint256 withdrawn,Deposit[] memory deposits)
+	{
+	    Deposit[] memory dep= users[userAddress].deposits;
+	    User storage user = users[userAddress];
+        return (user.staked,user.withdrawn,dep);
+	}   
+
+    function getContractInfo() external view returns(uint256 invested,uint256 withdrawn)
+    {
+        return (totalInvested,totalWithdrawn);
+    }
+
+	function isContract(address addr) internal view returns (bool) {
+        uint size;
+        assembly { size := extcodesize(addr) }
+        return size > 0;
+    }
+    
+    function setPublicSaleOn(bool isOn) external
+    {
+        require(msg.sender==ownerAddress,"Invalid user");
+        isPublicSaleOn = isOn;
+    }
+
+    function setisRunningSwap(bool status) external
+    {
+        require(msg.sender==ownerAddress,"Invalid user");
+        isRunningSwap = status;
+    }
+    
+    function blockUnblockUser(address user,bool status) public
+    {
+        require(msg.sender==ownerAddress,"Invalid user");
+        isBlocked[user]=status;
+    }
+
+    function updateReward(uint256 _maturityPercentage,uint256 _life_days) public
+    {
+        require(msg.sender==ownerAddress,"Invalid user");
+        pool.maturityPercentage = _maturityPercentage;
+        pool.life_days = _life_days;
+    }
+    
+    
+    function rescuePNFT(address payable userAddress,uint256 amount) public 
+    {
+        require(msg.sender==ownerAddress,"Invalid user");
+        require(BEP20Interface(address(tokenAddress)).transfer(address(userAddress),amount),"Token transfer failed");
+    }
+    
+   
+
+}

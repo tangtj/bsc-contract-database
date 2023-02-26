@@ -1,0 +1,448 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+pragma solidity 0.7.5;
+
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+
+    function sqrrt(uint256 a) internal pure returns (uint c) {
+        if (a > 3) {
+            c = a;
+            uint b = add( div( a, 2), 1 );
+            while (b < c) {
+                c = b;
+                b = div( add( div( a, b ), b), 2 );
+            }
+        } else if (a != 0) {
+            c = 1;
+        }
+    }
+
+}
+
+abstract contract ERC20 is IERC20 {
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    constructor(
+        string memory name,
+        string memory symbol,
+        uint8 decimals
+    ) {
+        _name = name;
+        _symbol = symbol;
+        _decimals = decimals;
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+}
+
+interface IOwnable {
+    function owner() external view returns (address);
+
+    function renounceOwnership() external;
+
+    function transferOwnership( address newOwner_ ) external;
+}
+
+contract Ownable is IOwnable {
+
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        _owner = msg.sender;
+        emit OwnershipTransferred( address(0), _owner );
+    }
+
+    function owner() public view override returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require( _owner == msg.sender, "Ownable: caller is not the owner" );
+        _;
+    }
+
+    function renounceOwnership() public virtual override onlyOwner() {
+        emit OwnershipTransferred( _owner, address(0) );
+        _owner = address(0);
+    }
+
+    function transferOwnership( address newOwner_ ) public virtual override onlyOwner() {
+        emit OwnershipTransferred( _owner, newOwner_ );
+        _owner = newOwner_;
+    }
+}
+
+
+interface IDEXRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )
+    external
+    returns (
+        uint256 amountA,
+        uint256 amountB,
+        uint256 liquidity
+    );
+
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    )
+    external
+    payable
+    returns (
+        uint256 amountToken,
+        uint256 amountETH,
+        uint256 liquidity
+    );
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+}
+
+interface IDEXFactory {
+    function createPair(address tokenA, address tokenB)
+    external
+    returns (address pair);
+}
+
+contract ERC20Token is ERC20,Ownable {
+
+    using SafeMath for uint256;
+
+    uint256 private constant DECIMALS = 18;
+
+    uint256 private constant MAX_UINT256 = ~uint256(0);
+
+    uint256 private _totalSupply = 1000 * 10**12 * 10**DECIMALS;
+
+    uint256 private TOTAL_GONS = (MAX_UINT256 - (MAX_UINT256 % _totalSupply)) / 100;
+
+    uint256 private _gonsPerFragment;
+
+    mapping(address => uint256) private _gonBalances;
+
+    mapping(address => mapping(address => uint256)) private _allowedFragments;
+
+    uint256 public dividendFee = 80;
+    uint256 public marketFee = 20;
+    uint256 public burnFee = 20;
+    uint256 public feeDenominator = 1000;
+    address public marketAddress;
+
+    mapping(address => bool) public _isFeeExempt;
+
+    IDEXRouter public router;
+    address public pair;
+
+    event Rebase(uint256 amount);
+
+    constructor() ERC20("BABYKING", "BABYKING",uint8(DECIMALS)) {
+        router = IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        pair = IDEXFactory(router.factory()).createPair(
+            router.WETH(),
+            address(this)
+        );
+        _allowedFragments[address(this)][address(router)] = uint256(-1);
+
+        _gonBalances[msg.sender] = TOTAL_GONS;
+        _gonsPerFragment = TOTAL_GONS.div(_totalSupply);
+
+        marketAddress = 0xC19D090ed2d9a6131CC58EE714fE0A19C0f30Fa4;
+        _isFeeExempt[marketAddress] = true;
+        _isFeeExempt[msg.sender] = true;
+        _isFeeExempt[address(this)] = true;
+    }
+
+    function setIsFeeExempt(address _white,bool tOrF) external onlyOwner() returns ( bool ) {
+        _isFeeExempt[_white] = tOrF;
+        return true;
+    }
+
+    function balanceOf(address sender) external view override returns (uint256) {
+        return _gonBalances[sender].div(_gonsPerFragment);
+    }
+
+    function totalSupply() external view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function allowance(address owner_, address spender)
+    external
+    view
+    override
+    returns (uint256)
+    {
+        return _allowedFragments[owner_][spender];
+    }
+
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+        _transferFrom(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+        if (_allowedFragments[sender][msg.sender] != uint256(-1)) {
+            _allowedFragments[sender][msg.sender] = _allowedFragments[sender][
+            msg.sender
+            ].sub(amount, "Insufficient Allowance");
+        }
+        _transferFrom(sender, recipient, amount);
+        return true;
+    }
+
+    function _transferFrom(address sender,address recipient, uint256 amount) internal {
+        uint256 gonAmount = amount.mul(_gonsPerFragment);
+        _gonBalances[sender] = _gonBalances[sender].sub(gonAmount);
+
+        uint256 gonAmountReceived = shouldTakeFee(sender, recipient)
+        ? takeFee(sender, gonAmount)
+        : gonAmount;
+
+        _gonBalances[recipient] = _gonBalances[recipient].add(gonAmountReceived);
+        emit Transfer(sender,recipient,gonAmountReceived.div(_gonsPerFragment));
+    }
+
+    function takeFee(address sender, uint256 gonAmount) internal returns (uint256 _amount){
+        uint256 burnAmount = gonAmount.mul(burnFee).div(feeDenominator);
+        uint256 marketAmount = gonAmount.mul(marketFee).div(feeDenominator);
+        uint256 dividendAmount = gonAmount.mul(dividendFee).div(feeDenominator);
+        _swap(sender, marketAmount);
+        _burn(sender, burnAmount);
+        _dividendRebase(dividendAmount);
+        _amount = gonAmount.sub(burnAmount).sub(marketAmount).sub(dividendAmount);
+    }
+
+    function shouldTakeFee(address from, address to) internal view returns (bool) {
+        if(pair == from){
+            return !_isFeeExempt[to];
+        }else if(pair == to){
+            return !_isFeeExempt[from];
+        }else{
+            return false;
+        }
+    }
+
+    function _dividendRebase(uint256 gonAmount) internal {
+        emit Rebase(gonAmount.div(_gonsPerFragment));
+        TOTAL_GONS = TOTAL_GONS.sub(gonAmount);
+        _gonsPerFragment = TOTAL_GONS.div(_totalSupply);
+    }
+
+    function _swap(address sender,uint256 gonAmount) internal{
+        _gonBalances[address(this)] = _gonBalances[address(this)].add(gonAmount);
+        emit Transfer(sender,address(this),gonAmount.div(_gonsPerFragment));
+        if(sender != pair){
+            address[] memory path = new address[](2);
+            path[0] = address(this);
+            path[1] = router.WETH();
+            router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+                _gonBalances[address(this)].div(_gonsPerFragment),
+                0,
+                path,
+                marketAddress,
+                block.timestamp
+            );
+        }
+    }
+
+    function approve(address spender, uint256 value) public virtual override returns (bool) {
+        _allowedFragments[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function burn(uint256 amount) public virtual {
+        uint256 gonAmount = amount.mul(_gonsPerFragment);
+        _gonBalances[msg.sender] = _gonBalances[msg.sender].sub(gonAmount,"ERC20: burn amount exceeds balance");
+        _burn(msg.sender, gonAmount);
+    }
+
+    function burnFrom(address sender, uint256 amount) public virtual {
+        if (_allowedFragments[sender][msg.sender] != uint256(-1)) {
+            _allowedFragments[sender][msg.sender] = _allowedFragments[sender][
+            msg.sender
+            ].sub(amount, "Insufficient Allowance");
+        }
+        uint256 gonAmount = amount.mul(_gonsPerFragment);
+        _gonBalances[sender] = _gonBalances[sender].sub(gonAmount,"ERC20: burn amount exceeds balance");
+        _burn(sender, gonAmount);
+    }
+
+    function _burn(address sender, uint256 gonAmount) internal {
+        _totalSupply = _totalSupply.sub(gonAmount.div(_gonsPerFragment));
+        TOTAL_GONS = TOTAL_GONS.sub(gonAmount);
+        _gonsPerFragment = TOTAL_GONS.div(_totalSupply);
+        emit Transfer(sender, address(0), gonAmount.div(_gonsPerFragment));
+    }
+}

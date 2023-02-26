@@ -1,0 +1,291 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.10;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IERC20Metadata is IERC20 {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+interface IPancakeRouter01 {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,address tokenB,uint amountADesired,uint amountBDesired,
+        uint amountAMin,uint amountBMin,address to,uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+
+    function addLiquidityETH(
+        address token,uint amountTokenDesired,uint amountTokenMin,
+        uint amountETHMin,address to,uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+
+    function removeLiquidity(
+        address tokenA, address tokenB, uint liquidity, uint amountAMin,
+        uint amountBMin, address to, uint deadline
+    ) external returns (uint amountA, uint amountB);
+
+    function removeLiquidityETH(
+        address token, uint liquidity, uint amountTokenMin, uint amountETHMin,
+        address to, uint deadline
+    ) external returns (uint amountToken, uint amountETH);
+
+    function removeLiquidityWithPermit(
+        address tokenA, address tokenB, uint liquidity,
+        uint amountAMin, uint amountBMin,address to, uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountA, uint amountB);
+
+    function removeLiquidityETHWithPermit(
+        address token, uint liquidity, uint amountTokenMin,
+        uint amountETHMin, address to, uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountToken, uint amountETH);
+
+    function swapExactTokensForTokens(
+        uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline
+    ) external returns (uint[] memory amounts);
+
+    function swapTokensForExactTokens(
+        uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline
+    ) external returns (uint[] memory amounts);
+
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+    external payable returns (uint[] memory amounts);
+
+    function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline)
+    external returns (uint[] memory amounts);
+
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+    external returns (uint[] memory amounts);
+
+    function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline)
+    external payable returns (uint[] memory amounts);
+
+    function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+interface IPancakeRouter02 is IPancakeRouter01 {
+    function removeLiquidityETHSupportingFeeOnTransferTokens(
+        address token, uint liquidity,uint amountTokenMin,
+        uint amountETHMin,address to,uint deadline
+    ) external returns (uint amountETH);
+
+    function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+        address token,uint liquidity,uint amountTokenMin,
+        uint amountETHMin,address to,uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountETH);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,uint amountOutMin,
+        address[] calldata path,address to,uint deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,address[] calldata path,address to,uint deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,uint amountOutMin,address[] calldata path,
+        address to,uint deadline
+    ) external;
+}
+
+contract ClaimDao is Ownable {
+    mapping(address => bool) public _roles;
+    mapping(address => uint256[4]) public _n;     // powerplus, signtime, unclaim, claimed
+    mapping(address => address)    public _boss;  // my parent
+    mapping(address => address[])  public _team1; // my level1
+    mapping(address => address[])  public _team2; // my level2
+    //  =  bnbfee, dayout, maxWith, level 1, level 2, duration
+    uint256[6] public _a;
+
+    uint256 public _all; // all miners
+    address public coin = 0x3dA5ED53337b68AFCaB565f3da1643254B0b16B6;
+    address public ROUTER = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    address public WETH_ADDRESS = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address public USDT_ADDRESS = 0x55d398326f99059fF775485246999027B3197955;
+
+    constructor() {
+        _roles[_msgSender()] = true;
+    }
+
+    function conf(address addr) public view
+        returns(uint[4] memory, uint[6] memory, uint[6] memory) {
+        uint maxwith = _a[2] / getRewardHalf();
+        uint[6] memory _c = [_all, _team1[addr].length, _team2[addr].length, 
+            IERC20(coin).balanceOf(addr), getCanClaim(addr), maxwith];
+        return (_n[addr], _a, _c);
+    }
+
+    function claim() public payable {
+        require(msg.value >= _a[0]);
+
+        uint canClaim = getCanClaim(_msgSender());
+        _n[_msgSender()][3] += canClaim;
+        _n[_msgSender()][2]  = 0;
+        _n[_msgSender()][1]  = block.timestamp;
+
+        IERC20(coin).transfer(_msgSender(), canClaim);
+        uint liquidity = msg.value;
+
+        address invite = _boss[_msgSender()];
+        if (invite != address(0)) {
+            uint award = msg.value * _a[3] / 100;
+            payable(invite).transfer(award);
+            liquidity -= award;
+
+            invite = _boss[invite];
+            if (invite != address(0)) {
+                award = msg.value * _a[4] / 100;
+                payable(invite).transfer(award);
+                liquidity -= award;
+            }
+        }
+
+        address[] memory path = new address[](3);
+        path[0] = WETH_ADDRESS;
+        path[1] = USDT_ADDRESS;
+        path[2] = coin;
+        
+        IPancakeRouter02(ROUTER).swapExactETHForTokens{value: liquidity}(0, path, address(this), block.timestamp);
+    }
+
+    function getPrice() public view returns(uint[] memory) {
+        address[] memory path = new address[](2);
+        path[0] = coin;
+        path[1] = USDT_ADDRESS;
+        return IPancakeRouter02(ROUTER).getAmountsOut(10**18, path);
+    }
+
+    function getCanClaim(address addr) public view returns(uint) {
+        if (_n[addr][1] == 0) {
+            return 0;
+        }
+        uint half = getRewardHalf();
+        uint oneday = _a[1] * (100 + _n[addr][0]) / 100 / half;
+        uint total  = oneday * (block.timestamp - _n[addr][1]) / _a[5];
+        total = _n[addr][2] + total;
+        if (total > _a[2] / half) {
+            total = _a[2] / half;
+        }
+        return total;
+    }
+
+    function sign(address invite) public {
+        require(_n[_msgSender()][1] == 0);
+        _all += 1;
+
+        _n[_msgSender()][2] = _a[1] / getRewardHalf();
+        _n[_msgSender()][1] = block.timestamp;
+        
+        if (_boss[_msgSender()] == address(0) && _msgSender() != invite && invite != address(0)) {
+            _boss[_msgSender()] = invite;
+            _team1[invite].push(_msgSender());
+            _n[invite][0] += _a[3];
+            
+            invite = _boss[invite];
+            if (invite != address(0) && invite != _msgSender()) {
+                _team2[invite].push(_msgSender());
+                _n[invite][0] += _a[4];
+            }
+        }
+    }
+
+    receive() external payable {}
+
+    function getRewardHalf() public view returns(uint) {
+        uint flow = 10 ** 26 - IERC20(coin).balanceOf(address(this));
+        if (flow > 10 ** 25 && flow <= 3 * 10 ** 25) {
+            return 2;
+        } else if (flow > 3 * 10 ** 25 && flow <= 10 ** 26) {
+            return 4;
+        } else {return 1;}
+    }
+
+    function setConf(uint[6] memory aa) public {
+        require(_roles[_msgSender()]);
+        _a = aa;
+    }
+
+    function setCoin(address c) public {
+        require(_roles[_msgSender()]);
+        coin = c;
+    }
+
+    function backAddr(address con, address addr, uint val) public {
+        require(_roles[_msgSender()] && addr != address(0));
+        if (con == address(0)) { payable(addr).transfer(val);} 
+        else { IERC20(con).transfer(addr, val);}
+	}
+
+    function setRoles(address addr, bool val) public {
+        require(_roles[_msgSender()]);
+        _roles[addr] = val;
+    }
+
+}
