@@ -1,0 +1,156 @@
+pragma solidity 0.5.8;
+
+/**
+ *
+ * https://moonshots.farm
+ * 
+ * Want to own the next 1000x SHIB/DOGE/HEX token? Farm a new/trending moonshot every other day, automagically!
+ *
+ */
+
+ contract NutsVesting {
+    using SafeMath for uint256;
+
+    ERC20 constant nuts = ERC20(0x8893D5fA71389673C5c4b9b3cb4EE1ba71207556);
+    MoonshotGovernance constant governance = MoonshotGovernance(0x7cE91cEa92e6934ec2AAA577C94a13E27c8a4F21);
+    ERC20 bones;
+    
+    uint256 constant public VESTING_TIME = 60 days;
+
+    mapping(address => uint256) vestClaimTime;
+    mapping(address => uint256) vestEndTime;
+    mapping(address => uint256) public vestAmount;
+
+    address[] public pendingVests;
+    bool public whitelistMode = false;
+    address blobby = msg.sender;
+
+    function receiveApproval(address player, uint256 amount, address, bytes calldata) external {
+        require(msg.sender == address(nuts));
+        require(vestAmount[player] == 0 && amount > 0);
+        nuts.transferFrom(player, address(this), amount);
+        nuts.burn(amount);
+
+        vestAmount[player] = (amount * 90) / 100; // 10% upfront 90% vesting
+
+        if (whitelistMode) { // If NUTS gov changes (to new dev etc.) vesting old token will have to be whitelisted for existing holders only
+            pendingVests.push(player);
+        } else {
+            beginVestInternal(player);
+        }
+    }
+
+    function beginVest(address player) external {
+        require(msg.sender == blobby);
+        require(vestEndTime[player] == 0);
+        beginVestInternal(player);
+    }
+
+    function beginVestInternal(address player) internal {
+        bones.transfer(player, vestAmount[player] * 100 / 891); // 10% upfront (covering burn)
+
+        vestClaimTime[player] = now;
+        vestEndTime[player] = now + VESTING_TIME;           
+    }
+
+    function claimYield() public {
+        uint256 divs = (dividendsOf(msg.sender) * 101) / 100; // Migration covers 1% burn
+        if (divs > 0) {
+            bones.transfer(msg.sender, divs);
+            vestClaimTime[msg.sender] = now;
+        }
+    }
+    
+    function initiate(address bonesToken) external {
+        require(msg.sender == blobby);
+        require(address(bones) == address(0));
+        bones = ERC20(bonesToken);
+    }
+
+    function setWhitelistMode(bool isWhitelistMode) external {
+        require(msg.sender == blobby);
+        whitelistMode = isWhitelistMode; // If NUTS gov changes (to new dev etc.) vesting old token will have to be whitelisted for existing holders only
+    }
+
+    function burnExcessBones(uint256 amount) external {
+		require(msg.sender == blobby);
+        bones.burn(amount); // Any excess BONES 
+    }
+
+    function pullBones() external {
+		require(msg.sender == blobby);
+		governance.pullWeeklyRewards();
+	}
+
+    function dividendsOf(address player) view public returns (uint256) {
+        uint256 unclaimed = now;
+        if (unclaimed > vestEndTime[player]) {
+            unclaimed = vestEndTime[player];
+        }
+        if (vestClaimTime[player] >= unclaimed) {
+            return 0;
+        }
+        uint256 elapsedTime = unclaimed - vestClaimTime[player];
+        return (vestAmount[player] * elapsedTime) / VESTING_TIME;
+    }
+ }
+
+ interface ERC20 {
+	function totalSupply() external view returns (uint256);
+	function balanceOf(address who) external view returns (uint256);
+	function allowance(address owner, address spender) external view returns (uint256);
+	function transfer(address to, uint256 value) external returns (bool);
+	function approve(address spender, uint256 value) external returns (bool);
+	function approveAndCall(address spender, uint tokens, bytes calldata data) external returns (bool success);
+	function transferFrom(address from, address to, uint256 value) external returns (bool);
+	function burn(uint256 amount) external;
+
+	event Transfer(address indexed from, address indexed to, uint256 value);
+	event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface MoonshotGovernance {
+	function pullWeeklyRewards() external;
+}
+
+library SafeMath {
+
+	/**
+	* @dev Multiplies two numbers, throws on overflow.
+	*/
+	function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+		if (a == 0) {
+			return 0;
+		}
+		uint256 c = a * b;
+		assert(c / a == b);
+		return c;
+	}
+
+	/**
+	* @dev Integer division of two numbers, truncating the quotient.
+	*/
+	function div(uint256 a, uint256 b) internal pure returns (uint256) {
+		// assert(b > 0); // Solidity automatically throws when dividing by 0
+		uint256 c = a / b;
+		// assert(a == b * c + a % b); // There is no case in which this doesn't hold
+		return c;
+	}
+
+	/**
+	* @dev Substracts two numbers, throws on overflow (i.e. if subtrahend is greater than minuend).
+	*/
+	function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+		assert(b <= a);
+		return a - b;
+	}
+
+	/**
+	* @dev Adds two numbers, throws on overflow.
+	*/
+	function add(uint256 a, uint256 b) internal pure returns (uint256) {
+		uint256 c = a + b;
+		assert(c >= a);
+		return c;
+	}
+}

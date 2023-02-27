@@ -1,0 +1,469 @@
+pragma solidity ^0.5.16;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address account) external view returns (uint);
+    function transfer(address recipient, uint amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint);
+    function approve(address spender, uint amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+}
+
+interface IFireStore {
+    function buyAAddreTokenAdd(address _addr,uint256 _buyTokenAmount,uint256 _AllAmount) external;
+}
+
+interface IFireBaseFunc {
+    function  autoSellToken() external;
+    function  autoBuySellToken() external;
+    function  autoSellSellToken() external;
+}
+
+contract Context {
+    constructor () internal { }
+    // solhint-disable-previous-line no-empty-blocks
+
+    function _msgSender() internal view returns (address payable) {
+        return msg.sender;
+    }
+}
+
+contract Manager is Context {
+  address public governance;
+  function setGovernance(address _governance) public {
+      require(msg.sender == governance, "!governance");
+      governance = _governance;
+  }
+
+    modifier isGover {
+         require(msg.sender == governance, "!governance");
+        _;
+    }
+
+
+}
+
+contract FreeManager is Manager {
+   //正式地址
+   address  public aFreeAddr=0xD3eFcF60afAB6D55E16514d844bDc77a33590d28;
+   address  public bFreeAddr=0x4e8C7c8fcaa761afA34266F7b17cAa26F8F05228;
+   address  public rewardAddr=0xa6375f9a7DcFcd82F6665EB4124B4247E8Cf3480;
+   address  public teamAddr=0xaC0580060db637A023fbc82D13D3c9c7f631f8a9;
+
+   address  public blackHoleAddr=0x000000000000000000000000000000000000dEaD;//黑洞地址
+
+   address  public usdtTokenAddr=0x55d398326f99059fF775485246999027B3197955;
+   
+   address  public swapTokenAddr=0x10ED43C718714eb63d5aA57B78B54704E256024E;
+
+   address  public fireStoreAddr = address(0);
+   address  public fireBaseFuncAddr = address(0);
+
+
+   uint256  public sellRate2;
+   uint256  public buyInviteRate = 300;
+   uint256  public teamRate = 500;
+
+   mapping (address => uint256) public sellRateList;
+   mapping (address => uint256) public buyRateList;
+   mapping(address => bool) public nftWhites;
+
+  function setRewardAddr(address _address) public  isGover{     
+      rewardAddr = _address;
+  }
+
+  function setTeamAddr(address _address) public  isGover{     
+      teamAddr = _address;
+  }
+
+  function setAFreeAddr(address _address) public  isGover{     
+      aFreeAddr = _address;
+  }
+
+  function setSellRate2(uint256 _sellRate2) public  isGover{     
+      sellRate2 = _sellRate2;
+  }
+
+  function setBuyInviteRate(uint256 _buyInviteRate) public  isGover{     
+      buyInviteRate = _buyInviteRate;
+  }
+  
+
+  function setBFreeAddr(address _address) public  isGover{     
+      bFreeAddr = _address;
+  }
+
+  function setUsdtTokenAddr(address _address) public  isGover{     
+      usdtTokenAddr = _address;
+  }
+
+  function setFireStoreAddr(address _address) public  isGover{     
+      fireStoreAddr = _address;
+  }
+
+  function setFireBaseFuncAddr(address _address) public  isGover{     
+      fireBaseFuncAddr = _address;
+  }
+
+  function setSwapTokenAddr(address _address) public  isGover{     
+      swapTokenAddr = _address;
+  }
+
+
+  function setBlackHoleAddr(address _address) public  isGover{     
+      blackHoleAddr = _address;
+  }
+
+
+
+ function setTeamRate(uint256 _lv) public  isGover{     
+      teamRate = _lv;
+  }
+
+ 
+ function setSellRateList(address _address,uint256 _amount) public  isGover{     
+      sellRateList[_address] = _amount;
+  }
+
+  function getSellRateList(address _address) public view returns (uint256)  {
+     return  sellRateList[_address];
+  }
+
+ function setBuyRateList(address _address,uint256 _amount) public  isGover{     
+      buyRateList[_address] = _amount;
+  }
+
+  function getBuyRateList(address _address) public view returns (uint256)  {
+     return  buyRateList[_address];
+  }
+
+  function addNftWhites(address _address) public isGover{
+      nftWhites[_address] = true;
+  }
+
+  function getNftWhites(address _address) public view returns (bool)  {
+     return  nftWhites[_address] ;
+  }
+
+  function removeNftWhites(address _address) public isGover{
+      nftWhites[_address] = false;
+  }
+
+}
+
+contract ERC20 is FreeManager, IERC20 {
+    using SafeMath for uint;
+    mapping (address => uint256) public lockAccount;// lock account and lock end date
+    mapping (address => uint) private _balances;
+    
+    mapping (address => mapping (address => uint)) private _allowances;
+
+    uint private _totalSupply;
+    function totalSupply() public view returns (uint) {
+        return _totalSupply;
+    }
+    function balanceOf(address account) public view returns (uint) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint amount) public returns (bool) {
+        require(now>lockAccount[msg.sender], "ERC20:  address lock");
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view returns (uint) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint amount) public returns (bool) {
+        require(now>lockAccount[msg.sender], "ERC20:  address lock");
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint amount) public returns (bool) {
+        require(now>lockAccount[sender], "ERC20:  address lock");
+        _transfer(sender, recipient, amount);
+        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint addedValue) public returns (bool) {
+	require(now>lockAccount[_msgSender()], "ERC20:  address lock");
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint subtractedValue) public returns (bool) {
+        require(now>lockAccount[_msgSender()], "ERC20:  address lock");
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint amount) internal {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        _balances[sender] = _balances[sender].sub(amount, "ERC20: transfer amount exceeds balance");
+
+         uint256 tranAmount =  amount;
+        if(nftWhites[sender]==false && nftWhites[recipient]==false){
+
+           //buy token           
+            uint256 pBuyRate = buyRateList[sender];
+            if(pBuyRate>0){
+                tranAmount =  amount.mul(10000 -pBuyRate).div(10000);
+
+                uint freeAAmount  = amount.mul(pBuyRate - sellRate2).div(10000);
+                
+                IFireStore(fireStoreAddr).buyAAddreTokenAdd(
+                            recipient,freeAAmount,
+                            amount//.mul(buyInviteRate).div(10000)
+                            );
+
+                                
+                _balances[aFreeAddr] = _balances[aFreeAddr].add(freeAAmount);
+                emit Transfer(sender, aFreeAddr, freeAAmount);
+               
+                uint freeBAmount  = amount.mul(sellRate2).div(10000);
+                if(freeBAmount>0){                    
+                    // _balances[bFreeAddr] = _balances[bFreeAddr].add(freeBAmount);
+                    // emit Transfer(sender, bFreeAddr, freeBAmount);
+
+                    _balances[fireBaseFuncAddr] = _balances[fireBaseFuncAddr].add(freeBAmount);
+                    emit Transfer(sender, fireBaseFuncAddr, freeBAmount);
+                   //autoSellToken
+                    IFireBaseFunc(fireBaseFuncAddr).autoBuySellToken();
+                }
+
+            }
+
+           //sell token
+            uint256 pSellRate = sellRateList[recipient];
+            if(pBuyRate ==0 && pSellRate>0){
+                //tranAmount =  amount;//.mul(10000 -pSellRate).div(10000);
+                uint freeBAmount  = amount.mul(pSellRate).div(10000);
+
+                _balances[sender] = _balances[sender].sub(freeBAmount, "ERC20: transfer amount exceeds balance");
+                 //emit Transfer(sender, fireBaseFuncAddr, freeBAmount);
+                // _balances[bFreeAddr] = _balances[bFreeAddr].add(freeBAmount);
+                // emit Transfer(sender, bFreeAddr, freeBAmount);
+
+                _balances[fireBaseFuncAddr] = _balances[fireBaseFuncAddr].add(freeBAmount);
+                emit Transfer(sender, fireBaseFuncAddr, freeBAmount);
+                IFireBaseFunc(fireBaseFuncAddr).autoSellSellToken();
+            }
+        }
+        
+        _balances[recipient] = _balances[recipient].add(tranAmount);
+        
+        emit Transfer(sender, recipient, tranAmount);
+    }
+
+    function _mint(address account, uint amount) internal {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _totalSupply = _totalSupply.add(amount);
+        _balances[account] = _balances[account].add(amount);
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint amount) internal {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+        _totalSupply = _totalSupply.sub(amount);
+        emit Transfer(account, address(0), amount);
+    }
+
+    function _approve(address owner, address spender, uint amount) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+   function setLockAccount(address target, uint256 lockenddate) public  {
+		 require(msg.sender == governance, "ERC20: Insufficient authority");
+		lockAccount[target] = lockenddate;
+     }
+
+	/* The end time of the lock account is obtained */
+	function lockAccountOf(address _owner) public  view returns (uint256 enddata) {
+        return lockAccount[_owner];
+    }
+}
+
+contract MinterManager is ERC20 {
+    mapping (address => bool) public minters;
+//    mapping (address => uint256) public mintersAmount;
+
+//    modifier isMinter {
+//        require(minters[msg.sender], "!minter");
+//        _;
+//    }
+
+//   function mint(address account, uint256 amount)  public isMinter {
+//       require( mintersAmount[msg.sender]>=amount,"minter not amount");
+//       mintersAmount[msg.sender]=mintersAmount[msg.sender].sub(amount);
+//       _mint(account, amount);
+//   }
+  
+//   function burn(address account, uint256 amount) public isMinter {
+//       _burn(account, amount);
+//   }
+  
+  function setGovernance(address _governance) public isGover {
+      governance = _governance;
+  }
+  
+//   function addMinter(address _minter,uint256 amount) public  isGover{
+//       mintersAmount[_minter] = amount*(10**18);
+//       minters[_minter] = true;
+//   }
+
+//    function getMinterNum(address _minter) public view returns (uint256)  {
+//      return  mintersAmount[_minter] ;
+//   }
+
+//   function removeMinter(address _minter) public isGover{
+//       minters[_minter] = false;
+//   }
+}
+
+contract ERC20Detailed is MinterManager {
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    constructor (string memory name, string memory symbol, uint8 decimals) public {
+        _name = name;
+        _symbol = symbol;
+        _decimals = decimals;
+    }
+    function name() public view returns (string memory) {
+        return _name;
+    }
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+}
+
+library SafeMath {
+    function add(uint a, uint b) internal pure returns (uint) {
+        uint c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+    function sub(uint a, uint b) internal pure returns (uint) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+    function sub(uint a, uint b, string memory errorMessage) internal pure returns (uint) {
+        require(b <= a, errorMessage);
+        uint c = a - b;
+
+        return c;
+    }
+    function mul(uint a, uint b) internal pure returns (uint) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+    function div(uint a, uint b) internal pure returns (uint) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+    function div(uint a, uint b, string memory errorMessage) internal pure returns (uint) {
+        // Solidity only automatically asserts when dividing by 0
+        require(b > 0, errorMessage);
+        uint c = a / b;
+
+        return c;
+    }
+}
+
+library Address {
+    function isContract(address account) internal view returns (bool) {
+        bytes32 codehash;
+        bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+        // solhint-disable-next-line no-inline-assembly
+        assembly { codehash := extcodehash(account) }
+        return (codehash != 0x0 && codehash != accountHash);
+    }
+}
+
+library SafeERC20 {
+    using SafeMath for uint;
+    using Address for address;
+
+    function safeTransfer(IERC20 token, address to, uint value) internal {
+        callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+    }
+
+    function safeTransferFrom(IERC20 token, address from, address to, uint value) internal {
+        callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+    }
+
+    function safeApprove(IERC20 token, address spender, uint value) internal {
+        require((value == 0) || (token.allowance(address(this), spender) == 0),
+            "SafeERC20: approve from non-zero to non-zero allowance"
+        );
+        callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+    }
+    function callOptionalReturn(IERC20 token, bytes memory data) private {
+        require(address(token).isContract(), "SafeERC20: call to non-contract");
+
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory returndata) = address(token).call(data);
+        require(success, "SafeERC20: low-level call failed");
+
+        if (returndata.length > 0) { // Return data is optional
+            // solhint-disable-next-line max-line-length
+            require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+        }
+    }
+}
+
+contract FireToken is ERC20, ERC20Detailed {
+  using SafeERC20 for IERC20;
+  using Address for address;
+  using SafeMath for uint;
+
+  constructor () public ERC20Detailed("Fire", "Fire", 18) {
+      governance = msg.sender;
+      _mint(0xa6Ba3791FEBc20EF24A113b1DBdEbB5805eaCc1b, 1000000000*10**18);
+      minters[msg.sender] = true;
+  }
+
+  function init() public isGover {
+       setBuyInviteRate(300);
+       setAFreeAddr(0x93dF1b0fB5Ab0ED9DD801242C4eE701553e5A4Ca);
+       setBFreeAddr(0x5484C92d08cF158d17880A4BEA044f20e41D6Fe3);
+       addNftWhites(0x5484C92d08cF158d17880A4BEA044f20e41D6Fe3);
+       setSellRate2(1000);
+       setSellRateList(0x0a32Da95056C380D39679Af95678F33Cc2D5F82e, 1200);
+       setBuyRateList(0x0a32Da95056C380D39679Af95678F33Cc2D5F82e, 1500);
+  }
+
+  function init2(address _aAddr,address _bAddr,address _swapAddr) public isGover {
+       setAFreeAddr(_aAddr);
+       setBFreeAddr(_bAddr);
+       addNftWhites(_bAddr);
+       setSellRate2(1000);
+       setSellRateList(_swapAddr, 1200);
+       setBuyRateList(_swapAddr, 1500);
+  }
+  
+}

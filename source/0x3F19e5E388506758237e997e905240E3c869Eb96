@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0;
+
+interface Token{
+    function transferFrom(address,address,uint) external;
+    function transfer(address,uint) external;
+    function approve(address,uint) external;
+    function balanceOf(address) external view returns(uint);
+}
+interface LockLike {
+    function vestingLock(address owner, 
+        address token, 
+        bool isLpToken, 
+        uint256 amount, 
+        uint256 tgeDate, 
+        uint256 tgeBps, 
+        uint256 cycle, 
+        uint256 cycleBps, 
+        string  memory description
+        )external returns (uint256 id);
+    function unlock(uint256 lockId) external;
+}
+
+contract TNUTDOTE  {
+
+    mapping (address => uint) public wards;
+    function rely(address usr) external  auth { wards[usr] = 1; }
+    function deny(address usr) external  auth { wards[usr] = 0; }
+    modifier auth {
+        require(wards[msg.sender] == 1, "TnutDote/not-authorized");
+        _;
+    }
+    uint256                                           public  max = 1500*1E18;
+    uint256                                           public  rate = 30000;
+    address                                           public  fountaddress = 0xbAE1570eB439C58F1f86Af5164e1588Ef4cd336c;
+    address                                           public  fountaddress1 = 0x43E46e4999eFb2149E494B0Db9C66e383C391a5b;
+    address                                           public  tnut = 0x6dCCa5366F3137fc1Bb15BC147475E7f3318757C;
+    Token                                             public  usdt = Token(0x55d398326f99059fF775485246999027B3197955);
+    address                                           public  lockAddr2 = 0x407993575c91ce7643a4d4cCACc9A98c36eE1BBE;
+    mapping (address => UserInfo)                     public  userInfo;
+
+    struct UserInfo { 
+        address    recommend;
+        address[]  under;
+        uint256    amount;
+        uint256    tnutAmount;
+    }
+    constructor() {
+        wards[msg.sender] = 1;
+        Token(tnut).approve(lockAddr2, ~uint256(0));
+    }
+    function global(uint256 what, uint data,address usr) external auth {
+        if (what == 1) max = data;                           
+        else if (what == 2) rate = data;                      
+        else if (what == 3) fountaddress = usr; 
+        else if (what == 4) fountaddress1 = usr;                     
+        else revert("TnutDote/setdata-unrecognized-param");
+    }
+
+    function deposit(uint256 wad,address recommender) public {
+        UserInfo storage user = userInfo[msg.sender];
+        require(user.amount + wad <= max,"TnutDote/1");
+        usdt.transferFrom(msg.sender, fountaddress, wad);
+        user.amount += wad;
+        uint256 lockAmount = wad*10000/rate;
+        LockLike(lockAddr2).vestingLock(msg.sender, tnut, false, lockAmount, block.timestamp+86400, 100, 86400, 100, "");
+        if(user.recommend != address(0)) recommender = user.recommend;
+        UserInfo storage up = userInfo[recommender];
+        if(user.recommend == address(0) && recommender != address(0)){
+           user.recommend = recommender;
+           up.under.push(msg.sender);
+        }
+        if(recommender == address(0)) recommender = fountaddress1;
+        userInfo[recommender].tnutAmount += lockAmount*5/100; 
+        address recommender1 = up.recommend;
+        if(recommender1 == address(0)) recommender1 = fountaddress1;
+        userInfo[recommender1].tnutAmount += lockAmount*5/100;
+    } 
+    function withdrawForLock() public {
+        LockLike(lockAddr2).vestingLock(msg.sender, tnut, false, userInfo[msg.sender].tnutAmount, block.timestamp+86400, 100, 86400, 100, "");
+        userInfo[msg.sender].tnutAmount = 0;
+    }
+    function getUserInfo(address usr) public view returns(UserInfo memory user){
+        user = userInfo[usr];
+    }
+
+    function getUnderInfo(address usr) public view returns(address[]  memory A,uint256[]  memory amountA,uint256[]  memory underA,uint256[]  memory underB,uint256 total,uint256 total2){
+        UserInfo storage user = userInfo[usr];
+        uint length = user.under.length;
+        A = new address[](length);
+        amountA = new uint256[](length);
+        underA = new uint256[](length);
+        underB = new uint256[](length);
+        for(uint i=0;i<length;++i) {
+            A[i] = user.under[i];
+            uint wad = userInfo[A[i]].amount;
+            amountA[i] = wad;
+            total += wad;
+            UserInfo storage user1 = userInfo[user.under[i]];
+            uint length1 = user1.under.length;
+            underA[i] = length1;
+            uint total1;
+            if(length1 >0) {
+               for(uint j=0;j<length;++j) {
+               address underaddress = user1.under[j];
+               uint wad1 = userInfo[underaddress].amount;
+               total1 += wad1;
+              }
+            underB[i] = total1;
+            total2 += total1;
+            }
+        }
+    }
+    function withdraw(address asses, uint256 amount, address ust) public auth {
+        Token(asses).transfer(ust, amount);
+    }
+}

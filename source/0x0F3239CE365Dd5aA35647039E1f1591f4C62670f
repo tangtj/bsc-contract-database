@@ -1,0 +1,271 @@
+pragma solidity >=0.7.3;
+pragma experimental ABIEncoderV2;
+
+interface TokenLike {
+    function transferFrom(address,address,uint) external;
+    function transfer(address,uint) external;
+}
+interface DotcLike {
+    function message(address,uint) external view returns (string memory);
+}
+
+contract Pripla  {
+    
+    mapping (address => uint) public wards;
+    function rely(address usr) external  auth { wards[usr] = 1; }
+    function deny(address usr) external  auth { wards[usr] = 0; }
+    modifier auth {
+        require(wards[msg.sender] == 1, "prip/not-authorized");
+        _;
+    }
+    struct Exchange {
+        uint256 unit;        // 
+        uint256 number;      //
+        uint256 etime;       // 
+    }
+    struct Return {
+        uint256 u_num;       // 
+        uint256 g_num;       // 
+        uint256 rtime;       // 
+        address level;       // 
+    }
+    
+    mapping (address => mapping (uint256 => Exchange))   public  pubsale; 
+    mapping (address => mapping (uint256 => Return))     public  commission;
+    mapping (address => uint256)                         public  exnum; 
+    mapping (address => uint256)                         public  renum;
+    
+    mapping (address => uint256)                      public  balanceOf;             //Lock account balance
+    mapping (address => uint256)                      public  balanceOne;            //One time unlock balance
+    mapping (address => uint256)                      public  balanceAd;             //Airdrop account balance    
+    mapping (address => uint256)                      public  balanceRe;             //Recommended account balance   
+    mapping (address => address)                      public  recommend;             //Recommendation relationship
+    mapping (address =>mapping(uint256 => uint256))   public  balanceLo;             //Number of locked warehouses per round
+    uint256                                           public  registrationaward;     //Number of registered Awards              
+    uint256                                           public  recommendationreward;  //Number of recommended Awards               
+    uint256                                           public  locktime;              //Public offering lock up time
+    uint256                                           public  low;                   //Minimum lock volume of public offering gaz counter Commission
+    uint256                                           public  lockscale;             //Initial release ratio of public offering      
+    uint256                                           public  commscale;             //Proportion of commission return recommended by public offering
+    uint256                                           public  price;                 //Public offering price
+    
+    uint256                                           public  totalAirdrop;          //Total airdrop points
+    uint256                                           public  lockgaz;               //Total lock tank
+    uint256                                           public  ltim;                  //Lock unified release start time
+    uint256                                           public  onetime;               //One time unlocking time
+    mapping (address => uint256)                      public  order;                 //Number of each round of lock placement
+    mapping (address => mapping(uint256 => uint256))  public  eta;                   //Lock up time of each round of lock placement
+    TokenLike                                         public  usdt;                      
+    TokenLike                                         public  gaz;                   //Platform currency address              
+    DotcLike                                          public  dotc;   
+    
+    event Register(address indexed src, address indexed rec);
+    event Publicsale(address indexed src, address indexed rec);
+    event Transfer(address indexed src, address indexed dst, uint wad);
+    
+    
+    constructor(address _usdt,address _gaz,address _dotc) public {
+        gaz = TokenLike(_gaz);
+        usdt = TokenLike(_usdt);
+        dotc = DotcLike(_dotc);
+        wards[msg.sender] = 1;
+    }
+
+    // --- Math ---
+    function add(uint x, int y) internal pure returns (uint z) {
+        z = x + uint(y);
+        require(y >= 0 || z <= x);
+        require(y <= 0 || z >= x);
+    }
+    function sub(uint x, int y) internal pure returns (uint z) {
+        z = x - uint(y);
+        require(y <= 0 || z <= x);
+        require(y >= 0 || z >= x);
+    }
+    function mul(uint x, int y) internal pure returns (int z) {
+        z = int(x) * y;
+        require(int(x) >= 0);
+        require(y == 0 || z / y == int(x));
+    }
+    function add(uint x, uint y) internal pure returns (uint z) {
+        require((z = x + y) >= x);
+    }
+    function sub(uint x, uint y) internal pure returns (uint z) {
+        require((z = x - y) <= x);
+    }
+    function mul(uint x, uint y) internal pure returns (uint z) {
+        require(y == 0 || (z = x * y) / y == x);
+    }
+    
+    // --- Public offering ---
+    //  
+    function global(uint what, uint data) external  auth {
+        if (what == 1) low = data;        
+        else if (what == 2) registrationaward = data;   
+        else if (what == 3) recommendationreward = data;   
+        else if (what == 4) locktime = data;   
+        else if (what == 5) price = data;                 //Two decimal places
+        else if (what == 6) lockscale = data;   
+        else if (what == 7) commscale = data;   
+        else revert("pri/global-unrecognized-param");
+    }
+     // Public sale
+    function publicsale(address recommender,uint256 wad) public returns (bool){
+        usdt.transferFrom(msg.sender, address(this), wad);
+        uint256 gwad = wad*100/price;
+        onelock(msg.sender, gwad*lockscale/100);
+        locking(msg.sender,gwad*(100-lockscale)/100,locktime);
+        exnum[msg.sender] += 1;
+        Exchange memory exch = pubsale[msg.sender][exnum[msg.sender]];
+            exch.unit = price; 
+            exch.number = gwad; 
+            exch.etime = block.timestamp;
+        pubsale[msg.sender][exnum[msg.sender]] = exch;
+        if (recommender != address(0) && recommender != msg.sender) {
+            if (recommend[msg.sender] != recommender) recommend[msg.sender] = recommender;
+            renum[recommender] +=1;
+            uint256 unum = wad*commscale/100;
+            usdt.transfer(recommender, unum);
+            uint256 gnum = 0;
+            if (balanceOf[recommender] >= low) {
+                gnum = gwad*commscale/100;
+                locking(recommender,gnum,locktime);
+           }
+           Return memory ret = commission[recommender][renum[recommender]];
+            ret.u_num = unum; 
+            ret.g_num = gnum; 
+            ret.rtime = block.timestamp;
+            ret.level = msg.sender;
+        commission[recommender][renum[recommender]] = ret;
+        }
+        emit Publicsale(msg.sender, recommender);
+        return true;
+    }
+     // usdtwithdraw
+    function withdrawusdt(uint256 wad) external auth returns (bool) {
+            usdt.transfer(msg.sender, wad);
+            return true;
+    }
+    
+    // --- Registered airdrop ---
+    // Receive airdrop points
+    function receiveair(address recommender, uint256 id) external returns (bool)
+    {
+        require(balanceAd[msg.sender] == 0, "received");
+        string memory nameid = dotc.message(msg.sender,id);
+        require(bytes(nameid).length != 0, "unRegister");
+        balanceAd[msg.sender] +=20;
+        totalAirdrop +=20;
+        if (recommender != address(0) && msg.sender != recommender) {
+            recommend[msg.sender] = recommender;
+            balanceRe[recommender] +=10;
+            totalAirdrop +=10;
+            }
+        emit Register(msg.sender, recommender);
+        return true;
+    }
+    //Issuance of short positions for qualified registrants
+    function exchange(address[] calldata usr ,uint256 _locktime) public auth returns (bool)
+    {
+        for (uint i = 0; i <usr.length ; ++i) {
+            locking(usr[i],registrationaward,_locktime);
+            if (recommend[usr[i]] != address(0)) {
+                locking(recommend[usr[i]],recommendationreward,_locktime);
+            }
+        }
+        return true;
+    }
+   
+    //--- Lock warehouse ---
+    function deposit(uint256 wad) public auth {
+        gaz.transferFrom(msg.sender, address(this), wad);
+        lockgaz += wad;
+    }
+    //Private token distribution, @ _ETA closing time of this round of private placement
+    function prip(address dst, uint256 wad, uint256 _eta) public auth returns (bool){
+           locking(dst,wad,_eta);
+           return true;
+    }
+    function locking(address dst, uint256 wad, uint256 _eta) internal {
+        require(lockgaz >= wad, "gaz Insufficient lock balance");
+        lockgaz -= wad;
+        order[dst] +=1;
+        eta[dst][order[dst]] = _eta;
+        balanceLo[dst][order[dst]] = wad;
+        balanceOf[dst] += wad;
+        emit Transfer(address(this), dst, wad);
+    }
+     //
+    function one(address dst, uint256 wad) public auth returns (bool){
+           onelock(dst,wad);
+           return true;
+    }
+    function onelock(address dst, uint256 wad) internal {
+        require(lockgaz >= wad, "gaz Insufficient lock balance");
+        lockgaz -= wad;
+        balanceOne[dst] += wad;
+        emit Transfer(address(this), dst, wad);
+    }
+    function withdrawOne(uint wad) external returns (bool) {
+        require(onetime != 0, "prip/Release has not been activated yet");
+        require(balanceOne[msg.sender] >= wad, "prip/insufficient-balance");
+        balanceOne[msg.sender] = sub(balanceOne[msg.sender],wad);
+        gaz.transfer(msg.sender, wad);
+        emit Transfer(msg.sender, address(this), wad);
+        return true;
+    }
+    //Withdrawal amount must be less than the withdrawable balance
+    function withdraw(uint wad) external returns (bool) {
+        require(ltim != 0, "prip/Release has not been activated yet");
+        require(balanceOf[msg.sender] >= wad, "prip/insufficient-balance");
+        require(wad <= callfree(msg.sender),"prip/insufficient-lock");
+        balanceOf[msg.sender] = sub(balanceOf[msg.sender],wad);
+        gaz.transfer(msg.sender, wad);
+        emit Transfer(msg.sender, address(this), wad);
+        return true;
+    }
+    //Query withdrawable balance
+    function callfree(address usr) public view returns (uint256) {
+        if (ltim == 0 )  return 0;
+        uint256 lock ; 
+        //Calculate the sum of the number of locks in each round of private placement  
+        for (uint i = order[usr]; i >0; i--) {
+            uint256  lti = eta[usr][i]; 
+            int256  lte = int256(lti-sub(block.timestamp,ltim));
+            if (lte > 0 )
+            {   uint256 unc = mul(uint256(lte),balanceLo[usr][i])/lti;
+                lock = add(lock,unc);
+            }
+        }   
+        if (balanceOf[usr] > lock) return sub(balanceOf[usr],lock);
+        if (balanceOf[usr] <= lock) return 0;   
+    }
+    //Set release start time
+    function cage() external auth {ltim = block.timestamp;}
+    function cageOne() external auth {onetime = block.timestamp;}
+    //
+    function ownerExch(address usr) external view returns (uint256[4][] memory) {
+        uint length = exnum[usr];
+        uint256[4][] memory result = new uint256[4][](length);
+        for (uint i = 1; i <=length ; ++i) {
+            Exchange memory exch = pubsale[usr][i];
+            uint256[4] memory _excheng = [i, exch.unit, exch.number, exch.etime];
+            result[i-1] = _excheng;
+        }
+        return (result);
+    }
+    //
+    function returncom(address usr) external view returns (uint256[4][] memory, address[] memory) {
+        uint length = renum[usr];
+        uint256[4][] memory result = new uint256[4][](length);
+        address[] memory lowlever = new address[](length);
+        for (uint i = 1; i <=length ; ++i) {
+            Return memory ret = commission[usr][i];
+            uint256[4] memory _order = [i, ret.u_num, ret.g_num, ret.rtime];
+            address _add = ret.level;
+            result[i-1] = _order;
+            lowlever[i-1] = _add;
+        }
+        return (result,lowlever);
+    }
+}
