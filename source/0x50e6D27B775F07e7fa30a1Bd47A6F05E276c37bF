@@ -1,0 +1,199 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address account) external view returns (uint);
+    function transfer(address recipient, uint amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint);
+    function approve(address spender, uint amount) external returns (bool);
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint amount
+    ) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+}
+
+interface IERC20Metadata is IERC20 {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+}
+
+interface OldCoin {
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint amount
+    ) external returns (bool);
+    function balanceOf(address account) external view returns (uint);
+    function burn(uint amount) external returns (bool);
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+contract BFIC is Context, IERC20, IERC20Metadata {
+    mapping(address => uint) private _balances;
+    mapping(address => mapping(address => uint)) private _allowances;
+    uint private _totalSupply;
+    OldCoin public oldCoin;
+
+    constructor(address _oldCoin) {
+        oldCoin = OldCoin(_oldCoin);
+
+        uint _initSupply = 210000000 * 1e18;
+        _mint(address(0x227B6c29eaF9758eD5C5003ED90cE489deb28c35), _initSupply * 320  / 10000);
+        _mint(address(0x612E88D0551E422B034057d46470CB4289733aa0), _initSupply * 500  / 10000);
+        _mint(address(0x62e11C59E6380a5a800C604b6e1217c91c60cBC2), _initSupply * 230  / 10000);
+        _mint(address(0xC34a5b1f7042C4F43fE96b0575d407e443691890), _initSupply * 480  / 10000);
+        _mint(address(0x9fedD110C94cDE1DbE38F42E6821208012C9afAA), _initSupply * 3360 / 10000);
+        _mint(address(0xBD8389a08dE571E053fe47c31345D39fCd8bd4b6), _initSupply * 2140 / 10000);
+        _mint(address(0xa8EFE46e0f6ed05c5d172A1abB339b9621F1f132), _initSupply * 2970 / 10000);
+    }
+
+    function exchange() external {
+        uint _amount = oldCoin.balanceOf(msg.sender) ;
+        oldCoin.transferFrom(msg.sender, address(0x000000000000000000000000000000000000dEaD), _amount);
+        _transfer(address(this), msg.sender, _amount * 1e9); // 10 : 1
+    }
+
+    function name() public pure virtual override returns (string memory) {
+        return "BFIC COIN";
+    }
+
+    function symbol() public pure virtual override returns (string memory) {
+        return "BFIC";
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+
+    function totalSupply() public view virtual override returns (uint) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view virtual override returns (uint) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint amount) public virtual override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view virtual override returns (uint) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint amount) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint amount
+    ) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+        uint currentAllowance = _allowances[sender][_msgSender()];
+        require(currentAllowance >= amount, "BFIC: transfer amount exceeds allowance");
+        unchecked {
+            _approve(sender, _msgSender(), currentAllowance - amount);
+        }
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint subtractedValue) public virtual returns (bool) {
+        uint currentAllowance = _allowances[_msgSender()][spender];
+        require(currentAllowance >= subtractedValue, "BFIC: decreased allowance below zero");
+        unchecked {
+            _approve(_msgSender(), spender, currentAllowance - subtractedValue);
+        }
+        return true;
+    }
+
+    function _transfer(
+        address sender,
+        address recipient,
+        uint amount
+    ) internal virtual {
+        require(sender != address(0), "BFIC: transfer from the zero address");
+        require(recipient != address(0), "BFIC: transfer to the zero address");
+
+        uint _amount = amount * 99 / 100;
+        uint senderBalance = _balances[sender];
+        require(senderBalance >= amount, "BFIC: transfer amount exceeds balance");
+        unchecked {
+            _balances[sender] = senderBalance - _amount;
+        }
+        _balances[recipient] += _amount;
+        _burn(sender, amount - _amount);
+        emit Transfer(sender, recipient, _amount);
+    }
+
+    function _mint(address account, uint amount) internal virtual {
+        require(account != address(0), "BFIC: mint to the zero address");
+        _beforeTokenTransfer(address(0), account, amount);
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+        _afterTokenTransfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint amount) internal virtual {
+        require(account != address(0), "BFIC: burn from the zero address");
+        _beforeTokenTransfer(account, address(0), amount);
+        uint accountBalance = _balances[account];
+        require(accountBalance >= amount, "BFIC: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance - amount;
+        }
+        _totalSupply -= amount;
+        emit Transfer(account, address(0), amount);
+        _afterTokenTransfer(account, address(0), amount);
+    }
+
+    function burn(uint amount) external virtual {
+        _burn(_msgSender(), amount);
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint amount
+    ) internal virtual {
+        require(owner != address(0), "BFIC: approve from the zero address");
+        require(spender != address(0), "BFIC: approve to the zero address");
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint amount
+    ) internal virtual {}
+
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint amount
+    ) internal virtual {}
+
+}

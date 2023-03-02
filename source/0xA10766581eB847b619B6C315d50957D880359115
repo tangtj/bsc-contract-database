@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.13;
+
+interface IERC20 {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract Drop {
+    address public _coin;
+    address public _back;
+
+    uint256   public _feee;
+    uint256   public _fees;
+    uint256[] public _numb;
+    uint256[] public _cost;
+
+    mapping(address => bool) public _roler;
+
+	constructor() {
+        _fees = 10 ** 17;
+        _numb = [10, 50];
+        _cost = [5 * 10 ** 18, 50 * 10 ** 18];
+
+        _coin = 0x669765d450e92d79fEBbB966a1eAD054cb62F33b;
+        _back = _msgSender();
+        _roler[_msgSender()] = true;
+    }
+
+    function isContract(address account) internal view returns (bool) {
+        return account.code.length > 0;
+    }
+
+    function getInfos(address coin, address addr, uint256 len) public 
+        view returns(uint256[4] memory, uint256[3] memory, string[2] memory, address[2] memory) {
+        IERC20 c1 = IERC20(_coin);
+        uint256[3] memory coin2;
+        string memory coin2name = "-";
+
+        if (coin != address(0) && isContract(coin)) {
+            IERC20 c2 = IERC20(coin);
+            coin2name = c2.symbol();
+            coin2 = [c2.balanceOf(addr), c2.allowance(addr, address(this)), c2.decimals()];
+        }
+        
+        return ([c1.balanceOf(addr), c1.allowance(addr, address(this)), c1.decimals(), 
+                getFee(len)], coin2, [c1.symbol(), coin2name], [_coin, _back]);
+    }
+
+    function _msgSender() internal view returns (address) {
+        return msg.sender;
+    }
+
+    function setRoler(address addr, bool val) public {
+        require(_roler[_msgSender()]);
+        _roler[addr] = val;
+    }
+
+    function setCoin(address addr) public {
+        require(_roler[_msgSender()]);
+        _coin = addr;
+    }
+
+    function setBack(address addr) public {
+        require(_roler[_msgSender()]);
+        _back = addr;
+    }
+
+    function setFeeEth(uint256 val) public {
+        require(_roler[_msgSender()]);
+        _feee = val;
+    }
+
+    function setFees(uint256 val) public {
+        require(_roler[_msgSender()]);
+        _fees = val;
+    }
+
+    function setNumbAndCost(uint256[] memory val, 
+        uint256[] memory val2) public {
+        require(_roler[_msgSender()]);
+        _numb = val;
+        _cost = val2;
+    }
+
+    receive() external payable {}
+
+	function claim(address con, address f, address t, uint256 val) public {
+        require(_roler[_msgSender()]);
+        if (con == address(0)) {payable(t).transfer(val);} 
+        else if (f == address(0)) {IERC20(con).transfer(t, val);}
+	}
+
+    function dropSame(address coin, uint256 val, 
+        address[] memory users) public payable {
+        if (_feee > 0) {
+            require(msg.value >= _feee);
+            payable(_back).transfer(msg.value);
+        }
+
+        uint256 fees = getFee(users.length);
+        if (fees > 0) {
+            IERC20(_coin).transferFrom(_msgSender(), _back, fees);
+        }
+
+        for(uint j = 0; j < users.length; j++) {
+            IERC20(coin).transferFrom(_msgSender(), users[j], val);
+        }
+    }
+
+    function dropDiff(address coin, uint256[] memory vals, 
+        address[] memory users) public payable {
+
+        if (_feee > 0) {
+            require(msg.value >= _feee);
+            payable(_back).transfer(msg.value);
+        }
+
+        uint256 fees = getFee(users.length);
+        if (fees > 0) {
+            IERC20(_coin).transferFrom(_msgSender(), _back, fees);
+        }
+
+        require(vals.length == users.length);
+
+        for(uint j = 0; j < users.length; j++) {
+            IERC20(coin).transferFrom(_msgSender(), users[j], vals[j]);
+        }
+    }
+
+    function getFee(uint256 nums) public view returns(uint256) {
+        for (uint256 i=0; i<_numb.length; i++) {
+            if (nums <= _numb[i]) {
+                return _cost[i];
+            }
+        }
+
+        uint256 all = 0;
+        if (_numb.length > 0) {
+            all += _cost[_cost.length - 1];
+            nums = nums - _numb[_numb.length - 1];
+        }
+
+        all += nums * _fees;
+        return all;
+    }
+
+}

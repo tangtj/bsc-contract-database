@@ -1,0 +1,385 @@
+pragma solidity >=0.5.0;
+
+library AddressStringUtil {
+    // converts an address to the uppercase hex string, extracting only len bytes (up to 20, multiple of 2)
+    function toAsciiString(address addr, uint256 len) internal pure returns (string memory) {
+        require(len % 2 == 0 && len > 0 && len <= 40, 'AddressStringUtil: INVALID_LEN');
+
+        bytes memory s = new bytes(len);
+        uint256 addrNum = uint256(addr);
+        for (uint256 i = 0; i < len / 2; i++) {
+            // shift right and truncate all but the least significant byte to extract the byte at position 19-i
+            uint8 b = uint8(addrNum >> (8 * (19 - i)));
+            // first hex character is the most significant 4 bits
+            uint8 hi = b >> 4;
+            // second hex character is the least significant 4 bits
+            uint8 lo = b - (hi << 4);
+            s[2 * i] = char(hi);
+            s[2 * i + 1] = char(lo);
+        }
+        return string(s);
+    }
+
+    // hi and lo are only 4 bits and between 0 and 16
+    // this method converts those values to the unicode/ascii code point for the hex representation
+    // uses upper case for the characters
+    function char(uint8 b) private pure returns (bytes1 c) {
+        if (b < 10) {
+            return bytes1(b + 0x30);
+        } else {
+            return bytes1(b + 0x37);
+        }
+    }
+}
+
+pragma solidity >=0.5.0;
+
+// produces token descriptors from inconsistent or absent ERC20 symbol implementations that can return string or bytes32
+// this library will always produce a string symbol to represent the token
+library SafeERC20Namer {
+    function bytes32ToString(bytes32 x) private pure returns (string memory) {
+        bytes memory bytesString = new bytes(32);
+        uint256 charCount = 0;
+        for (uint256 j = 0; j < 32; j++) {
+            bytes1 char = x[j];
+            if (char != 0) {
+                bytesString[charCount] = char;
+                charCount++;
+            }
+        }
+        bytes memory bytesStringTrimmed = new bytes(charCount);
+        for (uint256 j = 0; j < charCount; j++) {
+            bytesStringTrimmed[j] = bytesString[j];
+        }
+        return string(bytesStringTrimmed);
+    }
+
+    // assumes the data is in position 2
+    function parseStringData(bytes memory b) private pure returns (string memory) {
+        uint256 charCount = 0;
+        // first parse the charCount out of the data
+        for (uint256 i = 32; i < 64; i++) {
+            charCount <<= 8;
+            charCount += uint8(b[i]);
+        }
+
+        bytes memory bytesStringTrimmed = new bytes(charCount);
+        for (uint256 i = 0; i < charCount; i++) {
+            bytesStringTrimmed[i] = b[i + 64];
+        }
+
+        return string(bytesStringTrimmed);
+    }
+
+    // uses a heuristic to produce a token name from the address
+    // the heuristic returns the full hex of the address string in upper case
+    function addressToName(address token) private pure returns (string memory) {
+        return AddressStringUtil.toAsciiString(token, 40);
+    }
+
+    // uses a heuristic to produce a token symbol from the address
+    // the heuristic returns the first 6 hex of the address string in upper case
+    function addressToSymbol(address token) private pure returns (string memory) {
+        return AddressStringUtil.toAsciiString(token, 6);
+    }
+
+    // calls an external view token contract method that returns a symbol or name, and parses the output into a string
+    function callAndParseStringReturn(address token, bytes4 selector) private view returns (string memory) {
+        (bool success, bytes memory data) = token.staticcall(abi.encodeWithSelector(selector));
+        // if not implemented, or returns empty data, return empty string
+        if (!success || data.length == 0) {
+            return '';
+        }
+        // bytes32 data always has length 32
+        if (data.length == 32) {
+            bytes32 decoded = abi.decode(data, (bytes32));
+            return bytes32ToString(decoded);
+        } else if (data.length > 64) {
+            return abi.decode(data, (string));
+        }
+        return '';
+    }
+
+    // attempts to extract the token symbol. if it does not implement symbol, returns a symbol derived from the address
+    function tokenSymbol(address token) internal view returns (string memory) {
+        // 0x95d89b41 = bytes4(keccak256("symbol()"))
+        string memory symbol = callAndParseStringReturn(token, 0x95d89b41);
+        if (bytes(symbol).length == 0) {
+            // fallback to 6 uppercase hex of address
+            return addressToSymbol(token);
+        }
+        return symbol;
+    }
+
+    // attempts to extract the token name. if it does not implement name, returns a name derived from the address
+    function tokenName(address token) internal view returns (string memory) {
+        // 0x06fdde03 = bytes4(keccak256("name()"))
+        string memory name = callAndParseStringReturn(token, 0x06fdde03);
+        if (bytes(name).length == 0) {
+            // fallback to full hex of address
+            return addressToName(token);
+        }
+        return name;
+    }
+}
+
+pragma solidity >=0.5.0;
+
+// produces names for rewards pools using InfinityRewards's naming scheme
+library InfinityRewardsNamer {
+    string private constant TOKEN_PREFIX = 'Infinity Staking ';
+    string private constant TOKEN_SEPARATOR = ' for ';
+    string private constant TOKEN_SYMBOL_PREFIX = 'IR[';
+    string private constant TOKEN_SYMBOL_SUFFIX = ']';
+
+    // produces a pool descriptor in the format of `${prefix}${symbol0}${separator}${symbol1}`
+    function poolName(
+        address token0,
+        address token1
+    ) internal view returns (string memory) {
+        return
+            string(
+                abi.encodePacked(
+                    TOKEN_PREFIX,
+                    SafeERC20Namer.tokenSymbol(token0),
+                    TOKEN_SEPARATOR,
+                    SafeERC20Namer.tokenSymbol(token1)
+                )
+            );
+    }
+
+    // produces a pool symbol in the format of `${prefix}${symbol}${suffix}`
+    function poolSymbol(
+        address token
+    ) internal view returns (string memory) {
+        return
+            string(
+                abi.encodePacked(
+                    TOKEN_SYMBOL_PREFIX,
+                    SafeERC20Namer.tokenSymbol(token),
+                    TOKEN_SYMBOL_SUFFIX
+                )
+            );
+    }
+}
+
+pragma solidity ^0.6.7;
+
+library SafeMath {
+    function add(uint a, uint b) internal pure returns (uint c) {
+        require((c = a + b) >= a, "Addition overflow");
+    }
+
+    function sub(uint a, uint b) internal pure returns (uint c) {
+        require((c = a - b) <= a, "Subtraction underflow");
+    }
+    
+    function mul(uint a, uint b) internal pure returns (uint c) {
+        require(b == 0 || (c = a * b) / b == a, "Multiplication overflow");
+    }
+
+    function div(uint a, uint b) internal pure returns (uint) {
+        require(b > 0, "Division by zero");
+        return a / b;
+    }
+}
+
+library TransferHelper {
+    function safeTransfer(address token, address to, uint256 value) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "transfer failed");
+    }
+
+    function safeTransferFrom(address token, address from, address to, uint256 value) internal {
+        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "transferFrom failed");
+    }
+}
+
+interface IToken {
+    function decimals() external view returns (uint8);
+    function balanceOf(address owner) external view returns (uint);
+    function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+}
+
+contract InfinityRewards {
+    using SafeMath for uint;
+
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+
+    address public immutable factory;
+    address public rewardsToken;
+    address public stakingToken;
+    uint public constant minRewardsDuration = 14 days;
+    uint public periodFinish;
+    uint public rewardRate;
+    uint public lastUpdateTime;
+    uint public rewardPerTokenStored;
+    uint public rewardsOwed;
+
+    mapping(address => uint) public userRewardPerTokenPaid;
+    mapping(address => uint) public rewards;
+
+    uint public totalSupply;
+    mapping(address => uint) public balanceOf;
+
+    uint private unlocked = 1;
+    modifier lock() {
+        require(unlocked == 1, "locked");
+        unlocked = 0;
+        _;
+        unlocked = 1;
+    }
+
+    // update pool rewards, rewards owed and specified account rewards
+    modifier updateReward(address account) {
+        uint _rewardPerToken = rewardPerTokenStored; // gas saving
+        uint _lastTimeRewardApplicable = lastTimeRewardApplicable();
+        uint _totalSupply = totalSupply;
+        if (_totalSupply > 0) {
+            uint extraRewardPerToken = _lastTimeRewardApplicable.sub(lastUpdateTime).mul(rewardRate).mul(1e18).div(_totalSupply);
+            if (extraRewardPerToken > 0) {
+                _rewardPerToken = _rewardPerToken.add(extraRewardPerToken);
+                rewardPerTokenStored = _rewardPerToken;
+                rewardsOwed = rewardsOwed.add(extraRewardPerToken.mul(_totalSupply));
+            }
+        }
+        lastUpdateTime = _lastTimeRewardApplicable;
+        if (account != address(0)) {
+            uint extraEarnings = balanceOf[account].mul(_rewardPerToken.sub(userRewardPerTokenPaid[account]));
+            if (extraEarnings > 0) {
+                rewards[account] = rewards[account].add(extraEarnings / 1e18);
+                rewardsOwed = rewardsOwed.sub(extraEarnings % 1e18); // free any remainder
+            }
+            userRewardPerTokenPaid[account] = _rewardPerToken;
+        }
+        _;
+    }
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event RewardUpdated(uint rewardRate, uint periodFinish);
+    event Staked(address indexed user, uint amount);
+    event Withdrawn(address indexed user, uint amount);
+    event RewardPaid(address indexed user, uint reward);
+
+    constructor() public {
+        factory = msg.sender;
+    }
+
+    // initialize tokens only when pool is created
+    function initialize(address rewardsToken_, address stakingToken_) external {
+        require(msg.sender == factory, 'Forbidden');
+        IToken(rewardsToken_).balanceOf(address(this)); // check token
+        rewardsToken = rewardsToken_;
+        stakingToken = stakingToken_;
+        name = InfinityRewardsNamer.poolName(stakingToken_, rewardsToken_);
+        symbol = InfinityRewardsNamer.poolSymbol(stakingToken_);
+        decimals = IToken(stakingToken_).decimals();
+    }
+
+    // **** VIEW FUNCTIONS ****
+
+    function lastTimeRewardApplicable() public view returns (uint) {
+        uint _periodFinish = periodFinish;
+        return block.timestamp < _periodFinish ? block.timestamp : _periodFinish;
+    }
+
+    function rewardPerToken() public view returns (uint) {
+        uint _totalSupply = totalSupply;
+        if (_totalSupply == 0) return rewardPerTokenStored;
+        return rewardPerTokenStored.add(lastTimeRewardApplicable().sub(lastUpdateTime).mul(rewardRate).mul(1e18).div(_totalSupply));
+    }
+
+    function earned(address account) external view returns (uint) {
+        return balanceOf[account].mul(rewardPerToken().sub(userRewardPerTokenPaid[account])).div(1e18).add(rewards[account]);
+    }
+
+    function currentRewardsOwed() public view returns (uint) {
+        uint _totalSupply = totalSupply;
+        if (_totalSupply == 0) return rewardsOwed;
+        uint extraRewardPerToken = lastTimeRewardApplicable().sub(lastUpdateTime).mul(rewardRate).mul(1e18).div(_totalSupply);
+        return rewardsOwed.add(extraRewardPerToken.mul(_totalSupply));
+    }
+
+    function rewardsAvailable() public view returns (uint) {
+        address _rewardsToken = rewardsToken;
+        uint rewardsBalance = IToken(_rewardsToken).balanceOf(address(this));
+        if (_rewardsToken == stakingToken) rewardsBalance = rewardsBalance.sub(totalSupply);
+        uint _rewardsOwed = currentRewardsOwed();
+        _rewardsOwed = _rewardsOwed % 1e18 == 0 ? _rewardsOwed / 1e18 : (_rewardsOwed / 1e18) + 1;
+        return rewardsBalance.sub(_rewardsOwed);
+    }
+
+    // **** STAKING FUNCTIONS ****
+    
+    function stakeWithPermit(uint amount, uint deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s) external {
+        uint approval = approveMax ? uint(-1) : amount;
+        IToken(stakingToken).permit(msg.sender, address(this), approval, deadline, v, r, s);
+        stake(amount);
+    }
+
+    function stake(uint amount) public lock updateReward(msg.sender) {
+        address _stakingToken = stakingToken;
+        uint balanceBefore = IToken(_stakingToken).balanceOf(address(this));
+        TransferHelper.safeTransferFrom(_stakingToken, msg.sender, address(this), amount);
+        uint amountReceived = IToken(_stakingToken).balanceOf(address(this)).sub(balanceBefore);
+        require(amountReceived > 0, "Cannot stake 0");
+        totalSupply = totalSupply.add(amountReceived);
+        balanceOf[msg.sender] = balanceOf[msg.sender].add(amountReceived);
+        emit Transfer(address(0), msg.sender, amountReceived);
+        emit Staked(msg.sender, amountReceived);
+    }
+
+    function withdraw(uint amount) public lock updateReward(msg.sender) {
+        require(amount > 0, "Cannot withdraw 0");
+        totalSupply = totalSupply.sub(amount);
+        balanceOf[msg.sender] = balanceOf[msg.sender].sub(amount);
+        TransferHelper.safeTransfer(stakingToken, msg.sender, amount);
+        emit Transfer(msg.sender, address(0), amount);
+        emit Withdrawn(msg.sender, amount);
+    }
+
+    function getReward() public lock updateReward(msg.sender) {
+        uint reward = rewards[msg.sender];
+        if (reward > 0) {
+            rewards[msg.sender] = 0;
+            rewardsOwed = rewardsOwed.sub(reward.mul(1e18));
+            TransferHelper.safeTransfer(rewardsToken, msg.sender, reward);
+            emit RewardPaid(msg.sender, reward);
+        }
+    }
+
+    function exit() external {
+        withdraw(balanceOf[msg.sender]);
+        getReward();
+    }
+
+    // distribute available rewardsToken balance over the desired duration
+    function updateRewardAmount(uint duration) external lock updateReward(address(0)) {
+        require (duration >= minRewardsDuration, "Duration less than minRewardsDuration");
+        uint reward = rewardsAvailable();
+        uint newRewardRate = reward.div(duration);
+        require (newRewardRate > 0, "No reward to distribute");
+        
+        uint _periodFinish = periodFinish;
+        if (block.timestamp < _periodFinish) {
+            uint _rewardRate = rewardRate;
+            require(newRewardRate >= _rewardRate, "Insufficient rewardRate");
+            uint periodRemaining = _periodFinish.sub(block.timestamp);
+            if (duration < periodRemaining) {
+                uint rewardRemaining = periodRemaining.mul(_rewardRate);
+                require(reward >= rewardRemaining.mul(3), "Insufficient reward to decrease duration");
+            }
+        }
+        
+        rewardRate = newRewardRate;
+        lastUpdateTime = block.timestamp;
+        uint newPeriodFinish = block.timestamp.add(duration);
+        periodFinish = newPeriodFinish;
+        emit RewardUpdated(newRewardRate, newPeriodFinish);
+    }
+}
