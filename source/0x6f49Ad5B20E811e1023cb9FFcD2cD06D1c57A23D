@@ -1,0 +1,386 @@
+// SPDX-License-Identifier: Unlicensed
+pragma solidity 0.8.11;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+contract Ownable {
+    address private _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        _transferOwnership(msg.sender);
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    //Removing an Administrator
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    //Modifying an Administrator
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+contract Token is IERC20, Ownable {
+    string public name;
+    string public symbol;
+    uint8 public decimals = 8;
+    uint256 public totalSupply;
+
+    receive() external payable {}
+
+    address private LPAddress;
+    address private smartCommunityAddress;
+    address private burnsAddress = 0x000000000000000000000000000000000000dEaD;
+    address private routerAddress = 0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    mapping(address => address) public inviteMap;
+    mapping(address => bool) public whiteList;
+    mapping(address => bool) public swapAddress;
+
+    mapping(uint8 => uint40) public levelAward;
+
+    uint40 private buySlippage = 20;
+    uint40 private sellSlippage = 30;
+
+    uint40 private LPAward = 10;
+    uint40 private burnsAward = 50;
+
+    uint256 public burnsAmount;
+
+    bool public openTransfer;
+
+    constructor(
+        string memory tokenName,
+        string memory tokenSymbol,
+        address tokenSmartCommunityAddress,
+        address tokenLPAddress
+    ) {
+        name = tokenName;
+        symbol = tokenSymbol;
+        smartCommunityAddress = tokenSmartCommunityAddress;
+        LPAddress = tokenLPAddress;
+        uint256 initialSupply = 100000000000;
+        totalSupply = initialSupply * 10**uint256(decimals);
+        uint256 smartCommunityAmount = (totalSupply * 65) / 100;
+        uint256 toBalance = totalSupply - smartCommunityAmount;
+
+        balanceOf[msg.sender] = toBalance;
+        emit Transfer(address(0), msg.sender, toBalance);
+
+        balanceOf[tokenSmartCommunityAddress] = smartCommunityAmount;
+        emit Transfer(
+            address(0),
+            tokenSmartCommunityAddress,
+            smartCommunityAmount
+        );
+
+        whiteList[msg.sender] = true;
+        whiteList[LPAddress] = true;
+        whiteList[tokenSmartCommunityAddress] = true;
+
+        levelAward[1] = 10;
+        levelAward[2] = 8;
+        levelAward[3] = 5;
+        levelAward[4] = 5;
+        levelAward[5] = 4;
+        levelAward[6] = 4;
+        levelAward[7] = 4;
+    }
+
+    event AddLP(uint256 value);
+    event DropToInvite(address indexed sender, address indexed to);
+
+    function setSwapAddress(address token,bool status)public onlyOwner{
+        swapAddress[token]=status;
+    }
+
+    function getAddressConfig()
+        public
+        view
+        returns (
+            address _burnsAddress,
+            address _LPAddress,
+            address _smartCommunityAddress
+        )
+    {
+        return (burnsAddress, LPAddress, smartCommunityAddress);
+    }
+
+    function getProportionConfig()
+        public
+        view
+        returns (
+            uint40 _buySlippage,
+            uint40 _sellSlippage,
+            uint40 _LPAward,
+            uint40 _burnsAward
+        )
+    {
+        return (buySlippage, sellSlippage, LPAward, burnsAward);
+    }
+
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal {
+        if(openTransfer==false&&sender==routerAddress){
+            if (whiteList[sender] == false){
+                revert ("Not opened 1");
+            }
+        }else if(openTransfer==false&&checkAddressIsSwap(sender)==true){
+            if (whiteList[recipient] == false){
+                revert ("Not opened 2");
+            }
+        }else if(openTransfer==false&&whiteList[sender]==false){
+             revert ("Not opened 3");
+        }
+        
+        _bind_invite(sender,recipient);
+
+        if (checkAddressIsSwap(sender) && whiteList[recipient] == false) {
+            //买入,取消流动性
+            _transferBuy(sender, recipient, amount);
+        } else if (
+            checkAddressIsSwap(recipient) && whiteList[sender] == false
+        ) {
+            //卖出,添加流动性
+            _transferSell(sender, recipient, amount);
+        } else {
+            _transferDefault(sender, recipient, amount);
+        }
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, allowance[sender][msg.sender] - amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal {
+        require(owner != address(0), "approve from the zero address");
+        require(spender != address(0), "approve to the zero address");
+        allowance[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function setAddressConfig(
+        address _LPAddress,
+        address _smartCommunityAddress
+    ) public onlyOwner {
+        LPAddress = _LPAddress;
+        smartCommunityAddress = _smartCommunityAddress;
+    }
+
+    function setOpenTransfer(bool status) public onlyOwner {
+        openTransfer = status;
+    }
+
+    function _transferDefault(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal {
+        balanceOf[sender] = balanceOf[sender] - amount;
+        balanceOf[recipient] = balanceOf[recipient] + amount;
+        emit Transfer(sender, recipient, amount);
+    }
+
+    //卖出
+    function _transferSell(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) private {
+        uint256 awardBalance = (amount * sellSlippage) / 100;
+
+        _transferDefault(sender, recipient, amount-awardBalance); //到账
+
+        uint256 burnsLevel = _transferLevelAward(
+            sender,
+            sender,
+            awardBalance,
+            amount
+        );
+        _transferDefault(sender, LPAddress, (awardBalance * LPAward) / 100); //lp到账
+        emit AddLP((awardBalance * LPAward) / 100);
+        uint256 burns = (awardBalance * burnsAward) / 100 + burnsLevel;
+        _transferBurn(sender,burns);
+    }
+
+    //买入
+    function _transferBuy(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) private {
+        _transferDefault(sender, recipient, amount); //到账
+        uint256 awardBalance = (amount * buySlippage) / 100;
+        if (balanceOf[smartCommunityAddress] < awardBalance) {
+            return;
+        }
+        uint256 burnsLevel = _transferLevelAward(
+            smartCommunityAddress,
+            recipient,
+            awardBalance,
+            amount
+        );
+        _transferDefault(
+            smartCommunityAddress,
+            LPAddress,
+            (awardBalance * LPAward) / 100
+        ); //lp到账
+        emit AddLP((awardBalance * LPAward) / 100);
+        uint256 burns = (awardBalance * burnsAward) / 100 + burnsLevel;
+        _transferBurn(smartCommunityAddress,burns);
+    }
+
+    function _transferBurn(address payAddress,uint256 amount)private{
+        if (balanceOf[burnsAddress]>=totalSupply*9/10){
+            _transferDefault(payAddress, smartCommunityAddress, amount); 
+        }else{
+            _transferDefault(payAddress, burnsAddress, amount);
+        }
+    }
+
+    //推荐奖励
+    function _transferLevelAward(
+        address payingAddress,
+        address sender,
+        uint256 amount,
+        uint256 transferAmount
+    ) private returns (uint256) {
+        address cur = sender;
+        uint256 burns;
+        for (uint8 i = 1; i <= 7; i++) {
+            cur = inviteMap[cur];
+            uint256 fee = (amount * levelAward[i]) / 100;
+            if (cur == address(0)) {
+                burns = burns + fee;
+                continue;
+            }
+            if(balanceOf[cur]>=transferAmount){
+                _transferDefault(payingAddress, cur, fee);
+                continue;
+            }
+            uint256 thisFee=fee*balanceOf[cur]/transferAmount;
+            if(thisFee>0){
+                 _transferDefault(payingAddress, cur, thisFee);
+                burns = burns + (fee - thisFee);
+            }
+        }
+        return burns;
+    }
+
+ 
+    function _bind_invite(address sender,address recipient)private{
+        if(isContract(sender)||isContract(recipient) || checkAddressIsSwap(recipient)){
+            return;
+        }
+        if (inviteMap[recipient]!=address(0)||inviteMap[sender]==recipient||sender==recipient){
+            return;
+        }
+        inviteMap[recipient]=sender;
+        emit DropToInvite(sender,recipient);
+    }
+
+    function checkAddressIsSwap(address token) public view returns (bool) {
+        return swapAddress[token]==true;
+    }
+
+    function setWhiteList(address user, bool status) public onlyOwner {
+        whiteList[user] = status;
+    }
+
+    function setWhiteList(address[] memory userList, bool status)
+        public
+        onlyOwner
+    {
+        for (uint40 i = 0; i < userList.length; i++) {
+            whiteList[userList[i]] = status;
+        }
+    }
+
+    function isContract(address addr) private view returns (bool) {
+        uint256 size;
+        assembly {
+            size := extcodesize(addr)
+        }
+        return size > 0;
+    }
+
+}

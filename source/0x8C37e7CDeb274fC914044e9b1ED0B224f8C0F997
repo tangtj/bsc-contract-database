@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: MIT
+
+
+pragma solidity 0.8.2;
+
+interface IERC20Token {
+    function mint(address account, uint256 value) external;
+}
+
+interface BridgeLog {
+    function incoming(address _wallet, uint256 _amount, uint8 _txType, bytes32 _transferId) external;
+}
+
+contract Ownable {
+
+    address private owner;
+    
+    event OwnerSet(address indexed oldOwner, address indexed newOwner);
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Caller is not owner");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender; // 'msg.sender' is sender of current call, contract deployer for a constructor
+        emit OwnerSet(address(0), owner);
+    }
+
+
+    function changeOwner(address newOwner) public onlyOwner {
+        emit OwnerSet(owner, newOwner);
+        owner = newOwner;
+    }
+
+    function getOwner() external view returns (address) {
+        return owner;
+    }
+}
+
+contract POLCBridgeMinter is Ownable {
+    address public polcTokenAddress;
+    IERC20Token private polcToken;
+    BridgeLog private logger;
+    mapping (address => bool) minters;
+    
+    constructor() {
+        polcTokenAddress = 0x6Ae9701B9c423F40d54556C9a443409D79cE170a;
+        polcToken = IERC20Token(polcTokenAddress);
+        logger = BridgeLog(0x4DAbebf52972e21a65e88C534ACEF7751Cf4a752);
+    }
+    
+    function setMinter (address _minter, bool _canMint) public onlyOwner {
+        minters[_minter] = _canMint;
+    }
+    
+    function mint (address _wallet, uint256 _amount, uint8 _txType, bytes32 _txId) public {
+        require(minters[msg.sender] == true, "Invalid caller");
+        logger.incoming(_wallet, _amount, _txType, _txId);
+        polcToken.mint(_wallet, _amount);
+    }
+    
+}

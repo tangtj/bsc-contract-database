@@ -1,0 +1,365 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.9;
+
+// ----------------------------------------------------------------------------
+// Safe maths
+// ----------------------------------------------------------------------------
+contract SafeMath {
+    function safeAdd(uint a, uint b) internal pure returns (uint c) {
+        c = a + b;
+        require(c >= a);
+    }
+    function safeSub(uint a, uint b) internal pure returns (uint c) {
+        require(b <= a);
+        c = a - b;
+    }
+    function safeMul(uint a, uint b) internal pure returns (uint c) {
+        c = a * b;
+        require(a == 0 || c / a == b);
+    }
+    function safeDiv(uint a, uint b) internal pure returns (uint c) {
+        require(b > 0);
+        c = a / b;
+    }
+}
+
+
+// ----------------------------------------------------------------------------
+// ERC Token Standard #20 Interface
+// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-20-token-standard.md
+// ----------------------------------------------------------------------------
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+
+// ----------------------------------------------------------------------------
+// Owned contract
+// ----------------------------------------------------------------------------
+contract Owned {
+    address public owner;
+
+    event OwnershipTransferred(address indexed _from, address indexed _to);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner {
+        require(msg.sender == owner);
+        _;
+    }
+
+    function transferOwnership(address _newOwner) public onlyOwner {
+        address oldOwner = owner;
+        owner = _newOwner;
+        emit OwnershipTransferred(oldOwner, owner);
+    }
+}
+
+
+// ----------------------------------------------------------------------------
+// ERC20 Token, with the addition of symbol, name and decimals and assisted
+// token transfers
+// ----------------------------------------------------------------------------
+contract SolClout is IERC20, Owned, SafeMath {
+    string public name = "SolClout";
+    string public symbol = "SCT";
+    uint8 public decimals = 18;
+    uint public _totalSupply = 1000000000e18;
+    bool public isLocked;
+    
+    address[]   private     blackList;
+    address[]   private     vaultList;
+    mapping(address => uint) vaultAmount;
+    mapping(address => uint) vaultReleaseTime;
+
+    mapping(address => uint) balances;
+    mapping(address => mapping(address => uint)) allowed;
+
+
+    // ------------------------------------------------------------------------
+    // Constructor
+    // ------------------------------------------------------------------------
+    constructor(address multisig) {
+        balances[multisig] = safeAdd(balances[multisig], _totalSupply);
+        emit Transfer(address(0), multisig, _totalSupply);
+        isLocked = false;
+    }
+
+    modifier isNotLocked {
+        require(!isLocked);
+        _;
+    }
+
+    function setIsLocked(bool _isLocked) public onlyOwner{
+        isLocked = _isLocked;
+    }
+
+
+    // ------------------------------------------------------------------------
+    // Total supply
+    // ------------------------------------------------------------------------
+    function totalSupply() public view override returns (uint) {
+        return _totalSupply  - balances[address(0)];
+    }
+
+
+    // ------------------------------------------------------------------------
+    // Get the token balance for account `tokenOwner`
+    // ------------------------------------------------------------------------
+    function balanceOf(address tokenOwner) public view override returns (uint balance) {
+        return balances[tokenOwner];
+    }
+
+
+    function isBlacklisted(address account) private view returns(bool) {
+        uint i;
+        for (i = 0; i < blackList.length; i++) {
+            if (blackList[i] == account)
+                return true;
+        }
+        return false;
+    }
+    
+    
+    function addBlacklist(address account) public onlyOwner {
+        require(account != address(0));
+        blackList.push(account);
+    }
+    // ------------------------------------------------------------------------
+    // Transfer the balance from token owner's account to `to` account
+    // - Owner's account must have sufficient balance to transfer
+    // - 0 value transfers are allowed
+    // ------------------------------------------------------------------------
+    function transfer(address to, uint tokens) public override isNotLocked returns (bool success) {
+        require(isBlacklisted(msg.sender) == false);
+        balances[msg.sender] = safeSub(balances[msg.sender], tokens);
+        balances[to] = safeAdd(balances[to], tokens);
+        emit Transfer(msg.sender, to, tokens);
+        return true;
+    }
+
+
+    // ------------------------------------------------------------------------
+    // Token owner can approve for `spender` to transferFrom(...) `tokens`
+    // from the token owner's account
+    //
+    // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-20-token-standard.md
+    // recommends that there are no checks for the approval double-spend attack
+    // as this should be implemented in user interfaces
+    // ------------------------------------------------------------------------
+    function approve(address spender, uint tokens) public override returns (bool success) {
+        require(isBlacklisted(msg.sender) == false);
+        allowed[msg.sender][spender] = tokens;
+        emit Approval(msg.sender, spender, tokens);
+        return true;
+    }
+
+
+    // ------------------------------------------------------------------------
+    // Transfer `tokens` from the `from` account to the `to` account
+    //
+    // The calling account must already have sufficient tokens approve(...)-d
+    // for spending from the `from` account and
+    // - From account must have sufficient balance to transfer
+    // - Spender must have sufficient allowance to transfer
+    // - 0 value transfers are allowed
+    // ------------------------------------------------------------------------
+    function transferFrom(address from, address to, uint tokens) public override isNotLocked returns (bool success) {
+        require(isBlacklisted(msg.sender) == false);
+        balances[from] = safeSub(balances[from], tokens);
+        allowed[from][msg.sender] = safeSub(allowed[from][msg.sender], tokens);
+        balances[to] = safeAdd(balances[to], tokens);
+        emit Transfer(from, to, tokens);
+        return true;
+    }
+
+
+    // ------------------------------------------------------------------------
+    // Returns the amount of tokens approved by the owner that can be
+    // transferred to the spender's account
+    // ------------------------------------------------------------------------
+    function allowance(address tokenOwner, address spender) public view override returns (uint remaining) {
+        return allowed[tokenOwner][spender];
+    }
+
+
+    fallback() external payable {
+        revert();
+    }
+    
+    receive() external payable {
+        revert();
+    }
+
+    // ------------------------------------------------------------------------
+    // DECREASE token supply
+    // ------------------------------------------------------------------------
+    function burn(uint amount) public {
+        require(amount > 0);
+        _burn(msg.sender, amount);
+    }
+
+    // ------------------------------------------------------------------------
+    // DECREASE token supply
+    // ------------------------------------------------------------------------
+    function burnFrom(address from, uint amount) public {
+        require(allowance(from, msg.sender) >= amount);
+        allowed[from][msg.sender] = safeSub(allowed[from][msg.sender], amount);
+        _burn(from, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal {
+        require(account != address(0));
+
+        balances[account] = safeSub(balances[account], amount);
+        _totalSupply = safeSub(_totalSupply, amount);
+        emit Transfer(account, address(0), amount);
+    }
+
+
+    function tokenToVault(address to, uint amount, uint releaseTime) public onlyOwner {
+        require(to != address(0x0));
+        vaultAmount[to] = safeAdd(vaultAmount[to], amount);
+        vaultReleaseTime[to] = releaseTime;
+        _totalSupply = safeAdd(_totalSupply, amount);
+        balances[address(this)] = safeAdd(balances[address(this)], amount);
+        vaultList.push(to);
+    }
+
+    function releaseToken() public {
+        require(vaultAmount[msg.sender] > 0);
+        require(block.timestamp >= vaultReleaseTime[msg.sender]);
+        require(balances[address(this)] >= vaultAmount[msg.sender]);
+
+        balances[msg.sender] = safeAdd(balances[msg.sender], vaultAmount[msg.sender]);
+        balances[address(this)] = safeSub(balances[address(this)], vaultAmount[msg.sender]);
+        vaultAmount[msg.sender] = 0;
+        _removeFromVault(msg.sender);
+    }
+
+    function releaseTokenTo(address to) public onlyOwner {
+        require(vaultAmount[to] > 0);
+        require(block.timestamp >= vaultReleaseTime[to]);
+        require(balances[address(this)] >= vaultAmount[to]);
+
+        balances[to] = safeAdd(balances[to], vaultAmount[to]);
+        balances[address(this)] = safeSub(balances[address(this)], vaultAmount[to]);
+        vaultAmount[to] = 0;
+        _removeFromVault(to);
+    }
+
+    function _removeFromVault(address addr) internal {
+        uint index;
+        uint length = vaultList.length;
+        for (index = 0; index < length; index++){
+            if (vaultList[index] == addr) {
+              break;
+            }
+        }
+
+        /// There is no use-case for inexistent
+        assert(index < length);
+        /// Remove out of list and map
+        if ( index + 1 != length ) {
+            /// Move the last to the current
+            vaultList[index] = vaultList[length - 1];
+        }
+        delete vaultList[length - 1];
+        delete vaultReleaseTime[addr];
+        delete vaultAmount[addr];
+    }
+
+    function getVaultAmountFrom(address from) public view onlyOwner returns (uint amount) {
+        return vaultAmount[from];
+    }
+
+    function getVaultAmount() public view returns (uint amount) {
+        return vaultAmount[msg.sender];
+    }
+
+    function getVaultReleaseTimeFrom(address from) public view onlyOwner returns (uint releaseTime) {
+        return vaultReleaseTime[from];
+    }
+
+    function getVaultReleaseTime() public view returns (uint releaseTime) {
+        return vaultReleaseTime[msg.sender];
+    }
+
+    function getVaultList() public view onlyOwner returns (address[] memory list) {
+        return vaultList;
+    }
+}
