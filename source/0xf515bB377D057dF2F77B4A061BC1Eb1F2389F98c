@@ -1,0 +1,298 @@
+pragma solidity ^0.8.0;
+    //Safe math auto-included in solidity versions >= 0.8.0
+
+    interface IERC20 {
+        function totalSupply() external view returns (uint256);
+        function balanceOf(address account) external view returns (uint256);
+        function transfer(address recipient, uint256 amount) external returns (bool);
+        function allowance(address owner, address spender) external view returns (uint256);
+        function approve(address spender, uint256 amount) external returns (bool);
+        function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+        event Transfer(address indexed from, address indexed to, uint256 value);
+        event Approval(address indexed owner, address indexed spender, uint256 value);
+    }
+
+    interface PancakeSwap {
+        function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+        function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts);
+        function addLiquidityETH(address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+        function removeLiquidityETH(address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external returns (uint amountToken, uint amountETH);
+        function getPair(address tokenA, address tokenB) external view returns (address pair);
+        function WETH() external pure returns (address);
+        function factory() external pure returns (address);
+    }
+
+    contract Velocity is IERC20 {
+        event OwnershipRenounced(address indexed previousOwner, address indexed newOwner);
+
+        struct Staking {
+            //   BNB Vault
+            uint lpStaked;
+            uint whenCanUnstake;
+            uint rewardCollectTimer;
+            uint referral;
+            uint rewards;
+
+            //   VEL Vault
+            uint velStaked;
+            uint previousAmount;
+        }
+
+        uint private constant bigNumber = 10**18;
+        uint private totalVelStaked;
+        uint private ratioTracker;
+        uint private currentMultiplier = 100;
+        uint private totalBnbRewardable;
+
+        string public name = 'Velocity';
+        string public symbol = 'VEL';
+        uint public decimals = 18;
+        uint private _totalSupply;
+        uint private totalBnbLocked;
+
+        address payable private immutable feeAddress;
+        address private constant PANCAKEROUTER = 0x10ED43C718714eb63d5aA57B78B54704E256024E;       
+        address private immutable FACTORY = PancakeSwap(PANCAKEROUTER).factory();                
+        address private immutable WETHAddress = PancakeSwap(PANCAKEROUTER).WETH(); 
+        address private poolAddress;
+        address public currentOwner;
+        bool private pairCreated; 
+     
+        mapping (address => Staking) private vault;
+        mapping (address => uint) private _balances;
+        mapping (address => mapping (address => uint)) private _allowances;
+
+        constructor(address _feeAddress) {
+            feeAddress = payable(_feeAddress);
+            currentOwner = msg.sender;
+        }
+
+        function renounceOwnership() external {
+            require(msg.sender == currentOwner);
+            currentOwner = address(0);
+            emit OwnershipRenounced(msg.sender, address(0));
+        }
+
+        function createPancakeSwap() external payable {
+            require(!pairCreated, "PANCAKESWAP: PAIR CAN NOT BE CREATED");
+            pairCreated = true;
+
+            uint toMint = address(this).balance * 1000;
+            mint(address(this), toMint);
+            _allowances[address(this)][PANCAKEROUTER] = toMint;
+
+            PancakeSwap(PANCAKEROUTER).addLiquidityETH{ value: address(this).balance }
+            (address(this), toMint, 1, 1, address(this), 33136721748);
+
+            poolAddress = PancakeSwap(FACTORY).getPair(address(this), WETHAddress);
+        }
+
+        receive() external payable {
+           if(msg.sender != PANCAKEROUTER && msg.sender != poolAddress) stakeBnb(address(0));
+        }
+
+        function sendValue(address payable recipient, uint amount) private {
+            (bool success, ) = recipient.call{ value: amount }("");
+            require(success, "TRANSACTION: UNABLE TO SEND VALUE");
+        }
+
+        function velDivideBnb() private view returns (uint) {
+            return bigNumber * _balances[poolAddress] / IERC20(WETHAddress).balanceOf(poolAddress);
+        }
+
+        function bnbDivideVel() private view returns (uint) {
+            return bigNumber * IERC20(WETHAddress).balanceOf(poolAddress) / _balances[poolAddress];
+        }
+
+        function velDivideLp() private view returns (uint) {
+            return bigNumber * _balances[poolAddress] / IERC20(poolAddress).totalSupply();
+        }
+
+        function stakeBnb(address ref) public payable {
+            updateVelRewards();
+            currentMultiplier += 100 * msg.value / bigNumber;
+            uint allowableAmount = msg.value / 2;
+            uint velAmount = allowableAmount * _balances[poolAddress] / IERC20(WETHAddress).balanceOf(poolAddress);
+
+            sendValue(feeAddress, allowableAmount * 9 / 10);
+
+            //If there are no stakers in the VEL vault, refund the vault fee
+            if (totalVelStaked != 0) {
+                ratioTracker += bigNumber * allowableAmount / 10 / totalVelStaked;
+                totalBnbRewardable += allowableAmount / 10;
+            }
+            else sendValue(payable(msg.sender), allowableAmount / 10);
+
+            //Checks if the referral address is a staker
+            if(vault[ref].lpStaked != 0) {
+                //Reward the referral address with 5% equivalent value of the stake
+                vault[ref].referral += velAmount / 20;
+                //Reward the staker with 2.5% equivalent value of their stake
+                vault[msg.sender].referral += velAmount / 40;
+            }    
+
+            //Mints the correct amount of VEL to send to the PancakeSwap pool
+            mint(address(this), velAmount); 
+
+            _allowances[address(this)][PANCAKEROUTER] = velAmount;
+
+            (, uint amountBnb, uint amountLiquidity) = PancakeSwap(PANCAKEROUTER).addLiquidityETH{ value: allowableAmount }
+            (address(this), velAmount, 1, 1, address(this), 33136721748); 
+
+            vault[msg.sender].lpStaked += amountLiquidity; 
+            vault[msg.sender].whenCanUnstake = block.timestamp + 10 days;
+            
+            totalBnbLocked += amountBnb;
+        }
+
+        function stakeVel(uint amount) external {
+            require(amount <= _balances[msg.sender], "VEL_VAULT: AMOUNT TO STAKE EXCEEDS BALANCE");
+            if(vault[msg.sender].velStaked != 0) withdrawBnbReward();
+            _balances[msg.sender] -= amount;
+            vault[msg.sender].velStaked += amount;
+            vault[msg.sender].previousAmount = ratioTracker;
+            totalVelStaked += amount;
+        }
+
+        function withdrawLp(uint amount) external {
+            require(vault[msg.sender].whenCanUnstake <= block.timestamp, "BNB_VAULT: 10 DAY PERIOD NOT YET COMPLETE");
+            require(amount <= vault[msg.sender].lpStaked,"BNB_VAULT: AMOUNT TO WITHDRAW EXCEEDS AMOUNT STAKED");
+            IERC20(poolAddress).transfer(msg.sender, amount);
+            updateVelRewards();
+            vault[msg.sender].lpStaked -= amount;
+            totalBnbLocked -= amount * IERC20(WETHAddress).balanceOf(poolAddress) / IERC20(poolAddress).totalSupply(); 
+        }
+
+        function withdrawBnbReward() public {
+            sendValue(payable(msg.sender), vault[msg.sender].velStaked * 
+                (ratioTracker - vault[msg.sender].previousAmount) / bigNumber);
+
+            vault[msg.sender].previousAmount = ratioTracker;
+        }
+
+        function withdrawVel(uint amount) external {
+            require(amount <= vault[msg.sender].velStaked, "VEL_VAULT: AMOUNT TO WTIHDRAW EXCEEDS AMOUNT STAKED");
+            withdrawBnbReward();
+            vault[msg.sender].velStaked -= amount;
+            _balances[msg.sender] += amount;
+            totalVelStaked -= amount;
+        }
+
+        function updateVelRewards() private {
+            //Overflow of individual and/or total rewards is impossible
+            if(vault[msg.sender].rewardCollectTimer != 0 ) {
+                vault[msg.sender].rewards += currentMultiplier * vault[msg.sender].lpStaked * 
+                (block.timestamp - vault[msg.sender].rewardCollectTimer) * _balances[poolAddress] / 31536000 / IERC20(poolAddress).totalSupply();
+            }
+            vault[msg.sender].rewardCollectTimer = block.timestamp;
+        }
+
+        function withdrawVelRewardReferral() external {
+            require(vault[msg.sender].whenCanUnstake <= block.timestamp, "BNB_VAULT: 10 DAY PERIOD NOT YET COMPLETE");
+            updateVelRewards();
+            mint(msg.sender, vault[msg.sender].rewards + vault[msg.sender].referral);
+            vault[msg.sender].referral = 0;
+            vault[msg.sender].rewards = 0;
+        }
+
+        function totalSupply() external view override returns (uint) {
+            return _totalSupply;
+        }
+
+        function balanceOf(address account) external view override returns (uint) {
+            return _balances[account];
+        }
+        
+        function allowance(address owner, address spender) external view override returns (uint) {
+            return _allowances[owner][spender];
+        }
+
+        function timeRemaining() external view returns(uint) {
+            uint returnValue;
+            if(vault[msg.sender].whenCanUnstake == 0) return 10 days;
+            vault[msg.sender].whenCanUnstake > block.timestamp ? returnValue = vault[msg.sender].whenCanUnstake - block.timestamp : returnValue = 0;
+            return returnValue;
+        }
+
+        function calcRewards() public view returns(uint) {
+            return vault[msg.sender].rewards + (currentMultiplier * vault[msg.sender].lpStaked * 
+                (block.timestamp - vault[msg.sender].rewardCollectTimer) * _balances[poolAddress] / 31536000 / IERC20(poolAddress).totalSupply());
+        }
+
+        function getData() external view returns(uint, uint, uint, uint, uint, uint, uint, uint, uint, uint, uint, uint, uint, uint) {
+            /*  0:  Price of 1 BNB in VEL
+                1:  APY / 100   
+                2:  Total amount of BNB staked in the protocol
+                3:  Total amount of VEL staked in the protocol
+                4:  Amount of LP tokens the user controls 
+                5:  Amount of referrals the user has earned 
+                6:  Rewards of the user as of the last update (is not equivalent to the actual rewards the user has earned)
+                7:  Amount of VEL the user is currently staking
+                8:  VEL balance of the user (not including the VEL staked)
+                9:  BNB rewards of the user 
+                10: TOtal BNB REwardable
+                11: Price of 1 VEL in BNB
+                12: Reward collect timer
+                13: VEL Rewards
+            */
+            return (velDivideBnb(), currentMultiplier, totalBnbLocked, totalVelStaked, vault[msg.sender].lpStaked,
+                vault[msg.sender].referral, vault[msg.sender].rewards, vault[msg.sender].velStaked, _balances[msg.sender],
+                vault[msg.sender].velStaked * (ratioTracker - vault[msg.sender].previousAmount) / bigNumber, 
+                totalBnbRewardable, bnbDivideVel(), vault[msg.sender].rewardCollectTimer, calcRewards());
+        }
+
+        function isStaker(address a) external view returns(bool) {
+            return vault[a].lpStaked != 0 ? true : false;
+        }
+
+        function mint(address account, uint amount) private {
+            _totalSupply += amount;
+            _balances[account] += amount;
+            emit Transfer(address(0), account, amount);
+        }
+
+        function transfer(address to, uint amount) external override returns (bool) {
+            _transfer(msg.sender, to, amount);
+            return true;
+        }
+
+        function transferFrom(address from, address to, uint amount) external override returns (bool) {
+            require(amount <=  _allowances[from][msg.sender]);
+            _transfer(from, to, amount);
+            _approve(from, msg.sender, _allowances[from][msg.sender] - amount);
+            return true;
+        }
+
+        function _transfer(address from, address to, uint amount) private {
+            require(amount <= _balances[from],"ERC20: TRANSFER AMOUNT GREATER THAN BALANCE");
+            require(amount != 0, "ERC20: TRANSFER AMOUNT WAS 0");
+            require(from != address(0) && to != address(0), "ERC20: TRANSFER FROM/TO THE ZERO ADDRESS");
+        
+            _balances[from] -= amount;
+            _balances[to] += amount;
+            emit Transfer(from, to, amount);
+        }
+
+        function approve(address to, uint amount) external override returns (bool) {
+            _approve(msg.sender, to, amount);
+            return true;
+        }
+
+         function _approve(address from, address to, uint amount) private {
+            require(from != address(0) && to != address(0), "ERC20: APPROVE FROM/TO THE ZERO ADDRESS");
+
+            _allowances[from][to] = amount;
+            emit Approval(from, to, amount);
+        }
+
+        function increaseAllowance(address spender, uint addedValue) external returns (bool) {
+            _approve(msg.sender, spender, _allowances[msg.sender][spender] + addedValue);
+            return true;
+        }
+
+        function decreaseAllowance(address spender, uint256 subtractedValue) external returns (bool) {
+            require(subtractedValue <= _allowances[msg.sender][spender],"ERC20: ALLOWANCE DECREASE GREATER THAN ALLOWANCE");
+            _approve(msg.sender, spender, _allowances[msg.sender][spender] - subtractedValue);
+            return true;
+        }
+    }
