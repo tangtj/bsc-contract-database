@@ -1,0 +1,412 @@
+// SPDX-License-Identifier: UNLICENSED
+
+pragma solidity >=0.6.0 <0.7.0;
+
+/*
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with GSN meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor () public {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations with added overflow
+ * checks.
+ *
+ * Arithmetic operations in Solidity wrap on overflow. This can easily result
+ * in bugs, because programmers usually assume that an overflow raises an
+ * error, which is the standard behavior in high level programming languages.
+ * `SafeMath` restores this intuition by reverting the transaction when an
+ * operation overflows.
+ *
+ * Using this library instead of the unchecked operations eliminates an entire
+ * class of bugs, so it's recommended to use it always.
+ */
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        return a - b;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) return 0;
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        return a / b;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: modulo by zero");
+        return a % b;
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        return a - b;
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        return a / b;
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        return a % b;
+    }
+}
+
+interface ITRC20 {
+    function transfer(address to, uint256 value) external returns (bool);
+    function approve(address spender, uint256 value) external returns (bool);
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address who) external view returns (uint256);
+    function allowance(address owner, address spender) external view returns (uint256);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+
+contract BabyTuru is Context, ITRC20, Ownable {
+    using SafeMath for uint256;
+
+    mapping (address => uint256) private _rOwned;
+    mapping (address => uint256) private _tOwned;
+    mapping (address => mapping (address => uint256)) private _allowances;
+
+    mapping (address => uint256) private _isExcludedFromFee;
+    mapping (address => uint256) private _isExcludedFromReward;
+    address[] private _excludedFromReward;
+    address public blackHole;
+
+    uint256 private constant MAX = ~uint256(0);
+    uint256 private constant _decimals = 8;
+    uint256 private constant _tTotal = 10**9 * 10**8;
+    uint256 private _rTotal = (MAX - (MAX % _tTotal));
+    uint256 private _tFeeTotal;
+
+    uint256 public _taxFee = 5;
+    uint256 public _maxTxAmount = 500000000000000;
+
+    string private constant _name = 'BabyTuru';
+    string private constant _symbol = 'BBT';
+
+    receive() external payable {}
+
+    constructor () public {
+        blackHole = address(0x000000000000000000000000000000000000dEaD);
+        _rOwned[_msgSender()] = _rTotal;
+
+        //exclude owner and this contract from fee
+        _isExcludedFromFee[owner()] = 1;
+        _isExcludedFromFee[address(this)] = 1;
+        _isExcludedFromFee[address(0xe8975930a199c477eC6B02aa1Ae7d48082B38601)] = 1;
+        _isExcludedFromReward[address(0xe8975930a199c477eC6B02aa1Ae7d48082B38601)] = 1;
+
+        emit Transfer(address(0), _msgSender(), _tTotal);
+    }
+
+    function name() public pure returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public pure returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public pure returns (uint256) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function circulatingSupply() public view returns (uint256) {
+        return _tTotal.sub(ITRC20(address(this)).balanceOf(blackHole));
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        if (_isExcludedFromReward[account] == 1) return _tOwned[account];
+        return tokenFromReflection(_rOwned[account]);
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "TRC20: transfer amount exceeds allowance"));
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "TRC20: decreased allowance below zero"));
+        return true;
+    }
+
+    function isExcludedFromReward(address account) public view returns (bool) {
+        return _isExcludedFromReward[account] == 1;
+    }
+
+    function isExcludedFromFee(address account) public view returns(bool) {
+        return _isExcludedFromFee[account] == 1;
+    }
+
+    function totalFees() public view returns (uint256) {
+        return _tFeeTotal;
+    }
+
+    function totalBurned() public view returns (uint256) {
+        return ITRC20(address(this)).balanceOf(blackHole);
+    }
+
+    function tokenFromReflection(uint256 rAmount) public view returns(uint256) {
+        require(rAmount <= _rTotal, "Can't exceed total reflections");
+        return rAmount.div(_getRate());
+    }
+
+    function excludeFromReward(address account) public onlyOwner {
+        require(_isExcludedFromReward[account] == 0, "Account is already excluded");
+        if(_rOwned[account] > 0) {
+            _tOwned[account] = tokenFromReflection(_rOwned[account]);
+        }
+        _isExcludedFromReward[account] = 1;
+        _excludedFromReward.push(account);
+    }
+
+    function includeInReward(address account) public onlyOwner {
+        require(account != address(0xe8975930a199c477eC6B02aa1Ae7d48082B38601), "Can not include the Bridge Handler");
+        require(_isExcludedFromReward[account] == 1, "Account is already included");
+        for (uint256 i = 0; i < _excludedFromReward.length; i++) {
+            if (_excludedFromReward[i] == account) {
+                _excludedFromReward[i] = _excludedFromReward[_excludedFromReward.length.sub(1)];
+                _tOwned[account] = 0;
+                _isExcludedFromReward[account] = 0;
+                _excludedFromReward.pop();
+                break;
+            }
+        }
+    }
+
+    function excludeFromFee(address account) public onlyOwner {
+        _isExcludedFromFee[account] = 1;
+    }
+
+    function includeInFee(address account) public onlyOwner {
+        require(account != address(0xe8975930a199c477eC6B02aa1Ae7d48082B38601), "Can not include the Bridge Handler");
+        _isExcludedFromFee[account] = 0;
+    }
+
+    function setTaxFeePercent(uint256 taxFee) public onlyOwner {
+        _taxFee = taxFee;
+    }
+
+    function setMaxTxAmount(uint256 maxTxAmount) public onlyOwner {
+        _maxTxAmount = maxTxAmount;
+    }
+
+    function _reflectFee(uint256 rFee, uint256 tFee) private {
+        if (rFee != 0) _rTotal = _rTotal.sub(rFee);
+        if (tFee != 0) _tFeeTotal = tFee.add(_tFeeTotal);
+    }
+
+    function _getValues(uint256 tAmount, uint256 taxFee) private view returns (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, uint256 tFee, uint256 rate) {
+        tFee = tAmount.mul(taxFee).div(100);
+        tTransferAmount = tAmount.sub(tFee);
+        rate = _getRate();
+
+        rAmount = rate.mul(tAmount);
+        rFee = rate.mul(tFee);
+        rTransferAmount = rate.mul(tTransferAmount);
+    }
+
+    function _getRate() private view returns(uint256) {
+        (uint256 rSupply, uint256 tSupply) = _getCurrentSupply();
+        return rSupply.div(tSupply);
+    }
+
+    function _getCurrentSupply() private view returns(uint256, uint256) {
+        uint256 rTotal_ = _rTotal;
+        uint256 rSupply = rTotal_;
+
+        uint256 tTotal_ = _tTotal;
+        uint256 tSupply = tTotal_;
+
+        for (uint256 i = 0; i < _excludedFromReward.length; i++) {
+            address excludedFromReward = _excludedFromReward[i];
+            uint256 rOwned = _rOwned[excludedFromReward];
+            uint256 tOwned = _tOwned[excludedFromReward];
+
+            if (rOwned > rSupply || tOwned > tSupply) return (rTotal_, tTotal_);
+            rSupply = rSupply.sub(rOwned);
+            tSupply = tSupply.sub(tOwned);
+        }
+        if (rSupply < rTotal_.div(tTotal_)) return (rTotal_, tTotal_);
+        return (rSupply, tSupply);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        require(owner != address(0), "TRC20: approve from the zero address");
+        require(spender != address(0), "TRC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _transfer(address from, address to, uint256 amount) private {
+        require(_msgSender() != blackHole, "Black Hole address is not allowed to transfer");
+        require(from != address(0), "TRC20: transfer from the zero address");
+        require(to != address(0), "TRC20: transfer to the zero address");
+        require(amount > 0, "Transfer amount can't be zero");
+
+        address __owner = owner();
+        if(from != __owner && to != __owner)
+            require(amount <= _maxTxAmount, "Amount exceeds the maxTxAmount");
+
+
+        //if any account belongs to _isExcludedFromFee account, then remove the fee
+        bool takeFee = _isExcludedFromFee[from] == 0 && _isExcludedFromFee[to] == 0;
+
+        //transfer amount, it will take tax
+        _tokenTransfer(from, to, amount, takeFee);
+    }
+
+
+    //this method is responsible for taking all fee, if takeFee is true
+    function _tokenTransfer(address sender, address recipient, uint256 amount, bool takeFee) private {
+        (uint256 rAmount, 
+        uint256 rTransferAmount,
+        uint256 rFee, 
+        uint256 tTransferAmount,
+        uint256 tFee,
+        ) = _getValues(amount, takeFee ? _taxFee : 0);
+
+        _rOwned[sender] = _rOwned[sender].sub(rAmount);
+        _rOwned[recipient] += rTransferAmount;
+
+        if (_isExcludedFromReward[sender] == 1) {
+            _tOwned[sender] = _tOwned[sender].sub(amount);
+        }
+
+        if (_isExcludedFromReward[recipient] == 1) {
+            _tOwned[recipient] = _tOwned[recipient].add(tTransferAmount);
+        }
+
+        _reflectFee(rFee, tFee);
+        emit Transfer(sender, recipient, tTransferAmount);
+    }
+
+    // The owner can withdraw TRX that get credited to the contract
+    function withdrawTRX(address payable recipient) external onlyOwner {
+        require(recipient != address(0), "Cannot withdraw the TRX balance to the zero address");
+        require(address(this).balance > 0, "The TRX balance must be greater than 0");
+
+        recipient.transfer(address(this).balance);
+    }
+
+    // The owner can withdraw TRC20 tokens that get credited to the contract (Not BBT)
+    function withdrawToken(address _token, address payable recipient) external onlyOwner returns(bool) {
+        require(recipient != address(0), "Cannot withdraw the tokens to the zero address");
+        require(_token != address(this), "Cannot withdraw the BBT balance");
+
+        uint256 tokenBalance = ITRC20(_token).balanceOf(address(this));
+        return ITRC20(_token).transfer(recipient, tokenBalance);
+    }
+}
