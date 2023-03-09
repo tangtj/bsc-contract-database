@@ -1,0 +1,325 @@
+pragma solidity ^0.8.5;
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+        return c;
+    }
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        // Solidity only automatically asserts when dividing by 0
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+        return c;
+    }
+}
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function decimals() external view returns (uint8);
+    function symbol() external view returns (string memory);
+    function name() external view returns (string memory);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+abstract contract Ownable  {
+    address private _owner;
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    constructor (address __owner)  {
+        _owner = __owner;
+        emit OwnershipTransferred(address(0), _owner);
+    }
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+interface IDEXFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+interface IDEXRouter {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+contract contractToken is IBEP20, Ownable {
+	using SafeMath for uint256;
+	address WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address DEAD = 0x000000000000000000000000000000000000dEaD;
+	mapping (address => uint256) _balances;	
+	mapping (address => mapping (address => uint256)) _allowances;
+   
+    mapping (address => bool) _isexfee;	
+
+	string constant _name = "CatGod";
+    string constant _symbol = "CatGod";
+    uint8 constant _decimals = 9;
+	uint256 _totalSupply = 1000 * (10 ** 8) * (10 ** _decimals);
+	uint256 public swapThreshold = _totalSupply / 5000 ; 
+	
+    uint256 public _totalSellFee = 500;
+    uint256 public _totalBuyFee  = 300;
+	uint256 public _burnFee     = 100;
+	mapping(address => address) public inviter;
+	
+	address public Team;
+	IDEXRouter public router;
+    address public pair;
+	bool inSwap;
+	modifier swapping() { inSwap = true; _; inSwap = false; }
+
+    constructor () Ownable(msg.sender) {
+		address _presaler = msg.sender;
+        router = IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        pair = IDEXFactory(router.factory()).createPair(WBNB, address(this));
+        _allowances[address(this)][address(router)] = type(uint256).max;
+		Team = _presaler;
+        _isexfee[Team] = true;
+        _isexfee[DEAD] = true;
+        _isexfee[address(this)] = true;
+		
+		_balances[_presaler] = _totalSupply;
+        emit Transfer(address(0), _presaler, _totalSupply);
+	}
+		
+	receive() external payable { }
+
+    function setisexfee(address addr) public onlyOwner{
+        _isexfee[addr] = true;
+    }
+
+    function rmisexfee(address addr) public onlyOwner{
+        _isexfee[addr] = false;
+    }
+
+    function totalSupply() external view override returns (uint256) { return _totalSupply; }
+    function decimals() external pure override returns (uint8) { return _decimals; }
+    function symbol() external pure override returns (string memory) { return _symbol; }
+    function name() external pure override returns (string memory) { return _name; }
+    function balanceOf(address account) public view override returns (uint256) { return _balances[account]; }
+    function allowance(address holder, address spender) external view override returns (uint256) { return _allowances[holder][spender]; }
+	
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function approveMax(address spender) external returns (bool) {
+        return approve(spender, type(uint256).max);
+    }
+
+    function transfer(address recipient, uint256 amount) external override returns (bool) {
+        return _transferFrom(msg.sender, recipient, amount);
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
+        if(_allowances[sender][msg.sender] != type(uint256).max){
+            _allowances[sender][msg.sender] = _allowances[sender][msg.sender].sub(amount, "Insufficient Allowance");
+        }
+
+        return _transferFrom(sender, recipient, amount);
+    }
+	
+	function _basicTransfer(address sender, address recipient, uint256 amount) internal returns (bool) {
+        _balances[sender] = _balances[sender].sub(amount, "Insufficient Balance");
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+	
+	function swapTokensForEth(uint256 tokenAmount) private {
+        // generate the uniswap pair path of token -> weth
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = WBNB;
+
+        // _approve(address(this), address(router), tokenAmount);
+
+        // make the swap
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0, // accept any amount of ETH
+            path,
+            address(this),
+            block.timestamp
+        );
+    }
+	
+	function addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
+        // approve token transfer to cover all possible scenarios
+        // _approve(address(this), address(router), tokenAmount);
+
+        // add the liquidity
+        router.addLiquidityETH{value: ethAmount}(
+            address(this),
+            tokenAmount,
+            0, // slippage is unavoidable
+            0, // slippage is unavoidable
+            DEAD,
+            block.timestamp
+        );
+    }
+	
+	function swapTokensForEthToteam(uint256 tokenAmount) private {
+        // generate the uniswap pair path of token -> weth
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = WBNB;
+
+        // _approve(address(this), address(router), tokenAmount);
+
+        // make the swap
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0, // accept any amount of ETH
+            path,
+            Team,
+            block.timestamp
+        );
+    }
+	
+	event SwapAndLiquify(
+        uint256 tokensSwapped,
+        uint256 ethReceived,
+        uint256 tokensIntoLiqudity
+    );
+	
+	function swapAndLiquify(uint256 contractTokenBalance) private swapping {
+ 
+        uint256 half = contractTokenBalance.div(4).mul(3);
+        uint256 otherHalf = contractTokenBalance.sub(half);
+
+        uint256 initialBalance = address(this).balance;
+		
+		//swapTokensForEthToteam(half);
+        swapTokensForEth(half); 
+		
+
+        uint256 newBalance = address(this).balance.sub(initialBalance);
+		uint256 halfbnb = newBalance.div(3).mul(2);
+		
+		payable(Team).transfer(halfbnb);
+		
+        addLiquidity(otherHalf, newBalance.sub(halfbnb));
+
+        emit SwapAndLiquify(half, newBalance.sub(halfbnb), otherHalf);
+    }
+	
+	
+	function shouldAddliquit() private view returns (bool) {
+		return msg.sender != pair
+        && !inSwap
+        && _balances[address(this)] >= swapThreshold;
+	}
+	
+	
+	function _transferFrom(address sender, address recipient, uint256 amount) internal returns (bool) {
+        require(sender != address(0),'');
+        require(recipient != address(0),'');
+		
+		if(inSwap){ return _basicTransfer(sender, recipient, amount); }
+		if(_isexfee[sender] || _isexfee[recipient]){return _basicTransfer(sender, recipient, amount);}
+		
+		if(shouldAddliquit()){swapAndLiquify(swapThreshold);}
+		
+        uint256 tax = 0;
+        if(sender == pair){
+		    tax = amount.mul(_totalBuyFee).div(10000);
+        }
+        if(recipient == pair){
+            tax = amount.mul(_totalSellFee).div(10000);
+        }
+        uint256 burnfee = amount.mul(_burnFee).div(10000);
+		
+        uint256 netamount = amount.sub(tax).sub(burnfee);
+
+        _basicTransfer(sender,DEAD,burnfee);
+		_basicTransfer(sender,address(this),tax);
+		_basicTransfer(sender,recipient,netamount);
+				
+		return true;
+	}
+}

@@ -1,0 +1,229 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.11;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract owned {
+    address public owner;
+    constructor() {
+        owner = msg.sender;
+    }
+    modifier onlyOwner {
+        require(msg.sender == owner);
+        _;
+    }
+    function transferOwnership(address newOwner) onlyOwner public {
+        owner = newOwner;
+    }
+}
+
+contract Token is IERC20,owned {
+    string public name;
+    string public symbol;
+    uint8 public decimals = 8;
+
+    uint256 public totalSupply;
+
+    uint256 public fomoPool;
+    address public swapAddress;
+    address public projectAddress;
+    uint40 public fomoTime;
+    mapping(address=>bool) private whiteList;
+    uint40 public fomoDiff = uint40(36000);
+    uint40 public sellFeeRate=300;//max 10000,min 0
+    uint40 public buyFeeRate=300;//max 10000,min 0
+    uint40 public feeRateMax = 10000;
+
+    receive() external payable {}
+
+    constructor(
+        string memory tokenName,
+        string memory tokenSymbol
+    ) {
+        name = tokenName;
+        symbol = tokenSymbol;
+
+        uint256 initialSupply=200000000;
+
+        totalSupply = initialSupply * 10 ** uint256(decimals);
+        balanceOf[msg.sender] = totalSupply;
+        sellFeeRate=300;
+        buyFeeRate=300;
+        whiteList[msg.sender]=true;
+        emit Transfer(address(0),msg.sender,  totalSupply);
+    }
+
+    mapping (address => uint256) public balanceOf;
+    mapping (address => mapping (address => uint256)) public allowance;
+
+    event AddParentAddressEvent(address myAddress,address parentAddress);
+    event AddRecommendEvent(address myAddress,uint256 amount);
+    event AddDividendsEvent(uint256 amount);
+    event AddTransferEvent(address myAddress);
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        _transfer_amount(sender,recipient,amount);
+        if(sender==swapAddress||recipient==swapAddress){
+            fomoTime=uint40(block.timestamp)+fomoDiff;
+            uint256 feeAmount;
+            address feeAddress;
+            if (sender==swapAddress){
+                feeAddress=recipient;
+                feeAmount=amount*buyFeeRate/feeRateMax;
+            }else {
+                feeAddress=sender;
+                feeAmount=amount*sellFeeRate/feeRateMax;
+            }
+            if(whiteList[feeAddress]==true){return;}
+            if(feeAmount==0){
+                return;
+            }
+
+            _transfer_burn(feeAddress,feeAmount*3/10);
+            _transfer_pool(feeAddress,feeAmount*3/10);
+            _transfer_recommend(feeAddress,feeAmount*4/10);
+        }
+
+        if(sender==swapAddress){
+            emit AddTransferEvent(recipient);
+        }
+    }
+
+    function _transfer_amount(address from,address to,uint256 amount)private{
+        balanceOf[from]=balanceOf[from]-amount;
+        balanceOf[to]=balanceOf[to]+amount;
+        emit Transfer(from, to, amount);
+    }
+
+    function _transfer_burn(address feeAddress,uint256 amount)private{
+        _transfer_amount(feeAddress,address(0),amount);
+    }
+
+    function _transfer_pool(address feeAddress,uint256 sendAmount)private{
+        uint256 fomoAmount = sendAmount*35/100;
+        uint256 dividendsAmount = sendAmount*60/100;
+        uint256 projectAmount = sendAmount*5/100;
+
+        if (projectAddress==address(0)){
+            _transfer_amount(feeAddress,address(this),dividendsAmount+projectAmount);
+        }else{
+            _transfer_amount(feeAddress,projectAddress,dividendsAmount+projectAmount);
+        }
+
+        fomoPool=fomoPool+fomoAmount;
+        _transfer_amount(feeAddress,address(this),fomoAmount);
+
+        emit AddDividendsEvent(dividendsAmount);
+    }
+    function _transfer_recommend(address feeAddress,uint256 amount)private{
+        if (projectAddress==address(0)){
+            _transfer_amount(feeAddress,address(this),amount);
+        }else{
+            _transfer_amount(feeAddress,projectAddress,amount);
+        }
+        emit AddRecommendEvent(feeAddress,amount);
+    }
+
+
+    function transfer(address recipient, uint256 amount) public returns(bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public returns(bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, allowance[sender][msg.sender]-amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public returns(bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "TRC20: approve from the zero address");
+        require(spender != address(0), "TRC20: approve to the zero address");
+        allowance[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function getFomoTime() public view returns(uint40) {
+        uint40 thisTime = uint40(block.timestamp);
+        if (fomoTime > thisTime) {
+            return fomoTime - uint40(block.timestamp);
+        } else {
+            return 0;
+        }
+    }
+
+    function setConfig(address swapAddr,address projectAddr,uint40 editFomoDiff) onlyOwner public{
+        swapAddress = swapAddr;
+        projectAddress = projectAddr;
+        fomoDiff = editFomoDiff;
+    }
+
+    function setWhiteAddress(address addr,bool status)  onlyOwner public {
+        whiteList[addr] = status;
+    }
+
+    function dealFomo(address[10] memory addressList) onlyOwner public returns (bool){
+        if(fomoPool==0){
+            return false;
+        }
+
+        if ((fomoTime - 10) > uint40(block.timestamp)) {
+            return false;
+        }
+
+        uint256 amountFirst=fomoPool*55/100;
+        uint256 amountOther=fomoPool*5/100;
+
+        for(uint40 i=0;i<addressList.length;i++){
+            if(addressList[i]==address(0)){
+                continue;
+            }
+            uint256 amount =0;
+            if (i==0){
+                amount=amountFirst;
+            }else{
+                amount=amountOther;
+            }
+            _transfer_amount(address(this),addressList[i],amount);
+            fomoPool=fomoPool-amount;
+        }
+        fomoTime=uint40(block.timestamp)+fomoDiff;
+        return true;
+    }
+
+    function withdrawEth(address payable addr, uint256 amount) onlyOwner public{
+        addr.transfer(amount);
+    }
+
+    function withdrawToken(IERC20 token, uint256 amount)onlyOwner public returns (bool){
+        token.transfer(msg.sender, amount);
+        return true;
+    }
+
+    function bindParent(address parentAddress)public{
+        emit AddParentAddressEvent(msg.sender,parentAddress);
+    }
+
+    function setFeeRate(uint40 buyRate,uint40 sellRate)onlyOwner public returns (bool){
+        if (buyRate>feeRateMax||sellRate>feeRateMax){
+            return false;
+        }
+        buyFeeRate=buyRate;
+        sellFeeRate=sellRate;
+        return true;
+    }
+}
