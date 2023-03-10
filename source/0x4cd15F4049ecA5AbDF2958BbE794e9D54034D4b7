@@ -1,0 +1,254 @@
+/**
+ *Submitted for verification at BscScan.com on 2021-09-09
+*/
+
+//SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.7;
+
+/**
+
+ *  $$$$$$\  $$\   $$\     $$\ $$\      $$\ $$$$$$$\  $$\   $$\  $$$$$$\
+ * $$  __$$\ $$ |  \$$\   $$  |$$$\    $$$ |$$  __$$\ $$ |  $$ |$$  __$$\
+ * $$ /  $$ |$$ |   \$$\ $$  / $$$$\  $$$$ |$$ |  $$ |$$ |  $$ |$$ /  \__|
+ * $$ |  $$ |$$ |    \$$$$  /  $$\$$\$$ $$ |$$$$$$$  |$$ |  $$ |\$$$$$$\
+ * $$ |  $$ |$$ |     \$$  /   $$ \$$$  $$ |$$  ____/ $$ |  $$ | \____$$\
+ * $$ |  $$ |$$ |      $$ |    $$ |\$  /$$ |$$ |      $$ |  $$ |$$\   $$ |
+ *  $$$$$$  |$$$$$$$$\ $$ |    $$ | \_/ $$ |$$ |      \$$$$$$  |\$$$$$$  |
+ *  \______/ \________|\__|    \__|     \__|\__|       \______/  \______/
+ * 
+ *  https://olympustoken.io/
+ *  https://t.me/OlympusOfficial
+ */
+
+/**
+ * BEP20 standard interface.
+ */
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function decimals() external view returns (uint8);
+    function symbol() external view returns (string memory);
+    function name() external view returns (string memory);
+    function getOwner() external view returns (address);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract OlympusLock is IBEP20 {
+    uint256 constant UINT_MAX = 115792089237316195423570985008687907853269984665640564039457584007913129639935;
+    
+    string constant _name = "Olympus Lock";
+    string constant _symbol = "Olympus-Lock";
+    uint8 constant _decimals = 18;
+
+    uint256 _totalSupply = 1 * (10 ** _decimals);
+    address public owner;
+    address public factory;
+
+    mapping (address => uint256) _balances;
+    mapping (address => mapping (address => uint256)) _allowances;
+    
+    address public lockedToken;
+    uint256 public lockTime;
+    uint256 public unlockTime;
+
+    constructor () {
+        factory = msg.sender;
+    }
+
+    bool entered = false;
+    modifier reentrancyGuard() {
+        require(!entered, "Reentrancy Disallowed");
+        entered = true;
+        _;
+        entered = false;
+    }
+    
+    function initialize(address token, address _owner, uint256 _unlockTime) external {
+        require(msg.sender == address(factory));
+        lockedToken = token;
+        owner = _owner;
+        lockTime = block.timestamp;
+        unlockTime = _unlockTime;
+        require(unlockTime > lockTime, "Unlock in past");
+        
+        _balances[owner] = _totalSupply;
+        emit Transfer(address(0), owner, _totalSupply);
+    }
+
+    function totalSupply() external view override returns (uint256) { return _totalSupply; }
+    function decimals() external pure override returns (uint8) { return _decimals; }
+    function symbol() external pure override returns (string memory) { return _symbol; }
+    function name() external pure override returns (string memory) { return _name; }
+    function getOwner() external view override returns (address) { return owner; }
+    function balanceOf(address account) public view override returns (uint256) { return _balances[account]; }
+    function allowance(address __owner, address spender) external view override returns (uint256) { return _allowances[__owner][spender]; }
+
+    function transfer(address recipient, uint256 amount) external override returns (bool) {
+        _transferFrom(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) external override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
+        _transferFrom(sender, recipient, amount);
+        return true;
+    }
+
+    function _transferFrom(address sender, address recipient, uint256 amount) internal {
+        require(amount > 0, "ZERO AMOUNT");
+        if(sender != msg.sender && _allowances[sender][msg.sender] != UINT_MAX){
+            _allowances[sender][msg.sender] = _allowances[sender][msg.sender] - amount;
+        }
+        _balances[sender] = _balances[sender] - amount;
+        _balances[recipient] = _balances[recipient] + amount;
+        emit Transfer(sender, recipient, amount);
+    }
+    
+    function getLockTime() public view returns (uint256) {
+        return unlockTime > block.timestamp ? block.timestamp - unlockTime : 0;
+    }
+    
+    function unlock() external reentrancyGuard {
+        require(getLockTime() == 0, "Olympus-Lock: LOCKED");
+        require(_balances[msg.sender] > 0, "Olympus-Lock: !BALANCE");
+        uint256 amount = _balances[msg.sender] * IBEP20(lockedToken).balanceOf(address(this)) / _totalSupply;
+        IBEP20(lockedToken).transfer(msg.sender, amount);
+        emit Unlock(msg.sender, _balances[msg.sender], amount);
+        emit Transfer(msg.sender, address(0), _balances[msg.sender]);
+        _totalSupply = _totalSupply - _balances[msg.sender];
+        _balances[msg.sender] = 0;
+    }
+    
+    function retrieveOther(address token, uint256 amount) external reentrancyGuard {
+        require(balanceOf(msg.sender) > 0, "Olympus-Lock: UNAUTHORIZED");
+        require(token != lockedToken, "Olympus-Lock: LOCKED");
+        require(getLockTime() == 0, "Olympus-Lock: LOCKED");
+        IBEP20(token).transfer(msg.sender, amount);
+    }
+    
+    event Unlock(address holder, uint256 lockAmount, uint256 tokenAmount);
+}
+
+contract OlympusLockFactory {
+    uint256 public creationFeeBNB;
+    
+    uint256 public lockCount;
+    uint256 public cumulativeLockTime;
+    
+    mapping (address => uint256) public nonces;
+    
+    address[] public allLocks;
+    mapping (address => address[]) public tokenLocks;
+    mapping (address => address[]) public createdLocks;
+    
+    address public owner;
+    address payable public feeReceiver;
+    
+    constructor(uint256 fee){
+        owner = msg.sender;
+        feeReceiver = payable(msg.sender);
+        creationFeeBNB = fee;
+    }
+
+    bool entered = false;
+    modifier reentrancyGuard() {
+        require(!entered, "Reentrancy Disallowed");
+        entered = true;
+        _;
+        entered = false;
+    }
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "!OWNER"); _;
+    }
+    
+    function getAllLocks() external view returns (address[] memory) {
+        return allLocks;
+    }
+    
+    function getAllLocksLength() external view returns (uint256) {
+        return allLocks.length;
+    }
+    
+    function getTokenLocks(address token) external view returns (address[] memory) {
+        return tokenLocks[token];
+    }
+    
+    function getTokenLocksLength(address token) external view returns (uint256) {
+        return tokenLocks[token].length;
+    }
+    
+    function getCreatedLocks(address user) external view returns (address[] memory) {
+        return createdLocks[user];
+    }
+    
+    function getCreatedLocksLength(address user) external view returns (uint256) {
+        return createdLocks[user].length;
+    }
+    
+    function createLock(address token, uint256 amount, uint256 unlockTime) external payable reentrancyGuard returns (address lock) {
+        require(msg.value == creationFeeBNB, "!FEE");
+        (bool success,) = feeReceiver.call{value: msg.value, gas: 30000}("");
+        require(success, "Failed to deposit fee");
+        
+        require(unlockTime > block.timestamp, "Unlock in past");
+        
+        lockCount++;
+        cumulativeLockTime = cumulativeLockTime + (unlockTime - block.timestamp);
+        
+        bytes memory bytecode = type(OlympusLock).creationCode;
+        bytes32 salt = keccak256(abi.encodePacked(token, nonces[token]));
+        assembly {
+            lock := create2(0, add(bytecode, 32), mload(bytecode), salt)
+        }
+        nonces[token]++;
+        allLocks.push(lock);
+        tokenLocks[token].push(lock);
+        createdLocks[msg.sender].push(lock);
+        
+        OlympusLock(lock).initialize(token, msg.sender, unlockTime);
+        IBEP20(token).transferFrom(msg.sender, lock, amount);
+        
+        emit LockCreated(msg.sender, token, amount, unlockTime);
+    }
+    
+    function getNextLockAddress(address token) external view returns (address) {
+        return address(uint160(uint(keccak256(abi.encodePacked(
+            hex'ff',
+            address(this),
+            keccak256(abi.encodePacked(token, nonces[token])),
+            keccak256(abi.encodePacked(type(OlympusLock).creationCode))
+        )))));
+    }
+    
+    function setFee(uint256 bnbFee) external onlyOwner {
+        creationFeeBNB = bnbFee;
+        emit FeeUpdated(bnbFee);
+    }
+    
+    function setFeeReceiver(address payable _feeReceiver) external onlyOwner {
+        feeReceiver = _feeReceiver;
+        emit FeeReceiverUpdated(feeReceiver);
+    }
+    
+    function transferOwnership(address newOwner) external onlyOwner {
+        owner = newOwner;
+        emit OwnershipTransferred(newOwner);
+    }
+    
+    event LockCreated(address owner, address token, uint256 amount, uint256 unlockTime);
+    event OwnershipTransferred(address newOwner);
+    event FeeUpdated(uint256 fee);
+    event FeeReceiverUpdated(address receiver);
+}

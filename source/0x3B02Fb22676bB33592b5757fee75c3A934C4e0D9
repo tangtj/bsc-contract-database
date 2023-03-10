@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.5.7;
+interface HfFreeLike {
+    function seed() external view returns(address);
+    function technology() external view returns(address);
+    function free(address) external view returns(bool);
+}
+contract HappyFarm {
+	 // --- Math ---
+    function add(uint x, int y) internal pure returns (uint z) {
+        z = x + uint(y);
+        require(y >= 0 || z <= x);
+        require(y <= 0 || z >= x);
+    }
+    function sub(uint x, int y) internal pure returns (uint z) {
+        z = x - uint(y);
+        require(y <= 0 || z <= x);
+        require(y >= 0 || z >= x);
+    }
+    function mul(uint x, int y) internal pure returns (int z) {
+        z = int(x) * y;
+        require(int(x) >= 0);
+        require(y == 0 || z / y == int(x));
+    }
+    function add(uint x, uint y) internal pure returns (uint z) {
+        require((z = x + y) >= x);
+    }
+    function sub(uint x, uint y) internal pure returns (uint z) {
+        require((z = x - y) <= x);
+    }
+    function mul(uint x, uint y) internal pure returns (uint z) {
+        require(y == 0 || (z = x * y) / y == x);
+    }
+	
+	
+    uint256                                           public  totalSupply = 10 ** 33;
+    mapping (address => uint256)                      public  balanceOf;
+    mapping (address => mapping (address => uint))    public  allowance;
+    string                                            public  symbol = "HF";
+    string                                            public  name = "HappyFarm";     
+    uint256                                           public  decimals = 18; 
+
+    mapping (address => uint256)                      public  count;
+    mapping (address => address)                      public  inviter;
+    mapping (address => mapping (address => uint256)) public  Recommended;
+    mapping (address => mapping (uint256 => address)) public  referrals;
+    HfFreeLike                                        public  HfFree = HfFreeLike(0xC5c897673eeC50c8C689e8A43868C5Ca1f01f981);
+
+	constructor() public{
+       balanceOf[msg.sender] = totalSupply;
+    }
+
+	function approve(address guy) external returns (bool) {
+        return approve(guy, uint(-1));
+    }
+
+    function approve(address guy, uint wad) public  returns (bool){
+        allowance[msg.sender][guy] = wad;
+        emit Approval(msg.sender, guy, wad);
+        return true;
+    }
+
+    function transfer(address dst, uint wad) external  returns (bool){
+        return transferFrom(msg.sender, dst, wad);
+    }
+
+    function transferFrom(address src, address dst, uint wad)
+        public  returns (bool)
+    {
+        if (src != msg.sender && allowance[src][msg.sender] != uint(-1)) {
+            require(allowance[src][msg.sender] >= wad, "HF/insufficient-approval");
+            allowance[src][msg.sender] = sub(allowance[src][msg.sender], wad);
+        }
+        require(balanceOf[src] >= wad, "HF/insuff-balance");
+        balanceOf[src] = sub(balanceOf[src], wad);
+        
+        if (block.timestamp < 1652261400) require(HfFree.free(dst), "HF/nofree");
+        
+        if (inviter[dst] == address(0) && balanceOf[dst] == 0) {
+            inviter[dst] = src;
+            count[src] +=1;
+            referrals[src][count[src]] = dst;
+            Recommended[src][dst] = count[src];
+        }
+        if (dst != 0x7ee058420e5937496F5a2096f04caA7721cF70cc) {
+            address technology = HfFree.technology();
+            address seed = HfFree.seed();
+            
+            balanceOf[technology] = add(balanceOf[technology], wad*1/100);
+            emit Transfer(src, technology, wad*1/100);
+            
+            balanceOf[seed] = add(balanceOf[seed], wad*4/100);
+            emit Transfer(src, seed, wad*4/100);
+            wad = wad*95/100;
+        }
+     
+        balanceOf[dst] = add(balanceOf[dst], wad);
+        emit Transfer(src, dst,  wad);
+        
+        return true;
+    }
+    function changeInviter(address dst) external  returns (bool){
+        address _referrer = inviter[msg.sender];
+        require(_referrer != address(0), "HF/No change without referrer");
+        address _inviter = inviter[dst];
+        while (_inviter != address(0)) {
+           require(_inviter != msg.sender, "HF/Unable to loop recommendation");
+            _inviter = inviter[_inviter];           
+        }
+        uint256 _count = Recommended[_referrer][msg.sender];    
+        if (count[_referrer] >1 && Recommended[_referrer][msg.sender] < count[_referrer]) {
+            address _referrals = referrals[_referrer][count[_referrer]];
+            Recommended[_referrer][_referrals] = _count;
+        }
+        referrals[_referrer][count[_referrer]] = address(0);
+        count[_referrer] -=1;
+        Recommended[_referrer][msg.sender] = 0;
+        inviter[msg.sender] = dst;
+        count[dst] +=1;
+        referrals[dst][count[dst]] = msg.sender;
+        Recommended[dst][msg.sender] = count[dst];
+        return true;
+    }
+	event Transfer(
+		address indexed _from,
+		address indexed _to,
+		uint _value
+		);
+	event Approval(
+		address indexed _owner,
+		address indexed _spender,
+		uint _value
+		);
+}
