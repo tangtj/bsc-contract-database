@@ -1,0 +1,535 @@
+
+// File: @chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface AggregatorV3Interface {
+  function decimals() external view returns (uint8);
+
+  function description() external view returns (string memory);
+
+  function version() external view returns (uint256);
+
+  function getRoundData(uint80 _roundId)
+    external
+    view
+    returns (
+      uint80 roundId,
+      int256 answer,
+      uint256 startedAt,
+      uint256 updatedAt,
+      uint80 answeredInRound
+    );
+
+  function latestRoundData()
+    external
+    view
+    returns (
+      uint80 roundId,
+      int256 answer,
+      uint256 startedAt,
+      uint256 updatedAt,
+      uint80 answeredInRound
+    );
+}
+
+
+// File: contracts/DataFeeds.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.16;
+
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+
+contract DataFeeds {
+
+    AggregatorV3Interface internal immutable priceFeed;
+
+    /**
+     * Network: BSC - BSC TESTNET 
+     * Aggregator: BNB/USD
+     * testnet: 0x2514895c72f50D8bd4B4F9b1110F0D6bD2c97526
+     * mainnet: 0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE
+     **/
+    constructor() {
+        priceFeed = AggregatorV3Interface(0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE);
+    }
+
+    function _getLatestPrice() internal view returns (int) {
+        (
+          , // uint80 roundId
+          int256 answer,
+          , // uint256 startedAt
+          , // uint256 updatedAt
+            // uint80 answeredInRound
+         ) = priceFeed.latestRoundData();
+        return answer;
+    }
+}
+
+// File: contracts/Ownable.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.16;
+
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+
+abstract contract Ownable {
+    
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+// File: contracts/SSEPresaleTimeLock.sol
+// SPDX-License-Identifier: MIT
+
+// SSEPreSaleTimeLock - Developed by www.soroosh.app
+
+pragma solidity ^0.8.16;
+
+import "./Ownable.sol";
+
+interface IBEP20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract SSEPreSaleTimeLock is Ownable {
+
+    // creation time of the token
+    uint256 public immutable creationTime;
+    
+    // Number of tokens which is released after each period.
+    uint256 private immutable periodicReleaseNum;
+    
+    //  Release period in seconds.
+    uint256 public constant PERIOD = 15552000; // (seconds in 6 month)
+    
+    // Number of tokens that has been withdrawn already.
+    uint256 private _withdrawnTokens;
+    
+    IBEP20 private immutable _token;
+    
+    event TokenWithdrawn(uint indexed previousAmount, uint indexed newAmount);
+
+
+    /// @dev creates timelocked wallet with given info.
+    /// @param token_ tokenContract address.
+    /// @param periodicReleaseNum_ periodic release number.
+
+    constructor(IBEP20 token_, uint256 periodicReleaseNum_ , address owner_) {
+        _transferOwnership(owner_);
+        _token = token_;
+        creationTime = block.timestamp;
+        periodicReleaseNum = periodicReleaseNum_;
+    }
+
+    /// @dev withdraws token from wallet if it has enough balance.
+    /// @param amount_ amount of withdrawal.
+    /// @param beneficiary_ destination address.
+
+    function withdraw(uint256 amount_, address beneficiary_) public onlyOwner {
+        require(availableTokens() >= amount_);
+        uint256 oldAmount  = _withdrawnTokens;
+        _withdrawnTokens += amount_;
+        emit TokenWithdrawn(oldAmount, _withdrawnTokens);
+        require(token().transfer(beneficiary_, amount_));
+    }
+    
+    /// @dev returns token.
+
+    function token() public view returns (IBEP20) {
+        return _token;
+    }
+
+    /// @dev returns periodic release number.
+
+    function getPeriodicReleaseNum() public view returns (uint256) {
+        return periodicReleaseNum;
+    }
+
+    /// @dev returns amount of withdrawan tokens.
+
+    function withdrawnTokens() public view returns (uint256) {
+        return _withdrawnTokens;
+    }
+    
+    /// @dev returns available balance to withdraw.
+
+    function availableTokens() public view returns (uint256) {
+        uint256 passedTime = block.timestamp - creationTime;
+        return ((passedTime / PERIOD) * periodicReleaseNum) - _withdrawnTokens;
+    }
+
+    /// @dev returns total locked balance of token.
+
+    function lockedTokens() public view returns (uint256) {
+        uint256 balance = timeLockWalletBalance();
+        return balance - availableTokens();
+    }
+
+    /// @dev returns total balance of the token.
+    
+    function timeLockWalletBalance() public view returns (uint256) {
+        uint256 balance = token().balanceOf(address(this));
+        return balance;
+    }
+}
+
+
+// File: contracts/SSESponserPresale.sol
+// SPDX-License-Identifier: MIT
+
+// SSE Sponser Presale Contract 
+
+// Developed By www.soroosh.app 
+
+pragma solidity ^0.8.16;
+
+import "./DataFeeds.sol";
+import "./Ownable.sol";
+import "./SSEPresaleTimeLock.sol";
+
+
+contract SSESponserPresale is DataFeeds, Ownable {
+    
+    // presale status 
+    bool public isActive;
+
+    // min and max amount
+    uint public immutable minTokenAmount;
+    uint public immutable maxTokenAmount;
+    
+    // token price
+    uint public constant TOKEN_PRICE =  1e16;
+ 
+    // presale financial report 
+    uint public totalTokenSold;
+    uint public totalBNBValue;
+    
+    // list of allowed wallets - this lits gets updated by Soroosh Team.
+    address[] public allowedWallets;
+
+    // presale admin
+    address public admin;
+
+    // Sponser
+    struct Sponser {
+        uint tokenAmount;
+        uint BNBAmount;
+        SSEPreSaleTimeLock timeLockWallet;
+    }
+
+    mapping(address => Sponser) sponsers;
+
+    address[] public sponsersList;
+
+    //events 
+    event AdminIsChanged(address indexed previousAdmin, address indexed newAdmin);
+
+    // Contracts 
+    IBEP20 private immutable _token;
+    
+    constructor(IBEP20 token_, uint minAmount_, uint maxAmount_) {
+        _transferOwnership(msg.sender);
+        changeAdmin(msg.sender);
+        _token = token_;
+        minTokenAmount = minAmount_ * 1e18;
+        maxTokenAmount = maxAmount_ * 1e18;
+    }
+
+    // =============== Activation and DeActivating Presale ============== \\
+
+    function activate() public onlyOwner() {
+        isActive = true;
+
+    }
+
+    function deActivate() public onlyOwner() {
+        isActive = false;
+
+    }
+
+    // =============== Functinos for Allowed Wallets ============== \\
+
+    /// @dev sets presale admin.
+    /// @param newAdmin Address of the wallet.
+
+    function changeAdmin(address newAdmin) public onlyOwner {
+        require(newAdmin != address(0), "SSESponserPrsale : admin can't be zero address");
+        address oldAdmin = admin;
+        admin = newAdmin;
+        emit AdminIsChanged(oldAdmin, newAdmin);
+    }
+
+    /// @dev returns allowedlist.
+    /// @return list of allowedlist.
+
+    function getAllowedWallets() public view returns (address[] memory) {
+        return allowedWallets;
+    }
+
+    /// @dev Adds wallet address to allowedlist.
+    /// @param wallet Address of owner to be replaced.
+
+    function addWalletToPresale(address wallet) public  onlyAdmin {
+        require(!isAllowed(wallet), "SSESponserPrsale : wallet already in allowed list");
+        allowedWallets.push(wallet);
+    }
+
+    /// @dev remove wallet from allowedwallets byindex.
+    /// @param index index of the wallet to be removed.
+
+    function removeAllowedWalletByIndex(uint index) public onlyAdmin {
+        require(index < allowedWallets.length, "SSESponserPrsale : index out of bound");
+        while (index<allowedWallets.length-1) {
+            allowedWallets[index] = allowedWallets[index+1];
+            index++;
+        }
+        allowedWallets.pop();
+    }
+    
+    /// @dev finds the index of the address in allowedwallets
+    /// @param address_ address of the wallet.
+
+    function find(address address_) private view returns(uint) {
+        uint i = 0;
+        while (allowedWallets[i] != address_) {
+            i++;
+        }
+        return i;
+    }
+
+    /// @dev removes the wallet from the allowedwallets by address
+    /// @param address_ address of the wallet.
+
+    function removeAllowedWalletByAddress(address address_) public onlyAdmin {
+        uint index = find(address_);
+        removeAllowedWalletByIndex(index);
+    }
+
+
+    // =============== Functions For PreSale ============== \\
+
+    /// @dev checks if address is allowed to enter presale.
+    /// @param address_ address of the wallet.
+
+    function isAllowed(address address_) public view returns (bool) {
+        if(allowedWallets.length == 0) {
+            return false;
+        }
+
+        for (uint i = 0; i < allowedWallets.length; i++) {
+            if (allowedWallets[i] == address_) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// @dev returns the Sponser Object.
+    /// @param address_ address of the Sponser.
+
+    function getSponser(address address_) public view returns (Sponser memory) {
+        return sponsers[address_];
+    }
+    
+
+    /// @dev returns the Sponsers Wallet List.
+
+    function getSponsersList() public view returns (address[] memory) {
+        return sponsersList;
+    }
+
+        // =============== Functions For Calculating Amount ============== \\
+
+    /// @dev Gets bnb latest price from @chainlink
+    
+    function getBNBLatestPrice() public view returns (uint) {
+        return uint(_getLatestPrice() / 1e8);
+    }
+
+    /// @dev converts BNB TO USD.
+    /// @param value amount of BNB.
+
+    function calulateUsd(uint value) private view returns (uint) {
+        uint bnbPrice = getBNBLatestPrice();
+        return value * bnbPrice;
+    }
+
+    /// @dev converts BNB TO SSE Amount.
+    /// @param value amount of BNB.
+
+    function getTokenAmountFromBNB(uint value) private view returns (uint){
+        uint _toUsdt = calulateUsd(value) * 1e18;
+        return _toUsdt / TOKEN_PRICE;
+    }
+
+    /// @dev converts SSE to BNB amount.
+    /// @param amount amount of token.
+
+    function getBNBAmountFromToken(uint amount) public view returns (uint) {
+        uint _BNBPrice = getBNBLatestPrice();
+        uint _toUSDT = amount * TOKEN_PRICE;
+        return _toUSDT  / _BNBPrice;
+    }
+ 
+        // =============== Functions For Checking Boundaries ============== \\
+
+    /// @dev checks if amount of BNB is in presale boundry.
+    /// @param amount amount of Token.
+
+    function checkTokenAmount(uint amount) private view returns (bool) {
+        if (amount >= minTokenAmount && amount <= maxTokenAmount ) {
+            return true;
+        }
+        return false;
+    }
+
+    /// @dev returns the amount of tokens which user has already bought.
+    /// @param address_ address of the wallet.
+
+    function getWalletTokenParticipation (address address_) public view returns (uint) {
+        Sponser storage sponser = sponsers[address_];
+        return sponser.tokenAmount;
+    }
+
+    /// @dev returns the amount of bnb which user has already entered with.
+    /// @param address_ address of the wallet.
+
+    function getWalletBNBParticipation (address address_) public view returns (uint) {
+        Sponser storage sponser = sponsers[address_];
+        return sponser.BNBAmount;
+    }
+
+    /// @dev will calculate the priodic release amount of tokens in PreSaleTimeLock Walelt
+    /// @param amount_ amount of total tokens.
+    
+    function getPeriodicRelease (uint amount_ ) private pure returns (uint) {
+        return amount_ / 12;
+    } 
+
+
+    /// @dev main function to enter presalse as sponser.
+
+    function enterPresaleAsSponser() public payable {
+        require(isActive, "SSESponserPresale : Presale is currently not active.");
+        require(isAllowed(msg.sender), "SSESponserPresale : Access Denied, Your Wallet Should be in AllowedList");
+        require(getWalletTokenParticipation(msg.sender) == 0, "SSESponserPresale : A Wallet can only participate in sponser presale only once!");
+
+        uint amount = getTokenAmountFromBNB(msg.value);
+
+        require(checkTokenAmount(amount), "SSESponserPresale : Amount should be in boundries");
+
+        totalTokenSold += amount;
+        totalBNBValue += msg.value;
+
+        SSEPreSaleTimeLock _ssePreSaleTimeLock = new SSEPreSaleTimeLock(token(), getPeriodicRelease(amount), msg.sender);
+
+        Sponser memory newSponser = Sponser({
+        tokenAmount: amount,
+        BNBAmount: msg.value,
+        timeLockWallet: _ssePreSaleTimeLock
+        });
+
+        sponsers[msg.sender] = newSponser;
+        sponsersList.push(msg.sender);
+
+        sendTokenToWallet(amount, address(_ssePreSaleTimeLock));
+    }
+
+
+    // =============== Transfering And Withdraw Methods ============== \\
+    
+    /// @dev withdraws token from contract.
+    /// @param amount amount token.
+    /// @param beneficiary_ destination address.
+
+    function withdrawToken(uint256 amount, address beneficiary_) public onlyOwner {
+        require(token().transfer(beneficiary_, amount));
+    }
+
+    /// @dev withdraws BNB from contract.
+    /// @param to destination address.
+    /// @param amount amount of token.
+
+    function withdrawBNB(address payable to, uint amount) public payable onlyOwner {
+        require(to != address(0), "SSEPrsale : destination is zero address");
+        uint Balance = address(this).balance;
+        require(Balance > 0 wei, "SSESponserPresale : Error! No Balance to withdraw");
+        require(Balance >= amount, "SSESponserPresale : Balance insufficient"); 
+
+        to.transfer(amount);
+    }
+
+
+    /// @dev sent token to wallet.
+    /// @param amount amount of token.
+    /// @param destinatino_ destination address.
+
+    function sendTokenToWallet(uint amount, address destinatino_) private returns (bool) {
+        require(token().transfer(destinatino_, amount), "SSEPresale : withdraw error.");
+        return true;
+    }
+    
+    function token() public view returns (IBEP20) {
+        return _token;
+    }
+    
+    // =============== Modifiers ============== \\
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin || msg.sender == owner(), "caller is neither admin or owner");
+        _;
+    }
+}
+

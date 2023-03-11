@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.17;
+
+
+contract TokenDistribution
+{
+    uint256 private constant OWNER_NOT_ENTERED = 1;
+    uint256 private constant OWNER_ENTERED = 2;
+    uint256 private reentrancyForOwnerStatus;
+
+    // Destination Address => Token Address => Amount
+    mapping(address => mapping(address => uint256)) private processedAmount; 
+
+    address public owner;
+
+    event SudoTransferFund(address token, address to, uint256 amountInWei);
+    event SudoTransferNetworkCoinFund(address to, uint256 amountInWei);
+    event ExecuteSendCall();
+
+    constructor()
+    {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner 
+    {
+        require(msg.sender == owner, 'FN'); // Forbidden
+        _;
+    }
+
+    modifier noReentrancyForOwner() 
+    {
+        require(reentrancyForOwnerStatus != OWNER_ENTERED, "REE");
+        reentrancyForOwnerStatus = OWNER_ENTERED;
+        _;
+        reentrancyForOwnerStatus = OWNER_NOT_ENTERED;
+    }
+
+    modifier validAddress(address _address) 
+    {
+       require(_address != address(0), "INVAD"); // Invalid address
+       _;
+    }
+
+    modifier validWallet()
+    {
+        require( !Hlp.isContract(msg.sender), "CTR"); // CTR = Wallet is a contract
+        require(tx.origin == msg.sender, "INVW"); // INVW = Invalid wallet origin
+        _;
+    }
+
+    /* *****************************
+        SUDO
+    *  *****************************/
+    function transferFund(address token, address to, uint256 amountInWei) external onlyOwner noReentrancyForOwner validAddress(token) validAddress(to) validWallet
+    {
+        emit SudoTransferFund(token, to, amountInWei);
+
+        //Withdraw token
+        bool txOk = IERC20(token).transfer(to, amountInWei);
+
+        require(txOk, "TXERR"); // TXERR = Transaction Error
+    }
+
+    function transferNetworkCoinFund(address to, uint256 amountInWei) external onlyOwner noReentrancyForOwner validAddress(to) validWallet
+    {
+        emit SudoTransferNetworkCoinFund(to, amountInWei);
+
+        //Withdraw Network Coin
+        payable(to).transfer(amountInWei);
+    }
+
+    function setOwner(address newValue) external onlyOwner noReentrancyForOwner validAddress(newValue) validWallet
+    {
+        owner = newValue;
+    }
+
+    /* *****************************
+        PROCESSING
+    *  *****************************/
+    function executeSend(address[] memory sendList, uint256[] memory amounts, address[] memory tokenList) external onlyOwner noReentrancyForOwner validWallet
+    {
+        require(sendList.length == amounts.length && sendList.length == tokenList.length, "DIFSZ"); // Different size of arrays
+        for (uint ix=0; ix<sendList.length; ix++) 
+        {
+            address sendAddress = sendList[ix];
+            uint256 amountToSend = amounts[ix];
+            address tokenAddress = tokenList[ix];
+
+            processedAmount[sendAddress][tokenAddress] += amountToSend;
+
+            bool txOk = IERC20(tokenAddress).transfer(sendAddress, amountToSend);
+            require(txOk, "TXERR"); // TXERR = Transaction Error
+        }
+
+        emit ExecuteSendCall();
+    }
+
+    function getTotalSent(address destinationAddress, address tokenAddress) external view returns (uint256)
+    {
+        return processedAmount[destinationAddress][tokenAddress];
+    }
+}
+
+// ****************************************************
+// ***************** HELPER FUNCTIONS *****************
+// ****************************************************
+library Hlp 
+{
+    function isContract(address account) internal view returns (bool) 
+    {
+        uint256 size;
+        assembly {
+            size := extcodesize(account)
+        }
+        return size > 0;
+    }
+}
+
+// ****************************************************
+// ***************** ERC-20 INTERFACE *****************
+// ****************************************************
+interface IERC20 {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address _owner) external view returns (uint256);
+    function allowance(address _owner, address _spender) external view returns (uint256);
+    function approve(address _spender, uint256 _value) external returns (bool);
+    function transfer(address _to, uint256 _value) external returns (bool);
+    function transferFrom(address _from, address _to, uint256 _value) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}

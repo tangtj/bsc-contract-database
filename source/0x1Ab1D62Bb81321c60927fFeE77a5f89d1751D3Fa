@@ -1,0 +1,581 @@
+/**
+ *Submitted for verification at BscScan.com on 2023-01-10
+ */
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+    function decimals() external view returns (uint256);
+}
+
+interface IUniswapV2Pair {
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function name() external pure returns (string memory);
+
+    function symbol() external pure returns (string memory);
+
+    function decimals() external pure returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 value) external returns (bool);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+
+    function nonces(address owner) external view returns (uint256);
+
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
+
+    event Mint(address indexed sender, uint256 amount0, uint256 amount1);
+    event Burn(
+        address indexed sender,
+        uint256 amount0,
+        uint256 amount1,
+        address indexed to
+    );
+    event Swap(
+        address indexed sender,
+        uint256 amount0In,
+        uint256 amount1In,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint256);
+
+    function factory() external view returns (address);
+
+    function token0() external view returns (address);
+
+    function token1() external view returns (address);
+
+    function getReserves()
+        external
+        view
+        returns (
+            uint112 reserve0,
+            uint112 reserve1,
+            uint32 blockTimestampLast
+        );
+
+    function price0CumulativeLast() external view returns (uint256);
+
+    function price1CumulativeLast() external view returns (uint256);
+
+    function kLast() external view returns (uint256);
+
+    function mint(address to) external returns (uint256 liquidity);
+
+    function burn(address to)
+        external
+        returns (uint256 amount0, uint256 amount1);
+
+    function swap(
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address to,
+        bytes calldata data
+    ) external;
+
+    function skim(address to) external;
+
+    function sync() external;
+
+    function initialize(address, address) external;
+}
+
+/**
+ * @notice Contract is a inheritable smart contract that will add a
+ * New modifier called onlyOwner available in the smart contract inherting it
+ *
+ * onlyOwner makes a function only callable from the Token owner
+ *
+ */
+contract Ownable {
+    // _owner is the owner of the Token
+    address private _owner;
+
+    /**
+     * Event OwnershipTransferred is used to log that a ownership change of the token has occured
+     */
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    /**
+     * Modifier
+     * We create our own function modifier called onlyOwner, it will Require the current owner to be
+     * the same as msg.sender
+     */
+    modifier onlyOwner() {
+        require(
+            _owner == msg.sender,
+            "Ownable: only owner can call this function"
+        );
+        // This _; is not a TYPO, It is important for the compiler;
+        _;
+    }
+
+    constructor() {
+        _owner = msg.sender;
+        emit OwnershipTransferred(address(0), _owner);
+    }
+
+    /**
+     * @notice owner() returns the currently assigned owner of the Token
+     *
+     */
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @notice renounceOwnership will set the owner to zero address
+     * This will make the contract owner less, It will make ALL functions with
+     * onlyOwner no longer callable.
+     * There is no way of restoring the owner
+     */
+    function renounceOwnership() public onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    /**
+     * @notice transferOwnership will assign the {newOwner} as owner
+     *
+     */
+    function transferOwnership(address newOwner) public onlyOwner {
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @notice _transferOwnership will assign the {newOwner} as owner
+     *
+     */
+    function _transferOwnership(address newOwner) internal {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract DBlpStaking is Ownable {
+    IBEP20 private DBToken;
+    IUniswapV2Pair private LPToken;
+    uint256 currentRewardPool;
+
+    struct StakeLevel {
+        uint256 duration;
+        uint256 rewardAPY;
+    }
+
+    struct ReferralReward {
+        uint256 update;
+        uint256 claimable;
+    }
+
+    StakeLevel[] stakelevels;
+
+    uint256[] referralAPYs = [50, 30, 10];
+
+    struct Stake {
+        uint256 lpamount;
+        uint256 dbamount;
+        uint256 since;
+        uint256 update;
+        uint256 level;
+        uint256 claimable;
+        ReferralReward[] referral_rewards;
+    }
+
+    struct Stakeholder {
+        address user;
+        Stake[] address_stakes;
+        address referral_user;
+    }
+
+    struct ReferralSummary {
+        uint256 level;
+        Stakeholder referral_user;
+    }
+
+    struct StakingSummary {
+        uint256 account_amount;
+        uint256 total_amount;
+        uint256 stakers;
+        uint256 current;
+        Stake[] stakes;
+        ReferralSummary[] referrals;
+    }
+
+    /**
+     * @notice
+     * StakingList is a struct that is used to contain all stakes
+     */
+    struct StakingList {
+        uint256 current;
+        Stakeholder[] stakinglist;
+        StakeLevel[] stake_levels;
+        uint256[] referral_APYs;
+    }
+
+    /**
+     * @notice
+     *   This is a array where we store all Stakes that are performed on the Contract
+     *   The stakes for each address are stored at a certain index, the index can be found using the stakes mapping
+     */
+    Stakeholder[] internal stakeholders;
+    /**
+     * @notice
+     * stakes is used to keep track of the INDEX for the stakers in the stakes array
+     */
+    mapping(address => uint256) internal stakes;
+
+    /**
+     * @notice Staked event is triggered whenever a user stakes tokens, address is indexed to make it filterable
+     */
+    event Staked(
+        address indexed user,
+        uint256 amount,
+        uint256 index,
+        uint256 timestamp
+    );
+
+    event Unstaked(address indexed user, uint256 amount, uint256 timestamp);
+    event WithdrawReward(
+        address indexed user,
+        uint256 amount,
+        uint256 timestamp
+    );
+
+    constructor(address _dbtokenAddress, address _lptokenAddress) {
+        DBToken = IBEP20(_dbtokenAddress);
+        LPToken = IUniswapV2Pair(_lptokenAddress);
+        // This push is needed so we avoid index 0 causing bug of index-1
+        stakeholders.push();
+        stakelevels.push(StakeLevel(30, 50));
+        stakelevels.push(StakeLevel(90, 100));
+        stakelevels.push(StakeLevel(180, 150));
+    }
+
+    function _setStakeLevelDays(uint256 level, uint256 _days)
+        external
+        onlyOwner
+    {
+        stakelevels[level].duration = _days;
+    }
+
+    function _setStakeLevelAPY(uint256 level, uint256 _apy) external onlyOwner {
+        stakelevels[level].rewardAPY = _apy;
+    }
+
+    function _setReferralAPY(uint256 level, uint256 _apy) external onlyOwner {
+        referralAPYs[level] = _apy;
+    }
+
+    function _addStakeholder(address staker, address _referral_address) internal returns (uint256)
+    {
+        stakeholders.push();
+        uint256 userIndex = stakeholders.length - 1;
+        stakeholders[userIndex].user = staker;
+        uint256 referral_index = stakes[_referral_address];
+        if(referral_index != 0 && referral_index != userIndex){
+            stakeholders[userIndex].referral_user = _referral_address;
+        }
+        stakes[staker] = userIndex;
+        return userIndex;
+    }
+
+    function removeReferral(address _staker) public {
+        uint256 index = stakes[_staker];
+        require(index > 0, "Address isn't exist");
+        stakeholders[index].referral_user = address(0);
+    }
+
+    function stake(uint256 _amount, uint256 _level, address _referral_address) public {
+        require(_amount > 0, "Staking amount should be more than 0!");
+        uint256 index = stakes[msg.sender];
+        uint256 timestamp = block.timestamp;
+        if (index == 0) {
+            index = _addStakeholder(msg.sender, _referral_address);
+        }
+        uint256 _dbAmount = calculateDBFromLP(_amount);
+
+        stakeholders[index].address_stakes.push();
+        uint256 stakeIndex = stakeholders[index].address_stakes.length - 1;
+
+        stakeholders[index].address_stakes[stakeIndex].lpamount = _amount;
+        stakeholders[index].address_stakes[stakeIndex].dbamount = _dbAmount;
+        stakeholders[index].address_stakes[stakeIndex].since = timestamp;
+        stakeholders[index].address_stakes[stakeIndex].update = timestamp;
+        stakeholders[index].address_stakes[stakeIndex].level = _level;
+        stakeholders[index].address_stakes[stakeIndex].claimable = 0;
+
+        if (stakeholders[index].referral_user != address(0)) {
+            stakeholders[index].address_stakes[stakeIndex].referral_rewards.push(ReferralReward(timestamp, 0));
+            if (stakeholders[stakes[stakeholders[index].referral_user]].referral_user != address(0)) {
+                stakeholders[index].address_stakes[stakeIndex].referral_rewards.push(ReferralReward(timestamp, 0));
+                if (stakeholders[stakes[stakeholders[stakes[stakeholders[index].referral_user]].referral_user]].referral_user != address(0)) {
+                    stakeholders[index].address_stakes[stakeIndex].referral_rewards.push(ReferralReward(timestamp, 0));
+                }
+            }
+        }
+        
+        if (LPToken.transferFrom(msg.sender, address(this), _amount)) {
+            emit Staked(msg.sender, _amount, index, timestamp);
+        } else {
+            revert("Unable to transfer funds");
+        }
+    }
+
+    function calculateDBFromLP(uint256 _amount) public view returns (uint256) {
+        uint256 totalLP = LPToken.totalSupply();
+        ( ,uint256 Res1, ) = LPToken.getReserves();
+        uint256 dbAmount = (Res1 * _amount) / totalLP;
+        
+        return dbAmount;
+    }
+
+    function calculateDBReward(Stake memory _stake)
+        internal
+        view
+        returns (uint256)
+    {
+        if (
+            block.timestamp - _stake.since >=
+            stakelevels[_stake.level].duration * 24 * 60 * 60
+        ) {
+            uint256 duration = (block.timestamp - _stake.update) / 1 days;
+            uint256 amount = _stake.dbamount + _stake.claimable;
+            for (uint256 i = 0; i < duration; i++) {
+                amount =
+                    amount +
+                    ((amount * stakelevels[_stake.level].rewardAPY) /
+                        365 /
+                        1000);
+            }
+            uint256 reward = amount - _stake.dbamount;
+            return reward;
+        }
+        return 0;
+    }
+
+    function calculateReferralReward(Stake memory _stake, uint _level)
+        internal
+        view
+        returns (uint256)
+    {
+        if (
+            block.timestamp - _stake.since >=
+            stakelevels[_stake.level].duration * 24 * 60 * 60
+        ) {
+            uint256 duration = (block.timestamp - _stake.referral_rewards[_level].update) / 1 days;
+            uint256 amount = _stake.referral_rewards[_level].claimable;
+            amount = amount + _stake.dbamount * referralAPYs[_level] * duration / 365 / 1000;
+            return amount;
+        }
+        return 0;
+    }
+
+    function unstake(uint256 amount, uint256 index) public {
+        uint256 user_index = stakes[msg.sender];
+        Stake memory current_stake = stakeholders[user_index].address_stakes[index];
+
+        require(
+            current_stake.lpamount >= amount,
+            "UnStaking: Cannot withdraw more than you have staked"
+        );
+
+        uint256 timestamp = block.timestamp;
+        uint256 duration = timestamp - current_stake.since;
+
+        uint256 cooldown_time = (stakelevels[current_stake.level].duration) * 24 * 60 * 60;
+        require(
+            duration >= cooldown_time,
+            "UnStaking: Cannot withdraw in cooldown time"
+        );
+
+        uint256 reward = calculateDBReward(current_stake);
+        current_stake.lpamount = current_stake.lpamount - amount;
+        stakeholders[user_index].address_stakes[index].lpamount = current_stake.lpamount;
+        uint256 dbAmount = calculateDBFromLP(current_stake.lpamount);
+        stakeholders[user_index].address_stakes[index].dbamount = dbAmount;
+        stakeholders[user_index].address_stakes[index].claimable = reward;
+        stakeholders[user_index].address_stakes[index].update = timestamp;
+        for (uint256 i = 0; i < current_stake.referral_rewards.length; i++) {
+            uint256 referral_claimable = calculateReferralReward(current_stake, i);
+            stakeholders[user_index].address_stakes[index].referral_rewards[i].update = timestamp;
+            stakeholders[user_index].address_stakes[index].referral_rewards[i].claimable = referral_claimable;
+        }
+
+        if (LPToken.transfer(msg.sender, amount)) {
+            emit Unstaked(msg.sender, amount, timestamp);
+        } else {
+            revert("Unable to transfer funds");
+        }
+    }
+
+    function withdrawReward(uint256 index) public {
+        uint256 user_index = stakes[msg.sender];
+        Stake memory current_stake = stakeholders[user_index].address_stakes[
+            index
+        ];
+
+        uint256 timestamp = block.timestamp;
+        require(
+            (timestamp - current_stake.since) >=
+                (stakelevels[current_stake.level].duration * 24 * 60 * 60),
+            "Withdraw: Cannot withdraw in cooldown time"
+        );
+
+        // Calculate available Reward first before we start modifying data
+        uint256 claimable = calculateDBReward(current_stake);
+        uint256 rewardPool = DBToken.balanceOf(address(this));
+
+        require(rewardPool > claimable, "Withdraw: Reward pool is not enough.");
+
+        stakeholders[user_index].address_stakes[index].claimable = 0;
+        stakeholders[user_index].address_stakes[index].update = timestamp;
+
+        if (DBToken.transfer(msg.sender, claimable)) {
+            emit WithdrawReward(msg.sender, claimable, timestamp);
+        } else {
+            revert("Unable to transfer funds");
+        }
+    }
+
+
+    function claimReferralReward(address _address, uint256 _level) public {
+        uint256 user_index = stakes[_address];
+        address referral_address = stakeholders[user_index].referral_user;
+
+        if(_level > 0){
+            referral_address = stakeholders[stakes[referral_address]].referral_user;
+            if(_level > 1){
+                referral_address = stakeholders[stakes[referral_address]].referral_user;
+            }
+        }
+
+        require(
+            referral_address == msg.sender,
+            "Referral Reward: You are not referral user."
+        );
+
+        uint256 timestamp = block.timestamp;
+
+        uint256 claimable = 0;
+        uint256 rewardPool = DBToken.balanceOf(address(this));
+        for (uint256 i = 0; i < stakeholders[user_index].address_stakes.length; i++) {
+            Stake memory _stake = stakeholders[user_index].address_stakes[i];
+            if(timestamp - _stake.since >= stakelevels[_stake.level].duration * 24 * 60 * 60){
+                uint256 stakingReferralClaimable = calculateReferralReward(_stake, _level);
+                if(stakingReferralClaimable > 0){
+                    stakeholders[user_index].address_stakes[i].referral_rewards[_level].update = timestamp;
+                    claimable = claimable + stakingReferralClaimable;
+                }
+            }
+        }
+        
+        require(rewardPool > claimable, "Withdraw: Reward pool is not enough.");
+
+        if (DBToken.transfer(msg.sender, claimable)) {
+            emit WithdrawReward(msg.sender, claimable, timestamp);
+        } else {
+            revert("Unable to transfer funds");
+        }
+    }
+
+    function getStakeList() public view returns (StakingList memory){
+        uint256 timestamp = block.timestamp;
+        StakingList memory summary = StakingList(timestamp, stakeholders, stakelevels, referralAPYs);
+        return summary;
+    }
+
+    function getStakeLevels() public view returns (StakeLevel[] memory) {
+        return stakelevels;
+    }
+
+    function getReferralAPYs() public view returns (uint256[] memory) {
+        return referralAPYs;
+    }
+
+    function manageRewardPool(address receiver, uint256 amount)
+        public
+        onlyOwner
+    {
+        uint256 rewardPool = DBToken.balanceOf(address(this));
+
+        require(
+            rewardPool > amount,
+            "Manage RewardPool: Amount should be less than pool."
+        );
+
+        DBToken.transfer(receiver, amount);
+    }
+}

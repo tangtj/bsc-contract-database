@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract Savings {
+    address payable public owner;
+    mapping(address => uint256) public balances;
+    mapping(address => uint256) public lastUpdated;
+    
+    event Deposit(address indexed user, uint256 amount);
+    event Withdraw(address indexed user, uint256 amount);
+    event ProfitWithdraw(address indexed user, uint256 amount);
+    
+    constructor() {
+        owner = payable(msg.sender);
+    }
+    
+    function deposit(uint256 _amount) public {
+        require(_amount > 0, "Amount must be greater than 0");
+        balances[msg.sender] += _amount;
+        lastUpdated[msg.sender] = block.timestamp;
+        emit Deposit(msg.sender, _amount);
+    }
+    
+    function withdraw(uint256 _amount) public {
+        require(_amount > 0, "Amount must be greater than 0");
+        require(_amount <= balances[msg.sender], "Insufficient balance");
+        require(block.timestamp > lastUpdated[msg.sender] + 30 days, "Withdrawal available after 30 days");
+        balances[msg.sender] -= _amount;
+        lastUpdated[msg.sender] = block.timestamp;
+        payable(msg.sender).transfer(_amount);
+        emit Withdraw(msg.sender, _amount);
+    }
+    
+    function getProfit() public view returns(uint256) {
+        uint256 timePassed = block.timestamp - lastUpdated[msg.sender];
+        uint256 interestRate = 10;
+        uint256 profit = (balances[msg.sender] * interestRate * timePassed) / (100 * 30 days);
+        return profit;
+    }
+    
+    function withdrawProfit() public {
+        uint256 profit = getProfit();
+        require(profit > 0, "No profit available");
+        balances[msg.sender] += profit;
+        lastUpdated[msg.sender] = block.timestamp;
+        emit ProfitWithdraw(msg.sender, profit);
+    }
+    
+    function withdrawAll() public {
+        uint256 amount = balances[msg.sender] + getProfit();
+        require(amount > 0, "No funds available for withdrawal");
+        balances[msg.sender] = 0;
+        lastUpdated[msg.sender] = block.timestamp;
+        payable(msg.sender).transfer(amount);
+        emit Withdraw(msg.sender, amount);
+    }
+    
+    function destroy() public {
+        require(msg.sender == owner, "Only the owner can destroy the contract");
+        selfdestruct(owner);
+    }
+}
