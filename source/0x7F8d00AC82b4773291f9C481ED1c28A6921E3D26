@@ -1,0 +1,86 @@
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+interface IPancakeRouter02 {
+    function swapExactTokensForTokens(
+        uint amountIn, 
+        uint amountOutMin, 
+        address[] calldata path, 
+        address to, 
+        uint deadline
+    ) external returns (uint[] memory amounts);
+}
+
+contract ArbitrageBot {
+    address public owner;
+    address constant PANCAKE_ROUTER = 0x05fF2B0DB69458A0750badebc4f9e13aDd608C7F;
+    address constant TOKEN_CONTRACT = 0xb8aa1ac7ebe9D2a00340FcD48269fadA698b9314;
+    address constant BUSD = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+
+    constructor() {
+        owner = msg.sender;
+    }
+    
+    function startArbitrage(uint amount) external {
+        require(msg.sender == owner, "Unauthorized access!");
+        require(IBEP20(TOKEN_CONTRACT).balanceOf(address(this)) >= amount, "Insufficient balance");
+
+        uint[] memory amounts = IPancakeRouter02(PANCAKE_ROUTER).swapExactTokensForTokens(
+            amount,
+            0,
+            getPath(),
+            address(this),
+            block.timestamp
+        );
+
+        uint expectedProfit = amounts[1] + 1;
+        require(IBEP20(BUSD).approve(PANCAKE_ROUTER, expectedProfit), "Approval failed");
+
+        (bool success,) = address(this).call(
+            abi.encodeWithSignature("executeArbitrage(uint256,uint256)", amount, expectedProfit)
+        );
+        require(success, "Transaction execution failed.");
+    }
+
+    function executeArbitrage(uint amount, uint expectedProfit) external {
+        uint balanceBefore = IBEP20(BUSD).balanceOf(address(this));
+
+        require(IBEP20(TOKEN_CONTRACT).transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+
+        uint[] memory amounts = IPancakeRouter02(PANCAKE_ROUTER).swapExactTokensForTokens(
+            amount,
+            expectedProfit,
+            getPath(),
+            msg.sender,
+            block.timestamp
+        );
+
+        uint profit = IBEP20(BUSD).balanceOf(address(this)) - balanceBefore;
+        require(profit >= expectedProfit, "Transaction not profitable!");
+    }
+
+    function getPath() private view returns (address[] memory) {
+        address[] memory path = new address[](2);
+        path[0] = TOKEN_CONTRACT;
+        path[1] = BUSD;
+        return path;
+    }
+
+    function withdrawToken(address tokenAddress) external {
+        require(msg.sender == owner, "Unauthorized access!");
+        IBEP20 token = IBEP20(tokenAddress);
+        token.transfer(owner, token.balanceOf(address(this)));
+    }
+
+    function withdraw(uint amount) external {
+        require(msg.sender == owner, "Unauthorized access!");
+        require(IBEP20(BUSD).transfer(owner, amount), "Withdrawal failed");
+    }
+}

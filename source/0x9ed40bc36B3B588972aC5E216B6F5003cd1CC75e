@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract EscrowFactory {
+
+    address public owner;
+    address public feeReceiver;
+    uint public FEE_PERCENT = 1;
+    bool public isServiceEnabled;
+    mapping (address => address[]) public payerEscrowContracts;
+    mapping (address => address[]) public payeeEscrowContracts;
+    mapping(address => bool) public adminMap;
+
+    function addAdmin(address _adminToAdd) external onlyOwner{
+        adminMap[_adminToAdd] = true;
+    }
+
+    function removeAdmin(address _adminToRemove) external onlyOwner{
+        adminMap[_adminToRemove] = false;
+    }
+
+    modifier onlyAdmin(){
+        require(adminMap[msg.sender] == true);_;
+    }
+
+
+    modifier onlyOwner(){
+        require(msg.sender == owner, "You are not the owner!");_;
+    }
+
+    event NewEscrowContract(address indexed _escrowContract, address indexed _sender, address indexed _payee, uint _amount);
+
+    constructor(address _feeReceiver) {
+        owner = msg.sender;
+        feeReceiver = _feeReceiver;
+        isServiceEnabled = true;
+        adminMap[msg.sender] = true;
+    }
+
+        //Allows DEV to pause the creation of new escrows. On-going contracts will not be affected.
+
+
+    function disableService() external onlyOwner{
+        isServiceEnabled = false;
+    }
+
+    function enableService() external onlyOwner{
+        isServiceEnabled = true;
+    }
+
+    
+    function newEscrowContract(address payable _payee, string memory _name) external payable returns (address) {
+
+        require(isServiceEnabled == true, "Service currently disabled");
+        require(msg.value > 0, "Amount must be greater than 0");
+        uint fee = (msg.value * FEE_PERCENT) / 100;
+        Escrow newEscrow = new Escrow{value: msg.value-fee}(payable(msg.sender), _payee, owner, _name);
+        payable(feeReceiver).transfer(fee);
+
+        payerEscrowContracts[msg.sender].push(address(newEscrow));
+        payeeEscrowContracts[_payee].push(address(newEscrow));
+        
+        emit NewEscrowContract(address(newEscrow), msg.sender, _payee, msg.value);
+        return address(newEscrow);
+    }
+
+    function changeFeeReceiver(address _newFeeReceiver) external onlyOwner {
+        feeReceiver = _newFeeReceiver;
+    }
+
+    function changeFeePercent(uint _newFeePercent) external onlyOwner {
+        FEE_PERCENT = _newFeePercent;
+    }
+}
+
+contract Escrow {
+    address payable public payer;
+    address payable public payee;
+    address public owner;
+    uint public amount;
+    uint public fee;
+    bool public released;
+    bool public refunded;
+    string public name;
+
+    modifier onlyPayer(){
+        require(msg.sender == payer, "You did not create this contract!");_;
+    }
+
+    modifier onlyOwner(){
+        require(msg.sender == owner, "You are not the owner!");_;
+    }
+
+    constructor(address payable _payer, address payable _payee, address _owner, string memory _name) payable {
+        require(_payer != address(0), "Invalid payer address");
+        require(_payee != address(0), "Invalid payee address");
+
+        name = _name;
+        payer = _payer;
+        payee = _payee;
+        amount = msg.value;
+        owner = _owner;
+        released = false;
+        refunded = false;
+    }
+
+    function release() public onlyPayer{
+        require(released == false, "Funds have already been released");
+        require(refunded == false, "Funds have been refunded");
+
+        released = true;
+        payee.transfer(amount);
+    }
+
+    function emergencyRelease() public onlyOwner{
+        require(released == false, "Funds have already been released");
+        require(refunded == false, "Funds have already been refunded");
+
+        released = true;
+        payer.transfer(amount);
+    }
+
+    function refund() public onlyOwner {
+        require(released == false, "Funds have already been released");
+        require(refunded == false, "Funds have been refunded");
+
+        refunded = true;
+        payer.transfer(amount);
+
+        emit Refund(payer, amount);
+    }
+
+    event Refund(address indexed _payer, uint _amount);
+    
+}

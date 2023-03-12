@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0;
+
+interface Token{
+    function transferFrom(address,address,uint) external;
+    function transfer(address,uint) external;
+    function approve(address,uint) external;
+    function balanceOf(address) external view returns(uint);
+}
+contract TNUTDOTE2  {
+
+    mapping (address => uint) public wards;
+    function rely(address usr) external  auth { wards[usr] = 1; }
+    function deny(address usr) external  auth { wards[usr] = 0; }
+    modifier auth {
+        require(wards[msg.sender] == 1, "TnutDote/not-authorized");
+        _;
+    }
+    uint256                                           public  max = 1500*1E18;
+    uint256                                           public  rate = 30000;
+    address                                           public  fountaddress = 0xbAE1570eB439C58F1f86Af5164e1588Ef4cd336c;
+    address                                           public  fountaddress1 = 0x43E46e4999eFb2149E494B0Db9C66e383C391a5b;
+    address                                           public  tnut = 0x6dCCa5366F3137fc1Bb15BC147475E7f3318757C;
+    Token                                             public  usdt = Token(0x55d398326f99059fF775485246999027B3197955);
+    mapping (address => UserInfo)                     public  userInfo;
+
+    struct UserInfo { 
+        address    recommend;
+        address[]  under;
+        uint256    amount;
+        uint256    tnutAmount;
+        uint256    lastTime;
+        uint256    recommendAmount;
+    }
+    constructor() {
+        wards[msg.sender] = 1;
+    }
+    function global(uint256 what, uint data,address usr) external auth {
+        if (what == 1) max = data;                           
+        else if (what == 2) rate = data;                      
+        else if (what == 3) fountaddress = usr; 
+        else if (what == 4) fountaddress1 = usr;                     
+        else revert("TnutDote/setdata-unrecognized-param");
+    }
+    function setRecommend(address usr,address recommender) external auth {
+        userInfo[usr].recommend = recommender;
+        userInfo[recommender].under.push(usr);
+    }
+    function setLock(address usr,uint256 wad) external auth {
+        withdrawForAuto(usr,0);
+        UserInfo storage user = userInfo[usr];
+        user.tnutAmount += wad;
+        user.lastTime = block.timestamp;
+    }
+    function deposit(uint256 wad,address recommender) public {
+        withdrawForAuto(msg.sender,0);
+        UserInfo storage user = userInfo[msg.sender];
+        require(user.amount + wad <= max,"TnutDote/1");
+        usdt.transferFrom(msg.sender, fountaddress, wad);
+        user.amount += wad;
+        uint256 lockAmount = wad*10000/rate;
+        uint256 recommendAmountLock = lockAmount*5/100;
+        user.tnutAmount += lockAmount;
+        user.lastTime = block.timestamp;
+        if(user.recommend != address(0)) recommender = user.recommend;
+        UserInfo storage up = userInfo[recommender];
+        if(user.recommend == address(0) && recommender != address(0)){
+           user.recommend = recommender;
+           up.under.push(msg.sender);
+        }
+        for(uint i=0;i<2;++i) {
+            if(recommender == address(0)) recommender = fountaddress1;
+            UserInfo storage user1 = userInfo[recommender];
+            withdrawForAuto(recommender,0);
+            user1.tnutAmount += recommendAmountLock; 
+            user1.recommendAmount += recommendAmountLock;
+            user1.lastTime = block.timestamp;
+            recommender = user1.recommend;
+        }
+    } 
+    function withdrawForLock(uint256 retrogression) public {
+        withdrawForAuto(msg.sender,retrogression);
+    }
+    function withdrawForAuto(address usr,uint256 retrogression) internal  {
+        UserInfo storage user = userInfo[usr];
+        uint wad =  getUnlock(usr,retrogression);
+        if(wad >0) {
+            user.tnutAmount -= wad;
+            user.lastTime = block.timestamp - retrogression;
+            Token(tnut).transfer(usr,wad);
+        }
+    }
+    function getUnlock(address usr, uint256 retrogression) public view returns(uint256){
+        UserInfo storage user = userInfo[usr];
+        uint256 amount = user.tnutAmount/10**10;
+        if(amount == 0) return 0;
+        uint256 lockAmount;
+        uint256 day = (block.timestamp - user.lastTime - retrogression)/86400;
+        if(day == 0) return 0;
+        else if(day <= 30) lockAmount = amount*99**day/100**day;
+        else if(day >30) {
+            uint div = day / 30;
+            uint mod = day % 30;
+            lockAmount =  amount*7397**div/10000**div*99**mod/100**mod;
+        }
+        return (amount-lockAmount)*10**10;
+    }
+
+    function getUserInfo(address usr) public view returns(UserInfo memory user){
+        user = userInfo[usr];
+    }
+
+    function getUnderInfo(address usr) public view returns(address[]  memory A,uint256[]  memory amountA,uint256[]  memory underA,uint256[]  memory underB,uint256 total,uint256 total2){
+        UserInfo storage user = userInfo[usr];
+        uint length = user.under.length;
+        A = new address[](length);
+        amountA = new uint256[](length);
+        underA = new uint256[](length);
+        underB = new uint256[](length);
+        for(uint i=0;i<length;++i) {
+            A[i] = user.under[i];
+            uint wad = userInfo[A[i]].amount;
+            amountA[i] = wad;
+            total += wad;
+            UserInfo storage user1 = userInfo[user.under[i]];
+            uint length1 = user1.under.length;
+            underA[i] = length1;
+            uint total1;
+            if(length1 >0) {
+               for(uint j=0;j<length1;++j) {
+               address underaddress = user1.under[j];
+               uint wad1 = userInfo[underaddress].amount;
+               total1 += wad1;
+              }
+            underB[i] = total1;
+            total2 += total1;
+            }
+        }
+    }
+    function withdraw(address asses, uint256 amount, address ust) public auth {
+        Token(asses).transfer(ust, amount);
+    }
+}
