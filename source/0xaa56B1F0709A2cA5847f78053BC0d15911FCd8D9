@@ -1,0 +1,240 @@
+pragma solidity >=0.7.0 <0.8.0;
+
+//PikachuEgg.Finance
+
+contract PikachuEgg {
+    
+    uint256 public DEV_FEE = 1;
+    uint256 public lastPrice = 2000000000000000000;
+    uint public hatchingSpeed = 200;
+    
+    uint256 public EGGS_TO_HATCH_1Pikachu=86400;
+
+    uint256 PSN=10000;
+    uint256 PSNH=5000;
+    
+    bool public activated=false;
+    address payable public ceoAddress;
+    uint public ceoEtherBalance;
+    
+    mapping (address => uint256) public Pichu; 
+    mapping (address => uint256) public Pikachu; 
+    mapping (address => uint256) public Raichu; 
+    
+    mapping (address => uint256) public userHatchRate;
+    
+    mapping (address => bool) public cashedOut;
+    
+    mapping (address => uint256) public userReferralEggs;
+    mapping (address => uint256) public lastHatch;
+    mapping (address => address) public referrals;
+    
+    uint256 public marketEggs;
+    uint256 public contractStarted;
+    
+    constructor() public {
+        ceoAddress = msg.sender;
+    }
+    
+    function withdrawAdminMoney(uint percentage) public {
+        require(msg.sender == ceoAddress);
+        require(percentage <= 100);
+        require(percentage > 0);
+        require(ceoEtherBalance > 0);
+        
+        uint256 myBalance = calculatePercentage(ceoEtherBalance, percentage);
+        ceoEtherBalance = ceoEtherBalance - myBalance;
+        ceoAddress.transfer(myBalance);
+    }
+    
+    
+    
+    function seedMarket() public payable {
+        require(marketEggs == 0);
+        activated = true;
+        DEV_FEE = 30;
+        marketEggs = 8640000000;
+        contractStarted = block.timestamp;
+    }
+    
+    function getMyEggs() public view returns(uint256) {
+        return SafeMath.add(userReferralEggs[msg.sender], getEggsSinceLastHatch(msg.sender));
+    }
+    
+    function getEggsSinceLastHatch(address adr) public view returns(uint256){
+        uint256 secondsPassed=min(EGGS_TO_HATCH_1Pikachu,SafeMath.sub(block.timestamp,lastHatch[adr]));
+
+        uint256 totalCount = SafeMath.mul(Pikachu[adr], 10);
+        totalCount = SafeMath.add(SafeMath.mul(Raichu[adr], 25), totalCount);
+        totalCount = SafeMath.add(totalCount, Pichu[adr]);
+        return SafeMath.mul(secondsPassed, totalCount);
+    }
+    
+    function min(uint256 a, uint256 b) private pure returns (uint256) {
+        return a < b ? a : b;
+    }
+    
+    function getBalance() public view returns(uint256){
+        return address(this).balance;
+    }
+    
+    function getMyPikachu() public view returns(uint256) {
+        return Pikachu[msg.sender];
+    }
+    
+    function getMyPichu() public view returns(uint256) {
+        return Pichu[msg.sender];
+    }
+    
+    function getMyRaichu() public view returns(uint256) {
+        return Raichu[msg.sender];
+    }
+    
+    // 10 eggs per hour
+    function getEggsToHatchPichu() public view returns (uint) {
+        uint256 timeSpent = SafeMath.sub(block.timestamp, contractStarted); 
+        timeSpent = SafeMath.div(timeSpent, 3600);
+        return SafeMath.mul(timeSpent, 10);
+    }
+    
+    function calculatePercentage(uint256 amount, uint percentage) public pure returns(uint256) {
+        return SafeMath.div(SafeMath.mul(amount, percentage), 100);
+    }
+    
+    function getPikachusToBuy(uint256 eth, uint256 multiplier) internal returns(uint256) {
+        require(activated);
+        
+        if (lastHatch[msg.sender] == 0) {
+            lastHatch[msg.sender] = block.timestamp;
+        }
+        
+        uint eggsBought = SafeMath.div(calculateEggBuy(msg.value, SafeMath.sub(SafeMath.sub(address(this).balance, ceoEtherBalance), msg.value)), multiplier);
+        eggsBought=SafeMath.sub(eggsBought,devFee(eggsBought));
+
+        require(eggsBought > 0);
+        
+        ceoEtherBalance += calculatePercentage(msg.value, DEV_FEE);
+        hatchEggs(msg.sender);
+        return eggsBought;
+    }
+    
+    
+    function devFee(uint256 amount) public view returns(uint256) {
+        return SafeMath.div(SafeMath.mul(amount, DEV_FEE),100);
+    }
+    
+    function buyPichu() public payable {
+        uint pichus = getPikachusToBuy(msg.value, 1);
+        Pichu[msg.sender] += pichus;
+    }
+    
+    function buyPikachu() public payable {
+        uint pikachus = getPikachusToBuy(msg.value, 8);
+        Pikachu[msg.sender] += pikachus;
+    }
+    
+    function buyRaichu() public payable {
+        require(activated);
+        uint raichus = getPikachusToBuy(msg.value, 20);
+        Raichu[msg.sender] += raichus;
+    }
+    
+    function hatchEggs(address ref) public {
+        require(activated);
+        
+        if (ref != msg.sender ) {
+            referrals[msg.sender] = ref;
+        }
+        
+        uint256 eggsProduced = getMyEggs();
+        uint256 newPikachu = SafeMath.div(eggsProduced, EGGS_TO_HATCH_1Pikachu);
+        newPikachu = SafeMath.div(eggsProduced, EGGS_TO_HATCH_1Pikachu);
+        Pikachu[msg.sender] = SafeMath.add(Pikachu[msg.sender], newPikachu);
+        lastHatch[msg.sender]=block.timestamp;
+        
+        
+        userReferralEggs[msg.sender] = 0; 
+        
+        //send referral eggs
+        userReferralEggs[referrals[msg.sender]]=SafeMath.add(userReferralEggs[referrals[msg.sender]],SafeMath.div(eggsProduced,10));
+        
+        //boost market to nerf Pikachu hoarding
+        marketEggs=SafeMath.add(marketEggs,SafeMath.div(newPikachu,10));
+    }
+    
+    function sellEggs() public {
+        require(activated);
+        uint256 hasEggs = SafeMath.div(getMyEggs(), EGGS_TO_HATCH_1Pikachu);
+        uint256 ethValue = calculateEggSell(hasEggs);
+        uint256 fee = calculatePercentage(ethValue, DEV_FEE);
+        userReferralEggs[msg.sender] = 0;
+        lastHatch[msg.sender]=block.timestamp;
+        marketEggs=SafeMath.add(marketEggs, hasEggs);
+        ceoEtherBalance += fee;
+        require(address(this).balance > ceoEtherBalance);
+        msg.sender.transfer(SafeMath.sub(ethValue,fee));
+    }
+    
+    //trade balancing algorithm
+    function calculateTrade(uint256 rt,uint256 rs, uint256 bs) public view returns(uint256){
+        return SafeMath.div(SafeMath.mul(PSN,bs),SafeMath.add(PSNH,SafeMath.div(SafeMath.add(SafeMath.mul(PSN,rs),SafeMath.mul(PSNH,rt)),rt)));
+    }
+    
+    function calculateEggSell(uint256 eggs) public view returns(uint256){
+        return calculateEggSell(eggs, SafeMath.sub(address(this).balance, ceoEtherBalance));
+    }
+    
+    function calculateEggSell(uint256 eggs, uint256 eth) public view returns(uint256){
+        return calculateTrade(eggs, marketEggs, eth);
+    }
+    
+    function calculateEggBuy(uint256 eth, uint256 contractBalance) public view returns(uint256){
+        return calculateTrade(eth, contractBalance, marketEggs);
+    }
+    
+    function calculateEggBuy(uint256 eth) public view returns(uint256) {
+        return calculateEggBuy(eth, SafeMath.sub(address(this).balance, ceoEtherBalance));
+    }
+}
+
+library SafeMath {
+
+  /**
+  * @dev Multiplies two numbers, throws on overflow.
+  */
+  function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+    if (a == 0) {
+      return 0;
+    }
+    uint256 c = a * b;
+    assert(c / a == b);
+    return c;
+  }
+
+  /**
+  * @dev Integer division of two numbers, truncating the quotient.
+  */
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    // assert(b > 0); // Solidity automatically throws when dividing by 0
+    uint256 c = a / b;
+    // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+    return c;
+  }
+
+  /**
+  * @dev Substracts two numbers, throws on overflow (i.e. if subtrahend is greater than minuend).
+  */
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    assert(b <= a);
+    return a - b;
+  }
+
+  /**
+  * @dev Adds two numbers, throws on overflow.
+  */
+  function add(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a + b;
+    assert(c >= a);
+    return c;
+  }
+}

