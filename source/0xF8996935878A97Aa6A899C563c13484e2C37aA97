@@ -1,0 +1,254 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return payable(msg.sender);
+    }
+}
+
+
+
+contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }   
+    
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+
+}
+
+
+abstract contract ReentrancyGuard {
+   
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+   
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+interface IERC20 {
+
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+}
+
+interface IMasterChef {
+
+    function deposit(uint256 _pid, uint256 _amount) external;
+    function withdraw(uint256 _pid, uint256 _amount) external;
+    function pendingCake(uint256 _pid, address _user) external view returns (uint256);
+    function userInfo(uint256 _pid, address _user) external view returns (uint256 amount,uint256 rewardDebt,uint256 boostMultiplier);
+    function emergencyWithdraw(uint256 _pid) external;
+
+}
+
+
+
+contract PigVault is ReentrancyGuard, Context, Ownable {
+
+    struct UserInformation {
+        uint256 amount;
+        uint256 time;
+    }
+    
+    mapping (uint256 => uint256) public rewardPercent;
+    mapping(uint256 => mapping(address => UserInformation)) public userInfo;
+
+    
+    IERC20 public rewardToken;
+    IMasterChef public pancakeMasterChef;
+    uint256 public purchasedTokens;
+    uint256 public defaultRewardRatio = 1000; //100%
+    uint256 constant defaultRewardDenominator = 1000;
+
+    event deposited(address  depositor, uint256 value, uint256 pid);
+    event withdrawed(address  depositor, uint256 value, uint256 pid);
+    event emergencyWithdrawed(address  depositor, uint256 value, uint256 pid);
+    event rewardSent(address  user, uint256 value, uint256 pid);
+    event newDefaultPercent(uint256 value);
+
+    constructor ()  {
+        pancakeMasterChef = IMasterChef(0xa5f8C5Dbd5F286960b9d90548680aE5ebFf07652);
+        rewardToken = IERC20(0x613598a7252cF210b34859eF9C6D163B5d6a50ca);
+    }
+
+    /**
+        * Public Write Starts Here
+    */
+
+    /// @notice Deposit LP tokens to pool.
+    /// @param _pid The id of the pool. 
+    /// @param _amount Amount of LP tokens to deposit.
+    function deposit(uint256 _pid,uint256 _amount) external {
+        UserInformation storage user = userInfo[_pid][_msgSender()];
+        uint256 weiAmount = _amount;
+        address userAddress = _msgSender();
+        (uint256 amount,,) = pancakeMasterChef.userInfo(_pid,userAddress);
+        uint256 tokenReward;
+        if(user.amount==0){
+            user.time = block.timestamp;
+        }
+        if(amount>0 && user.amount > 0){
+            tokenReward = calculateReward(_pid,userAddress);
+        }
+        user.amount = user.amount + (_amount);
+        pancakeMasterChef.deposit(_pid,_amount);
+        if(rewardToken.balanceOf(address(this))>tokenReward){
+            rewardToken.transfer(userAddress,tokenReward);
+            emit rewardSent(_msgSender(), tokenReward, _pid);
+        }
+        emit deposited(_msgSender(), weiAmount, _pid);
+    }
+
+    /// @notice Withdraw LP tokens from pool.
+    /// @param _pid The id of the pool. 
+    /// @param _amount Amount of LP tokens to withdraw.
+    function withdraw(uint256 _pid,uint256 _amount) external {
+        UserInformation storage user = userInfo[_pid][_msgSender()];
+        address userAddress = _msgSender();
+        require(user.amount >= _amount, "Withdraw: Insufficient");
+        uint256 tokenReward;
+        if (_amount > 0) {
+            tokenReward = calculateReward(_pid,userAddress);
+            user.amount = user.amount - (_amount);
+            pancakeMasterChef.withdraw(_pid,_amount);
+        }
+        if(rewardToken.balanceOf(address(this))>tokenReward){
+            rewardToken.transfer(userAddress,tokenReward);
+            emit rewardSent(_msgSender(), tokenReward, _pid);
+        }
+        emit withdrawed(_msgSender(), _amount, _pid);
+    }
+
+    /// @notice Withdraw without caring about the rewards. EMERGENCY ONLY.
+    /// @param _pid The id of the pool. 
+    function emergencyWithdraw(uint256 _pid) external  {
+        UserInformation storage user = userInfo[_pid][_msgSender()];
+        
+        uint256 amount = user.amount;
+        user.amount = 0;
+        user.time = 0;
+        pancakeMasterChef.emergencyWithdraw(_pid);
+
+        emit emergencyWithdrawed(_msgSender(), amount, _pid);
+    }
+
+    /**
+        * Public Write Function Ends Here
+    */
+
+    /**
+        * Public View Function Starts Here
+    */
+
+    // Calculate the Pig Vault reward for the token
+    function calculateReward(uint256 _pid, address _userAddress) public view returns(uint256){
+        uint256 pendingCakeReward = pancakeMasterChef.pendingCake(_pid,_userAddress);
+        uint256 calculatedReward;
+        if(rewardPercent[_pid]>0){
+            calculatedReward = (pendingCakeReward * (rewardPercent[_pid]))/defaultRewardDenominator;
+        }else{
+            calculatedReward = (pendingCakeReward * (defaultRewardRatio))/defaultRewardDenominator;
+        }
+        return calculatedReward;
+    }
+
+    // Display Pending Cake ready for harvest from pancake 
+    function pendingCake(uint256 _pid, address _userAddress) external view returns(uint256){
+        return pancakeMasterChef.pendingCake(_pid,_userAddress);
+    }
+
+    // Fetch user information from the Pancakeswap MasterChef Contract
+    function userInfosMasterschef(uint256 _pid, address _userAddress) external view returns(uint256 amount,uint256 rewardDebt,uint256 boostMultiplier){
+        (amount,rewardDebt,boostMultiplier) = pancakeMasterChef.userInfo(_pid,_userAddress);
+        return (amount,rewardDebt,boostMultiplier);
+    }
+
+    /**
+        * Public View Function Ends Here
+    */
+
+    /**
+        * Admin Functionality Starts Here
+    */
+
+    // Change the default percentage ratio of all pool
+    function changeDefaultPercentRatio(uint256 _newDefault) external onlyOwner{
+        defaultRewardRatio = _newDefault;
+        emit newDefaultPercent(_newDefault);
+    }
+
+    // Set New token Reward ratio for the pool
+    function setRewardPercentRatio(uint256 _pid, uint256 _newPercent) external onlyOwner{
+        rewardPercent[_pid] = _newPercent;
+    }
+    
+    // Remove Stuck token inside contract
+    function takeTokens(IERC20 tokenAddress, address _wallet) external nonReentrant onlyOwner{
+        IERC20 tokens = tokenAddress;
+        uint256 tokenAmt = tokens.balanceOf(address(this));
+        require(tokenAmt > 0, "PLY-20 balance is 0");
+        tokens.transfer(_wallet, tokenAmt);
+    }
+
+    // Remove Stuck BNB from the contract
+    function _forwardFunds(uint256 amount,address payable _wallet) external nonReentrant onlyOwner {
+        payable(_wallet).transfer(amount);
+    }
+
+    // Change Master Contract for Masterchef
+    function changeMasterChefContract(IMasterChef _newContract) external onlyOwner{
+        pancakeMasterChef = _newContract;
+    }
+
+    // Change Reward Token Contract for Pig Vault
+    function changeRewardContract(IERC20 _newContract) external onlyOwner{
+        rewardToken = _newContract;
+    }
+
+    /**
+        * Admin Functionality Ends Here
+    */
+    
+}

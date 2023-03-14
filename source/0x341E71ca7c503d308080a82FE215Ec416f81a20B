@@ -1,0 +1,735 @@
+pragma solidity 0.8.0;
+//SPDX-License-Identifier: UNLICENSED
+    
+interface IBEP20 {
+    /**
+    * @dev Returns the amount of tokens in existence.
+    */
+    function totalSupply() external view returns (uint256);
+    
+    /**
+    * @dev Returns the token decimals.
+    */
+    function decimals() external view returns (uint8);
+    
+    /**
+    * @dev Returns the token symbol.
+    */
+    function symbol() external view returns (string memory);
+    
+    /**
+    * @dev Returns the token name.
+    */
+    function name() external view returns (string memory);
+    
+    /**
+    * @dev Returns the bep token owner.
+    */
+    function getOwner() external view returns (address);
+    
+    /**
+    * @dev Returns the amount of tokens owned by `account`.
+    */
+    function balanceOf(address account) external view returns (uint256);
+    
+    /**
+    * @dev Moves `amount` tokens from the caller's account to `recipient`.
+    *
+    * Returns a boolean value indicating whether the operation succeeded.
+    *
+    * Emits a {Transfer} event.
+    */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    
+    /**
+    * @dev Returns the remaining number of tokens that `spender` will be
+    * allowed to spend on behalf of `owner` through {transferFrom}. This is
+    * zero by default.
+    *
+    * This value changes when {approve} or {transferFrom} are called.
+    */
+    function allowance(address _owner, address spender) external view returns (uint256);
+    
+    /**
+    * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+    *
+    * Returns a boolean value indicating whether the operation succeeded.
+    *
+    * IMPORTANT: Beware that changing an allowance with this method brings the risk
+    * that someone may use both the old and the new allowance by unfortunate
+    * transaction ordering. One possible solution to mitigate this race
+    * condition is to first reduce the spender's allowance to 0 and set the
+    * desired value afterwards:
+    * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+    *
+    * Emits an {Approval} event.
+    */
+    function approve(address spender, uint256 amount) external returns (bool);
+    
+    /**
+    * @dev Moves `amount` tokens from `sender` to `recipient` using the
+    * allowance mechanism. `amount` is then deducted from the caller's
+    * allowance.
+    *
+    * Returns a boolean value indicating whether the operation succeeded.
+    *
+    * Emits a {Transfer} event.
+    */
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    
+    /**
+    * @dev Emitted when `value` tokens are moved from one account (`from`) to
+    * another (`to`).
+    *
+    * Note that `value` may be zero.
+    */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    
+    /**
+    * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+    * a call to {approve}. `value` is the new allowance.
+    */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+/**
+ * @dev Multiple administrators interface:
+ * - Checks requiring a percentage of administrators to sign N times before executing functions
+ * - Alive signatures: in case an admin does not execute any function in X days they will be marked as inactive, this is to avoid locking the signatures in case some admin loses its keys
+ */
+abstract contract Administrable{
+    uint8 constant _percentageSignatures = 66;              // Percentage of admins required to sign
+    uint256 constant _adminExpiration = 60 days;            // Time after which an admin is marked as inactive if it does not execute any function
+    uint256 constant _signatureExpiration = 5 minutes;      // Duration of an admin signature, after which it will expire and will need to be signed again
+    uint256 constant _signatureSetExpiration = 10 minutes;  // Duration of an admins signature set, after which it will expire and will need to be validated again
+    
+    mapping (address => bool) internal _adminsMap;              // Map of admins, for fast check
+    address[] internal _adminsList;                             // Array of admins, for iteration
+    mapping (address => uint256) internal _adminsLastActivity;  // Last time an admin has called a function: admin => timestamp
+    uint8 internal _adminsSignaturesCause;                      // Cause for which the admins are currently signing: 1 = add admin, 2 = remove admin, 3 = lock contract, other values depend on implementation
+    address internal _adminSignaturesTarget;                    // User to add/remove from admins, used for signing causes 1 or 2
+    mapping (address => uint256) internal _adminsSignatures;    // Admins signature time: admin => timestamp
+    uint8 internal _adminsSignaturesSets = 0;                   // Times all the admins signed together, this is used for stronger actions which require all the admins signing together twice, three times, ...
+    uint256 internal _adminsSignaturesSetsCreation = 0;         // Timestamp of the last signature set creation
+    
+    bool internal _contractLocked = false;  // If true, the contract can be no longer executed, only reading functions are available
+    
+    event AddedAdministrator(address indexed admin);    // Called when a new admin is nominated
+    event RemovedAdministrator(address indexed admin);  // Called when an admin is removed
+
+
+    /**
+     * @dev Add the contract creator as the first admin
+     */
+    constructor (){
+        _addAdmin(msg.sender);
+    }
+    
+    /**
+     * @dev Returns true if the contract is locked and cannot be interacted with
+     */
+    function isLocked() external view returns (bool){
+        return _contractLocked;
+    }
+    
+    /**
+     * @dev Returns the addresses of the current admins.
+     */
+    function adminsList() external view returns (address[] memory){
+        return _adminsList;
+    }
+    
+    /**
+     * @dev Returns the number of current admins.
+     */
+    function adminsNumber() external view returns (uint){
+        return _adminsList.length;
+    }
+    
+    /**
+     * @dev Checks if a given user is an admin
+     */
+    function isAdmin(address user) external view returns (bool){
+        return _adminsMap[user];
+    }
+    
+    /**
+     * @dev Checks if a given admin is active
+     */
+    function isAdminActive(address admin) external view returns (bool){
+        require(_adminsMap[admin], "Administrable: passed user is not admin");
+        return (_adminsLastActivity[admin] >= block.timestamp - _adminExpiration);
+    }
+    
+    /**
+     * @dev Add a new admin
+     */
+    function addAdmin() external notLocked requireAdmin requireAdminSignatureSets(1, 1){
+        require(!_adminsMap[_adminSignaturesTarget], "Administrable: user is already admin");
+        _addAdmin(_adminSignaturesTarget);
+    }
+    
+    /**
+     * @dev Remove an existing admin, this checks for admin signatures excluding inactive admins, this prevents getting stuck if some admin lost access to their keys
+     * To remove an inactive admin the required percentage is calculated on the remaining active admins, to remove an active admin the percentage is calculated on the total number of admins
+     */
+    function removeAdmin() external notLocked requireAdmin{
+        // Check if the cause corresponds to the cause being signed
+        require(2 == _adminsSignaturesCause, "Administrable: signature cause does not correspond to the function cause");
+        
+        // Check all the admin signatures, except the inactive ones
+        uint16 activeAdmins = 0;
+        uint16 signatures = 0;
+        for(uint i = 0; i < _adminsList.length; i++){
+            // Check if the admin is active
+            if(_adminsLastActivity[_adminsList[i]] >= block.timestamp - _adminExpiration){
+                activeAdmins++;
+                
+                // Check if it signed
+                if(_adminsSignatures[_adminsList[i]] >= block.timestamp - _signatureExpiration)
+                    signatures++;
+            }
+        }
+        
+        // Check if we have a minimum amount of signatures
+        require(activeAdmins > 0, "Administrable: all admins are inactive or haven't signed");
+        require(signatures >= (((_adminsLastActivity[_adminSignaturesTarget] >= block.timestamp - _adminExpiration ? _adminsList.length : activeAdmins) * _percentageSignatures) + 50) / 100, "Administrable: not all admins signed or some signatures expired");
+        
+        // Remove the admin
+        _removeAdmin(_adminSignaturesTarget);
+        
+        // Reset the signatures and sets
+        _resetSignaturesAndSets();
+    }
+    
+    /**
+     * @dev Permanently disables the contract, leaving only read-only interactions available
+     */
+    function lockContract() public notLocked requireAdmin requireAdminSignatureSets(3, 3){
+        _contractLocked = true;
+    }
+    
+    /**
+     * @dev Retrieves the admins signatures cause
+     */
+    function adminSignaturesCause() external view returns (uint8){
+        return _adminsSignaturesCause;
+    }
+    
+    /**
+     * @dev Changes the admins signatures cause if there are no signatures already
+     */
+    function adminSetSignaturesCause(uint8 cause) external notLocked requireAdmin notSigned{
+        _adminsSignaturesCause = cause;
+        //_resetSignaturesAndSets();
+    }
+    
+    /**
+     * @dev Retrieves the user that will be targeted in the next admin signatures
+     */
+    function adminSignaturesTarget() external view returns (address){
+        return _adminSignaturesTarget;
+    }
+    
+    /**
+     * @dev Changes the admins signatures target if there are no signatures already
+     */
+    function adminSetSignaturesTarget(address user) external notLocked requireAdmin notSigned{
+        _adminSignaturesTarget = user;
+        //_resetSignaturesAndSets();
+    }
+    
+    /**
+     * @dev Returns the number of times the admins signed together
+     */
+    function adminSignatureSets() external view returns (uint8){
+        return _adminsSignaturesSets;
+    }
+    
+    /**
+     * @dev Puts an admin signature to allow calling function requiring all admins signatures
+     */
+    function adminSign() public notLocked requireAdmin{
+        // Check if the admin already signed
+        require(_adminsSignatures[msg.sender] < block.timestamp - _signatureExpiration, "Administrable: the admin already signed");
+        
+        // Update the signature
+        _adminsSignatures[msg.sender] = block.timestamp;
+    }
+    
+    /**
+     * @dev Checks if all admins signed
+     */
+    function checkSignatures() external view returns (bool){
+        return _checkSignatures();
+    }
+    
+    /**
+     * @dev Checks all the admins signatures and creates a new set if all valid, this should be called when more than 1 set is needed
+     */
+    function adminValidateSignatures() external notLocked requireAdmin{
+        // Check all the admin signatures
+        require(_checkSignatures(), "Administrable: not all admins signed or some signatures expired");
+        
+        // Check that the previous set has not expired (if any), and update time
+        if(_adminsSignaturesSets > 0 && _adminsSignaturesSetsCreation < block.timestamp - _signatureSetExpiration)
+            _adminsSignaturesSets = 1;
+        else
+            _adminsSignaturesSets++;
+        _adminsSignaturesSetsCreation = block.timestamp;
+        
+        // Reset the signatures, to allow signing again
+        _resetSignatures();
+    }
+    
+    
+    /**
+     * @dev Throws if the contract is locked
+     */
+    modifier notLocked(){
+        require(!_contractLocked, "Administrable: contract locked");
+        _;
+    }
+    
+    /**
+     * @dev Throws if called by any account other than admins, also updates last activity at the end
+     */
+    modifier requireAdmin(){
+        // Check if the user is an admin
+        require(_adminsMap[msg.sender], "Administrable: caller is not an admin");
+        
+        // Execute function
+        _;
+        
+        // Update last activity to now
+        _adminsLastActivity[msg.sender] = block.timestamp;
+    }
+    
+    /**
+     * @dev Throws if there is at least a signature set or at least one signature
+     */
+    modifier notSigned(){
+        // Check that there are no signatures sets active
+        require(_adminsSignaturesSets == 0 || _adminsSignaturesSetsCreation < block.timestamp - _signatureSetExpiration, "Administrable: one or more admin signatures sets are active");
+        
+        // Check that no signature is available
+        for(uint i = 0; i < _adminsList.length; i++){
+            require(_adminsSignatures[_adminsList[i]] < block.timestamp - _signatureExpiration, "Administrable: one or more admin signatures are active");
+        }
+        
+        _;
+    }
+    
+    /**
+     * @dev Throws if there are admin signatures or sets missing
+     */
+    modifier requireAdminSignatureSets(uint sets, uint cause){
+        // Check if the cause corresponds to the cause being signed
+        require(cause == _adminsSignaturesCause, "Administrable: signature cause does not correspond to the function cause");
+        
+        // Check if any previous signature sets expired
+        require(sets == 1 || (_adminsSignaturesSets >= sets-1 && _adminsSignaturesSetsCreation >= block.timestamp - _signatureSetExpiration), "Administrable: missing signature sets or expired signature sets");
+        
+        // If we are missing a signature set check all the admin signatures
+        if(_adminsSignaturesSets == sets-1)
+            require(_checkSignatures(), "Administrable: not all admins signed or some signatures expired");
+        
+        // Execute function
+        _;
+        
+        // Reset the signatures and sets
+        _resetSignaturesAndSets();
+    }
+    
+    
+    /**
+     * @dev Adds an admin to the list and the map
+     */
+    function _addAdmin(address user) internal{
+        _adminsList.push(user);
+        _adminsMap[user] = true;
+        _adminsLastActivity[user] = block.timestamp;
+        emit AddedAdministrator(user);
+    }
+    
+    /**
+     * @dev Removes an admin from the list and the map
+     */
+    function _removeAdmin(address admin) internal{
+        // Delete the admin from the map
+        _adminsMap[admin] = false;
+        
+        // Delete the admin from the list
+        for(uint i = 0; i < _adminsList.length; i++){
+            if(_adminsList[i] == admin){
+                // Copy the last key to the current and shorten the array length by one
+                _adminsList[i] = _adminsList[_adminsList.length-1];
+                _adminsList.pop();
+                emit RemovedAdministrator(admin);
+                return;
+            }
+        }
+    }
+    
+    /**
+     * @dev Checks if all admins signed
+     */
+    function _checkSignatures() internal view returns (bool){
+        // Retrieve the number of required admins
+        uint16 minAdmins = ((uint16(_adminsList.length) * _percentageSignatures) + 50) / 100;
+        
+        // Check the signatures
+        uint16 signatures = 0;
+        for(uint i = 0; i < _adminsList.length; i++){
+            if(_adminsSignatures[_adminsList[i]] >= block.timestamp - _signatureExpiration){
+                signatures++;
+                if(signatures >= minAdmins)
+                    return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * @dev Deletes all the signatures
+     */
+    function _resetSignatures() internal{
+        // Reset all the signatures
+        for(uint i = 0; i < _adminsList.length; i++){
+            _adminsSignatures[_adminsList[i]] = 0;
+        }
+    }
+    
+    /**
+     * @dev Deletes all the signatures and resets any previous sets
+     */
+    function _resetSignaturesAndSets() internal{
+        // Reset the sets
+        _adminsSignaturesSets = 0;
+        
+        // Reset all the signatures
+        _resetSignatures();
+    }
+}
+
+contract StoneToken is IBEP20, Administrable {
+  //uint8 _adminsSignaturesCause;   // 4 = mint, 5 = disable minting
+    
+  mapping (address => uint256) private _balances;
+
+  mapping (address => mapping (address => uint256)) private _allowances;
+
+  uint256 private _totalSupply;
+  uint8 private _decimals;
+  string private _symbol;
+  string private _name;
+  
+  bool private _canMint = true;
+  address[] _mintAddresses;
+  uint256[] _mintAmounts;
+
+  constructor() {
+    _name = "Stone Token";
+    _symbol = "STONE";
+    _decimals = 2;
+    _totalSupply = 0;
+  }
+
+  /**
+   * @dev Returns the bep token owner.
+   */
+  function getOwner() override external view returns (address) {
+    // The named owner will be the first admin, this is required by the BEP-20 standard
+    return _adminsList[0];
+  }
+
+  /**
+   * @dev Returns the token decimals.
+   */
+  function decimals() override external view returns (uint8) {
+    return _decimals;
+  }
+
+  /**
+   * @dev Returns the token symbol.
+   */
+  function symbol() override external view returns (string memory) {
+    return _symbol;
+  }
+
+  /**
+  * @dev Returns the token name.
+  */
+  function name() override external view returns (string memory) {
+    return _name;
+  }
+
+  /**
+   * @dev See {BEP20-totalSupply}.
+   */
+  function totalSupply() override external view returns (uint256) {
+    return _totalSupply;
+  }
+
+  /**
+   * @dev See {BEP20-balanceOf}.
+   */
+  function balanceOf(address account) override external view returns (uint256) {
+    return _balances[account];
+  }
+
+  /**
+   * @dev See {BEP20-transfer}.
+   *
+   * Requirements:
+   *
+   * - `recipient` cannot be the zero address.
+   * - the caller must have a balance of at least `amount`.
+   */
+  function transfer(address recipient, uint256 amount) override external notLocked returns (bool) {
+    _transfer(msg.sender, recipient, amount);
+    return true;
+  }
+
+  /**
+   * @dev See {BEP20-allowance}.
+   */
+  function allowance(address owner, address spender) override external view returns (uint256) {
+    return _allowances[owner][spender];
+  }
+
+  /**
+   * @dev See {BEP20-approve}.
+   *
+   * Requirements:
+   *
+   * - `spender` cannot be the zero address.
+   */
+  function approve(address spender, uint256 amount) override external notLocked returns (bool) {
+    _approve(msg.sender, spender, amount);
+    return true;
+  }
+
+  /**
+   * @dev See {BEP20-transferFrom}.
+   *
+   * Emits an {Approval} event indicating the updated allowance. This is not
+   * required by the EIP. See the note at the beginning of {BEP20};
+   *
+   * Requirements:
+   * - `sender` and `recipient` cannot be the zero address.
+   * - `sender` must have a balance of at least `amount`.
+   * - the caller must have allowance for `sender`'s tokens of at least
+   * `amount`.
+   */
+  function transferFrom(address sender, address recipient, uint256 amount) override external notLocked returns (bool) {
+    require(_allowances[sender][msg.sender] >= amount, "BEP20: transfer amount exceeds allowance");
+    _transfer(sender, recipient, amount);
+    _approve(sender, msg.sender, _allowances[sender][msg.sender] - amount);
+    return true;
+  }
+
+  /**
+   * @dev Atomically increases the allowance granted to `spender` by the caller.
+   *
+   * This is an alternative to {approve} that can be used as a mitigation for
+   * problems described in {BEP20-approve}.
+   *
+   * Emits an {Approval} event indicating the updated allowance.
+   *
+   * Requirements:
+   *
+   * - `spender` cannot be the zero address.
+   */
+  function increaseAllowance(address spender, uint256 addedValue) external notLocked returns (bool) {
+    _approve(msg.sender, spender, _allowances[msg.sender][spender] + addedValue);
+    return true;
+  }
+
+  /**
+   * @dev Atomically decreases the allowance granted to `spender` by the caller.
+   *
+   * This is an alternative to {approve} that can be used as a mitigation for
+   * problems described in {BEP20-approve}.
+   *
+   * Emits an {Approval} event indicating the updated allowance.
+   *
+   * Requirements:
+   *
+   * - `spender` cannot be the zero address.
+   * - `spender` must have allowance for the caller of at least
+   * `subtractedValue`.
+   */
+  function decreaseAllowance(address spender, uint256 subtractedValue) external notLocked returns (bool) {
+    _approve(msg.sender, spender, _allowances[msg.sender][spender] - subtractedValue);
+    return true;
+  }
+  
+  /**
+   * @dev Returns true if more tokens can be minted, false if it is locked
+   */
+  function canMint() external view returns (bool){
+      return _canMint;
+  }
+  
+  /**
+   * @dev Permanently disables minting of new tokens
+   */
+  function disableMinting() external notLocked requireAdmin requireAdminSignatureSets(2, 5){
+      _canMint = false;
+  }
+  
+  /**
+   * @dev Throws if minting is locked
+   */
+  modifier mintingEnabled(){
+      require(_canMint, "Token minting locked");
+      _;
+  }
+  
+  /**
+   * @dev Reads the addresses list for minting
+   */
+  function mintAddresses() external view returns (address[] memory){
+      return _mintAddresses;
+  }
+  
+  /**
+   * @dev Sets the addresses list for minting
+   */
+  function mintSetAddresses(address[] memory addresses) external notLocked requireAdmin mintingEnabled notSigned returns (bool) {
+    _mintAddresses = addresses;
+    return true;
+  }
+  
+  /**
+   * @dev Reads the amounts list for minting
+   */
+  function mintAmounts() external view returns (uint256[] memory){
+      return _mintAmounts;
+  }
+  
+  /**
+   * @dev Calculates the total amount to be minted
+   */
+  function mintTotalAmount() external view returns (uint256){
+      uint256 length = (_mintAddresses.length < _mintAmounts.length ? _mintAddresses.length : _mintAmounts.length);
+      uint256 total = 0;
+      for(uint i = 0; i < length; i++){
+          total = total + _mintAmounts[i];
+      }
+      return total;
+  }
+  
+  /**
+   * @dev Sets the amounts list for minting
+   */
+  function mintSetAmounts(uint256[] memory amounts) external notLocked requireAdmin mintingEnabled notSigned returns (bool) {
+    _mintAmounts = amounts;
+    return true;
+  }
+  
+  /**
+   * @dev Creates tokens based on the previously loaded addresses and amounts. This requires 1 signature set from admins
+   */
+  function mint() external notLocked requireAdmin mintingEnabled requireAdminSignatureSets(1, 4) returns (bool) {
+    // Min length
+    uint256 length = (_mintAddresses.length < _mintAmounts.length ? _mintAddresses.length : _mintAmounts.length);
+    for(uint i = 0; i < length; i++){
+        if(_mintAmounts[i] > 0)
+            _mint(_mintAddresses[i], _mintAmounts[i]);
+    }
+    return true;
+  }
+  
+  /**
+   * @dev Burns `amount` tokens from `msg.sender`
+   */
+  function burn(uint256 amount) external notLocked returns (bool){
+      _burn(msg.sender, amount);
+      return true;
+  }
+
+  /**
+   * @dev Moves tokens `amount` from `sender` to `recipient`.
+   *
+   * This is internal function is equivalent to {transfer}, and can be used to
+   * e.g. implement automatic token fees, slashing mechanisms, etc.
+   *
+   * Emits a {Transfer} event.
+   *
+   * Requirements:
+   *
+   * - `sender` cannot be the zero address.
+   * - `recipient` cannot be the zero address.
+   * - `sender` must have a balance of at least `amount`.
+   */
+  function _transfer(address sender, address recipient, uint256 amount) internal {
+    require(sender != address(0), "BEP20: transfer from the zero address");
+    require(recipient != address(0), "BEP20: transfer to the zero address");
+    
+    require(_balances[sender] >= amount, "BEP20: transfer amount exceeds balance");
+    _balances[sender] = _balances[sender] - amount;
+    _balances[recipient] = _balances[recipient] + amount;
+    emit Transfer(sender, recipient, amount);
+  }
+
+  /** @dev Creates `amount` tokens and assigns them to `account`, increasing
+   * the total supply.
+   *
+   * Emits a {Transfer} event with `from` set to the zero address.
+   *
+   * Requirements
+   *
+   * - `to` cannot be the zero address.
+   */
+  function _mint(address account, uint256 amount) internal {
+    require(account != address(0), "BEP20: mint to the zero address");
+
+    _totalSupply = _totalSupply + amount;
+    _balances[account] = _balances[account] + amount;
+    emit Transfer(address(0), account, amount);
+  }
+
+  /**
+   * @dev Destroys `amount` tokens from `account`, reducing the
+   * total supply.
+   *
+   * Emits a {Transfer} event with `to` set to the zero address.
+   *
+   * Requirements
+   *
+   * - `account` cannot be the zero address.
+   * - `account` must have at least `amount` tokens.
+   */
+  function _burn(address account, uint256 amount) internal {
+    require(account != address(0), "BEP20: burn from the zero address");
+
+    require(_balances[account] >= amount, "BEP20: burn amount exceeds balance");
+    _balances[account] = _balances[account] - amount;
+    _totalSupply = _totalSupply - amount;
+    emit Transfer(account, address(0), amount);
+  }
+
+  /**
+   * @dev Sets `amount` as the allowance of `spender` over the `owner`s tokens.
+   *
+   * This is internal function is equivalent to `approve`, and can be used to
+   * e.g. set automatic allowances for certain subsystems, etc.
+   *
+   * Emits an {Approval} event.
+   *
+   * Requirements:
+   *
+   * - `owner` cannot be the zero address.
+   * - `spender` cannot be the zero address.
+   */
+  function _approve(address owner, address spender, uint256 amount) internal {
+    require(owner != address(0), "BEP20: approve from the zero address");
+    require(spender != address(0), "BEP20: approve to the zero address");
+
+    _allowances[owner][spender] = amount;
+    emit Approval(owner, spender, amount);
+  }
+}
