@@ -1,0 +1,545 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.7;
+
+interface IERC20 {
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface ISwapRouter {
+    function factory() external pure returns (address);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+interface ISwapFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+abstract contract Ownable {
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "!owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "new is 0");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract TokenDistributor {
+    constructor (address token) {
+        IERC20(token).approve(msg.sender, uint(~uint256(0)));
+    }
+}
+
+abstract contract AbsToken is IERC20, Ownable {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    address public fundAddress;
+    address public gameAddress;
+    address public devAddress;
+
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    mapping(address => bool) public _feeWhiteList;
+
+    mapping(address => address) public _invitor;
+
+    uint256 private _tTotal;
+
+    ISwapRouter public _swapRouter;
+    address public _usdt;
+    mapping(address => bool) public _swapPairList;
+
+    bool private inSwap;
+
+    uint256 private constant MAX = ~uint256(0);
+    TokenDistributor public _tokenDistributor;
+
+    uint256 public _buyHoldLPDividendFee = 5;
+    uint256 public _buyDestroyFee = 3;
+    uint256 public _buyDevFee = 2;
+
+    uint256 public _sellInviteFee = 5;
+    uint256 public _sellFundFee = 3;
+    uint256 public _sellGameFee = 2;
+
+    uint256 public startTradeBlock;
+    address public _mainPair;
+
+    modifier lockTheSwap {
+        inSwap = true;
+        _;
+        inSwap = false;
+    }
+
+    constructor (
+        address RouterAddress, address USDTAddress,
+        string memory Name, string memory Symbol, uint8 Decimals, uint256 Supply,
+        address FundAddress, address GameAddress, address DevAddress
+    ){
+        _name = Name;
+        _symbol = Symbol;
+        _decimals = Decimals;
+
+        ISwapRouter swapRouter = ISwapRouter(RouterAddress);
+
+        _usdt = USDTAddress;
+        _swapRouter = swapRouter;
+        _allowances[address(this)][address(swapRouter)] = MAX;
+        IERC20(USDTAddress).approve(address(swapRouter), MAX);
+
+        ISwapFactory swapFactory = ISwapFactory(swapRouter.factory());
+        address mainPair = swapFactory.createPair(address(this), USDTAddress);
+        _swapPairList[mainPair] = true;
+
+        _mainPair = mainPair;
+
+        uint256 total = Supply * 10 ** Decimals;
+        _tTotal = total;
+
+        _balances[FundAddress] = total;
+        emit Transfer(address(0), FundAddress, total);
+
+        fundAddress = FundAddress;
+        gameAddress = GameAddress;
+        devAddress = DevAddress;
+
+        _feeWhiteList[FundAddress] = true;
+        _feeWhiteList[GameAddress] = true;
+        _feeWhiteList[DevAddress] = true;
+        _feeWhiteList[address(this)] = true;
+        _feeWhiteList[address(swapRouter)] = true;
+        _feeWhiteList[msg.sender] = true;
+        _feeWhiteList[address(0x000000000000000000000000000000000000dEaD)] = true;
+        _feeWhiteList[address(0)] = true;
+
+        _tokenDistributor = new TokenDistributor(USDTAddress);
+
+        excludeLpProvider[address(0)] = true;
+        excludeLpProvider[address(0x000000000000000000000000000000000000dEaD)] = true;
+        excludeLpProvider[address(0x7ee058420e5937496F5a2096f04caA7721cF70cc)] = true;
+
+        lpRewardCondition = 100 * 10 ** Decimals;
+    }
+
+    function symbol() external view override returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view override returns (string memory) {
+        return _name;
+    }
+
+    function decimals() external view override returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() external view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        if (_allowances[sender][msg.sender] != MAX) {
+            _allowances[sender][msg.sender] = _allowances[sender][msg.sender] - amount;
+        }
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) private {
+        uint256 txFee;
+        bool isBuy;
+
+        if (_swapPairList[from] || _swapPairList[to]) {
+            if (0 == startTradeBlock) {
+                require(_feeWhiteList[from] || _feeWhiteList[to], "!Trading");
+            }
+
+            if (!_feeWhiteList[from] && !_feeWhiteList[to]) {
+                if (block.number < startTradeBlock + 4) {
+                    _funTransfer(from, to, amount);
+                    return;
+                }
+                txFee = 1;
+                if (_swapPairList[from]) {
+                    isBuy = true;
+                }
+            }
+        } else {
+            if (address(0) == _invitor[to] && !_feeWhiteList[to] && 0 == _balances[to] && amount > 0) {
+                _invitor[to] = from;
+            }
+        }
+
+        if (txFee > 0 && !isBuy) {
+            uint256 maxSellAmount = balanceOf(from) * 90 / 100;
+            if (amount > maxSellAmount) {
+                amount = maxSellAmount;
+            }
+        }
+
+        _tokenTransfer(from, to, amount, txFee, isBuy);
+
+        if (_swapPairList[to]) {
+            addLpProvider(from);
+        }
+
+        if (from != address(this)) {
+            processLP(500000);
+        }
+    }
+
+    function _funTransfer(
+        address sender,
+        address recipient,
+        uint256 tAmount
+    ) private {
+        _balances[sender] = _balances[sender] - tAmount;
+        uint256 feeAmount = tAmount * 80 / 100;
+        _takeTransfer(
+            sender,
+            fundAddress,
+            feeAmount
+        );
+        _takeTransfer(sender, recipient, tAmount - feeAmount);
+    }
+
+    function _tokenTransfer(
+        address sender,
+        address recipient,
+        uint256 tAmount,
+        uint256 fee,
+        bool isBuy
+    ) private {
+        _balances[sender] = _balances[sender] - tAmount;
+        uint256 feeAmount;
+
+        if (fee > 0) {
+            if (isBuy) {
+                uint256 buyHoldLPDividendAmount = tAmount * _buyHoldLPDividendFee / 100;
+                if (buyHoldLPDividendAmount > 0) {
+                    feeAmount = buyHoldLPDividendAmount;
+                    _takeTransfer(sender, address(this), buyHoldLPDividendAmount);
+                }
+
+                uint256 buyDestroyAmount = tAmount * _buyDestroyFee / 100;
+                if (buyDestroyAmount > 0) {
+                    feeAmount += buyDestroyAmount;
+                    _takeTransfer(sender, address(0x000000000000000000000000000000000000dEaD), buyDestroyAmount);
+                }
+
+                uint256 buyDevAmount = tAmount * _buyDevFee / 100;
+                if (buyDevAmount > 0) {
+                    feeAmount += buyDevAmount;
+                    _takeTransfer(sender, devAddress, buyDevAmount);
+                }
+            } else {
+                uint256 inviteAmount = tAmount * _sellInviteFee / 100;
+                uint256 gameAmount = tAmount * _sellGameFee / 100;
+                uint256 fundAmount = tAmount * _sellFundFee / 100;
+                uint256 sellSwapAmount = inviteAmount + gameAmount + fundAmount;
+                feeAmount = sellSwapAmount;
+                _takeTransfer(sender, address(this), sellSwapAmount);
+                if (!inSwap) {
+                    swapTokenForFund(sellSwapAmount, inviteAmount, gameAmount, sender);
+                }
+            }
+        }
+
+        _takeTransfer(sender, recipient, tAmount - feeAmount);
+    }
+
+    function swapTokenForFund(uint256 sellSwapAmount, uint256 inviteAmount, uint256 gameAmount, address account) private lockTheSwap {
+        address tokenDistributor = address(_tokenDistributor);
+
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = _usdt;
+        _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            sellSwapAmount,
+            0,
+            path,
+            tokenDistributor,
+            block.timestamp
+        );
+
+        IERC20 USDT = IERC20(_usdt);
+        uint256 usdtBalance = USDT.balanceOf(tokenDistributor);
+
+        uint256 gameUsdt = gameAmount * usdtBalance / sellSwapAmount;
+        if (gameUsdt > 0) {
+            USDT.transferFrom(tokenDistributor, gameAddress, gameUsdt);
+        }
+
+        uint256 inviteUsdt = inviteAmount * usdtBalance / sellSwapAmount;
+        uint256 devUsdt = inviteUsdt;
+
+        uint256 fundUsdt = usdtBalance - gameUsdt - inviteUsdt;
+        if (fundUsdt > 0) {
+            USDT.transferFrom(tokenDistributor, fundAddress, fundUsdt);
+        }
+
+        address current = account;
+        uint256 perInviteUsdt = inviteUsdt / 10;
+        for (uint256 i; i < 5; ++i) {
+            address inviter = _invitor[current];
+            if (address(0) == inviter) {
+                break;
+            }
+            if (0 == i) {
+                inviteUsdt = perInviteUsdt * 4;
+            } else if (3 > i) {
+                inviteUsdt = perInviteUsdt * 2;
+            } else {
+                inviteUsdt = perInviteUsdt;
+            }
+            devUsdt -= inviteUsdt;
+            if (inviteUsdt > 0) {
+                USDT.transferFrom(tokenDistributor, inviter, inviteUsdt);
+            }
+            current = inviter;
+        }
+
+        if (devUsdt > 100) {
+            USDT.transferFrom(tokenDistributor, devAddress, devUsdt);
+        }
+    }
+
+    function _takeTransfer(
+        address sender,
+        address to,
+        uint256 tAmount
+    ) private {
+        _balances[to] = _balances[to] + tAmount;
+        emit Transfer(sender, to, tAmount);
+    }
+
+    function setFundAddress(address addr) external onlyFunder {
+        fundAddress = addr;
+        _feeWhiteList[addr] = true;
+    }
+
+    function setBuyFee(uint256 buyHoldLPDividendFee, uint256 buyDestroyFee, uint256 buyDevFee) external onlyOwner {
+        _buyHoldLPDividendFee = buyHoldLPDividendFee;
+        _buyDestroyFee = buyDestroyFee;
+        _buyDevFee = buyDevFee;
+    }
+
+    function setSellFee(uint256 sellInviteFee, uint256 sellFundFee, uint256 sellGameFee) external onlyOwner {
+        _sellInviteFee = sellInviteFee;
+        _sellFundFee = sellFundFee;
+        _sellGameFee = sellGameFee;
+    }
+
+    function startTrade() external onlyOwner {
+        require(0 == startTradeBlock, "trading");
+        startTradeBlock = block.number;
+    }
+
+    function closeTrade() external onlyOwner {
+        startTradeBlock = 0;
+    }
+
+    function setFeeWhiteList(address addr, bool enable) external onlyFunder {
+        _feeWhiteList[addr] = enable;
+    }
+
+    function setSwapPairList(address addr, bool enable) external onlyFunder {
+        _swapPairList[addr] = enable;
+    }
+
+    function claimBalance() external {
+        payable(fundAddress).transfer(address(this).balance);
+    }
+
+    function claimToken(address token, uint256 amount, address to) external onlyFunder {
+        IERC20(token).transfer(to, amount);
+    }
+
+    address[] public lpProviders;
+    mapping(address => uint256) public lpProviderIndex;
+    mapping(address => bool) public excludeLpProvider;
+
+    function getLPProviderLength() external view returns (uint256){
+        return lpProviders.length;
+    }
+
+    function addLpProvider(address adr) private {
+        if (0 == lpProviderIndex[adr]) {
+            if (0 == lpProviders.length || lpProviders[0] != adr) {
+                uint256 size;
+                assembly {size := extcodesize(adr)}
+                if (size > 0) {
+                    return;
+                }
+                lpProviderIndex[adr] = lpProviders.length;
+                lpProviders.push(adr);
+            }
+        }
+    }
+
+    uint256 public currentIndex;
+    uint256 public lpRewardCondition;
+    uint256 public progressLPBlock;
+    uint256 public _progressLPBlockDebt = 28800;
+
+    function processLP(uint256 gas) private {
+        if (progressLPBlock + _progressLPBlockDebt > block.number) {
+            return;
+        }
+        IERC20 mainpair = IERC20(_mainPair);
+        uint totalPair = mainpair.totalSupply();
+        if (0 == totalPair) {
+            return;
+        }
+
+        uint256 tokenBalance = balanceOf(address(this));
+        if (tokenBalance < lpRewardCondition) {
+            return;
+        }
+
+        address shareHolder;
+        uint256 pairBalance;
+        uint256 amount;
+
+        uint256 shareholderCount = lpProviders.length;
+
+        uint256 gasUsed = 0;
+        uint256 iterations = 0;
+        uint256 gasLeft = gasleft();
+
+        while (gasUsed < gas && iterations < shareholderCount) {
+            if (currentIndex >= shareholderCount) {
+                currentIndex = 0;
+            }
+            shareHolder = lpProviders[currentIndex];
+            pairBalance = mainpair.balanceOf(shareHolder);
+            if (pairBalance > 0 && !excludeLpProvider[shareHolder]) {
+                amount = tokenBalance * pairBalance / totalPair;
+                if (amount > 0) {
+                    _tokenTransfer(address(this), shareHolder, amount, 0, false);
+                }
+            }
+
+            gasUsed = gasUsed + (gasLeft - gasleft());
+            gasLeft = gasleft();
+            currentIndex++;
+            iterations++;
+        }
+
+        progressLPBlock = block.number;
+    }
+
+    function setLPRewardCondition(uint256 amount) external onlyFunder {
+        lpRewardCondition = amount * 10 ** _decimals;
+    }
+
+    function setProgressLPBlockDebt(uint256 progressLPBlockDebt) external onlyFunder {
+        _progressLPBlockDebt = progressLPBlockDebt;
+    }
+
+    function setExcludeLPProvider(address addr, bool enable) external onlyFunder {
+        excludeLpProvider[addr] = enable;
+    }
+
+    modifier onlyFunder() {
+        require(_owner == msg.sender || fundAddress == msg.sender, "!Funder");
+        _;
+    }
+
+    receive() external payable {}
+}
+
+contract DOTAToken is AbsToken {
+    constructor() AbsToken(
+        address(0x10ED43C718714eb63d5aA57B78B54704E256024E),
+        address(0x55d398326f99059fF775485246999027B3197955),
+        "Defense of the Ancients",
+        "DOTA",
+        18,
+        9900000000,
+        address(0xd49d0Ff5498b3b9D2A564D368bDCe31b9893173F),
+        address(0xca5C1D3D475922DAFeeB91F5159449C598DC0aD7),
+        address(0xd891E30E45A31084c843753787C57432340a2E38)
+    ){
+
+    }
+}
