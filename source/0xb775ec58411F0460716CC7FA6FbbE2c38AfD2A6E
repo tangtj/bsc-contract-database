@@ -1,0 +1,390 @@
+
+// File: contracts/CukiesNFTBridge.sol
+pragma solidity ^0.5.4;
+
+import "./ICukie.sol";
+import "./Pausable.sol";
+import "./Ownable.sol";
+import "./Context.sol";
+
+
+contract CukiesNFTBridge is Context, Pausable, Ownable {
+
+    /*** EVENTS ***/
+    event JumpInBridge(uint256 tokenId, address originOwner, address destOwner, uint8 network, uint256 createdAt);
+    event JumpOutBridge(uint256 tokenId, address destOwner, uint256 createdAt);
+
+    /*** CONFIGURATION ***/
+    ICukie private tokenContract;
+    uint256 public bridgePrice;
+    address payable beneficiary;
+
+    /*** CONSTRUCTOR ***/
+    constructor(address tokenAddress, uint256 _bridgePrice) public {
+        tokenContract = ICukie(tokenAddress);
+        bridgePrice = _bridgePrice;
+        beneficiary = _msgSender();
+    }
+
+    /*** SECURITY ***/
+    function pause() public onlyOwner whenNotPaused {
+        _pause();
+    }
+
+    function unpause() public onlyOwner whenPaused {
+        _unpause();
+    }
+
+    function changeTokenContract(address newTokenContractAddress) public onlyOwner {
+        tokenContract = ICukie(newTokenContractAddress);
+    }
+
+    function changeBridgePrice(uint256 _bridgePrice) public onlyOwner {
+        bridgePrice = _bridgePrice;
+    }
+
+    function changeBeneficiary(address payable _beneficiary) public onlyOwner {
+        beneficiary =  _beneficiary;
+    }
+
+    /*** LOGIC ***/
+    function jumpInBridge(uint256 tokenId, address destOwner, uint8 chainPrefix) public payable whenNotPaused {
+        require(_msgSender() == tokenContract.ownerOf(tokenId), "Transfer caller is not owner nor approved");
+        require(msg.value == bridgePrice, "Please submit the asking bridgePrice");
+        tokenContract.burn(tokenId);
+        beneficiary.transfer(msg.value);
+        emit JumpInBridge(tokenId, _msgSender(), destOwner, chainPrefix, block.timestamp);
+    }
+    
+    function jumpOutBridge(address destOwner, uint256 typeId, uint256 generation, uint8[6] memory skills, uint8 energy, uint8 health, uint256 tokenId) public onlyOwner {
+        tokenContract.mintWithTokenURI(destOwner, typeId, generation, skills, energy, health, tokenId);
+        emit JumpOutBridge(tokenId, destOwner, block.timestamp);
+    }
+}
+
+
+// File: contracts/ICukie.sol
+pragma solidity ^0.5.4;
+
+
+import './ITRC721.sol';
+import './ITRC721Metadata.sol';
+
+
+/**
+ * @title TRC721MetadataMintable
+ * @dev TRC721 minting logic with metadata.
+ */
+contract ICukie is ITRC721, ITRC721Metadata {
+    
+    function mintWithTokenURI(address to, uint256 typeId, uint256 generation, uint8[6] memory skills, uint8 energy, uint8 health) public returns (bool);
+    function mintWithTokenURI(address to, uint256 typeId, uint256 generation, uint8[6] memory skills, uint8 energy, uint8 health, uint256 tokenId) public returns (bool);
+    function totalSupply() public view returns (uint256);
+    function getType(uint256 _index)  view public returns (uint256 ,  
+                                                    uint256 , 
+                                                    uint256 , 
+                                                    uint256 );
+
+    function addType(uint256 probability, uint256 tokenId) public;
+    function burn(uint256 nftId) public;
+
+    function getCukie(uint256 index) view public returns (uint256, uint8, uint8, uint8, uint8, uint8, uint8, uint8, uint8);
+
+    function tokenOfOwnerByIndex(address owner, uint256 index) public view returns (uint256 tokenId);
+
+}
+
+
+// File: contracts/Pausable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (security/Pausable.sol)
+
+pragma solidity ^0.5.4;
+
+import "./Context.sol";
+
+/**
+ * @dev Contract module which allows children to implement an emergency stop
+ * mechanism that can be triggered by an authorized account.
+ *
+ * This module is used through inheritance. It will make available the
+ * modifiers `whenNotPaused` and `whenPaused`, which can be applied to
+ * the functions of your contract. Note that they will not be pausable by
+ * simply including this module, only once the modifiers are put in place.
+ */
+contract Pausable is Context {
+    /**
+     * @dev Emitted when the pause is triggered by `account`.
+     */
+    event Paused(address account);
+
+    /**
+     * @dev Emitted when the pause is lifted by `account`.
+     */
+    event Unpaused(address account);
+
+    bool private _paused;
+
+    /**
+     * @dev Initializes the contract in unpaused state.
+     */
+    constructor() internal {
+        _paused = false;
+    }
+
+    /**
+     * @dev Returns true if the contract is paused, and false otherwise.
+     */
+    function paused() public view returns (bool) {
+        return _paused;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is not paused.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    modifier whenNotPaused() {
+        require(!paused(), "Pausable: paused");
+        _;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is paused.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    modifier whenPaused() {
+        require(paused(), "Pausable: not paused");
+        _;
+    }
+
+    /**
+     * @dev Triggers stopped state.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    function _pause() internal whenNotPaused {
+        _paused = true;
+        emit Paused(_msgSender());
+    }
+
+    /**
+     * @dev Returns to normal state.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    function _unpause() internal whenPaused {
+        _paused = false;
+        emit Unpaused(_msgSender());
+    }
+}
+
+
+// File: contracts/Ownable.sol
+pragma solidity ^0.5.4;
+
+
+/**
+ * @title Ownable
+ * @dev The Ownable contract has an owner address, and provides basic authorization control
+ * functions, this simplifies the implementation of "user permissions".
+ */
+contract Ownable {
+  address private _owner;
+
+
+  event OwnershipRenounced(address indexed previousOwner);
+  event OwnershipTransferred(
+    address indexed previousOwner,
+    address indexed newOwner
+  );
+
+
+  /**
+   * @dev The Ownable constructor sets the original `owner` of the contract to the sender
+   * account.
+   */
+  constructor() public {
+    _owner = msg.sender;
+  }
+
+  /**
+   * @return the address of the owner.
+   */
+  function owner() public view returns(address) {
+    return _owner;
+  }
+
+  /**
+   * @dev Throws if called by any account other than the owner.
+   */
+  modifier onlyOwner() {
+    require(isOwner());
+    _;
+  }
+
+  /**
+   * @return true if `msg.sender` is the owner of the contract.
+   */
+  function isOwner() public view returns(bool) {
+    return msg.sender == _owner;
+  }
+
+  /**
+   * @dev Allows the current owner to relinquish control of the contract.
+   * @notice Renouncing to ownership will leave the contract without an owner.
+   * It will not be possible to call the functions with the `onlyOwner`
+   * modifier anymore.
+   */
+  function renounceOwnership() public onlyOwner {
+    emit OwnershipRenounced(_owner);
+    _owner = address(0);
+  }
+
+  /**
+   * @dev Allows the current owner to transfer control of the contract to a newOwner.
+   * @param newOwner The address to transfer ownership to.
+   */
+  function transferOwnership(address newOwner) public onlyOwner {
+    _transferOwnership(newOwner);
+  }
+
+  /**
+   * @dev Transfers control of the contract to a newOwner.
+   * @param newOwner The address to transfer ownership to.
+   */
+  function _transferOwnership(address newOwner) internal {
+    require(newOwner != address(0));
+    emit OwnershipTransferred(_owner, newOwner);
+    _owner = newOwner;
+  }
+}
+
+// File: contracts/Context.sol
+pragma solidity ^0.5.4;
+
+/*
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with GSN meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+contract Context {
+    // Empty internal constructor, to prevent people from mistakenly deploying
+    // an instance of this contract, which should be used via inheritance.
+    constructor () internal { }
+    // solhint-disable-previous-line no-empty-blocks
+
+    function _msgSender() internal view returns (address payable) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view returns (bytes memory) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+// File: contracts/ITRC721.sol
+pragma solidity ^0.5.4;
+
+import './ITRC165.sol';
+
+/**
+ * @dev Required interface of an TRC721 compliant contract.
+ */
+contract ITRC721 is ITRC165 {
+    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+    event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+    event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+
+    /**
+     * @dev Returns the number of NFTs in `owner`'s account.
+     */
+    function balanceOf(address owner) public view returns (uint256 balance);
+
+    /**
+     * @dev Returns the owner of the NFT specified by `tokenId`.
+     */
+    function ownerOf(uint256 tokenId) public view returns (address owner);
+
+    /**
+     * @dev Transfers a specific NFT (`tokenId`) from one account (`from`) to
+     * another (`to`).
+     *
+     *
+     *
+     * Requirements:
+     * - `from`, `to` cannot be zero.
+     * - `tokenId` must be owned by `from`.
+     * - If the caller is not `from`, it must be have been allowed to move this
+     * NFT by either {approve} or {setApprovalForAll}.
+     */
+    function safeTransferFrom(address from, address to, uint256 tokenId) public;
+    /**
+     * @dev Transfers a specific NFT (`tokenId`) from one account (`from`) to
+     * another (`to`).
+     *
+     * Requirements:
+     * - If the caller is not `from`, it must be approved to move this NFT by
+     * either {approve} or {setApprovalForAll}.
+     */
+    function transferFrom(address from, address to, uint256 tokenId) public;
+    function approve(address to, uint256 tokenId) public;
+    function getApproved(uint256 tokenId) public view returns (address operator);
+
+    function setApprovalForAll(address operator, bool _approved) public;
+    function isApprovedForAll(address owner, address operator) public view returns (bool);
+
+
+    function safeTransferFrom(address from, address to, uint256 tokenId, bytes memory data) public;
+}
+
+// File: contracts/ITRC721Metadata.sol
+
+pragma solidity ^0.5.4;
+/**
+ * @title TRC-721 Non-Fungible Token Standard, optional metadata extension
+ */
+import './ITRC721.sol';
+ 
+contract ITRC721Metadata is ITRC721 {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function tokenURI(uint256 tokenId) external view returns (string memory);
+}
+
+// File: contracts/ITRC165.sol
+pragma solidity ^0.5.4;
+
+/**
+ * @dev Interface of the TRC165 standard.
+ *
+ * Implementers can declare support of contract interfaces, which can then be
+ * queried by others ({TRC165Checker}).
+ *
+ * For an implementation, see {TRC165}.
+ */
+interface ITRC165 {
+    /**
+     * @dev Returns true if this contract implements the interface defined by
+     * `interfaceId`.
+     *
+     * This function call must use less than 30 000 gas.
+     */
+    function supportsInterface(bytes4 interfaceId) external view returns (bool);
+}
+

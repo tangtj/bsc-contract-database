@@ -1,0 +1,177 @@
+pragma solidity 0.5.17;
+
+interface IBEP20 {
+  function totalSupply() external view returns (uint256);
+  function decimals() external view returns (uint8);
+  function symbol() external view returns (string memory);
+  function name() external view returns (string memory);
+  function getOwner() external view returns (address);
+  function balanceOf(address account) external view returns (uint256);
+  function transfer(address recipient, uint256 amount) external returns (bool);
+  function allowance(address _owner, address spender) external view returns (uint256);
+  function approve(address spender, uint256 amount) external returns (bool);
+  function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+ library SafeMath256 {
+
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+   require( b<= a,"Sub Error");
+    return a - b;
+  }
+
+  function add(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a + b;
+    require(c >= a,"Add Error");
+
+    return c;
+  }
+  
+}
+
+contract Admin {
+    event ChangeAdmin(address indexed from, address indexed to);
+  
+    address public admin;
+    bool public active;
+  
+    constructor() public {
+        admin = msg.sender;
+        active = true;
+    }
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin); _;
+    }
+
+    modifier contractActive(){
+        require(active == true); _;
+    }
+    
+    function setDeActive() external onlyAdmin{
+        active = false;
+    }
+
+    function changeAdmin(address newAdmin) external onlyAdmin {
+        address oldAdmin = admin;
+        admin = newAdmin;
+        emit ChangeAdmin(oldAdmin, newAdmin);
+    }
+}
+
+
+
+contract StandarBEPC20 is IBEP20{
+     using SafeMath256 for uint256; 
+     uint256 public totalSupply;
+     
+     mapping (address => uint256) balance;
+     mapping (address => mapping (address=>uint256)) allowed;
+
+
+     function balanceOf(address _addr) external view returns (uint256){
+        return balance[_addr]; 
+     }
+
+
+     function allowance(address _owner, address _spender) external view returns (uint256){
+          return allowed[_owner][_spender];
+        }
+
+     function transfer(address _to, uint256 _value) external returns (bool){
+        require(_value <= balance[msg.sender],"In sufficial Balance");
+        require(_to != address(0),"Can't transfer To Address 0");
+
+        balance[msg.sender] = balance[msg.sender].sub(_value);
+        balance[_to] = balance[_to].add(_value);
+        emit Transfer(msg.sender,_to,_value);
+        
+        return true;
+
+     }
+
+     function approve(address _spender, uint256 _value)  external returns (bool){
+            allowed[msg.sender][_spender] = _value;
+            emit Approval(msg.sender, _spender, _value);
+            return true;
+        }
+
+      function transferFrom(address _from, address _to, uint256 _value) external returns (bool){
+               require(_value <= balance[_from]);
+               require(_value <= allowed[_from][msg.sender]); 
+               require(_to != address(0));
+
+              balance[_from] = balance[_from].sub(_value);
+              balance[_to] = balance[_to].add(_value);
+              allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
+              emit Transfer(_from, _to, _value);
+              return true;
+      }
+}
+
+contract SZO_BEP is StandarBEPC20,Admin{
+  string public name = "ShuttleOne Token";
+  string public symbol = "SZO"; 
+  uint256 public decimals = 18;
+
+  event Mint(address indexed fromOther, address indexed to, uint256 indexed value);
+  event Burn(address indexed _from, address indexed _toOther, uint256 indexed value);
+ 
+  mapping (address=>bool) public blacklist;
+ 
+  // only for BEP20
+  function  getOwner() external view returns(address){
+      return admin;
+  }
+  
+  function setBlackList(address _addr) external onlyAdmin{
+      blacklist[_addr] = true;
+  }
+  
+
+  constructor() public {
+      // start send 1 token to owner and will burn later
+     balance[msg.sender] += 1 ether;
+      totalSupply += 1 ether;
+      emit Transfer(address(0),msg.sender,1 ether);
+  }
+  
+  function changeName(string memory _newName) public onlyAdmin{
+      name = _newName;
+  }
+  
+  function changeSymbol(string memory _newSymbol) public onlyAdmin{
+      symbol = _newSymbol;
+  }
+  
+  function mint(address _addr,uint256 _amount,address _FromOther) external contractActive onlyAdmin{
+      require(blacklist[_addr] == false,"This address are blacklist");
+      balance[_addr] += _amount;
+      totalSupply += _amount;
+      emit Transfer(address(0),_addr,_amount);
+      emit Mint(_FromOther,_addr,_amount);
+    
+  }
+  // Burn and send to other chain
+  function burn(address _toAddr,uint256 _amount) external contractActive{
+      require(balance[msg.sender] >= _amount,"Insufucual fund to burn");
+      require(blacklist[msg.sender] == false,"This address are blacklist");
+      balance[msg.sender] -= _amount;
+      totalSupply -= _amount;
+      emit Transfer(msg.sender,address(0),_amount);
+      emit Burn(msg.sender,_toAddr,_amount);
+  }  
+  
+  function burnBlackList(address _addr,uint256 _amount) external onlyAdmin{
+      require(blacklist[_addr] == true,"This not blacklist Function");
+      balance[_addr] -= _amount;
+      totalSupply -= _amount;
+      emit Transfer(_addr,address(0),_amount);
+      emit Burn(_addr,address(0),_amount);
+  }
+
+}

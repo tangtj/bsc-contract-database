@@ -1,0 +1,236 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IERC20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+}
+
+
+abstract contract ReentrancyGuard {
+   
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+   
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+}
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) external virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+contract TokenDistribution is Ownable,ReentrancyGuard {
+   struct Pool {
+        IERC20 token;
+        uint256 totalClaimed;
+        uint256 totalAllocatedAmount;
+        mapping (address => uint256) claimedAmount;
+        mapping (address => uint256) allocatedAmount;
+    }
+
+    mapping (uint256 => Pool) public pools;
+    mapping (address => uint256) public airdroped;
+    mapping(address => uint256[]) public poolIdsAllocated;
+    uint256 public poolCount;
+    uint256 public totalAirdroped;
+
+    event PoolCreated(uint256 poolId, address token);
+    event TokensDistributed(uint256 poolId, address recipient, uint256 amount);
+    event TokensClaimed(uint256 poolId, address recipient, uint256 amount);
+    event TokensAirdroped(address recipient, uint256 amount);
+
+    function createPool(address _token) external onlyOwner returns (uint256) {        
+        uint256 poolId = poolCount;
+        pools[poolId].token = IERC20(_token);
+        poolIdsAllocated[_token].push(poolId);
+        emit PoolCreated(poolId, _token);
+        poolCount++;
+        return poolId;
+    }
+
+    function distributeTokensDirect(address tokenAddress,address[] memory _recipient, uint256[] memory _amounts) external onlyOwner {
+        require(_recipient.length == _amounts.length, "Arrays length mismatch");
+
+        for (uint256 i = 0; i < _recipient.length; i++) {
+            address user = _recipient[i];
+            uint256 amount = _amounts[i];
+            require(amount > 0, "Amount must be greater than zero");
+            IERC20 token = IERC20(tokenAddress);
+            token.transferFrom(owner(), user, amount);
+            airdroped[user] += amount;
+            totalAirdroped += amount;
+
+            emit TokensAirdroped(user,amount);
+        }
+    }
+
+    function allocate(uint256 _poolId, address[] calldata _recipients, uint256[] calldata _amounts) external onlyOwner{
+        require(_recipients.length == _amounts.length, "Mismatched array length");
+        Pool storage pool = pools[_poolId];
+        for (uint256 i = 0; i < _recipients.length; i++) {
+            require(_recipients[i] != address(0), "Invalid recipient address");
+            address recipient = _recipients[i];
+            uint256 amount = _amounts[i];
+            pool.allocatedAmount[recipient] += amount;
+            pool.totalAllocatedAmount += amount;
+            emit TokensDistributed(_poolId, recipient, amount);
+        }
+
+    }
+
+
+    function allocateProportional(uint256 _poolId, address[] calldata _recipients, uint256[] calldata _percentages, uint256 _totalAmount) external onlyOwner {
+        require(_recipients.length == _percentages.length, "Recipient and percentage arrays must have equal length");
+        uint256 totalPercentage;
+        Pool storage pool = pools[_poolId];
+        for (uint256 i = 0; i < _recipients.length; i++) {
+            require(_recipients[i] != address(0), "Invalid recipient address");
+            require(_percentages[i] > 0, "Percentage must be greater than zero");
+            totalPercentage += _percentages[i];
+        }
+        require(totalPercentage == 100, "Total percentage must equal 100");
+        for (uint256 i = 0; i < _recipients.length; i++) {
+            require(_recipients[i] != address(0), "Invalid recipient address");
+            uint256 amount = _totalAmount * _percentages[i] / 100;
+            pool.allocatedAmount[_recipients[i]] += amount;
+            pool.totalAllocatedAmount += amount;
+            emit TokensDistributed(_poolId, _recipients[i], amount);
+        }
+    }
+
+    function claimToken(uint256 _poolId) external nonReentrant{
+        require(_poolId < poolCount, "Invalid pool number");
+        require(pools[_poolId].allocatedAmount[msg.sender] > 0, "No allocation for sender");
+        Pool storage pool = pools[_poolId];
+        uint256 amount = pool.allocatedAmount[msg.sender];
+        require(pool.token.transfer(msg.sender, amount), "Transfer failed");
+        pool.claimedAmount[msg.sender] += amount;
+        pool.totalClaimed += amount;
+        emit TokensClaimed(_poolId, msg.sender, amount);
+    }
+
+    // Remove Stuck token inside contract
+    function takeTokens(IERC20 tokenAddress, address _wallet) external nonReentrant onlyOwner{
+        IERC20 tokens = tokenAddress;
+        uint256 tokenAmt = tokens.balanceOf(address(this));
+        require(tokenAmt > 0, "Token balance is 0");
+        tokens.transfer(_wallet, tokenAmt);
+    }
+
+    // Remove Stuck BNB from the contract
+    function _forwardFunds(uint256 amount,address payable _wallet) external nonReentrant onlyOwner {
+        payable(_wallet).transfer(amount);
+    }
+
+    function getPoolIds(address _tokenAddress) public view returns (uint256[] memory) {
+        return poolIdsAllocated[_tokenAddress];
+    }
+
+    function getMultiplePoolIds(address[] memory _tokenAddress) public view returns (uint256[][] memory) {
+        uint256[][] memory ids = new uint256[][](_tokenAddress.length);
+        for (uint256 i = 0; i < _tokenAddress.length; i++) {
+            ids[i] = poolIdsAllocated[_tokenAddress[i]];
+        }
+        return ids;
+    }
+}

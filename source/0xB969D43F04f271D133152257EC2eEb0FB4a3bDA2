@@ -1,0 +1,273 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.17;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    
+    function pairAddress() external view returns (address);    
+    function routerAddress() external view returns (address);    
+    function usdtAddress() external view returns (address);  
+    function getMarketAddress() external view returns (address);
+}
+
+interface ISwapRouter {
+    function factory() external pure returns (address);
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        returns (
+            uint256 amountA,
+            uint256 amountB,
+            uint256 liquidity
+        );
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+
+abstract contract Ownable {
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "!owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "new is 0");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract Dapp is Ownable {
+    
+    struct Order {
+        bool isClear;
+        bool isLpUnlocked; 
+        uint32 buyTime;  
+        uint256 usdtAmount; 
+        uint256 alreadyClaimedAmount; 
+    }
+
+    struct UserInfo {
+        uint256 zhituiUsdtAmount; 
+        uint256 jintuiUsdtAmount; 
+        uint256 teamUsdtBonusClaimed; 
+        uint256 lpAmount; 
+        address parent;   
+        address[] invited; 
+        Order[] orders;        
+    }
+
+
+    ISwapRouter private _swapRouter;
+    address private _marketAddress;
+    IERC20 private _usdtContract;
+    IERC20 private _myTokenContract;
+    IERC20 private _mainPairContract;
+
+    mapping(address => UserInfo) private _userInfo; 
+
+
+    constructor (){
+    }
+
+    
+    function _hasCircleParent(address userAddress,address parentAddress) internal view returns(bool){ 
+        while(parentAddress!=address(0)){
+            if(parentAddress == userAddress) return true;
+            parentAddress = _userInfo[parentAddress].parent;
+        }
+        return false;
+    }
+
+    function hasCircleParent(address userAddress,address parentAddress) external view returns(bool){ 
+        return _hasCircleParent(userAddress, parentAddress);
+    }
+
+    function buy(uint256 usdtAmount, address parent) external returns (bool success) {  
+        if(parent!=address(0)) require(_userInfo[parent].orders.length>0, "KL buy(): parent no order");
+        address msgSender = msg.sender;
+        require(_usdtContract.balanceOf(msgSender) >= usdtAmount, "KL buy(): insufficient balance of USDT");     
+
+        UserInfo storage userInfo = _userInfo[msgSender];            
+        
+        _usdtContract.transferFrom(msgSender, address(this), usdtAmount); 
+        userInfo.orders.push(Order(false,false, uint32(block.timestamp), usdtAmount, 0));
+        uint256 lpBalance = IERC20(_mainPairContract).balanceOf(msgSender);
+        if(usdtAmount == 150e18){
+            _myTokenContract.transfer(msgSender, 250e18); 
+            _swapRouter.addLiquidity(address(_usdtContract), address(_myTokenContract), 50e18, 250e18, 50e18, 0, msgSender, 9e11);
+            userInfo.lpAmount += (IERC20(_mainPairContract).balanceOf(msgSender) - lpBalance);
+
+        }else if(usdtAmount == 300e18){
+            _myTokenContract.transfer(msgSender, 500e18); 
+            _swapRouter.addLiquidity(address(_usdtContract), address(_myTokenContract), 100e18, 500e18, 100e18, 0, msgSender, 9e11);
+            userInfo.lpAmount += (IERC20(_mainPairContract).balanceOf(msgSender) - lpBalance);
+
+        }else if(usdtAmount == 450e18){
+            _myTokenContract.transfer(msgSender, 750e18); 
+            _swapRouter.addLiquidity(address(_usdtContract), address(_myTokenContract), 150e18, 750e18, 150e18, 0, msgSender, 9e11);
+            userInfo.lpAmount += (IERC20(_mainPairContract).balanceOf(msgSender) - lpBalance);
+        }else{
+            require(false,"KL buy(): invalid usdtAmount");
+        }
+        
+        if(parent != address(0) && userInfo.parent == address(0) && !_hasCircleParent(msgSender, parent)){
+            userInfo.parent = parent;
+            
+            _userInfo[parent].invited.push(msgSender); 
+        }
+        if(userInfo.parent!=address(0)){
+            
+            address userParent = userInfo.parent;
+            userInfo = _userInfo[userParent];
+            userInfo.zhituiUsdtAmount += usdtAmount;
+            _usdtContract.transfer(userParent, usdtAmount/25); 
+            if(userInfo.parent!=address(0)){
+                
+                userParent = userInfo.parent;
+                userInfo = _userInfo[userParent];
+                userInfo.jintuiUsdtAmount += usdtAmount;
+                _usdtContract.transfer(userParent, usdtAmount/25); 
+            }
+        }
+        return true;
+    }
+
+    function _getTeamUsdtAmount(address userAddress, uint256 level) internal view returns(uint256){
+        UserInfo memory userInfo = _userInfo[userAddress];
+        uint256 totalUsdtAmount = 0;
+        uint i;
+        for(i=0;i<userInfo.orders.length;++i){
+            if(userInfo.orders[i].isClear) break;
+            
+            totalUsdtAmount += userInfo.orders[i].usdtAmount;
+        }
+        if(level<=7){
+            
+            for(i=0;i<userInfo.invited.length;++i){
+                
+                totalUsdtAmount += _getTeamUsdtAmount(userInfo.invited[i], level + 1);
+            }
+        }
+        return totalUsdtAmount;
+    }
+
+    
+    function getTeamUsdtAmount(address userAddress) external view returns(uint256 totalUsdtAmount) {
+        return _getTeamUsdtAmount(userAddress, 0); 
+    }
+
+    function _getTeamMemberCount(address userAddress, uint32 level) internal view returns(uint256){
+        address[] memory invited = _userInfo[userAddress].invited;
+        uint256 teamMemberCount = invited.length;
+        if(level <= 7 ){
+            for(uint i=0;i<invited.length;++i){
+                teamMemberCount += _getTeamMemberCount(invited[i], level + 1);
+            }
+        }
+        return teamMemberCount;
+    }
+
+    function getTeamMemberCount(address userAddress) external view returns(uint256){
+        return _getTeamMemberCount(userAddress, 1); 
+    }
+
+    function clearOrder(address userAddress) external { 
+        require(msg.sender == address(_myTokenContract), "KL: caller should be VB Contract");
+        _clearOrder(userAddress);
+    }
+
+    function _clearOrder(address userAddress) internal { 
+        if(IERC20(_mainPairContract).balanceOf(userAddress)>=_userInfo[userAddress].lpAmount){
+            
+            return ;
+        }
+        UserInfo storage userInfo = _userInfo[userAddress]; 
+        Order storage order;
+        for(uint k=0;k<userInfo.orders.length;++k){
+            order = userInfo.orders[k];
+            if(!order.isClear){
+                order.isClear = true;
+              
+            }
+        }
+    }
+
+    function releaseBalance() external {
+        payable(_marketAddress).transfer(address(this).balance);
+    }
+
+    function releaseToken(address token, uint256 amount) external {
+        IERC20(token).transfer(_marketAddress, amount);
+    }
+
+    function getUserInfo(address userAddress) external view returns (UserInfo memory){
+        return _userInfo[userAddress];
+    }
+
+    function setMyTokenContractAddress(address contractAddress) external onlyOwner {
+        _myTokenContract = IERC20(contractAddress);
+        _mainPairContract = IERC20(_myTokenContract.pairAddress());
+        _usdtContract = IERC20(_myTokenContract.usdtAddress());
+        _swapRouter = ISwapRouter(_myTokenContract.routerAddress());
+        _marketAddress = _myTokenContract.getMarketAddress();
+        _myTokenContract.approve(address(_swapRouter),uint(~uint256(0)));
+        _usdtContract.approve(address(_swapRouter),uint(~uint256(0)));
+    }
+
+    function getMyTokenContractAddress() external view returns(address) {
+        return address(_myTokenContract);
+    }
+
+    function setMarketAddress(address addr) external onlyOwner {
+        _marketAddress = addr;
+    }
+
+    function getMarketAddress() external view returns(address){
+        return _marketAddress;
+    }
+
+    receive() external payable {}
+}

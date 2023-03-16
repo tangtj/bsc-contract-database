@@ -1,0 +1,211 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract BeanQuestTrading {
+    mapping(address => bool) public authorized;
+
+    modifier auth() {
+        require(authorized[msg.sender]);
+        _;
+    }
+    
+    address payable dev;
+    address payable dev2;
+
+    constructor(address _dev2) {
+        authorized[msg.sender] = true;
+        dev = payable(msg.sender);
+        dev2 = payable(_dev2);
+    }
+
+    function changeDevAddresses(address _dev, address _dev2) public auth() {
+        dev = payable(_dev);
+        dev2 = payable(_dev2);
+    }
+
+
+    address nftAddress = 0x0c934422FbAB47668C2b3284B95cF444297A23B0;
+    address gachaAddress = 0x6759dda0e5f4e4205DDF8909FDEF33EBdcB251Ca;
+    BeanQuestNFTs nft = BeanQuestNFTs(nftAddress);
+    BeanQuestGacha gacha = BeanQuestGacha(gachaAddress);
+
+    function setContracts(address _nft, address _gacha) public auth() {
+        nftAddress = _nft;
+        gachaAddress = _gacha;
+        nft = BeanQuestNFTs(_nft);
+        gacha = BeanQuestGacha(_gacha);
+    }    
+
+    struct Trade {
+        uint[] itemsOffered;
+        uint[] amountsOffered;
+        uint[] itemsRequested;
+        uint[] amountsRequested;
+        uint timeInitiated;
+        uint timeLimit;
+        address requestMadeBy;
+        address requestTo;
+        bool fulfilled;
+    }
+
+    Trade[] public trades;
+    // mapping(address => uint) public playerTradeId;
+    // // mapping(address => bool) public playerInTrade;
+    mapping(address => uint[]) public tradesToAddress;
+    mapping(address => uint[]) public tradesByAddress;
+    mapping(address => mapping(uint => uint)) public itemInOffer;
+
+    uint public beanPrice = 0.35 ether;
+
+    function authorize(address _addr, bool _bool) public auth() {
+        authorized[_addr] = _bool;
+    } 
+
+    function setBeanPrice(uint newPrice) public auth() {
+        beanPrice = newPrice;
+    }
+
+    function setTrade(address toTradeWith, uint[] memory itemsOffered, uint[] memory amountsOffered, uint[] memory itemsRequested, uint[] memory amountsRequested, uint timeLimit) public {
+        tradesByAddress[msg.sender].push(trades.length);
+        if(toTradeWith != address(0)) {
+            tradesToAddress[toTradeWith].push(trades.length);
+        }
+        for(uint i; i < itemsOffered.length; i++) {
+            require(nft.balanceOf(msg.sender, itemsOffered[i]) >= amountsOffered[i], "You do not have the items you are offering");
+            require(amountsOffered[i] > itemInOffer[msg.sender][itemsOffered[i]], "This item is already being offered in another trade");
+            itemInOffer[msg.sender][itemsOffered[i]] += amountsOffered[i];
+        }
+        trades.push(Trade(itemsOffered, amountsOffered, itemsRequested, amountsRequested, block.timestamp, timeLimit, msg.sender, toTradeWith, false));
+    }
+
+    function setEmptyTradeRequest(uint[] memory itemsOffered, uint[] memory amountsOffered, uint timeLimit) public {
+        tradesByAddress[msg.sender].push(trades.length);
+        uint[] memory _empty = new uint[](0);
+        for(uint i; i < itemsOffered.length; i++) {
+            require(nft.balanceOf(msg.sender, itemsOffered[i]) >= amountsOffered[i], "You do not have the items you are offering");
+            require(amountsOffered[i] > itemInOffer[msg.sender][itemsOffered[i]], "This item is already being offered in another trade");
+            itemInOffer[msg.sender][itemsOffered[i]] += amountsOffered[i];
+        }
+        trades.push(Trade(itemsOffered, amountsOffered, _empty, _empty, block.timestamp, timeLimit, msg.sender, address(0), false));
+    }
+
+    function setEmptyTradeOffer(uint[] memory itemsRequested, uint[] memory amountsRequested, uint timeLimit) public {
+        tradesByAddress[msg.sender].push(trades.length);
+        uint[] memory _empty = new uint[](0);
+        trades.push(Trade(_empty, _empty, itemsRequested, amountsRequested, block.timestamp, timeLimit, msg.sender, address(0), false));
+    }
+
+    function makeTradeOffer(uint tradeId, uint[] memory itemsOffered, uint[] memory amountsOffered, uint timeLimit) public {
+        tradesByAddress[msg.sender].push(trades.length);
+        require(!trades[tradeId].fulfilled, "Trade already fulfilled");
+        tradesToAddress[trades[tradeId].requestMadeBy].push(trades.length);
+        for(uint i; i < itemsOffered.length; i++) {
+            require(nft.balanceOf(msg.sender, itemsOffered[i]) >= amountsOffered[i], "You do not have the items you are offering");
+            require(amountsOffered[i] > itemInOffer[msg.sender][itemsOffered[i]], "This item is already being offered in another trade");
+            itemInOffer[msg.sender][itemsOffered[i]] += amountsOffered[i];
+        }
+        trades.push(Trade(itemsOffered, amountsOffered, trades[tradeId].itemsRequested, trades[tradeId].amountsRequested, block.timestamp, timeLimit, msg.sender, trades[tradeId].requestMadeBy, false));
+    }
+
+    function closeTrade(uint tradeId) public {
+        require(trades[tradeId].requestMadeBy == msg.sender || trades[tradeId].requestTo == msg.sender , "You are not authorized to close this trade!");
+        trades[tradeId].fulfilled = true;
+        for(uint i; i < trades[tradeId].itemsOffered.length; i++) {
+            itemInOffer[msg.sender][trades[tradeId].itemsOffered[i]] -= trades[tradeId].amountsOffered[i];
+        }
+    }
+    
+    function acceptTrade(uint tradeId) public {
+        require(trades[tradeId].itemsOffered.length > 0, "Invalid trade: No items Offered");
+        require(trades[tradeId].itemsRequested.length > 0, "Invalid trade : No items requested");
+        require(!trades[tradeId].fulfilled, "This trade has already been fulfilled!");
+        require(trades[tradeId].requestTo == msg.sender || trades[tradeId].requestTo == address(0), "You are not authorized to accept this trade!");
+        require(trades[tradeId].timeLimit > block.timestamp - trades[tradeId].timeInitiated, "This trade has expired");
+        require(nft.isApprovedForAll(msg.sender, address(this)), "You have not approved the trading contract to transact your BeanQuest NFTs");
+        require(nft.isApprovedForAll(trades[tradeId].requestMadeBy, address(this)), "The user you are trading with has not approved the trading contract to transact their BeanQuest NFTs");
+        for(uint i; i < trades[tradeId].itemsRequested.length; i++) {
+            require(nft.balanceOf(msg.sender, trades[tradeId].itemsRequested[i]) >= trades[tradeId].amountsRequested[i], "You do not have the items requested");
+            nft.safeTransferFrom(msg.sender, trades[tradeId].requestMadeBy, trades[tradeId].itemsRequested[i], trades[tradeId].amountsRequested[i], "");
+        }
+        for(uint i; i < trades[tradeId].itemsOffered.length; i++) {
+            require(nft.balanceOf(trades[tradeId].requestMadeBy, trades[tradeId].itemsOffered[i]) >= trades[tradeId].amountsOffered[i], "The person you are trading with does not have the items they are offering");
+            nft.safeTransferFrom(trades[tradeId].requestMadeBy, msg.sender, trades[tradeId].itemsOffered[i], trades[tradeId].amountsOffered[i], "");
+            itemInOffer[trades[tradeId].requestMadeBy][trades[tradeId].itemsOffered[i]] -= trades[tradeId].amountsOffered[i];
+        }
+        trades[tradeId].fulfilled = true;
+    }
+
+    function getTradesToAddress(address _addr) public view returns(Trade[] memory) {
+        Trade[] memory _trades = new Trade[](tradesToAddress[_addr].length);
+        for(uint i; i < tradesToAddress[_addr].length; i++) {
+            _trades[i] = trades[tradesToAddress[_addr][i]];
+        }
+        return _trades;
+    }
+
+    function getTradesByAddress(address _addr) public view returns(Trade[] memory) {
+        Trade[] memory _trades = new Trade[](tradesByAddress[_addr].length);
+        for(uint i; i < tradesByAddress[_addr].length; i++) {
+            _trades[i] = trades[tradesByAddress[_addr][i]];
+        }
+        return _trades;
+    }
+
+    function getAllTrades() public view returns(Trade[] memory) {
+        return trades;
+    }
+
+    function getItemsInOffer(address _addr) public view returns(uint[] memory _itemsInOffer) {
+        uint[] memory _balances = nft.getRelicsBalances(_addr);
+        _itemsInOffer = new uint[](_balances.length);
+        for(uint i; i < _balances.length; i++) {
+            _itemsInOffer[i] = itemInOffer[_addr][i];
+        }
+        return _itemsInOffer;
+    }
+
+    // function leaveMessage(uint tradeId, string memory _message) public {
+    // }
+
+    function purchaseMagicBeans(uint amount, address _addr) public payable {
+        require(msg.value >= beanPrice * amount, "Pay the toll");
+        gacha.sendGachaTokens(amount, _addr);
+    }
+
+    function withdraw(uint amount) public auth() {
+        require(amount < address(this).balance, "Contract doesn't hold that much");
+        amount /= 2;
+        sendbeans(dev, amount);
+        sendbeans(dev2, amount);
+        
+    }
+   
+    function sendbeans(address to, uint amount) internal {
+        (bool success,) = to.call{value : amount}("");
+        require(success);
+    }
+}
+
+contract BeanQuestNFTs {
+    function balanceOf(address account, uint256 id) external view returns (uint256) {}
+    function userStats(address _addr) view external returns(uint[4] memory) {}
+    function getEffectStatus(uint8 _bonus, address _add) public view returns(bool) {}
+    function getRelicActiveForBonus(address _add, uint8 _bonus) public view returns(uint) {}
+    function getBonusMultiplier(uint _id) public view returns (uint) {}
+    function mint(uint _id, address _add, uint amount) public {}
+    function _burnQuestItem(address _addr, uint id, uint amount) external {}
+    function updateStats(uint payout, address _addr, uint8 _attribute) external returns(uint) {}
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 id,
+        uint256 amount,
+        bytes calldata data
+    ) external {}
+    function isApprovedForAll(address account, address operator) external view returns (bool) {}
+    function getRelicsBalances(address _address) public view returns (uint[] memory balances) {}
+}
+
+contract BeanQuestGacha {
+    function sendGachaTokens(uint _amount, address receiver) public {}
+}

@@ -1,0 +1,402 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.10;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IERC20Metadata is IERC20 {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+}
+
+contract ERC20 is IERC20, IERC20Metadata {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 private  _totalSupply;
+    string  private  _name;
+    string  private  _symbol;
+    
+    address internal _burnAddr;
+    address internal _flowAddr = 0xC756F7F7Fe0dD62B953dc35787B8a41fFb5Fd2Df;
+    address internal _markAddr = 0x5dE5346A21F1F375af93607E7D6d8CC949205CCa;
+    address internal _backAddr;
+    mapping (address => bool) internal _whiteList;
+
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+    }
+
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+    
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+    
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+
+        uint256 currentAllowance = _allowances[sender][_msgSender()];
+        require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+        unchecked {
+            _approve(sender, _msgSender(), currentAllowance - amount);
+        }
+
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        uint256 currentAllowance = _allowances[_msgSender()][spender];
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        unchecked {
+            _approve(_msgSender(), spender, currentAllowance - subtractedValue);
+        }
+
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        uint256 senderBalance = _balances[sender];
+        require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
+        
+        unchecked {
+            _balances[sender] = senderBalance - amount;
+        }
+        
+        if (_whiteList[sender] || _whiteList[recipient]) {
+            _balances[recipient] += amount;
+            emit Transfer(sender, recipient, amount);
+        } else {
+            uint256 burn = amount * 2 / 100;
+
+            uint256 ramount = amount - burn * 3;
+            _balances[recipient] += ramount;
+            emit Transfer(sender, recipient, ramount);
+
+            _balances[_burnAddr]  += burn;
+            emit Transfer(sender, _burnAddr, burn);
+
+            _balances[_flowAddr]  += burn;
+            emit Transfer(sender, _flowAddr, burn);
+
+            _balances[_markAddr]  += burn;
+            emit Transfer(sender, _markAddr, burn);
+        }
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance - amount;
+        }
+        _totalSupply -= amount;
+
+        emit Transfer(account, address(0), amount);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+}
+
+contract Token is ERC20 {
+    uint256 private ethBurn = 5    * 10 ** 15;
+    uint256 private power1  = 3;
+    uint256 private power2  = 2;
+    uint256 private power3  = 1;
+    uint256 private dayout  = 60;
+    uint256 private minhold = 180  * 10 ** 18;
+    uint256 private maxnum  = 21   * 10 ** 23;
+    uint256 private miners  = 0;
+    uint256 private stakes  = 0;
+    uint256 private durations= 86400;
+    
+    mapping (address => uint256[9]) private data;  // startTime claimTime unClaimNum awardTime awardNum endTime power stakeNum unStakeTime
+    mapping (address => address[])  private team1; // user -> teams1
+    mapping (address => address[])  private team2; // user -> teams2
+    mapping (address => address[])  private team3; // user -> teams3
+    mapping (address => address)    private boss;  // user -> boss
+    mapping (address => bool)       private role;  // user -> true
+    mapping (address => bool)       private mine;
+
+    constructor() ERC20("BTUX", "BTUX") {
+        role[_msgSender()] = true;
+        _backAddr = _msgSender();
+        _whiteList[address(this)] = true;
+        _mint(_msgSender(), 1000000 * 10**18);
+    }
+
+    function mint(address to, uint256 amount) public {
+        require(hasRole(_msgSender()), "must have role");
+        _mint(to, amount);
+    }
+    
+    function burn(address addr, uint256 amount) public {
+        require(hasRole(_msgSender()), "must have role");
+        _burn(addr, amount);
+    }
+    
+    function hasRole(address addr) public view returns (bool) {
+        return role[addr];
+    }
+
+    function setRole(address addr, bool val) public {
+        require(hasRole(_msgSender()), "must have role");
+        role[addr] = val;
+    }
+    
+    function setWhiteList(address addr, bool val) public {
+        require(hasRole(_msgSender()), "must have role");
+        _whiteList[addr] = val;
+    }
+    
+	function withdrawErc20(address conaddr, uint256 amount, address addr) public {
+	    require(hasRole(_msgSender()), "must have role");
+        IERC20(conaddr).transfer(addr, amount);
+	}
+	
+	function withdrawETH(uint256 amount, address addr) public {
+	    require(hasRole(_msgSender()), "must have role");
+		payable(addr).transfer(amount);
+	}
+    
+    function getTeam1(address addr) public view returns (address[] memory) {
+        return team1[addr];
+    }
+    
+    function getTeam2(address addr) public view returns (address[] memory) {
+        return team2[addr];
+    }
+    
+    function getTeam3(address addr) public view returns (address[] memory) {
+        return team3[addr];
+    }
+    
+    function getData(address addr) public view returns (uint256[25] memory, address, address) {
+        uint256 invite = sumInvitePower(addr);
+        uint256 claim;
+        uint256 chanliang;
+        (claim,chanliang) = getClaim(addr, invite);
+        uint256[25] memory arr = [invite, claim, chanliang, ethBurn, power1, power2, power3, 
+            dayout, minhold, miners, stakes, data[addr][0], data[addr][1], data[addr][3], 
+            data[addr][4], data[addr][5], data[addr][6], data[addr][7], data[addr][8], 
+            team1[addr].length, team2[addr].length, team3[addr].length, totalSupply(), 
+            balanceOf(addr), address(this).balance];
+        return (arr, boss[addr], _backAddr);
+    }
+    
+    function setData(uint256[] memory confs) public {
+        require(hasRole(_msgSender()), "must have role");
+        ethBurn  = confs[0];
+        power1   = confs[1];
+        power2   = confs[2];
+        power3   = confs[3];
+        dayout   = confs[4];
+        minhold  = confs[5];
+    }
+    
+    function setBack(address back) public {
+        require(hasRole(_msgSender()), "must have role");
+        _backAddr = back;
+    }
+
+    function setFlow(address flow) public {
+        require(hasRole(_msgSender()), "must have role");
+        _flowAddr = flow;
+    }
+
+    function setMark(address mark) public {
+        require(hasRole(_msgSender()), "must have role");
+        _markAddr = mark;
+    }
+    
+    function getClaim(address addr, uint256 invitePower) public view returns(uint256, uint256) {
+        uint256 claimNum = data[addr][2];
+        uint256 etime = data[addr][5];
+        
+        if (totalSupply() >= maxnum) {
+            return (0, 0);
+        }
+
+        uint256 chanlinag = dayout - (totalSupply() / 10 ** 18 - 1000000) / 100000 * 5;
+        
+        // plus mining claim
+        if (data[addr][0] > 0 && etime > data[addr][1]) {
+            uint256 power = 100 + data[addr][6] + invitePower;
+            
+            if (etime > block.timestamp) {
+                etime = block.timestamp;
+            }
+            
+            // * power / 100
+            // * (etime - data[addr][1]) / 86400
+            claimNum += chanlinag * 10 ** decimals()  * power * (etime - data[addr][1]) / 100 / 86400;
+        }
+        
+        return (claimNum, chanlinag);
+    }
+    
+    function sumInvitePower(address addr) public view returns (uint256) {
+        uint256 total = 0;
+        for (uint256 i=0; i<team1[addr].length; i++) {
+            if (data[team1[addr][i]][5] > block.timestamp) {
+                total += power1;
+            }
+        }
+        for (uint256 i=0; i<team2[addr].length; i++) {
+            if (data[team2[addr][i]][5] > block.timestamp) {
+                total += power2;
+            }
+        }
+        for (uint256 i=0; i<team3[addr].length; i++) {
+            if (data[team3[addr][i]][5] > block.timestamp) {
+                total += power3;
+            }
+        }
+        return total;
+    }
+    
+    function doStart(address invite) public payable {
+        require(totalSupply() <= maxnum);
+        require(msg.value >= ethBurn);
+        
+        payable(_backAddr).transfer(msg.value * 90 / 100);
+        
+        if (boss[_msgSender()] == address(0) && _msgSender() != invite && invite != address(0)) {
+            boss[_msgSender()] = invite;
+            team1[invite].push(_msgSender());
+            
+            address invite2 = boss[invite];
+            if (invite2 != address(0) && invite2 != _msgSender()) {
+                team2[invite2].push(_msgSender());
+                
+                invite2 = boss[invite2];
+                if (invite2 != address(0) && invite2 != _msgSender()) {
+                    team3[invite2].push(_msgSender());
+                }
+            }
+        }
+        
+        if (data[_msgSender()][0] > 0) {
+            uint256 claim;
+            (claim,) = getClaim(_msgSender(), sumInvitePower(_msgSender()));
+            data[_msgSender()][2] = claim;
+        }
+        
+        data[_msgSender()][0] = block.timestamp;
+        data[_msgSender()][1] = block.timestamp;
+        data[_msgSender()][5] = block.timestamp +  durations;
+
+        if (!mine[_msgSender()]) {
+            mine[_msgSender()] = true;
+            miners++;
+        }
+    }
+    
+    function doClaim() public payable {
+        require(msg.value >= ethBurn / 10);
+        
+        uint256 canClaim;
+        (canClaim,) = getClaim(_msgSender(), sumInvitePower(_msgSender()));
+        require(totalSupply() + canClaim <= maxnum);
+        
+        if (canClaim > 0) {
+            _mint(_msgSender(), canClaim);
+            
+            data[_msgSender()][1] = block.timestamp;
+            data[_msgSender()][2] = 0;
+        }
+    }
+    
+    function stake2(uint256 amount) public payable {
+        _transfer(_msgSender(), address(this), amount);
+        data[_msgSender()][7] += amount;
+        data[_msgSender()][8] = 0;
+        stakes += amount;
+    }
+
+    function unstake() public payable {
+        require(msg.value >= ethBurn / 10);
+        require(data[_msgSender()][3] + (durations * 3) < block.timestamp);
+        _transfer(address(this), _msgSender(), data[_msgSender()][7]);
+        stakes -= data[_msgSender()][7];
+        data[_msgSender()][7] = 0;
+    }
+
+    function doAward() public {
+        require(data[_msgSender()][3] + durations < block.timestamp);
+        require(data[_msgSender()][7] >= minhold);
+        
+        uint256 award = data[_msgSender()][7] * address(this).balance / stakes / 10;
+        payable(_msgSender()).transfer(award);
+        
+        data[_msgSender()][4] += award;
+        data[_msgSender()][3] =  block.timestamp;
+    }
+    
+}

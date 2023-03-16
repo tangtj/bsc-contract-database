@@ -1,0 +1,295 @@
+/**************************
+
+    🅒🅞🅕🅕🅔🅔🅑🅔🅐🅝🅢
+
+https://www.coffeebeans.farm/
+
+ *****************************/
+
+// SPDX-License-Identifier:	AGPL-3.0-or-later
+
+pragma solidity ^0.8.0;
+
+contract CoffeeBeans {
+    uint256 private constant BEANS_REQ_PER_MINER = 1_080_000;
+    uint256 private constant INITIAL_MARKET_BEANS = 108_000_000_000;
+
+    uint256 private constant PSN = 10000;
+    uint256 private constant PSNH = 5000;
+
+    uint256 private constant getDevFeeVal = 300;
+    uint256 private constant getMarketingFeeVal = 300;
+
+    uint256 private marketBeans = INITIAL_MARKET_BEANS;
+
+    uint256 public uniqueUsers;
+    uint256 public START_TIME;
+    uint256 public channelPrice;
+
+    address public immutable owner;
+    address private devFeeReceiver;
+    address private marketingFeeReceiver;
+    address public signerAddress;
+
+    mapping(address => uint256) private academyMiners;
+    mapping(address => uint256) private claimedBeans;
+    mapping(address => uint256) private lastReplant;
+    mapping(address => bool) private hasParticipated;
+
+    mapping(address => address) private referrals;
+    mapping(string => Channel) public channelInfo;
+    mapping(address => string) public channelOwner;
+    mapping(address => bool) public botAddress;
+
+    struct Channel {
+        address receiver;
+        uint256 contribution;
+    }
+
+    error OnlyOwner(address);
+    error NonZeroMarketBeans(uint256);
+    error FeeTooLow();
+    error NotStarted(uint256);
+    error ValueTooLow();
+    error OnlyHuman(address);
+    error BuyChannelPriceError(address, uint256);
+    error ChannelAlreadyExists(address, string);
+    error ZeroAddress();
+    error AddressError(address);
+    error CallError(bytes);
+
+    event BuyChannel(address indexed user, string domain);
+    event Plant(address indexed user, string indexed domain, uint256 amount, uint256 beansBought);
+    event Harvest(address indexed user, uint256 amount, uint256 beansSold);
+
+    modifier hasStarted() {
+        if (block.timestamp < START_TIME) revert NotStarted(block.timestamp);
+        _;
+    }
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert OnlyOwner(msg.sender);
+        _;
+    }
+
+    modifier onlyHuman() {
+        if (tx.origin != msg.sender) {
+            revert OnlyHuman(msg.sender);
+        }
+        _;
+    }
+
+    constructor(address _devFeeReceiver, address _marcketFeeReceiver) payable {
+        owner = msg.sender;
+        devFeeReceiver = _devFeeReceiver;
+        marketingFeeReceiver = _marcketFeeReceiver;
+    }
+
+    function changeDevFeeReceiver(address newReceiver) external onlyOwner {
+        if (newReceiver == address(0)) revert ZeroAddress();
+        devFeeReceiver = newReceiver;
+    }
+
+    function setStartTime(uint256 time) external onlyOwner {
+        START_TIME = time;
+    }
+
+    function setBotAddress(address bot, bool flag) external onlyOwner {
+        if (isContract(bot)) {
+            botAddress[bot] = flag;
+        } else {
+            revert AddressError(bot);
+        }
+    }
+
+    function setChannelPrice(uint256 price) external onlyOwner {
+        channelPrice = price;
+    }
+
+    function buyChannel(string memory domain, address receiver) external payable {
+        if (receiver == address(0)) revert ZeroAddress();
+        if (msg.value < channelPrice) {
+            revert BuyChannelPriceError(receiver, msg.value);
+        }
+        if (isContract(receiver)) {
+            revert OnlyHuman(receiver);
+        }
+        Channel storage c = channelInfo[domain];
+        if (c.receiver != address(0)) {
+            revert ChannelAlreadyExists(receiver, domain);
+        }
+        c.receiver = receiver;
+        (bool success, bytes memory data) = devFeeReceiver.call{value: msg.value}(new bytes(0));
+        if (!success) revert CallError(data);
+        channelOwner[receiver] = domain;
+        emit BuyChannel(receiver, domain);
+    }
+
+    function init() external payable onlyOwner {
+        if (marketBeans > 0) revert NonZeroMarketBeans(marketBeans);
+    }
+
+    function fund() external payable onlyOwner {}
+
+    function bindChannelReceiver(string[] memory channels, address[] memory receivers) external onlyOwner {
+        uint256 len = channels.length;
+        for (uint256 i; i < len; i++) {
+            address r = receivers[i];
+            channelInfo[channels[i]].receiver = r;
+            channelOwner[r] = channels[i];
+
+            if (isContract(r)) {
+                revert OnlyHuman(r);
+            }
+        }
+    }
+
+    function plant(string memory channel, address ref) external payable hasStarted {
+        // require(
+        //     keccak256(abi.encodePacked(msg.sender, msg.value)).toEthSignedMessageHash().recover(v, r, s) ==
+        //         signerAddress,
+        //     "collectBeans:Invalid signarure"
+        // );
+        if (msg.value == 0) revert ValueTooLow();
+        uint256 beansBought = calculateBeansBuy(msg.value, address(this).balance - msg.value);
+        uint256 devFee = getDevFee(beansBought);
+        uint256 marketingFee = getMarketingFee(beansBought);
+        if (marketingFee == 0) revert FeeTooLow();
+        beansBought = beansBought - devFee - marketingFee;
+        Channel storage _channel = channelInfo[channel];
+        _channel.contribution += msg.value;
+
+        address channelReceiver = _channel.receiver;
+        if (channelReceiver == address(0)) {
+            (bool success, bytes memory data) = devFeeReceiver.call{
+                value: getDevFee(msg.value) + getMarketingFee(msg.value)
+            }(new bytes(0));
+            if (!success) revert CallError(data);
+        } else {
+            (bool success, bytes memory data) = devFeeReceiver.call{value: getDevFee(msg.value)}(new bytes(0));
+            if (!success) revert CallError(data);
+
+            (bool success1, bytes memory data1) = channelReceiver.call{value: getMarketingFee(msg.value)}(new bytes(0));
+            if (!success1) revert CallError(data1);
+        }
+        claimedBeans[msg.sender] += beansBought;
+        if (!hasParticipated[msg.sender]) {
+            hasParticipated[msg.sender] = true;
+            uniqueUsers++;
+        }
+        if (isContract(msg.sender)) {
+            botAddress[msg.sender] = true;
+        }
+
+        emit Plant(msg.sender, channel, msg.value, beansBought);
+        replant(ref);
+    }
+
+    function replant(address ref) public hasStarted {
+        if (ref == msg.sender || ref == address(0) || ref == address(this)) ref = marketingFeeReceiver;
+        if (referrals[msg.sender] == address(0) && referrals[msg.sender] != msg.sender) {
+            referrals[msg.sender] = ref;
+            if (!hasParticipated[ref]) {
+                hasParticipated[ref] = true;
+                uniqueUsers++;
+            }
+        }
+        uint256 beansUsed = getMyBeans(msg.sender);
+        uint256 myBeansRewards = getBeansSinceLastReplant(msg.sender);
+        claimedBeans[msg.sender] += myBeansRewards;
+
+        uint256 newMiners = claimedBeans[msg.sender] / BEANS_REQ_PER_MINER;
+        claimedBeans[msg.sender] -= (BEANS_REQ_PER_MINER * newMiners);
+        academyMiners[msg.sender] += newMiners;
+        lastReplant[msg.sender] = block.timestamp;
+
+        claimedBeans[referrals[msg.sender]] += (beansUsed / 8);
+
+        marketBeans += (beansUsed / 5);
+    }
+
+    function harvest() external hasStarted {
+        if (botAddress[msg.sender]) revert AddressError(msg.sender);
+        uint256 ownedBeans = getMyBeans(msg.sender);
+        uint256 beanValue = calculateBeansSell(ownedBeans);
+
+        uint256 devFee = getDevFee(beanValue);
+        uint256 marketingFee = getMarketingFee(beanValue);
+
+        if (academyMiners[msg.sender] == 0) uniqueUsers--;
+        claimedBeans[msg.sender] = 0;
+        lastReplant[msg.sender] = block.timestamp;
+        marketBeans += ownedBeans;
+
+        (bool success, bytes memory data) = devFeeReceiver.call{value: devFee + marketingFee}(new bytes(0));
+        if (!success) revert CallError(data);
+        (bool success1, bytes memory data1) = msg.sender.call{value: beanValue - devFee - marketingFee}(new bytes(0));
+        if (!success1) revert CallError(data1);
+
+        emit Harvest(msg.sender, beanValue, ownedBeans);
+    }
+
+    function beanRewards(address adr) external view returns (uint256) {
+        uint256 beans = getMyBeans(adr);
+        return beans == 0 ? 0 : calculateBeansSell(beans);
+    }
+
+    function calculateBeansSell(uint256 beans) public view returns (uint256) {
+        return calculateTrade(beans, marketBeans, address(this).balance);
+    }
+
+    function calculateBeansBuy(uint256 eth, uint256 contractBalance) public view returns (uint256) {
+        return calculateTrade(eth, contractBalance, marketBeans);
+    }
+
+    function getBalance()
+        external
+        view
+        returns (
+            uint256 beansBalance,
+            uint256 userBalance,
+            uint256 myMiners
+        )
+    {
+        beansBalance = address(this).balance;
+        userBalance = msg.sender.balance;
+        myMiners = academyMiners[msg.sender];
+    }
+
+    function getMyBeans(address adr) public view returns (uint256) {
+        return claimedBeans[adr] + getBeansSinceLastReplant(adr);
+    }
+
+    function getBeansSinceLastReplant(address adr) public view returns (uint256) {
+        return min(BEANS_REQ_PER_MINER, block.timestamp - lastReplant[adr]) * academyMiners[adr];
+    }
+
+    function calculateTrade(
+        uint256 rt,
+        uint256 rs,
+        uint256 bs
+    ) private pure returns (uint256) {
+        return (PSN * bs) / (PSNH + (((rs * PSN) + (rt * PSNH)) / rt));
+    }
+
+    function getDevFee(uint256 amount) private pure returns (uint256) {
+        return (amount * getDevFeeVal) / 10000;
+    }
+
+    function getMarketingFee(uint256 amount) private pure returns (uint256) {
+        return (amount * getMarketingFeeVal) / 10000;
+    }
+
+    function min(uint256 a, uint256 b) private pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+    function isContract(address addr) internal view returns (bool) {
+        uint256 size;
+        assembly {
+            size := extcodesize(addr)
+        }
+        return size > 0;
+    }
+
+    receive() external payable {}
+}
