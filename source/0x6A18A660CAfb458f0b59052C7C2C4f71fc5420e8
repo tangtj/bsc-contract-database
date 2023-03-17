@@ -1,0 +1,81 @@
+pragma solidity 0.6.12;
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address _to, uint _value) external returns (bool);
+    function transferFrom(address _from, address _to, uint _value) external returns (bool);
+}
+
+library Math {
+    function min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+}
+
+contract Ownable {
+    address public owner;
+
+    constructor () public{
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        owner = newOwner;
+    }
+}
+
+contract PrivatePlacement is Ownable {
+    IERC20 public c_erc20 = IERC20(0xf6163BE0f5464AC4D3F3A82a2C86c99d6C7494C7);
+
+    struct User {
+        uint256 amount;
+        uint256 withdrawn;
+    }
+    mapping(address => User) private users;
+
+    uint256 public startReleaseTime = 1647424800;
+    uint256 public interval = 86400;
+    uint256 public totalDays = 300; 
+   
+    function migrate(address[] memory addrs, uint256[] memory amounts) external onlyOwner {
+        uint256 len = addrs.length;
+        address addr;
+        for(uint256 i = 0; i < len; i++) {
+            addr = addrs[i];
+            users[addr].amount = amounts[i];
+        }
+    }
+
+    function release() external {
+        require(block.timestamp > startReleaseTime, "release time error");
+        uint256 num = (block.timestamp - startReleaseTime)/interval;
+        num++;
+        if (num > totalDays) {
+            num = totalDays;
+        }
+        num = users[msg.sender].amount*num/totalDays;
+        uint256 withdrawnAmount = users[msg.sender].withdrawn;
+        require(num > withdrawnAmount, "no release");
+        users[msg.sender].withdrawn = num;
+        c_erc20.transfer(msg.sender, num - withdrawnAmount);
+    }
+
+    function userInfo(address addr) external view returns(uint256, uint256, uint256) {
+        if (block.timestamp <= startReleaseTime) {
+            return (users[addr].amount, users[addr].withdrawn, 0);
+        }
+        uint256 num = (block.timestamp - startReleaseTime)/interval;
+        num++;
+        if (num > totalDays) {
+            num = totalDays;
+        }
+        num = users[msg.sender].amount*num/totalDays;
+        num -= users[msg.sender].withdrawn;
+        return (users[addr].amount, users[addr].withdrawn, num);
+    }
+}
