@@ -1,0 +1,66 @@
+pragma solidity ^0.8.7;
+
+contract FreelanceContract {
+    struct Order {
+        address payable customer;
+        string description;
+        uint256 price;
+        address payable executor;
+        bool completed;
+        bool accepted;
+    }
+
+    mapping(uint256 => Order) public orders;
+    uint256 public orderIndex;
+
+    event OrderCreated(address customer, uint256 orderId);
+    event OrderAccepted(uint256 orderId);
+    event OrderCompleted(uint256 orderId);
+    event OrderCancelled(uint256 orderId);
+
+function createOrder(string memory description, uint256 price) public {
+    orderIndex++;
+    orders[orderIndex] = Order(payable(msg.sender), description, price, payable(address(0)), false, false);
+    emit OrderCreated(msg.sender, orderIndex);
+}
+
+    function getOrders() public view returns (Order[] memory) {
+        Order[] memory result = new Order[](orderIndex);
+        for (uint256 i = 1; i <= orderIndex; i++) {
+            result[i - 1] = orders[i];
+        }
+        return result;
+    }
+
+    function takeOrder(uint256 orderId) public {
+        Order storage order = orders[orderId];
+        require(!order.completed, "Order is completed");
+        require(!order.accepted, "Order is already accepted");
+        order.executor = payable(msg.sender);
+        order.accepted = true;
+        emit OrderAccepted(orderId);
+    }
+
+    function completeOrder(uint256 orderId) public {
+        Order storage order = orders[orderId];
+        require(order.accepted, "Order is not accepted");
+        require(msg.sender == order.executor, "Only executor can complete order");
+        require(!order.completed, "Order is already completed");
+        order.completed = true;
+        order.customer.transfer(order.price);
+        emit OrderCompleted(orderId);
+    }
+
+    function cancelOrder(uint256 orderId) public {
+        Order storage order = orders[orderId];
+        require(!order.completed, "Order is completed");
+        require(msg.sender == order.customer, "Only customer can cancel order");
+        order.completed = true;
+        payable(msg.sender).transfer(order.price);
+        emit OrderCancelled(orderId);
+    }
+
+    function balanceOf(address user) public view returns (uint256) {
+        return address(user).balance;
+    }
+}

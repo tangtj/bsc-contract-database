@@ -1,0 +1,664 @@
+
+// File: contracts/internal-ctf/3-token/TokenChallenge.sol
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.16;
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "./ABC.sol";
+import "./XYZ.sol";
+
+interface IUniswapRouter {
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 InitAmountADesired,
+        uint256 InitAmountBDesired,
+        uint256 InitAmountAMin,
+        uint256 InitAmountBMin,
+        address to,
+        uint256 deadline
+    )
+    external
+    returns (
+        uint256 InitAmountA,
+        uint256 InitAmountB,
+        uint256 liquidity
+    );
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 InitAmountIn,
+        uint256 InitAmountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+}
+
+contract TokenChallenge is Ownable {
+    uint256 public constant MAX_UINT256 = type(uint256).max;
+    uint256 public constant INIT_AMOUNT = 10_000_000 ether;
+    
+    mapping(address => address) public usdAMap;
+    mapping(address => address) public abcMap;
+
+    mapping(address => address) public usdXMap;
+    mapping(address => address) public usdYMap;
+    mapping(address => address) public usdZMap;
+    mapping(address => address) public xyzMap;
+
+    mapping(address => bool) public challenged1;
+    mapping(address => bool) public challenged2;
+
+    IUniswapRouter private PANCAKE_ROUTER = IUniswapRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+    
+    modifier onlyChallenger1() {
+        require(usdAMap[msg.sender] != address(0), "only challenger");
+        require(!challenged1[msg.sender], "already challenged 1");
+        _;
+    }
+
+    modifier onlyChallenger2() {
+        require(usdXMap[msg.sender] != address(0), "only challenger");
+        require(!challenged2[msg.sender], "already challenged 2");
+        _;
+    }
+
+    modifier onlyNotRegister() {
+        require(usdAMap[msg.sender] == address(0), "already register");
+        _;
+    }
+
+    receive() external payable {}
+
+    function close() external onlyOwner {
+        payable(msg.sender).transfer(address(this).balance);
+    }
+
+    function _register1() internal {
+        USD usda = new USD("USDA", "USDA", INIT_AMOUNT);
+        ABC abc = new ABC("ABC", "ABC", INIT_AMOUNT);
+        usdAMap[msg.sender] = address(usda);
+        abcMap[msg.sender] = address(abc);
+
+        usda.transfer(msg.sender, 1 ether);
+        abc.transfer(msg.sender, 1 ether);
+
+        usda.approve(address(PANCAKE_ROUTER), MAX_UINT256);
+        abc.approve(address(PANCAKE_ROUTER), MAX_UINT256);
+        PANCAKE_ROUTER.addLiquidity(
+            address(usda),
+            address(abc),
+            usda.balanceOf(address(this)),
+            abc.balanceOf(address(this)),
+            1,
+            1,
+            address(this),
+            block.timestamp
+        );
+    }
+    
+    function _register2() internal {
+        USD usdx = new USD("USDX", "USDX", INIT_AMOUNT * 2);
+        USD usdy = new USD("USDY", "USDY", INIT_AMOUNT * 2);
+        USD usdz = new USD("USDZ", "USDZ", INIT_AMOUNT * 2);
+        XYZ xyz = new XYZ("XYZ", "XYZ", INIT_AMOUNT * 2, address(usdx));
+        usdXMap[msg.sender] = address(usdx);
+        usdYMap[msg.sender] = address(usdy);
+        usdZMap[msg.sender] = address(usdz);
+        xyzMap[msg.sender] = address(xyz);
+        
+        usdx.approve(address(PANCAKE_ROUTER), MAX_UINT256);
+        usdy.approve(address(PANCAKE_ROUTER), MAX_UINT256);
+        usdz.approve(address(PANCAKE_ROUTER), MAX_UINT256);
+        xyz.approve(address(PANCAKE_ROUTER), MAX_UINT256);
+
+        // add lp-usdx-xyz
+        PANCAKE_ROUTER.addLiquidity(address(usdx), address(xyz), INIT_AMOUNT, INIT_AMOUNT, 1, 1, address(this), block.timestamp);
+
+        // add lp-usdy-xyz
+        PANCAKE_ROUTER.addLiquidity(address(usdy), address(xyz), INIT_AMOUNT, INIT_AMOUNT, 1, 1, address(this), block.timestamp);
+
+        // add lp-usdy-usdz
+        PANCAKE_ROUTER.addLiquidity(address(usdy), address(usdz), INIT_AMOUNT, INIT_AMOUNT, 1, 1, address(this), block.timestamp);
+    }
+    
+    function register() external onlyNotRegister {
+        _register1();
+        _register2();
+    }
+
+    function withdraw1() external onlyChallenger1 {
+        address usda = usdAMap[msg.sender];
+        uint256 profitAtLeast = 700_0000 ether;
+        require(USD(usda).balanceOf(msg.sender) > 1 ether + profitAtLeast, "1 not solved");
+
+        // reward
+        payable(msg.sender).transfer(0.04 ether);
+        challenged1[msg.sender] = true;
+    }
+
+    function withdraw2() external onlyChallenger2 {
+        address usdy = usdYMap[msg.sender];
+        uint256 profitAtLeast = 1_000_000 ether; 
+        require(USD(usdy).balanceOf(msg.sender) > profitAtLeast, "2 not solved");
+
+        // reward
+        payable(msg.sender).transfer(0.08 ether);
+        challenged2[msg.sender] = true;
+    }
+}
+
+
+// File: @openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.7.0) (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: contracts/internal-ctf/3-token/ABC.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.7.0) (token/ERC20/ERC20.sol)
+pragma solidity ^0.8.0;
+import "../../pancake-swap-core/interfaces/IERC20.sol";
+
+contract ABC is IERC20 {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) private _allowance;
+    uint256 public totalSupply;
+    string public name;
+    string public symbol;
+
+    constructor(string memory _name, string memory _symbol, uint256 _totalSupply) {
+        name = _name;
+        symbol = _symbol;
+        totalSupply = _totalSupply;
+        _mint(msg.sender, _totalSupply);
+    }
+
+    function decimals() public view returns (uint8) {
+        return 18;
+    }
+
+    function transfer(address to, uint256 amount) public returns (bool) {
+        address owner = msg.sender;
+        _transfer(owner, to, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowance[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        address owner = msg.sender;
+        _approve(owner, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public returns (bool) {
+        address spender = msg.sender;
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+
+        uint256 _burnAmount = amount / 10;
+        burn(from, _burnAmount);
+        amount = amount - _burnAmount;
+
+        uint256 fromBalance = balanceOf[from];
+        require(fromBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            balanceOf[from] = fromBalance - amount;
+        }
+        balanceOf[to] += amount;
+
+        emit Transfer(from, to, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        totalSupply += amount;
+        balanceOf[account] += amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+    function burn(address account, uint256 amount) public {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        uint256 accountBalance = balanceOf[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            balanceOf[account] = accountBalance - amount;
+        }
+        totalSupply -= amount;
+
+        emit Transfer(account, address(0), amount);
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowance[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _spendAllowance(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(currentAllowance >= amount, "ERC20: insufficient allowance");
+        unchecked {
+            _approve(owner, spender, currentAllowance - amount);
+        }
+        }
+    }
+
+}
+
+contract USD is IERC20 {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) private _allowance;
+    uint256 public totalSupply;
+    string public name;
+    string public symbol;
+
+    constructor(string memory _name, string memory _symbol, uint256 _totalSupply) {
+        name = _name;
+        symbol = _symbol;
+        totalSupply = _totalSupply;
+        _mint(msg.sender, _totalSupply);
+    }
+
+    function decimals() public view returns (uint8) {
+        return 18;
+    }
+
+    function transfer(address to, uint256 amount) public returns (bool) {
+        address owner = msg.sender;
+        _transfer(owner, to, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowance[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        address owner = msg.sender;
+        _approve(owner, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public returns (bool) {
+        address spender = msg.sender;
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+
+        uint256 fromBalance = balanceOf[from];
+        require(fromBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            balanceOf[from] = fromBalance - amount;
+        }
+        balanceOf[to] += amount;
+
+        emit Transfer(from, to, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        totalSupply += amount;
+        balanceOf[account] += amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        uint256 accountBalance = balanceOf[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            balanceOf[account] = accountBalance - amount;
+        }
+        totalSupply -= amount;
+
+        emit Transfer(account, address(0), amount);
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowance[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _spendAllowance(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(currentAllowance >= amount, "ERC20: insufficient allowance");
+        unchecked {
+            _approve(owner, spender, currentAllowance - amount);
+        }
+        }
+    }
+
+}
+
+
+// File: contracts/internal-ctf/3-token/XYZ.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.7.0) (token/ERC20/ERC20.sol)
+pragma solidity ^0.8.0;
+//import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../../pancake-swap-core/interfaces/IERC20.sol";
+import "../../v2-periphery/interfaces/IUniswapV2Factory.sol";
+
+contract XYZ is IERC20 {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) private _allowance;
+    uint256 public totalSupply;
+    string public name;
+    string public symbol;
+    address public uniswapV2Pair;
+    IUniswapV2Factory public PANCAKE_FACTORY = IUniswapV2Factory(0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73);
+    address public owner;
+
+    constructor(string memory _name, string memory _symbol, uint256 _totalSupply, address usdx) {
+        name = _name;
+        symbol = _symbol;
+        totalSupply = _totalSupply;
+        _mint(msg.sender, _totalSupply);
+        owner = msg.sender;
+        uniswapV2Pair = PANCAKE_FACTORY.createPair(address(this), usdx);
+    }
+
+    function decimals() public view returns (uint8) {
+        return 18;
+    }
+
+    function transfer(address to, uint256 amount) public returns (bool) {
+        address owner = msg.sender;
+        _transfer(owner, to, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowance[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        address owner = msg.sender;
+        _approve(owner, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public returns (bool) {
+        address spender = msg.sender;
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+
+        uint256 fee = 0;
+
+        // take sell fee to the token contract
+        if (from != owner && to == uniswapV2Pair) {
+            fee = amount * 2 / 10;
+        }
+
+        uint256 fromBalance = balanceOf[from];
+        require(fromBalance >= amount + fee, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            balanceOf[from] = fromBalance - amount - fee;
+        }
+        balanceOf[to] += amount;
+        balanceOf[address(this)] += fee;
+
+        emit Transfer(from, to, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        totalSupply += amount;
+        balanceOf[account] += amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowance[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _spendAllowance(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(currentAllowance >= amount, "ERC20: insufficient allowance");
+        unchecked {
+            _approve(owner, spender, currentAllowance - amount);
+        }
+        }
+    }
+
+}
+
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+// File: contracts/pancake-swap-core/interfaces/IERC20.sol
+pragma solidity >=0.5.0;
+
+interface IERC20 {
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+
+    function approve(address spender, uint value) external returns (bool);
+    function transfer(address to, uint value) external returns (bool);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+}
+
+
+// File: contracts/v2-periphery/interfaces/IUniswapV2Factory.sol
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity >=0.5.0;
+
+interface IUniswapV2Factory {
+    event PairCreated(address indexed token0, address indexed token1, address pair, uint);
+
+    function feeTo() external view returns (address);
+    function feeToSetter() external view returns (address);
+    function migrator() external view returns (address);
+
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+    function allPairs(uint) external view returns (address pair);
+    function allPairsLength() external view returns (uint);
+
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+
+    function setFeeTo(address) external;
+    function setFeeToSetter(address) external;
+    function setMigrator(address) external;
+}
+
