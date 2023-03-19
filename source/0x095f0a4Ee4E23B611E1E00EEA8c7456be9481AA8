@@ -1,0 +1,313 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.5.17;
+
+library SafeMath {
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b);
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0);
+        // Solidity only automatically asserts when dividing by 0
+        uint256 c = a / b;
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a);
+        uint256 c = a - b;
+        return c;
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a);
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b != 0);
+        return a % b;
+    }
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address who) external view returns (uint256);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function approve(address spender, uint256 value) external returns (bool);
+
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+contract ERC20 is IERC20 {
+    using SafeMath for uint256;
+    mapping(address => uint256) public _balances;
+    mapping(address => mapping(address => uint256)) public _allowed;
+    uint256 public _totalSupply;
+
+
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address owner) public view returns (uint256) {
+        return _balances[owner];
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowed[owner][spender];
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        _transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        require(spender != address(0));
+        _allowed[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(value <= _allowed[from][msg.sender]);
+        _allowed[from][msg.sender] = _allowed[from][msg.sender].sub(value);
+        _transfer(from, to, value);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        require(spender != address(0));
+        _allowed[msg.sender][spender] = (_allowed[msg.sender][spender].add(addedValue));
+        emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        require(spender != address(0));
+        _allowed[msg.sender][spender] = (_allowed[msg.sender][spender].sub(subtractedValue));
+        emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
+        return true;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal {
+        require(to != address(0));
+        require(value <= _balances[from]);
+        _balances[from] = _balances[from].sub(value);
+        _balances[to] = _balances[to].add(value);
+        emit Transfer(from, to, value);
+    }
+
+}
+
+
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+}
+
+interface IUniswapV2Router {
+    function factory() external pure returns (address);
+}
+
+contract BHCToken is ERC20 {
+
+    string public name;
+    string public symbol;
+    uint8 public decimals = 18;
+    address public owner;
+
+    address public reFlowAddress;
+    address public marketingAddress;
+    address public fundAddress;
+    address public burnAddress;
+    address public lpAddress;
+    address public receiveAddress;
+
+   
+    uint16 public lpRate = 5;
+   
+    uint16 public reFlowRate = 4;
+   
+    uint16 public marketingRate = 1;
+   
+    uint16 public fundRate = 1;
+   
+    uint16 public burnRate = 3;
+   
+    uint16 public transferRate = 86;
+  
+    uint16 public maxRate = 100;
+
+    uint256 public lpTotalReward;
+    uint256 public btachId;
+    bool public isOpen;
+    uint256 public burnQuantity;
+    uint256 public maxBurnQuantity;
+
+   
+    mapping(address => bool) public blackMap;
+   
+    mapping(address => bool) public whiteMap;
+
+    event LPDividend(address user, uint256 amount, uint256 timestamp);
+
+    constructor() public {
+        name = "Bounty Hunter";
+        symbol = "BHC";
+        _totalSupply = 100000000000 * 1e18;
+        owner = msg.sender;
+        receiveAddress = 0x50b4B71B0FF911032472310202739B44760661EE;
+        whiteMap[receiveAddress] = true;
+        _balances[receiveAddress] = 10000000000 * 1e18;
+        emit Transfer(address(0), owner, 100000000000 * 1e18);
+
+        burnAddress = 0x000000000000000000000000000000000000dEaD;
+        _balances[burnAddress] = 90000000000 * 1e18;
+        emit Transfer(owner, burnAddress, 90000000000 * 1e18);
+        _totalSupply = _totalSupply.sub(90000000000 * 1e18);
+
+        reFlowAddress = 0xBe524E106561D8F7BCDB23589946b36fc39B3C4E;
+        marketingAddress = 0x8CC99a84a5656410c00AdE4D00F4089aCcfDd10C;
+        fundAddress = 0xB3635ae8EF0E1c25A0b9a39faF1C6C4236017B1c;
+
+        maxBurnQuantity = 9900000000 * 1e18;
+        whiteMap[owner] = true;
+
+        
+        IUniswapV2Router _uniswapV2Router = IUniswapV2Router(
+            0x10ED43C718714eb63d5aA57B78B54704E256024E
+        );
+       
+        lpAddress = IUniswapV2Factory(_uniswapV2Router.factory()).createPair(
+            address(this),
+            0x55d398326f99059fF775485246999027B3197955
+        );
+    }
+
+    modifier onlyOwner{
+        require(msg.sender == owner, "only owner operator");
+        _;
+    }
+
+   
+    function initAddress(address _lpAddress, address _marketingAddress,
+        address _fundAddress, address _burnAddress, address _reFlowAddress) onlyOwner public {
+        lpAddress = _lpAddress;
+        marketingAddress = _marketingAddress;
+        fundAddress = _fundAddress;
+        burnAddress = _burnAddress;
+        reFlowAddress = _reFlowAddress;
+    }
+
+    function initRate(uint16 _lpRate, uint16 _reFlowRate,
+        uint16 _marketingRate, uint16 _fundRate, uint16 _burnRate) onlyOwner public {
+        lpRate = _lpRate;
+        reFlowRate = _reFlowRate;
+        marketingRate = _marketingRate;
+        fundRate = _fundRate;
+        burnRate = _burnRate;
+    }
+
+ 
+    function open(bool _isOpen) onlyOwner public {
+        isOpen = _isOpen;
+    }
+
+    function addWhiteAddress(address user, bool _white) onlyOwner public {
+        whiteMap[user] = _white;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal {
+        require(to != address(0));
+        require(value <= _balances[from]);
+        require(!blackMap[from], "Prohibited Transactions");
+        require(!blackMap[msg.sender], "Prohibited Transactions");
+
+        if (whiteMap[from] || whiteMap[to]) {
+            _balances[from] = _balances[from].sub(value);
+            _balances[to] = _balances[to].add(value);
+            emit Transfer(from, to, value);
+        } else {
+            require(isOpen, "Prohibited Transactions");
+
+            uint256 lpAmount = value.mul(lpRate).div(maxRate);
+            uint256 reFlowAmount = value.mul(reFlowRate).div(maxRate);
+            uint256 marketingAmount = value.mul(marketingRate).div(maxRate);
+            uint256 fundAmount = value.mul(fundRate).div(maxRate);
+            uint256 burnAmount = value.mul(burnRate).div(maxRate);
+            burnAmount = burnQuantity.add(burnAmount) > maxBurnQuantity ? maxBurnQuantity.sub(burnQuantity) : burnAmount;
+           
+            burnQuantity += burnAmount;
+            
+            uint256 transferAmount = value.sub(lpAmount).sub(reFlowAmount).sub(marketingAmount);
+            transferAmount = transferAmount.sub(fundAmount).sub(burnAmount);
+            _balances[from] = _balances[from].sub(value);
+            _balances[to] = _balances[to].add(transferAmount);
+            emit Transfer(from, to, transferAmount);
+           
+            lpTotalReward += lpAmount;
+            _balances[address(this)] = _balances[address(this)].add(lpAmount);
+            emit Transfer(from, address(this), lpAmount);
+
+           
+            if (burnAmount > 0) {
+                _balances[burnAddress] = _balances[burnAddress].add(burnAmount);
+                emit Transfer(from, burnAddress, burnAmount);
+                _totalSupply = _totalSupply.sub(burnAmount);
+            }
+           
+            _balances[marketingAddress] = _balances[marketingAddress].add(marketingAmount);
+            emit Transfer(from, marketingAddress, marketingAmount);
+           
+            _balances[reFlowAddress] = _balances[reFlowAddress].add(reFlowAmount);
+            emit Transfer(from, reFlowAddress, reFlowAmount);
+           
+            _balances[fundAddress] = _balances[fundAddress].add(fundAmount);
+            emit Transfer(from, fundAddress, fundAmount);
+        }
+    }
+
+    function lpDayReward(address[] memory _users, uint256 _btachId) public onlyOwner {
+        require(btachId != _btachId, "Repeat operation");
+        btachId = _btachId;
+        uint256 lpRewardAmount = lpTotalReward;
+        lpTotalReward = 0;
+        if (lpRewardAmount > 0) {
+           
+            uint256 totalSupply = IERC20(lpAddress).totalSupply();
+            if (totalSupply > 0) {
+                for (uint256 i = 0; i < _users.length; i++) {
+                    address _user = _users[i];
+                   
+                    uint256 balance = IERC20(lpAddress).balanceOf(_user);
+                    if (balance > 0) {
+                        uint256 amount = balance.mul(lpRewardAmount).div(totalSupply);
+                        _balances[_user] = _balances[_user].add(amount);
+                        emit Transfer(address(this), _user, amount);
+                    }
+                }
+            }
+        } 
+    }
+
+
+}
