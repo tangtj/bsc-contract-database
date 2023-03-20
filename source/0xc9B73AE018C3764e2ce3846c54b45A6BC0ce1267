@@ -1,0 +1,356 @@
+// SPDX-License-Identifier: MIT
+// ERC20 Token for Staking 0xc9B73AE018C3764e2ce3846c54b45A6BC0ce1267
+pragma solidity ^0.8.4;
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+interface IERC20 {
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+    
+    function increaseAllowance(address spender, uint256 addedValue) external  returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    
+    function name() external  view  returns(string memory);
+    function symbol() external view   returns (string memory);
+    function decimals() external view  returns (uint8);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+
+contract ERC20 is Context, IERC20 {
+    using SafeMath for uint256;
+    mapping (address => uint256) private _balances;
+
+    mapping (address => mapping (address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+    uint8 private _decimals;
+
+    string private _name;
+    string private _symbol;
+
+    address deadAddress = 0x000000000000000000000000000000000000dEaD;
+
+
+    mapping (address => bool ) public admin;
+    address public rewardAddress = 0x8DC8b0eB6DFC7d081e26407C4Dc880f1c7C5f96A; // GreenAir Token wallet creator
+
+    uint256 constant public MAX_SUPPLY = 200_000_000 * (10 ** 12);
+    uint256 public END_REWARD = 1673308800;//9 Jan 2023 24:00:00 UTC
+    uint256 public greenTokenReward = 2 ; // 2% each 30 days
+   
+    mapping (address => uint256 ) public claimedToken;
+    mapping (address => uint256 []) public claimedTokenDate;
+    uint256 public intervalRewardTime = 30 days ;// 60*60*24*30    
+    address tokenAddress = 0xafcd56e0D0aD1a769db98F14D4149A78F52CE620;// GreenAir Token address
+    IERC20 public greenToken = IERC20(tokenAddress);
+    mapping (address => uint256 ) public stakedToken;
+    mapping (address => uint256 ) public stakedTokenIds;
+    bool public stakingIsLive = true;
+ 
+    mapping (address => mapping (uint256 => uint256))  stakeDateOwner;
+    mapping (address => mapping (uint256 => uint256))  stakeAmountOwner;
+
+    constructor ( string memory name_, string memory symbol_, uint8 decimals_) {
+        _name = name_;
+        _symbol = symbol_;
+        _decimals = decimals_;
+        admin[msg.sender] = true;
+        admin[rewardAddress] = true;
+    }
+   
+    /* DEFAULT FUNCTIONS*/
+    
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function allowance(address Owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[Owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+
+        uint256 currentAllowance = _allowances[sender][_msgSender()];
+        require(((currentAllowance >= amount)), "Transfer amount exceeds allowance ");
+        unchecked {
+            _approve(sender, _msgSender(), currentAllowance.sub(amount));
+             }
+        return true;
+    }
+  
+    function increaseAllowance(address spender, uint256 addedValue) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        uint256 currentAllowance = _allowances[_msgSender()][spender];
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        unchecked {
+            _approve(_msgSender(), spender, currentAllowance.sub(subtractedValue));
+        }
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        _beforeTokenTransfer(sender, recipient, amount);
+
+        uint256 senderBalance = _balances[sender];
+        require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            _balances[sender] = senderBalance.sub(amount);
+        }
+        _balances[recipient] = _balances[recipient].add(amount);
+
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _beforeTokenTransfer(address(0), account, amount);
+
+        _totalSupply = _totalSupply.add(amount);
+        _balances[account] = _balances[account].add(amount);
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _beforeTokenTransfer(account, address(0), amount);
+
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance.sub(amount);
+        }
+        _totalSupply = _totalSupply.sub(amount);
+
+        emit Transfer(account, deadAddress, amount);
+    }
+
+   
+    function _approve(address Owner, address spender, uint256 amount) internal virtual {
+        require(Owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[Owner][spender] = amount;
+        emit Approval(Owner, spender, amount);
+    }
+
+
+    function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual { }
+    
+    function min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+    function max(uint256 a, uint256 b) internal pure returns (uint256) {        
+        return a >= b ? a : b; 
+    }
+
+    /* Function get staking green token and Mint green Stake Token*/
+    function stakeGreenMint (uint256 stake) public returns (bool){
+        require(totalSupply()<=MAX_SUPPLY, "Staking no more available");
+        require(stake > 0, "Not enough Token to stake");
+        require(stakingIsLive == true, "Not enough Token to stake");
+        address _staker = msg.sender;
+       // uint256 stake = greenToken.balanceOf(_staker);
+        stakedToken[_staker] += stake;
+        stakedTokenIds[_staker]+=1;
+        stakeDateOwner[_staker][stakedTokenIds[_staker]] = block.timestamp;
+        stakeAmountOwner[_staker][stakedTokenIds[_staker]] = stake;
+        greenToken.transferFrom(_staker,address(this), stake);
+
+        _mint(_staker,stake);
+        return true;
+    }
+     /* Function unstake burns Green Stake Token and release Green token */
+
+    function unstakeClaimPlusReward () public virtual returns (bool exito){
+        address _staker = msg.sender;
+        uint256 balanceGreenStake = balanceOf(_staker);
+        uint256 rewardStaking = claimCalculateOwnerReward (_staker);
+        
+        claimedToken[_staker] = claimedToken[_staker].add(rewardStaking);
+        stakedTokenIds[_staker] = 0;
+            
+            _burn(_staker,balanceGreenStake);
+            greenToken.transfer(_staker, balanceGreenStake); 
+            greenToken.transferFrom(rewardAddress,_staker, rewardStaking); 
+            claimedTokenDate[_staker].push(block.timestamp);
+       return true;
+    }
+    /* Calculate Staking Reward : 2% every 30 days */
+    function claimCalculateOwnerReward (address _staker) public view returns (uint256 ){
+    uint256 reward = 0;
+          if(stakedTokenIds[_staker]>0){ 
+            for (uint i=1; i <= stakedTokenIds[_staker]; i++) {
+                
+                uint256 timeNow = min(block.timestamp, END_REWARD);
+                uint256 timeToken = stakeDateOwner[_staker][i];
+                    if(timeToken>0){
+                uint256 months = (timeNow.sub(timeToken )).div(intervalRewardTime);
+
+                if(months>0){
+                uint amount = stakeAmountOwner [_staker][i];
+                reward += (amount.mul(months) * greenTokenReward).div(100);               
+                        }
+                    }
+                }
+        }
+       return max(0,reward);
+    }
+function setAdmin (address _admin, bool _isOn) public  returns (bool ){
+    require(admin[msg.sender] , "Only Admin can act here");
+    admin[_admin] = _isOn;
+    return _isOn;
+}
+function setWalletReward (address _adminWallet) public  returns (bool ){
+    require(admin[msg.sender] , "Only Admin can act here");
+    rewardAddress = _adminWallet;
+    return true;
+}
+function setEndReward (uint256 _date) public  returns (bool ){
+    require(admin[msg.sender] , "Only Admin can act here");
+    END_REWARD = _date;
+    return true;
+}
+function setTokenReward (uint256 _reward) public  returns (bool ){
+    require(admin[msg.sender] , "Only Admin can act here");
+    greenTokenReward = _reward;
+    return true;
+}
+function setIntervalRewardTime (uint256 _time) public  returns (bool ){
+    require(admin[msg.sender] , "Only Admin can act here");
+    intervalRewardTime = _time;
+    return true;
+}
+function setStakingIsLive (bool _isLive) public  returns (bool ){
+    require(admin[msg.sender] , "Only Admin can act here");
+    stakingIsLive = _isLive;
+    return _isLive;
+}
+/* in case of any issue the tokens will don't remain blocked in the contract */
+function emergencyWithdraw (uint256 _withdraw) public  returns (bool ){
+    require(admin[msg.sender] , "Only Admin can act here");
+    require( stakingIsLive == false , "Staking");
+    greenToken.transfer(rewardAddress, _withdraw); 
+    return true;
+}
+receive() external payable {revert();}
+
+}
+contract STAKE_Token is ERC20 {
+    
+  //Name symbol decimals  
+    constructor() ERC20("GreenAir Stake", "GREEN_STAKE",12)  {
+    }
+}
