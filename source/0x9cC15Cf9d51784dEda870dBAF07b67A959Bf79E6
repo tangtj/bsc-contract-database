@@ -1,0 +1,275 @@
+// SPDX-License-Identifier: UNLICENSED
+
+pragma solidity ^0.8.19;
+
+interface IUniswapV2Router {
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+}
+
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+}
+
+contract SuperLuigi {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => bool) private _isExcludedFromFeeAndMaxWallet;
+    mapping(address => bool) private _isAutomatedMarketMaker;
+
+    address private _owner;
+
+    address public devWallet;
+    address public uniswapV2Pair;
+    IUniswapV2Router public uniswapV2Router;
+
+    uint256 private _totalSupply;
+
+    uint256 public maxWallet;
+
+    uint256 public buyDevFee;
+    uint256 public buyBurnFee;
+    uint256 public buyTotalFee;
+    uint256 public sellDevFee;
+    uint256 public sellBurnFee;
+    uint256 public sellTotalFee;
+    uint256 public devFeeTokensToSwap;
+
+    uint8 private _decimals = 9;
+
+    string private _name;
+    string private _symbol;
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender);
+        _;
+    }
+
+    event Approval(
+        address indexed from,
+        address indexed spender,
+        uint256 amount
+    );
+    event Transfer(address indexed from, address indexed to, uint256 amount);
+
+    constructor(
+        string memory name_,
+        string memory symbol_,
+        uint256 totalSupply_,
+        address owner_,
+        uint256 _maxWallet
+    ) {
+        _name = name_;
+        _symbol = symbol_;
+        _totalSupply = totalSupply_;
+        maxWallet = _maxWallet;
+        _balances[owner_] = totalSupply_;
+        emit Transfer(address(0), owner_, totalSupply_);
+        _owner = owner_;
+        devWallet = owner_;
+        buyDevFee = 8;
+        buyBurnFee = 1;
+        buyTotalFee = 9;
+        sellDevFee = 8;
+        sellBurnFee = 1;
+        sellTotalFee = 9;
+        uniswapV2Router = IUniswapV2Router(
+            0x10ED43C718714eb63d5aA57B78B54704E256024E
+        );
+        address uniswapV2Factory = 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73;
+        uniswapV2Pair = IUniswapV2Factory(uniswapV2Factory).createPair(
+            0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c,
+            address(this)
+        );
+        _isAutomatedMarketMaker[uniswapV2Pair] = true;
+        _isExcludedFromFeeAndMaxWallet[msg.sender] = true;
+        _isExcludedFromFeeAndMaxWallet[address(this)] = true;
+        _isExcludedFromFeeAndMaxWallet[owner_] = true;
+    }
+
+    receive() external payable {}
+
+    fallback() external payable {}
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    function balanceOf(address _address) public view returns (uint256) {
+        return _balances[_address];
+    }
+
+    function allowance(address from, address to) public view returns (uint256) {
+        return _allowances[from][to];
+    }
+
+    function isAutomatedMarketMaker(address _address)
+        public
+        view
+        returns (bool)
+    {
+        return _isAutomatedMarketMaker[_address];
+    }
+
+    function isExcludedFromFee(address _address) public view returns (bool) {
+        return _isExcludedFromFeeAndMaxWallet[_address];
+    }
+
+    function renounceOwnership() external onlyOwner {
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0));
+        _owner = newOwner;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function _approve(
+        address from,
+        address spender,
+        uint256 amount
+    ) internal {
+        _allowances[from][spender] = amount;
+        emit Approval(from, spender, amount);
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        _transfer(msg.sender, to, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool) {
+        _approve(from, msg.sender, _allowances[from][msg.sender] - amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal {
+        require(_balances[from] >= amount);
+        uint256 fee;
+        if (
+            !_isExcludedFromFeeAndMaxWallet[from] &&
+            !_isExcludedFromFeeAndMaxWallet[to]
+        ) {
+            if (_isAutomatedMarketMaker[from]) {
+                devFeeTokensToSwap += (amount / 100) * buyDevFee;
+                if (buyDevFee > 0) {
+                    _balances[address(this)] += (amount / 100) * buyDevFee;
+                    emit Transfer(
+                        from,
+                        address(this),
+                        (amount / 100) * buyDevFee
+                    );
+                }
+                if (buyBurnFee > 0) {
+                    _balances[address(0)] += (amount / 100) * buyBurnFee;
+                    emit Transfer(
+                        from,
+                        address(0),
+                        (amount / 100) * buyBurnFee
+                    );
+                }
+                fee = buyTotalFee;
+                require(
+                    _balances[to] + amount - (amount / 100) * fee <= maxWallet
+                );
+            }
+            if (_isAutomatedMarketMaker[to]) {
+                if (devFeeTokensToSwap > 0) {
+                    contractBalanceRealization();
+                }
+                devFeeTokensToSwap += (amount / 100) * sellDevFee;
+                if (sellDevFee > 0) {
+                    _balances[address(this)] += (amount / 100) * sellDevFee;
+                    emit Transfer(
+                        from,
+                        address(this),
+                        (amount / 100) * sellDevFee
+                    );
+                }
+                if (sellBurnFee > 0) {
+                    _balances[address(0)] += (amount / 100) * sellBurnFee;
+                    emit Transfer(
+                        from,
+                        address(0),
+                        (amount / 100) * sellBurnFee
+                    );
+                }
+                fee = sellTotalFee;
+            }
+        }
+        uint256 feeAmount = (amount / 100) * fee;
+        uint256 finalAmount = amount - feeAmount;
+        _balances[from] -= amount;
+        _balances[to] += finalAmount;
+        emit Transfer(from, to, finalAmount);
+    }
+
+    function contractBalanceRealization() internal {
+        uint256 contractBalance = address(this).balance;
+        swapTokensForETH(devFeeTokensToSwap);
+        uint256 differenceBetweenContractBalances = address(this).balance -
+            contractBalance;
+        devWallet.call{value: differenceBetweenContractBalances}("");
+        devFeeTokensToSwap = 0;
+    }
+
+    function swapTokensForETH(uint256 tokenAmount) internal {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+
+        _approve(address(this), address(uniswapV2Router), tokenAmount);
+
+        uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+    }
+
+    function setIsAutomatedMarketMaker(address _address, bool value)
+        external
+        onlyOwner
+    {
+        _isAutomatedMarketMaker[_address] = value;
+    }
+}

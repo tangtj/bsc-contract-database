@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: MIT
+// Created by Ghost Labs 
+pragma solidity ^0.8.0;
+
+interface ISwapContract {
+    struct PairSwapSpecific {
+        address pair;
+        uint256[] nftIds;
+    }
+
+    function swapETHForSpecificNFTs(
+        PairSwapSpecific[] calldata swapList,
+        address payable ethRecipient,
+        address nftRecipient,
+        uint256 deadline
+    ) external payable returns (uint256 remainingValue);
+
+    function swapNFTsForToken(
+        PairSwapSpecific[] calldata swapList,
+        uint256 minOutput,
+        address tokenRecipient,
+        uint256 deadline
+    ) external returns (uint256 outputAmount);
+}
+
+interface IERC721 {
+    function ownerOf(uint256 tokenId) external view returns (address owner);
+    function safeTransferFrom(address from, address to, uint256 tokenId) external;
+    function setApprovalForAll(address operator, bool approved) external;
+}
+
+contract NFTSwap {
+    ISwapContract public swapContract;
+
+    constructor(address _swapContractAddress) {
+        swapContract = ISwapContract(_swapContractAddress);
+    }
+
+    event Received(address, uint);
+
+    receive() external payable {
+        emit Received(msg.sender, msg.value);
+    }
+
+    function sellAndBuyNFTs(
+        ISwapContract.PairSwapSpecific[] calldata sellList,
+        ISwapContract.PairSwapSpecific[] calldata buyList,
+        uint256 minOutput,
+        uint256 minEthReceivedBack,
+        uint256 deadline
+    ) external payable {
+        // Check that the contract has received the required NFTs and approve transfer to swapContract
+        for (uint256 i = 0; i < sellList.length; i++) {
+            address nftContract = sellList[i].pair;
+            uint256[] memory nftIds = sellList[i].nftIds;
+            uint256 count = nftIds.length;
+
+            // Approve transfer of all NFTs to the swapContract
+            IERC721(nftContract).setApprovalForAll(address(swapContract), true);
+
+            // Transfer all NFTs to the contract
+            for (uint256 j = 0; j < count; j++) {
+                uint256 nftId = nftIds[j];
+                address owner = IERC721(nftContract).ownerOf(nftId);
+                require(msg.sender == owner, "Sender is not the owner of NFT");
+                IERC721(nftContract).safeTransferFrom(owner, address(this), nftId);
+            }
+        }
+
+        // Sell NFTs and get ETH
+        uint256 ethReceived = swapContract.swapNFTsForToken(
+            sellList,
+            minOutput,
+            address(this),
+            deadline
+        );
+
+        // Calculate the amount of ETH to be used for the swap
+        uint256 ethForSwap = ethReceived - minEthReceivedBack;
+
+        // Buy NFTs using the calculated amount of ETH
+        uint256 remainingValue = swapContract.swapETHForSpecificNFTs{value: ethForSwap}(
+            buyList,
+            payable(address(this)),
+            msg.sender,
+            deadline
+        );
+
+        // Refund the remaining ETH (minEthReceivedBack + unused ETH from swap) to the user
+        uint256 totalRefund = remainingValue + minEthReceivedBack;
+
+        if (totalRefund > 0) {
+            payable(msg.sender).transfer(totalRefund);
+        }
+}
+}

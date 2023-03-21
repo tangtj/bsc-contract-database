@@ -1,0 +1,196 @@
+pragma solidity ^0.6.12;
+pragma experimental ABIEncoderV2;
+// SPDX-License-Identifier: MIT
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return msg.sender;
+    }
+}
+
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _status;
+
+    constructor() internal {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "e3");
+        _status = _ENTERED;
+        _;
+        _status = _NOT_ENTERED;
+    }
+}
+
+contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    constructor () internal {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ow1");
+        _;
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ow2");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "e5");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "e6");
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "e7");
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "e8");
+        uint256 c = a / b;
+        return c;
+    }
+}
+
+interface IERC721Enumerable {
+    function transferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) external;
+}
+
+contract ShareStakingPool is Ownable, ReentrancyGuard {
+    using SafeMath for uint256;
+    IERC721Enumerable public CosoNFT;
+    bool public CanStaking = true;
+    bool public CanWithDraw = true;
+    mapping(address => uint256[]) public userStakingTokenIdList;
+    mapping(address => uint256) public userStakingNumList;
+
+    function remove(uint256[] memory array, uint256 _index) public pure returns (uint256[] memory arrayNew) {
+        if (_index >= array.length)
+        {
+            arrayNew = new uint256[](0);
+        }
+        else {
+            arrayNew = new uint256[](array.length - 1);
+            for (uint256 i = 0; i < _index; i++) {
+                arrayNew[i] = array[i];
+            }
+            for (uint256 i = _index; i < array.length - 1; i++) {
+                arrayNew[i] = array[i + 1];
+            }
+        }
+    }
+
+    function enableStaking() external onlyOwner {
+        CanStaking = true;
+    }
+
+    function disableStaking() external onlyOwner {
+        CanStaking = false;
+    }
+
+    function enableWithDraw() external onlyOwner {
+        CanWithDraw = true;
+    }
+
+    function disableWithDraw() external onlyOwner {
+        CanWithDraw = false;
+    }
+
+    function getTimeStatus(uint256 _time) public view returns (bool canStaking, bool canIgo, bool canBuyBack, bool canWithDraw, bool canSwapToken) {
+        require(_time > 0);
+        canStaking = CanStaking;
+        canIgo = false;
+        canBuyBack = false;
+        canWithDraw = CanWithDraw;
+        canSwapToken = false;
+    }
+
+    function setCosoNFT(IERC721Enumerable _CosoNF) external onlyOwner {
+        CosoNFT = _CosoNF;
+    }
+
+    function stakingCoso(uint256[] memory _tokenIdList) external nonReentrant {
+        require(CanStaking, "e08");
+        for (uint i = 0; i < _tokenIdList.length; i++) {
+            userStakingNumList[msg.sender] = userStakingNumList[msg.sender].add(1);
+            CosoNFT.transferFrom(msg.sender, address(this), _tokenIdList[i]);
+            userStakingTokenIdList[msg.sender].push(_tokenIdList[i]);
+        }
+    }
+
+    function withdrawCoso(uint256 _tokenId,address _user) internal  {
+        require(CanWithDraw, "e11");
+        uint256[] memory userCosoList = userStakingTokenIdList[_user];
+        uint256 len = userCosoList.length;
+        require(userCosoList.length > 0, "e12");
+        bool isOk = false;
+        uint256 index = 0;
+        for (uint i = 0; i < userCosoList.length; i++) {
+            if (userCosoList[i] == _tokenId) {
+                isOk = true;
+                index = i;
+                CosoNFT.transferFrom(address(this), _user, userCosoList[i]);
+                userStakingNumList[_user] = userStakingNumList[_user].sub(1);
+            }
+        }
+        if (isOk && len > 0) {
+            userStakingTokenIdList[_user] = remove(userStakingTokenIdList[_user], index);
+        }
+    }
+    
+     function withdrawCoso(uint256[] memory _tokenIdList) external nonReentrant {
+       for (uint256 i=0;i<_tokenIdList.length;i++) {
+           withdrawCoso(_tokenIdList[i],msg.sender);
+       }
+    }
+
+    function getuserStakingTokenIdList(address _user) external view returns (uint256[] memory stakingList) {
+        stakingList = userStakingTokenIdList[_user];
+    }
+
+    function withdrawCoso() external nonReentrant {
+        require(CanWithDraw, "e11");
+        uint256[] memory userCosoList = userStakingTokenIdList[msg.sender];
+        require(userCosoList.length > 0, "e12");
+        for (uint i = 0; i < userCosoList.length; i++) {
+            if (userCosoList[i] > 0)
+            {
+                CosoNFT.transferFrom(address(this), msg.sender, userCosoList[i]);
+            }
+        }
+        delete userStakingTokenIdList[msg.sender];
+        delete userStakingNumList[msg.sender];
+    }
+}

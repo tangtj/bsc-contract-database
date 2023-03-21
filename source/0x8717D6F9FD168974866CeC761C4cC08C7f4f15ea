@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: MIT
+// Created by Ghost Labs 
+
+pragma solidity ^0.8.0;
+
+interface ISwapContract {
+    struct PairSwapSpecific {
+        address pair;
+        uint256[] nftIds;
+    }
+
+    function swapETHForSpecificNFTs(
+        PairSwapSpecific[] calldata swapList,
+        address payable ethRecipient,
+        address nftRecipient,
+        uint256 deadline
+    ) external payable returns (uint256 remainingValue);
+
+    function swapNFTsForToken(
+        PairSwapSpecific[] calldata swapList,
+        uint256 minOutput,
+        address tokenRecipient,
+        uint256 deadline
+    ) external returns (uint256 outputAmount);
+}
+
+contract NFTSwap {
+    ISwapContract public swapContract;
+
+    constructor(address _swapContractAddress) {
+        swapContract = ISwapContract(_swapContractAddress);
+    }
+
+    event Received(address, uint);
+    
+    receive() external payable {
+        emit Received(msg.sender, msg.value);
+    }
+
+    function sellAndBuyNFTs(
+        ISwapContract.PairSwapSpecific[] calldata sellList,
+        ISwapContract.PairSwapSpecific[] calldata buyList,
+        uint256 minOutput,
+        uint256 minEthReceivedBack,
+        uint256 deadline
+    ) external payable {
+        // Sell NFTs and get ETH
+        uint256 ethReceived = swapContract.swapNFTsForToken(
+            sellList,
+            minOutput,
+            address(this),
+            deadline
+        );
+
+        // Add extra ETH value sent by the user
+        ethReceived += msg.value;
+
+        // Calculate the amount of ETH to be used for the swap
+        uint256 ethForSwap = ethReceived - minEthReceivedBack;
+
+        // Buy NFTs using the calculated amount of ETH
+        uint256 remainingValue = swapContract.swapETHForSpecificNFTs{value: ethForSwap}(
+            buyList,
+            payable(address(this)),
+            msg.sender,
+            deadline
+        );
+
+        // Refund the remaining ETH (minEthReceivedBack + unused ETH from swap) to the user
+        uint256 totalRefund = remainingValue + minEthReceivedBack;
+
+        if (totalRefund > 0) {
+        payable(msg.sender).transfer(totalRefund);
+        }
+    }
+}
