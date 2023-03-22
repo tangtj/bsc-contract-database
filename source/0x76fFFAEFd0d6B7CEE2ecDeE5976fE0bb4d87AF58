@@ -1,0 +1,307 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.18;
+
+interface IERC20 {
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+abstract contract Ownable {
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "!o");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "n0");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+abstract contract AbsSale is Ownable {
+    struct SaleInfo {
+        uint256 price;
+        uint256 duration;
+    }
+
+    struct UserInfo {
+        uint256 amount;
+        uint256 endTime;
+        bool superVip;
+    }
+
+    address public _cashAddress;
+
+    SaleInfo[] private _saleInfo;
+    mapping(address => UserInfo) private _userInfo;
+
+    uint256 private _totalAmount;
+    uint256 public constant MAX = ~uint256(0);
+
+    mapping(address => address) public _invitor;
+    mapping(uint256 => uint256) public _inviteFee;
+    mapping(uint256 => uint256) public _superVipInviteFee;
+    uint256 public _superVipInviteLength = 3;
+
+    uint256 private _totalInviteAmount;
+    string private _priceSymbol;
+
+    uint256 private _maxVipNum;
+
+    constructor(string memory Symbol, address CashAddress){
+        _priceSymbol = Symbol;
+        _cashAddress = CashAddress;
+
+        _saleInfo.push(SaleInfo(3 ether / 100, 1 days));
+        _saleInfo.push(SaleInfo(15 ether / 100, 7 days));
+        _saleInfo.push(SaleInfo(3 ether, MAX));
+
+        _superVipInviteFee[0] = 3000;
+        _superVipInviteFee[1] = 2000;
+        _superVipInviteFee[2] = 1000;
+
+        _inviteFee[0] = 1000;
+    }
+
+    function buy(uint256 saleId, address invitor) external payable {
+        address account = msg.sender;
+        SaleInfo storage sale = _saleInfo[saleId];
+        UserInfo storage userInfo = _userInfo[account];
+
+        if (userInfo.endTime == 0) {
+            UserInfo storage invitorInfo = _userInfo[invitor];
+            if (invitorInfo.endTime > 0) {
+                _invitor[account] = invitor;
+            }
+        }
+
+        uint256 endTime = userInfo.endTime;
+        require(endTime != MAX, "Max");
+        if (sale.duration == MAX) {
+            userInfo.endTime = MAX;
+            _maxVipNum++;
+        } else {
+            if (endTime < block.timestamp) {
+                userInfo.endTime = block.timestamp + sale.duration;
+            } else {
+                userInfo.endTime = endTime + sale.duration;
+            }
+        }
+
+        uint256 price = sale.price;
+        require(msg.value >= price, "price");
+
+        userInfo.amount += price;
+        _totalAmount += price;
+
+        uint256 cashAmount = price;
+        uint256 len = _superVipInviteLength;
+        address current = account;
+        uint256 invitorAmount;
+        for (uint256 i; i < len; ++i) {
+            invitor = _invitor[current];
+            if (address(0) == invitor) {
+                break;
+            }
+            if (_userInfo[invitor].superVip) {
+                invitorAmount = price * _superVipInviteFee[i] / 10000;
+            } else {
+                invitorAmount = price * _inviteFee[i] / 10000;
+            }
+
+            if (invitorAmount > 0) {
+                invitor.call{value : invitorAmount}("");
+                _totalInviteAmount += invitorAmount;
+                cashAmount -= invitorAmount;
+            }
+            current = invitor;
+        }
+
+        _cashAddress.call{value : cashAmount}("");
+    }
+
+    function addUserVipTime(address account, uint256 time) external onlyOwner {
+        UserInfo storage userInfo = _userInfo[account];
+        uint256 endTime = userInfo.endTime;
+        require(endTime != MAX, "Max");
+        if (time == MAX) {
+            userInfo.endTime = MAX;
+        } else {
+            if (endTime < block.timestamp) {
+                userInfo.endTime = block.timestamp + time;
+            } else {
+                userInfo.endTime = endTime + time;
+            }
+        }
+    }
+
+    function setUserVipTime(address account, uint256 time) external onlyOwner {
+        require(time > 0, "t0");
+        UserInfo storage userInfo = _userInfo[account];
+        userInfo.endTime = time;
+    }
+
+    function setUserVipTimes(address[] memory accounts, uint256[] memory times) external onlyOwner {
+        uint256 len = accounts.length;
+        UserInfo storage userInfo;
+        for (uint256 i; i < len;) {
+            userInfo = _userInfo[accounts[i]];
+            require(times[i] > 0, "t0");
+            userInfo.endTime = times[i];
+        unchecked{
+            ++i;
+        }
+        }
+    }
+
+    function allSales() external view returns (
+        uint256[] memory price, uint256[] memory duration
+    ){
+        uint256 len = getSaleLength();
+        price = new uint256[](len);
+        duration = new uint256[](len);
+        for (uint256 i; i < len;) {
+            (price[i], duration[i]) = getSaleInfo(i);
+        unchecked{
+            ++i;
+        }
+        }
+    }
+
+    function getSaleLength() public view returns (uint256){
+        return _saleInfo.length;
+    }
+
+    function getSaleInfo(uint256 sid) public view returns (
+        uint256 price, uint256 duration
+    ) {
+        SaleInfo storage sale = _saleInfo[sid];
+        price = sale.price;
+        duration = sale.duration;
+    }
+
+    function shopInfo() external view returns (
+        uint256 priceDecimals, string memory priceSymbol, uint256 timestamp,
+        uint256 totalAmount, uint256 totalInviteAmount, uint256 maxVipNum
+    ){
+        priceDecimals = 18;
+        priceSymbol = _priceSymbol;
+        timestamp = block.timestamp;
+        totalAmount = _totalAmount;
+        totalInviteAmount = _totalInviteAmount;
+        maxVipNum = _maxVipNum;
+    }
+
+    receive() external payable {}
+
+    function setCashAddress(address adr) external onlyOwner {
+        _cashAddress = adr;
+    }
+
+    function setPriceSymbol(string memory Symbol) external onlyOwner {
+        _priceSymbol = Symbol;
+    }
+
+    function setPrice(uint256 saleId, uint256 price) external onlyOwner {
+        _saleInfo[saleId].price = price;
+    }
+
+    function setDuration(uint256 saleId, uint256 duration) external onlyOwner {
+        _saleInfo[saleId].duration = duration;
+    }
+
+    function addSale(uint256 price, uint256 duration) external onlyOwner {
+        _saleInfo.push(SaleInfo(price, duration));
+    }
+
+    function setInviteLength(uint256 len) external onlyOwner {
+        _superVipInviteLength = len;
+    }
+
+    function setInviteFee(uint256 i, uint256 fee) external onlyOwner {
+        _inviteFee[i] = fee;
+    }
+
+    function setSuperVipInviteFee(uint256 i, uint256 fee) external onlyOwner {
+        _superVipInviteFee[i] = fee;
+    }
+
+    function setSuperVip(address account, bool enable) external onlyOwner {
+        _userInfo[account].superVip = enable;
+    }
+
+    function claimBalance(address to) external onlyOwner {
+        address payable addr = payable(to);
+        addr.transfer(address(this).balance);
+    }
+
+    function claimToken(address erc20Address, address to, uint256 amount) external onlyOwner {
+        IERC20 erc20 = IERC20(erc20Address);
+        erc20.transfer(to, amount);
+    }
+
+    function getUserInfo(address account) external view returns (
+        uint256 amount,
+        uint256 endTime,
+        uint256 balance,
+        uint256 blockTime,
+        bool isSuperVip
+    ){
+        UserInfo storage userInfo = _userInfo[account];
+        amount = userInfo.amount;
+        endTime = userInfo.endTime;
+        balance = account.balance;
+        blockTime = block.timestamp;
+        isSuperVip = userInfo.superVip;
+    }
+}
+
+contract VipSale is AbsSale {
+    constructor() AbsSale(
+    //Symbol
+        "BNB",
+    //Cash
+        address(0x93712cBBcCEce8c587e762F56292A5397C75AFaA)
+    ){
+
+    }
+}

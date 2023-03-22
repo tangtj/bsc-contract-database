@@ -1,0 +1,3542 @@
+
+// File: contracts/MasterChef.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "./libs/IERC20.sol";
+import "./libs/SafeERC20.sol";
+import "./libs/IPlushReferral.sol";
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+import "./NFTChef.sol";
+import "./STBToken.sol";
+import "./PlushToken.sol";
+
+
+// MasterChef is the master of Plush. He can make Plush and he is a fair guy.
+//
+// Note that it's ownable and the owner wields tremendous power. The ownership
+// will be transferred to a governance smart contract once PLUSH is sufficiently
+// distributed and the community can show to govern itself.
+//
+// Have fun reading it. Hopefully it's bug-free. God bless.
+contract MasterChef is Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
+
+    // Burn address
+    address constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+
+    // BUSD Polygon (BNB) address
+    address public constant busdCurrencyAddress = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+
+    // Founder 1 address
+    address public constant FOUNDER1_ADDRESS = 0x3a1D1114269d7a786C154FE5278bF5b1e3e20d31;
+    // Founder 2 address
+    address public constant FOUNDER2_ADDRESS = 0x30139dfe2D78aFE7fb539e2F2b765d794fe52cB4;
+
+    uint256 public totalBUSDCollected = 0;
+
+    uint256 public accDepositBUSDRewardPerShare = 0;
+
+    // NFTChef, the keeper of the NFTs!
+    NFTChef public nftChef;
+    // The STB TOKEN!
+    STBToken public STB;
+    // The PLUSH TOKEN!
+    PlushToken public plush;
+    // Plush's trusty utility belt.
+    PlushToolBox public plushToolBox;
+
+    uint256 public plushReleaseGradient;
+    uint256 public endPlushGradientBlock;
+    uint256 public endGoalPlushEmission;
+    bool public isIncreasingGradient = false;
+
+
+    // The amount of time between Rare release rate halvings.
+    uint256 public stbReleaseHalfLife;
+    // The inital release rate for the rare rewards period.
+    uint256 public initialSTBReleaseRate;
+
+    // Info of each user.
+    struct UserInfo {
+        uint256 amount;         // How many LP tokens the user has provided.
+        uint256 plushRewardDebt;     // Reward debt. See explanation below.
+        uint256 STBRewardDebt;     // Reward debt. See explanation below.
+        uint256 busdRewardDebt;     // Reward debt. See explanation below.
+        //
+        // We do some fancy math here. Basically, any point in time, the amount of PLUSHs
+        // entitled to a user but is pending to be distributed is:
+        //
+        //   pending reward = (user.amount * pool.accPlushPerShare) - user.rewardDebt
+        //
+        // Whenever a user deposits or withdraws LP tokens to a pool. Here's what happens:
+        //   1. The pool's `accPlushPerShare` (and `lastRewardBlock`) gets updated.
+        //   2. User receives the pending reward sent to his/her address.
+        //   3. User's `amount` gets updated.
+        //   4. User's `rewardDebt` gets updated.
+    }
+
+    // Info of each pool.
+    struct PoolInfo {
+        address lpToken;           // Address of LP token contract.
+        uint256 allocPoint;       // How many allocation points assigned to this pool. PLUSHs to distribute per block.
+        uint256 lastRewardBlock;  // Last block number that PLUSHs distribution occurs.
+        uint256 accPlushPerShare;   // Accumulated PLUSHs per share, times 1e24. See below.
+        uint256 accSTBPerShare;   // Accumulated STBs per share, times 1e24. See below.
+        uint256 depositFeeBPOrNFTBnbFee;      // Deposit fee in basis points
+        uint256 tokenType;          // 0=Token, 1=LP Token, 2=NFT
+        uint256 totalLocked;      // total units locked in the pool
+    }
+
+    // Info of each pool.
+    PoolInfo[] public poolInfo;
+    // Info of each user that stakes LP tokens.
+    mapping(uint256 => mapping(address => UserInfo)) public userInfo;
+    // Total allocation points. Must be the sum of all allocation points in all pools.
+    uint256 public totalAllocPoint = 0;
+    // The block number when normal PLUSH mining starts.
+    uint256 public startBlock;
+
+
+    // The last checked balance of PLUSH in the burn waller
+    uint256 public lastPlushBurnBalance = 0;
+    // How much of burn do STB stakers get out of 10000
+    uint256 public STBShareOfBurn = 8197;
+
+    // Plush referral contract address.
+    IPlushReferral plushReferral;
+    // Referral commission rate in basis points.
+    // This is split into 2 halves 3% for the referrer and 3% for the referee.
+    uint16 public constant referralCommissionRate = 600;
+
+    // removed to save some space..
+    // uint256 public constant STBPID = 0;
+
+    event AddPool(uint256 indexed pid, uint256 tokenType, uint256 allocPoint, address lpToken, uint256 depositFeeBPOrNFTBnbFee);
+    event SetPool(uint256 indexed pid, uint256 allocPoint, uint256 depositFeeBPOrNFTBnbFee);
+    event Restake(address indexed user, uint256 indexed pid);
+    event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
+    event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
+    event GradientUpdated(uint256 newEndGoalPlushEmmission, uint256 newEndPlushEmmissionBlock);
+    event SetPlushReferral(address plushAddress);
+
+    constructor(
+        NFTChef _nftChef,
+        STBToken _STB,
+        PlushToken _plush,
+        PlushToolBox _plushToolBox,
+        uint256 _startBlock,
+        uint256 _stbReleaseHalfLife,
+        uint256 _initialSTBReleaseRate,
+        uint256 _beginningPlushEmission,
+        uint256 _endPlushEmission,
+        uint256 _gradient1EndBlock
+    ) public {
+        require(_beginningPlushEmission < 80 ether, "too high");
+        require(_endPlushEmission < 80 ether, "too high");
+
+        nftChef = _nftChef;
+        STB = _STB;
+        plush = _plush;
+        plushToolBox = _plushToolBox;
+
+        startBlock = _startBlock;
+
+        require(_startBlock < _gradient1EndBlock + 20, "!grad");
+
+        isIncreasingGradient = _endPlushEmission > _beginningPlushEmission;
+
+        stbReleaseHalfLife = _stbReleaseHalfLife;
+        initialSTBReleaseRate = _initialSTBReleaseRate;
+
+        endPlushGradientBlock = _gradient1EndBlock;
+        endGoalPlushEmission = _endPlushEmission;
+
+        plushReleaseGradient = _plushToolBox.calcEmissionGradient(
+            _startBlock, _beginningPlushEmission, endPlushGradientBlock, endGoalPlushEmission);
+
+        add(0, 10000, address(_STB), 0, false);
+        add(0, 10000, address(_plush), 0, false);
+    }
+
+    function poolLength() external view returns (uint256) {
+        return poolInfo.length;
+    }
+
+    mapping(address => bool) public poolExistence;
+    modifier nonDuplicated(address _lpToken) {
+        require(poolExistence[_lpToken] == false, "dup-pool");
+        _;
+    }
+
+    // Add a new lp to the pool. Can only be called by the owner.
+    // XXX DO NOT add the same LP token more than once. Rewards will be messed up if you do.
+    function add(uint256 _tokenType, uint256 _allocPoint, address _lpToken, uint256 _depositFeeBPOrNFTBnbFee, bool _withUpdate) public onlyOwner nonDuplicated(_lpToken) {
+        require(_tokenType == 0 || _tokenType == 1 || _tokenType == 2, "!token-type");
+
+        // Make sure the provided token is ERC20/ERC721
+        if (_tokenType == 2)
+            nftChef.setPoolBnbFee(_lpToken, _depositFeeBPOrNFTBnbFee);
+        else {
+            ERC20(_lpToken).balanceOf(address(this));
+            require(_depositFeeBPOrNFTBnbFee <= 401, "!feeBP");
+        }
+
+        if (_withUpdate) {
+            massUpdatePools();
+        }
+
+        uint256 lastRewardBlock = block.number > startBlock ? block.number : startBlock;
+        totalAllocPoint = totalAllocPoint + _allocPoint;
+
+        poolExistence[_lpToken] = true;
+
+        poolInfo.push(PoolInfo({
+            lpToken: _lpToken,
+            allocPoint: _allocPoint,
+            lastRewardBlock: lastRewardBlock,
+            accPlushPerShare: 0,
+            accSTBPerShare: 0,
+            depositFeeBPOrNFTBnbFee: _depositFeeBPOrNFTBnbFee,
+            tokenType: _tokenType,
+            totalLocked: 0
+        }));
+
+        emit AddPool(poolInfo.length - 1, _tokenType, _allocPoint, address(_lpToken), _depositFeeBPOrNFTBnbFee);
+    }
+
+    // Update the given pool's PLUSH allocation point and deposit fee. Can only be called by the owner.
+    function set(uint256 _pid, uint256 _allocPoint, uint256 _depositFeeBPOrNFTBnbFee, bool _withUpdate) external onlyOwner {
+        if (poolInfo[_pid].tokenType == 2)
+            nftChef.setPoolBnbFee(poolInfo[_pid].lpToken, _depositFeeBPOrNFTBnbFee);
+        else
+            require(_depositFeeBPOrNFTBnbFee <= 401);
+
+        if (_withUpdate) {
+            massUpdatePools();
+        }
+        totalAllocPoint = (totalAllocPoint - poolInfo[_pid].allocPoint) + _allocPoint;
+        poolInfo[_pid].allocPoint = _allocPoint;
+        poolInfo[_pid].depositFeeBPOrNFTBnbFee = _depositFeeBPOrNFTBnbFee;
+        //poolInfo[_pid].tokenType = _tokenType;
+        //poolInfo[_pid].totalLocked = poolInfo[_pid].totalLocked;
+
+        emit SetPool(_pid, _allocPoint, _depositFeeBPOrNFTBnbFee);
+    }
+
+    // View function to see pending BUSDs on frontend.
+    function pendingBUSD(address _user) external view returns (uint256) {
+        UserInfo storage user = userInfo[0][_user];
+
+        return ((user.amount * accDepositBUSDRewardPerShare) / (1e24)) - user.busdRewardDebt;
+    }
+
+    // View function to see pending PLUSHs on frontend.
+    function pendingPlush(uint256 _pid, address _user) external view returns (uint256) {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][_user];
+        uint256 accPlushPerShare = pool.accPlushPerShare;
+
+        uint256 lpSupply = pool.totalLocked;
+        if (block.number > pool.lastRewardBlock && lpSupply != 0 && totalAllocPoint != 0) {
+            uint256 release = plushToolBox.getPlushRelease(isIncreasingGradient, plushReleaseGradient, endPlushGradientBlock, endGoalPlushEmission, pool.lastRewardBlock, block.number);
+            uint256 plushReward = (release * pool.allocPoint) / totalAllocPoint;
+            accPlushPerShare = accPlushPerShare + ((plushReward * 1e24) / lpSupply);
+        }
+        return ((user.amount * accPlushPerShare) / 1e24) - user.plushRewardDebt;
+    }
+
+    // View function to see pending STB on frontend.
+    function pendingSTB(uint256 _pid, address _user) external view returns (uint256) {
+        // STB pool never gets any more STB.
+        if (_pid == 0)
+            return 0;
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][_user];
+        uint256 accSTBPerShare = pool.accSTBPerShare;
+
+        uint256 lpSupply = pool.totalLocked;
+        if (block.number > pool.lastRewardBlock && lpSupply != 0 && totalAllocPoint > poolInfo[0].allocPoint) {
+            uint256 release = plushToolBox.getSTBRelease(initialSTBReleaseRate, stbReleaseHalfLife, pool.lastRewardBlock, block.number);
+            uint256 STBReward = (release * pool.allocPoint) / (totalAllocPoint - poolInfo[0].allocPoint);
+            accSTBPerShare = accSTBPerShare + ((STBReward * 1e24) / lpSupply);
+        }
+
+        return ((user.amount * accSTBPerShare) / 1e24) - user.STBRewardDebt;
+    }
+
+    // Update reward variables for all pools. Be careful of gas spending!
+    function massUpdatePools() public {
+        for (uint256 pid = 0; pid < poolInfo.length; ++pid) {
+            updatePool(pid);
+        }
+    }
+
+    // Transfers any excess coins gained through reflection
+    // to PLUSH and STB
+    function skimPool(uint256 poolId) internal {
+        PoolInfo storage pool = poolInfo[poolId];
+        // cannot skim any tokens we use for staking rewards.
+        if (pool.tokenType == 2 || isNativeToken(address(pool.lpToken)))
+            return;
+
+        uint256 trueBalance = ERC20(pool.lpToken).balanceOf(address(this));
+
+        uint256 skim = trueBalance > pool.totalLocked ?
+                            trueBalance - pool.totalLocked :
+                            0;
+
+        if (skim > 1e4) {
+            uint256 STBShare = skim / 2;
+            uint256 plushShare = skim - STBShare;
+            IERC20(pool.lpToken).safeTransfer(address(STB), STBShare);
+            IERC20(pool.lpToken).safeTransfer(address(plush), plushShare);
+        }
+    }
+
+    // Updates plush release goal and phase change duration
+    function updatePlushRelease(uint256 endBlock, uint256 endPlushEmission) external onlyOwner {
+        // give some buffer as to stop extrememly large gradients
+        require(endPlushEmission < 80 ether && block.number + 4 < endBlock, "!in");
+
+        // this will be called infrequently
+        // and deployed on a cheap gas network POLYGON (BNB)
+        massUpdatePools();
+
+        uint256 currentPlushEmission = plushToolBox.getPlushEmissionForBlock(block.number,
+            isIncreasingGradient, plushReleaseGradient, endPlushGradientBlock, endGoalPlushEmission);
+
+        isIncreasingGradient = endPlushEmission > currentPlushEmission;
+        plushReleaseGradient = plushToolBox.calcEmissionGradient(block.number,
+            currentPlushEmission, endBlock, endPlushEmission);
+
+        endPlushGradientBlock = endBlock;
+        endGoalPlushEmission = endPlushEmission;
+
+        emit GradientUpdated(endGoalPlushEmission, endPlushGradientBlock);
+    }
+
+    // Update reward variables of the given pool to be up-to-date.
+    function updatePool(uint256 _pid) public {
+        PoolInfo storage pool = poolInfo[_pid];
+        if (block.number <= pool.lastRewardBlock)
+            return;
+
+        uint256 lpSupply = pool.totalLocked;
+        if (lpSupply == 0 || pool.allocPoint == 0) {
+            pool.lastRewardBlock = block.number;
+            return;
+        }
+
+        // STB pool is always pool 0.
+        if (poolInfo[0].totalLocked > 0) {
+            uint256 busdRelease = STB.getBUSDDrip();
+
+            accDepositBUSDRewardPerShare = accDepositBUSDRewardPerShare + ((busdRelease * 1e24) / poolInfo[0].totalLocked);
+            totalBUSDCollected = totalBUSDCollected + busdRelease;
+        }
+
+        uint256 plushRelease = plushToolBox.getPlushRelease(isIncreasingGradient, plushReleaseGradient, endPlushGradientBlock, endGoalPlushEmission, pool.lastRewardBlock, block.number);
+        uint256 plushReward = (plushRelease * pool.allocPoint) / totalAllocPoint;
+
+        // Plush Txn fees ONLY for STB stakers.
+        if (_pid == 0) {
+            uint256 burnBalance = plush.balanceOf(BURN_ADDRESS);
+            plushReward = plushReward + (((burnBalance - lastPlushBurnBalance) * STBShareOfBurn) / 10000);
+
+            lastPlushBurnBalance = burnBalance;
+        }
+
+        plush.mint(address(this), plushReward);
+
+        if (_pid != 0 && totalAllocPoint > poolInfo[0].allocPoint) {
+
+            uint256 STBRelease = plushToolBox.getSTBRelease(initialSTBReleaseRate, stbReleaseHalfLife, pool.lastRewardBlock, block.number);
+
+            if (STBRelease > 0) {
+                uint256 STBReward = ((STBRelease * pool.allocPoint) / (totalAllocPoint - poolInfo[0].allocPoint));
+
+                // Getting STB allocated specificlly for initial distribution.
+                STBReward = STB.distribute(address(this), STBReward);
+
+                pool.accSTBPerShare = pool.accSTBPerShare + ((STBReward * 1e24) / lpSupply);
+            }
+        }
+
+        pool.accPlushPerShare = pool.accPlushPerShare + ((plushReward * 1e24) / lpSupply);
+        pool.lastRewardBlock = block.number;
+    }
+
+    // Return if address is a founder address.
+    function isFounder(address addr) public pure returns (bool) {
+        return addr == FOUNDER1_ADDRESS || addr == FOUNDER2_ADDRESS;
+    }
+
+    // Return if address is a founder address.
+    function isNativeToken(address addr) public view returns (bool) {
+        return addr == address(STB) || addr == address(plush);
+    }
+
+    function restake(uint256 _pid) external nonReentrant {
+        uint256 beforeSTBBal = STB.balanceOf(msg.sender);
+        uint256 beforePlushBal = plush.balanceOf(msg.sender);
+        deposit(_pid, 0, true, address(0));
+
+        // STB Restake
+        deposit(0,  STB.balanceOf(msg.sender) - beforeSTBBal, false, address(0));
+        // Plush Restake
+        deposit(1,  plush.balanceOf(msg.sender) - beforePlushBal, false, address(0));
+
+        emit Restake(msg.sender, _pid);
+    }
+
+    // Deposit LP tokens to MasterChef for PLUSH and STB allocation.
+    function deposit(uint256 _pid, uint256 _amountOrId, bool isNFTHarvest, address _referrer) public payable nonReentrant {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+
+        updatePool(_pid);
+
+        if ((pool.tokenType == 2 || _amountOrId > 0) && address(plushReferral) != address(0) && _referrer != address(0) && _referrer != msg.sender) {
+            plushReferral.recordReferral(msg.sender, _referrer);
+        }
+
+        payPendingSTBPlush(_pid);
+        if (_pid == 0)
+            payPendingBUSDReward();
+
+        if (!isNFTHarvest && pool.tokenType == 2) {
+            // I don't think we need to verify we recieved the NFT as safeTransferFrom checks this sufficiently.
+            nftChef.deposit{value: address(this).balance}(pool.lpToken, address(msg.sender), _amountOrId);
+
+            user.amount = user.amount + 1;
+            pool.totalLocked = pool.totalLocked + 1;
+        } else if (pool.tokenType != 2 && _amountOrId > 0) {
+            // Accept the balance of coins we recieve (useful for coins which take fees).
+            uint256 previousBalance = ERC20(pool.lpToken).balanceOf(address(this));
+            IERC20(pool.lpToken).safeTransferFrom(address(msg.sender), address(this), _amountOrId);
+            _amountOrId = ERC20(pool.lpToken).balanceOf(address(this)) - previousBalance;
+            require(_amountOrId > 0, "0 recieved");
+
+            if (pool.depositFeeBPOrNFTBnbFee > 0 && !isNativeToken(address(pool.lpToken))) {
+                uint256 depositFee = ((_amountOrId * pool.depositFeeBPOrNFTBnbFee) / 10000);
+                // For LPs plush handles it 100%, destroys and distributes
+                uint256 plushDepositFee = pool.tokenType == 1 ? depositFee : (depositFee / 4);
+                IERC20(pool.lpToken).safeTransfer(address(plush), plushDepositFee);
+                // plush handles all LP type tokens
+                plush.swapDepositFeeForETH(address(pool.lpToken), pool.tokenType);
+
+                if (pool.tokenType == 0)
+                    IERC20(pool.lpToken).safeTransfer(address(STB), depositFee - plushDepositFee);
+
+                STB.convertDepositFeesToBUSD(address(pool.lpToken), pool.tokenType);
+
+                user.amount = (user.amount + _amountOrId) - depositFee;
+                pool.totalLocked = (pool.totalLocked + _amountOrId) - depositFee;
+            } else {
+                user.amount = user.amount + _amountOrId;
+
+                pool.totalLocked = pool.totalLocked + _amountOrId;
+            }
+        }
+
+        user.plushRewardDebt = ((user.amount * pool.accPlushPerShare) / 1e24);
+        user.STBRewardDebt = ((user.amount * pool.accSTBPerShare) / 1e24);
+
+        if (_pid == 0)
+            user.busdRewardDebt = ((user.amount * accDepositBUSDRewardPerShare) / 1e24);
+
+        skimPool(_pid);
+
+        emit Deposit(msg.sender, _pid, _amountOrId);
+    }
+
+    // Withdraw LP tokens from MasterChef.
+    function withdraw(uint256 _pid, uint256 _amountOrId) external nonReentrant {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        require(pool.tokenType == 2 || user.amount >= _amountOrId, "!withdraw");
+
+        require(!(_pid == 0 && isFounder(msg.sender)) || block.number > startBlock + (60 * 28800),
+                "early!");
+
+        updatePool(_pid);
+
+        payPendingSTBPlush(_pid);
+        if (_pid == 0)
+            payPendingBUSDReward();
+
+        uint256 withdrawQuantity = 0;
+
+        if (pool.tokenType == 2) {
+            nftChef.withdraw(pool.lpToken, address(msg.sender), _amountOrId);
+
+            withdrawQuantity = 1;
+        } else if (_amountOrId > 0) {
+            IERC20(pool.lpToken).safeTransfer(address(msg.sender), _amountOrId);
+
+            withdrawQuantity = _amountOrId;
+        }
+
+        user.amount = user.amount - withdrawQuantity;
+        pool.totalLocked = pool.totalLocked - withdrawQuantity;
+
+        user.plushRewardDebt = ((user.amount * pool.accPlushPerShare) / 1e24);
+        user.STBRewardDebt = ((user.amount * pool.accSTBPerShare) / 1e24);
+
+        if (_pid == 0)
+            user.busdRewardDebt = ((user.amount * accDepositBUSDRewardPerShare) / 1e24);
+
+        skimPool(_pid);
+
+        emit Withdraw(msg.sender, _pid, _amountOrId);
+    }
+
+    // Withdraw without caring about rewards. EMERGENCY ONLY.
+    function emergencyWithdraw(uint256 _pid) external nonReentrant {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        uint256 amount = user.amount;
+
+        require(!(_pid == 0 && isFounder(msg.sender)) || block.number > startBlock + (60 * 28800),
+                "early!");
+
+        if (pool.tokenType == 2)
+            nftChef.emergencyWithdraw(pool.lpToken, address(msg.sender));
+        else
+            IERC20(pool.lpToken).safeTransfer(address(msg.sender), amount);
+
+        user.amount = 0;
+        user.plushRewardDebt = 0;
+        user.STBRewardDebt = 0;
+        user.busdRewardDebt = 0;
+
+        // In the case of an accounting error, we choose to let the user emergency withdraw anyway
+        if (pool.totalLocked >=  amount)
+            pool.totalLocked = pool.totalLocked - amount;
+        else
+            pool.totalLocked = 0;
+
+        emit EmergencyWithdraw(msg.sender, _pid, amount);
+    }
+
+    // Pay pending PLUSHs & STBs.
+    function payPendingSTBPlush(uint256 _pid) internal {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+
+        uint256 plushPending = ((user.amount * pool.accPlushPerShare) / 1e24) - user.plushRewardDebt;
+        uint256 STBPending = ((user.amount * pool.accSTBPerShare) / 1e24) - user.STBRewardDebt;
+
+        if (plushPending > 0) {
+            // burn founders plush harvest, without triggering STB re-mint distro.
+            if (isFounder(msg.sender))
+                safeTokenPlushBurn(plushPending);
+            else {
+                // send rewards
+                safeTokenTransfer(address(plush), msg.sender, plushPending);
+                payReferralCommission(msg.sender, plushPending);
+            }
+        }
+        if (STBPending > 0) {
+            // send rewards
+            if (isFounder(msg.sender))
+                safeTokenTransfer(address(STB), BURN_ADDRESS, STBPending);
+            else
+                safeTokenTransfer(address(STB), msg.sender, STBPending);
+        }
+    }
+
+    // Pay pending BUSD from the STB staking reward scheme.
+    function payPendingBUSDReward() internal {
+        UserInfo storage user = userInfo[0][msg.sender];
+
+        uint256 busdPending = ((user.amount * accDepositBUSDRewardPerShare) / 1e24) - user.busdRewardDebt;
+
+        if (busdPending > 0) {
+            // send rewards
+            STB.transferBUSDToUser(msg.sender, busdPending);
+        }
+    }
+
+    // Safe token transfer function, just in case if rounding error causes pool to not have enough PLUSHs.
+    function safeTokenPlushBurn(uint256 _amount) internal {
+        uint256 plushBalance = plush.balanceOf(address(this));
+        if (_amount > plushBalance) {
+            plush.burn(plushBalance);
+        } else {
+            plush.burn(_amount);
+        }
+    }
+
+    // Safe token transfer function, just in case if rounding error causes pool to not have enough PLUSHs.
+    function safeTokenTransfer(address token, address _to, uint256 _amount) internal {
+        uint256 tokenBal = IERC20(token).balanceOf(address(this));
+        if (_amount > tokenBal) {
+            IERC20(token).safeTransfer(_to, tokenBal);
+        } else {
+            IERC20(token).safeTransfer(_to, _amount);
+        }
+    }
+
+    // To receive BNB from depositers when depositing NFTs
+    receive() external payable {}
+
+    // Update the plush referral contract address by the owner
+    function setPlushReferral(IPlushReferral _plushReferral) external onlyOwner {
+        require(address(_plushReferral) != address(0) &&
+            address(plushReferral) == address(0), "!input");
+        plushReferral = _plushReferral;
+
+        emit SetPlushReferral(address(plushReferral));
+    }
+
+    // Pay referral commission to the referrer who referred this user.
+    function payReferralCommission(address _user, uint256 _pending) internal {
+        if (address(plushReferral) != address(0) && referralCommissionRate > 0) {
+            address referrer = plushReferral.getReferrer(_user);
+            uint256 commissionAmount = ((_pending * referralCommissionRate) / 10000);
+
+            if (referrer != address(0) && commissionAmount > 0) {
+                plush.mint(referrer, commissionAmount / 2);
+                plush.mint(_user, commissionAmount - (commissionAmount / 2));
+                plushReferral.recordReferralCommission(referrer, commissionAmount);
+            }
+        }
+    }
+}
+
+
+// File: contracts/libs/IERC20.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+// File: contracts/libs/SafeERC20.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "./IERC20.sol";
+import "@openzeppelin/contracts/utils/Address.sol";
+
+/**
+ * @title SafeERC20
+ * @dev Wrappers around ERC20 operations that throw on failure (when the token
+ * contract returns false). Tokens that return no value (and instead revert or
+ * throw on failure) are also supported, non-reverting calls are assumed to be
+ * successful.
+ * To use this library you can add a `using SafeERC20 for IERC20;` statement to your contract,
+ * which allows you to call the safe operations as `token.safeTransfer(...)`, etc.
+ */
+library SafeERC20 {
+    using Address for address;
+
+    function safeTransfer(
+        IERC20 token,
+        address to,
+        uint256 value
+    ) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+    }
+
+    function safeTransferFrom(
+        IERC20 token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+    }
+
+    /**
+     * @dev Deprecated. This function has issues similar to the ones found in
+     * {IERC20-approve}, and its usage is discouraged.
+     *
+     * Whenever possible, use {safeIncreaseAllowance} and
+     * {safeDecreaseAllowance} instead.
+     */
+    function safeApprove(
+        IERC20 token,
+        address spender,
+        uint256 value
+    ) internal {
+        // safeApprove should only be called when setting an initial allowance,
+        // or when resetting it to zero. To increase and decrease it, use
+        // 'safeIncreaseAllowance' and 'safeDecreaseAllowance'
+        require(
+            (value == 0) || (token.allowance(address(this), spender) == 0),
+            "SafeERC20: approve from non-zero to non-zero allowance"
+        );
+        _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+    }
+
+    function safeIncreaseAllowance(
+        IERC20 token,
+        address spender,
+        uint256 value
+    ) internal {
+        uint256 newAllowance = token.allowance(address(this), spender) + value;
+        _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+    }
+
+    function safeDecreaseAllowance(
+        IERC20 token,
+        address spender,
+        uint256 value
+    ) internal {
+        unchecked {
+            uint256 oldAllowance = token.allowance(address(this), spender);
+            require(oldAllowance >= value, "SafeERC20: decreased allowance below zero");
+            uint256 newAllowance = oldAllowance - value;
+            _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+        }
+    }
+
+    /**
+     * @dev Imitates a Solidity high-level call (i.e. a regular function call to a contract), relaxing the requirement
+     * on the return value: the return value is optional (but if data is returned, it must not be false).
+     * @param token The token targeted by the call.
+     * @param data The call data (encoded using abi.encode or one of its variants).
+     */
+    function _callOptionalReturn(IERC20 token, bytes memory data) private {
+        // We need to perform a low level call here, to bypass Solidity's return data size checking mechanism, since
+        // we're implementing it ourselves. We use {Address.functionCall} to perform this call, which verifies that
+        // the target address contains contract code and also asserts for success in the low-level call.
+
+        bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+        if (returndata.length > 0) {
+            // Return data is optional
+            require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+        }
+    }
+}
+
+// File: contracts/libs/IPlushReferral.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+interface IPlushReferral {
+    /**
+     * @dev Record referral.
+     */
+    function recordReferral(address user, address referrer) external;
+
+    /**
+     * @dev Record referral commission.
+     */
+    function recordReferralCommission(address referrer, uint256 commission) external;
+
+    /**
+     * @dev Get the referrer address that referred the user.
+     */
+    function getReferrer(address user) external view returns (address);
+}
+
+
+// File: @openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _setOwner(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _setOwner(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _setOwner(newOwner);
+    }
+
+    function _setOwner(address newOwner) private {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: @openzeppelin/contracts/security/ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and make it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+// File: contracts/NFTChef.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "./libs/IWETH.sol";
+import "./libs/IERC20.sol";
+import "./libs/SafeERC20.sol";
+
+import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+
+
+// NFTChef is the keeper of Masterchefs NFTs.
+//
+//
+// Have fun reading it. Hopefully it's bug-free. God bless.
+contract NFTChef is IERC721Receiver, Ownable {
+    using EnumerableSet for EnumerableSet.UintSet;
+    using SafeERC20 for IERC20;
+
+    function onERC721Received(
+        address,
+        address,
+        uint256,
+        bytes calldata
+    ) external override returns(bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
+    }
+
+    // max NFTs a single user can stake in a pool. This is to ensure finite gas usage on emergencyWithdraw.
+    uint256 public constant MAX_NFT_COUNT = 32;
+    uint256 public constant MAX_BNB_STAKING_FEE = 4 * (1e18);
+
+    // Mapping of NFT contract address to which NFTs a user has staked.
+    mapping(address => mapping(address => mapping(uint256 => bool))) public userStakedMap;
+    // Mapping of NFT contract address to array of NFT IDs a user has staked.
+    mapping(address => mapping(address => EnumerableSet.UintSet)) private userNftIdsMapArray;
+    // mapping of NFT contract address to bnbFeeAmount
+    mapping(address => uint256) public userNftBnbFeeMap;
+
+    // BNB Polygon (BNB) address
+    address public constant bnbCurrencyAddress = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address public immutable STBAddress;
+    address public immutable plushAddress;
+
+    event AddSetPoolNFT(address indexed nftContractAddress, uint256 bnbFee);
+    event DepositNFT(address indexed user, address indexed nftContractAddress, uint256 nftId);
+    event WithdrawNFT(address indexed user, address indexed nftContractAddress, uint256 nftId);
+    event EmergencyWithdrawNFT(address indexed user, address indexed nftContractAddress, uint256 nftId);
+    event EmergencyNFTWithdrawCompleted(address indexed user, address indexed nftContractAddress, uint256 amountOfNfts);
+
+    constructor(
+        address _STBAddress,
+        address _plushAddress
+    ) public {
+        STBAddress = _STBAddress;
+        plushAddress = _plushAddress;
+    }
+
+    // set NFTs bnb deposit Fees.
+    function setPoolBnbFee(address nftContractAddress, uint256 bnbFee) external onlyOwner {
+        IERC721(nftContractAddress).balanceOf(address(this));
+        require(bnbFee <= MAX_BNB_STAKING_FEE, "maximum bnb fee for nft staking is 1000 bnb!");
+        userNftBnbFeeMap[nftContractAddress] = bnbFee;
+
+        emit AddSetPoolNFT(nftContractAddress, bnbFee);
+    }
+
+    // Deposit NFTs to NFTChef for PLUSH allocation.
+    function deposit(address nftContractAddress, address userAddress, uint256 nftId) external payable onlyOwner {
+        require(msg.value >= userNftBnbFeeMap[nftContractAddress], "not enough unwrapped bnb provided!");
+        require(userNftIdsMapArray[nftContractAddress][userAddress].length() < MAX_NFT_COUNT,
+            "you have aleady reached the maximum amount of NFTs you can stake in this pool");
+        IERC721(nftContractAddress).transferFrom(userAddress, address(this), nftId);
+
+        userStakedMap[nftContractAddress][userAddress][nftId] = true;
+
+        userNftIdsMapArray[nftContractAddress][userAddress].add(nftId);
+
+        uint256 bnbBalance = address(this).balance;
+        // Wrapping native bnb for wbnb.
+        if (bnbBalance > 0)
+            IWETH(bnbCurrencyAddress).deposit{value:bnbBalance}();
+
+        uint256 wbnbBalance = IERC20(bnbCurrencyAddress).balanceOf(address(this));
+        uint256 plushFee = wbnbBalance/4;
+
+        if (plushFee > 0)
+            IERC20(bnbCurrencyAddress).safeTransferFrom(address(this), plushAddress, plushFee);
+        if (wbnbBalance - plushFee > 0)
+            IERC20(bnbCurrencyAddress).safeTransferFrom(address(this), STBAddress, wbnbBalance - plushFee);
+
+        emit DepositNFT(userAddress, nftContractAddress, nftId);
+    }
+
+    // Withdraw NFTs from NFTChef.
+    function withdraw(address nftContractAddress, address userAddress, uint256 nftId) external onlyOwner {
+        require(userStakedMap[nftContractAddress][userAddress][nftId], "nft not staked");
+
+        IERC721(nftContractAddress).transferFrom(address(this), userAddress, nftId);
+
+        userStakedMap[nftContractAddress][userAddress][nftId] = false;
+
+        userNftIdsMapArray[nftContractAddress][userAddress].remove(nftId);
+
+        emit WithdrawNFT(userAddress, nftContractAddress, nftId);
+    }
+
+    // Withdraw all NFTs without caring about rewards. EMERGENCY ONLY.
+    function emergencyWithdraw(address nftContractAddress, address userAddress) external onlyOwner {
+        EnumerableSet.UintSet storage nftStakedCollection = userNftIdsMapArray[nftContractAddress][userAddress];
+
+        for (uint256 i = 0;i < nftStakedCollection.length();i++) {
+            uint256 nftId = nftStakedCollection.at(i);
+
+            IERC721(nftContractAddress).transferFrom(address(this), userAddress, nftId);
+
+            userStakedMap[nftContractAddress][userAddress][nftId] = false;
+
+            emit EmergencyWithdrawNFT(userAddress, nftContractAddress, nftId);
+        }
+
+        emit EmergencyNFTWithdrawCompleted(userAddress, nftContractAddress, nftStakedCollection.length());
+
+        // empty user nft Ids array
+        delete userNftIdsMapArray[nftContractAddress][userAddress];
+    }
+
+    function viewStakerUserNFTs(address nftContractAddress, address userAddress) public view returns (uint256[] memory){
+        EnumerableSet.UintSet storage nftStakedCollection = userNftIdsMapArray[nftContractAddress][userAddress];
+
+        uint256[] memory nftStakedArray = new uint256[](nftStakedCollection.length());
+
+        for (uint256 i = 0;i < nftStakedCollection.length();i++)
+           nftStakedArray[i] = nftStakedCollection.at(i);
+
+        return nftStakedArray;
+    }
+
+    // To receive BNB from depositers when depositing NFTs
+    receive() external payable {}
+}
+
+
+// File: contracts/STBToken.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "./libs/ERC20.sol";
+import "./libs/IERC20.sol";
+
+import "./libs/PlushToolBox.sol";
+
+import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
+import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
+import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
+
+
+// STBToken
+contract STBToken is ERC20("STB", "STB") {
+
+    // Burn address
+    address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+
+    uint256 public constant busdSwapThreshold = 20 * (1e18);
+
+    uint256 public pendingBUSD = 0;
+
+    IERC20 public immutable busdRewardCurrency;
+
+    PlushToolBox public immutable plushToolBox;
+
+    IUniswapV2Router02 public plushSwapRouter;
+
+    uint256 public lastBUSDDistroBlock = type(uint256).max;
+
+    // default to one week @ 1200 blocks per hour
+    uint256 public distributionTimeFrameBlocks = 1200 * 24 * 7;
+
+    bool public ownershipIsTransferred = false;
+
+    // Events
+    event DistributeSTB(address recipient, uint256 STBAmount);
+    event DepositFeeConvertedToBUSD(address indexed inputToken, uint256 inputAmount, uint256 busdOutput);
+    event BUSDTransferredToUser(address recipient, uint256 busdAmount);
+    event OperatorTransferred(address indexed previousOperator, address indexed newOperator);
+    event PlushSwapRouterUpdated(address indexed operator, address indexed router);
+    event SetBUSDDistributionTimeFrame(uint256 distributionTimeFrameBlocks);
+
+    // The operator can only update the transfer tax rate
+    address public operator;
+
+    modifier onlyOperator() {
+        require(operator == msg.sender, "operator: caller is not the operator");
+        _;
+    }
+
+    /**
+     * @notice Constructs the PlushToken contract.
+     */
+    constructor(address _busdCurrency, PlushToolBox _plushToolBox) public {
+        operator = _msgSender();
+        emit OperatorTransferred(address(0), operator);
+
+        plushToolBox = _plushToolBox;
+        busdRewardCurrency = IERC20(_busdCurrency);
+
+        lastBUSDDistroBlock = _plushToolBox.startBlock();
+
+        // Divvy up STB supply.
+        _mint(0x3a1D1114269d7a786C154FE5278bF5b1e3e20d31, 85 * 1e3 * 1e18);
+        _mint(address(this), 15 * 1e3 * 1e18);
+    }
+
+
+    function transferOwnership(address newOwner) public override onlyOwner  {
+        require(!ownershipIsTransferred, "!unset");
+        super.transferOwnership(newOwner);
+        ownershipIsTransferred = true;
+    }
+
+    /// @notice Sends `_amount` token to `_to`. Must only be called by the owner (MasterChef).
+    function distribute(address _to, uint256 _amount) external onlyOwner returns (uint256){
+        require(ownershipIsTransferred, "too early!");
+        uint256 sendAmount = _amount;
+        if (balanceOf(address(this)) < _amount)
+            sendAmount = balanceOf(address(this));
+
+        if (sendAmount > 0) {
+            IERC20(address(this)).transfer(_to, sendAmount);
+            emit DistributeSTB(_to, sendAmount);
+        }
+
+        return sendAmount;
+    }
+
+    // To receive BNB from plushSwapRouter when swapping
+    receive() external payable {}
+
+    /**
+     * @dev sell all of a current type of token for busd. and distribute on a drip.
+     * Can only be called by the current owner.
+     */
+    function getBUSDDripRate() external view returns (uint256) {
+        uint256 busdBalance = busdRewardCurrency.balanceOf(address(this));
+        if (pendingBUSD > busdBalance)
+            return 0;
+        else
+            return (busdBalance - pendingBUSD) / distributionTimeFrameBlocks;
+    }
+
+    /**
+     * @dev sell all of a current type of token for busd. and distribute on a drip.
+     * Can only be called by the current owner.
+     */
+    function getBUSDDrip() external onlyOwner returns (uint256) {
+        uint256 busdBalance = busdRewardCurrency.balanceOf(address(this));
+        if (pendingBUSD > busdBalance)
+            return 0;
+
+        uint256 busdAvailable = busdBalance - pendingBUSD;
+
+        // only provide a drip if there has been some blocks passed since the last drip
+        uint256 blockSinceLastDistro = block.number > lastBUSDDistroBlock ? block.number - lastBUSDDistroBlock : 0;
+
+        // We distribute the busd assuming the old busd balance wanted to be distributed over distributionTimeFrameBlocks blocks.
+        uint256 busdRelease = (blockSinceLastDistro * busdAvailable) / distributionTimeFrameBlocks;
+
+        busdRelease = busdRelease > busdAvailable ? busdAvailable : busdRelease;
+
+        lastBUSDDistroBlock = block.number;
+        pendingBUSD += busdRelease;
+
+        return busdRelease;
+    }
+
+    /**
+     * @dev sell all of a current type of token for busd.
+     */
+    function convertDepositFeesToBUSD(address token, uint256 tokenType) public onlyOwner {
+        // shouldn't be trying to sell STB
+        if (token == address(this) || token == address(busdRewardCurrency))
+            return;
+
+        // LP tokens aren't destroyed in STB, but this is so STB can process
+        // already destroyed LP fees sent to it by the PlushToken contract.
+        if (tokenType == 1) {
+            convertDepositFeesToBUSD(IUniswapV2Pair(token).token0(), 0);
+            convertDepositFeesToBUSD(IUniswapV2Pair(token).token1(), 0);
+            return;
+        }
+
+        uint256 totalTokenBalance = IERC20(token).balanceOf(address(this));
+
+        uint256 busdValue = plushToolBox.getTokenBUSDValue(totalTokenBalance, token, tokenType, false, address(busdRewardCurrency));
+
+        if (totalTokenBalance == 0)
+            return;
+        if (busdValue < busdSwapThreshold)
+            return;
+
+        // generate the plushSwap pair path of token -> busd.
+        address[] memory path = new address[](2);
+        path[0] = token;
+        path[1] = address(busdRewardCurrency);
+
+        uint256 busdPriorBalance = busdRewardCurrency.balanceOf(address(this));
+
+        require(IERC20(token).approve(address(plushSwapRouter), totalTokenBalance), 'approval failed');
+
+        try
+            // make the swap
+            plushSwapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                totalTokenBalance,
+                0, // accept any amount of BUSD
+                path,
+                address(this),
+                block.timestamp
+            )
+        { /* suceeded */ } catch { /* failed, but we avoided reverting */ }
+
+
+        uint256 busdProfit = busdRewardCurrency.balanceOf(address(this)) - busdPriorBalance;
+
+        emit DepositFeeConvertedToBUSD(token, totalTokenBalance, busdProfit);
+    }
+
+    /**
+     * @dev send busd to a user
+     * Can only be called by the current operator.
+     */
+    function transferBUSDToUser(address recipient, uint256 amount) external onlyOwner {
+       uint256 busdBalance = busdRewardCurrency.balanceOf(address(this));
+       if (busdBalance < amount)
+           amount = busdBalance;
+
+       require(busdRewardCurrency.transfer(recipient, amount), "transfer failed!");
+
+       pendingBUSD -= amount;
+
+        emit BUSDTransferredToUser(recipient, amount);
+    }
+
+    /**
+     * @dev set the number of blocks we should use to calculate the BUSD drip rate.
+     * Can only be called by the current operator.
+     */
+    function setBUSDDistributionTimeFrame(uint256 _busdDistributionTimeFrame) external onlyOperator {
+        require(_busdDistributionTimeFrame > 1200 && _busdDistributionTimeFrame < 52560000 /* 5 years */, "_busdDistributionTimeFrame out of range!");
+
+        distributionTimeFrameBlocks = _busdDistributionTimeFrame;
+
+        emit SetBUSDDistributionTimeFrame(distributionTimeFrameBlocks);
+    }
+
+    /**
+     * @dev Update the swap router.
+     * Can only be called by the current operator.
+     */
+    function updatePlushSwapRouter(address _router) external onlyOperator {
+        require(_router != address(0), "updatePlushSwapRouter: new _router is the zero address");
+        require(address(plushSwapRouter) == address(0), "router already set!");
+
+        plushSwapRouter = IUniswapV2Router02(_router);
+        emit PlushSwapRouterUpdated(msg.sender, address(plushSwapRouter));
+    }
+
+    /**
+     * @dev Transfers operator of the contract to a new account (`newOperator`).
+     * Can only be called by the current operator.
+     */
+    function transferOperator(address newOperator) external onlyOperator {
+        require(newOperator != address(0), "transferOperator: new operator is the zero address");
+
+        emit OperatorTransferred(operator, newOperator);
+
+        operator = newOperator;
+    }
+}
+
+
+// File: contracts/PlushToken.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "./libs/ERC20.sol";
+import "./libs/IERC20.sol";
+import "./libs/SafeERC20.sol";
+import "./libs/IWETH.sol";
+
+import "./libs/AddLiquidityHelper.sol";
+import "./libs/PlushToolBox.sol";
+
+import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
+import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
+import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
+
+// PlushToken.
+contract PlushToken is ERC20("Plush", "PLUSH")  {
+    using SafeERC20 for IERC20;
+
+    // Transfer tax rate in basis points. (default 6.66%)
+    uint16 public transferTaxRate = 666;
+    // Extra transfer tax rate in basis points. (default 10.00%)
+    uint16 public extraTransferTaxRate = 1000;
+    // Burn rate % of transfer tax. (default 54.95% x 6.66% = 3.660336% of total amount).
+    uint32 public constant burnRate = 549549549;
+    // Max transfer tax rate: 20.00%.
+    uint16 public constant MAXIMUM_TRANSFER_TAX_RATE = 2000;
+    // Burn address
+    address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+
+    address public constant busdCurrencyAddress = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+
+    uint256 public constant busdSwapThreshold = 40 * 1e18;
+
+    // Min amount to liquify. (default 40 PLUSHs)
+    uint256 public constant minPlushAmountToLiquify = 40 * 1e18;
+    // Min amount to liquify. (default 0.2 BNB)
+    uint256 public constant minBnbAmountToLiquify = 0.2 *  1e18;
+
+    IUniswapV2Router02 public plushSwapRouter;
+    // The trading pair
+    address public plushSwapPair;
+    // In swap and liquify
+    bool private _inSwapAndLiquify;
+
+    AddLiquidityHelper public immutable addLiquidityHelper;
+    PlushToolBox public immutable plushToolBox;
+
+    address public immutable STB;
+
+    bool public ownershipIsTransferred = false;
+
+    mapping(address => bool) public excludeFromMap;
+    mapping(address => bool) public excludeToMap;
+
+    mapping(address => bool) public extraFromMap;
+    mapping(address => bool) public extraToMap;
+
+    event TransferFeeChanged(uint256 txnFee, uint256 extraTxnFee);
+    event UpdateFeeMaps(address indexed _contract, bool fromExcluded, bool toExcluded, bool fromHasExtra, bool toHasExtra);
+    event SetPlushRouter(address plushSwapRouter, address plushSwapPair);
+    event OperatorTransferred(address indexed previousOperator, address indexed newOperator);
+
+    // The operator can only update the transfer tax rate
+    address public operator;
+
+    modifier onlyOperator() {
+        require(operator == msg.sender, "!operator");
+        _;
+    }
+
+    modifier lockTheSwap {
+        _inSwapAndLiquify = true;
+        _;
+        _inSwapAndLiquify = false;
+    }
+
+    modifier transferTaxFree {
+        uint16 _transferTaxRate = transferTaxRate;
+        uint16 _extraTransferTaxRate = extraTransferTaxRate;
+        transferTaxRate = 0;
+        extraTransferTaxRate = 0;
+        _;
+        transferTaxRate = _transferTaxRate;
+        extraTransferTaxRate = _extraTransferTaxRate;
+    }
+
+    /**
+     * @notice Constructs the PlushToken contract.
+     */
+    constructor(address _STB, AddLiquidityHelper _addLiquidityHelper, PlushToolBox _plushToolBox) public {
+        addLiquidityHelper = _addLiquidityHelper;
+        plushToolBox = _plushToolBox;
+        STB = _STB;
+        operator = _msgSender();
+
+        // pre-mint
+        _mint(address(0x3a1D1114269d7a786C154FE5278bF5b1e3e20d31), uint256(800 * 1e3 * 1e18));
+    }
+
+    function transferOwnership(address newOwner) public override onlyOwner  {
+        require(!ownershipIsTransferred, "!unset");
+        super.transferOwnership(newOwner);
+        ownershipIsTransferred = true;
+    }
+
+    /// @notice Creates `_amount` token to `_to`. Must only be called by the owner (MasterChef).
+    function burn(uint256 _amount) external onlyOwner {
+        _burn(msg.sender, _amount);
+    }
+
+    /// @notice Creates `_amount` token to `_to`. Must only be called by the owner (MasterChef).
+    function mint(address _to, uint256 _amount) external onlyOwner {
+        require(ownershipIsTransferred, "too early!");
+        if (_amount > 0)
+            _mint(_to, _amount);
+    }
+
+    /// @dev overrides transfer function to meet tokenomics of PLUSH
+    function _transfer(address sender, address recipient, uint256 amount) internal virtual override {
+        bool toFromAddLiquidityHelper = (sender == address(addLiquidityHelper) || recipient == address(addLiquidityHelper));
+        // swap and liquify
+        if (
+            _inSwapAndLiquify == false
+            && address(plushSwapRouter) != address(0)
+            && !toFromAddLiquidityHelper
+            && sender != plushSwapPair
+            && sender != owner()
+        ) {
+            swapAndLiquify();
+        }
+
+        if (toFromAddLiquidityHelper ||
+            recipient == BURN_ADDRESS || (transferTaxRate == 0 && extraTransferTaxRate == 0) ||
+            excludeFromMap[sender] || excludeToMap[recipient]) {
+            super._transfer(sender, recipient, amount);
+        } else {
+            // default tax is 6.66% of every transfer, but extra 2% for dumping tax
+            uint256 taxAmount = (amount * (transferTaxRate +
+                ((extraFromMap[sender] || extraToMap[recipient]) ? extraTransferTaxRate : 0))) / 10000;
+
+            uint256 burnAmount = (taxAmount * burnRate) / 1000000000;
+            uint256 liquidityAmount = taxAmount - burnAmount;
+
+            // default 93.34% of transfer sent to recipient
+            uint256 sendAmount = amount - taxAmount;
+
+            assert(amount == sendAmount + taxAmount &&
+                        taxAmount == burnAmount + liquidityAmount);
+
+            super._transfer(sender, BURN_ADDRESS, burnAmount);
+            super._transfer(sender, address(this), liquidityAmount);
+            super._transfer(sender, recipient, sendAmount);
+            amount = sendAmount;
+        }
+    }
+
+    /// @dev Swap and liquify
+    function swapAndLiquify() private lockTheSwap transferTaxFree {
+        uint256 contractTokenBalance = ERC20(address(this)).balanceOf(address(this));
+
+        uint256 WETHbalance = IERC20(plushSwapRouter.WETH()).balanceOf(address(this));
+
+        IWETH(plushSwapRouter.WETH()).withdraw(WETHbalance);
+
+        if (address(this).balance >= minBnbAmountToLiquify || contractTokenBalance >= minPlushAmountToLiquify) {
+
+            IERC20(address(this)).safeTransfer(address(addLiquidityHelper), IERC20(address(this)).balanceOf(address(this)));
+            // send all tokens to add liquidity with, we are refunded any that aren't used.
+            addLiquidityHelper.plushETHLiquidityWithBuyBack{value: address(this).balance}(BURN_ADDRESS);
+        }
+    }
+
+    /**
+     * @dev unenchant the lp token into its original components.
+     * Can only be called by the current operator.
+     */
+    function swapLpTokensForFee(address token, uint256 amount) internal {
+        require(IERC20(token).approve(address(plushSwapRouter), amount), '!approved');
+
+        IUniswapV2Pair lpToken = IUniswapV2Pair(token);
+
+        uint256 token0BeforeLiquidation = IERC20(lpToken.token0()).balanceOf(address(this));
+        uint256 token1BeforeLiquidation = IERC20(lpToken.token1()).balanceOf(address(this));
+
+        // make the swap
+        plushSwapRouter.removeLiquidity(
+            lpToken.token0(),
+            lpToken.token1(),
+            amount,
+            0,
+            0,
+            address(this),
+            block.timestamp
+        );
+
+        uint256 token0FromLiquidation = IERC20(lpToken.token0()).balanceOf(address(this)) - token0BeforeLiquidation;
+        uint256 token1FromLiquidation = IERC20(lpToken.token1()).balanceOf(address(this)) - token1BeforeLiquidation;
+
+        address tokenForSTBBUSDReward = lpToken.token0();
+        address tokenForPlushAMMReward = lpToken.token1();
+
+        // If we already have, busd, save a swap.
+       if (lpToken.token1() == busdCurrencyAddress){
+
+            (tokenForPlushAMMReward, tokenForSTBBUSDReward) = (tokenForSTBBUSDReward, tokenForPlushAMMReward);
+        } else if (lpToken.token0() == plushSwapRouter.WETH()){
+            // if one is weth already use the other one for stb and
+            // the weth for plush AMM to save a swap.
+
+            (tokenForPlushAMMReward, tokenForSTBBUSDReward) = (tokenForSTBBUSDReward, tokenForPlushAMMReward);
+        }
+
+        bool czRewardIs0 = tokenForSTBBUSDReward == lpToken.token0();
+
+        // send stb all of 1 half of the LP to be convereted to BUSD later.
+        IERC20(tokenForSTBBUSDReward).safeTransfer(address(STB),
+            czRewardIs0 ? token0FromLiquidation : token1FromLiquidation);
+
+        // send stb 50% share of the other 50% to give stb 75% in total.
+        IERC20(tokenForPlushAMMReward).safeTransfer(address(STB),
+            (czRewardIs0 ? token1FromLiquidation : token0FromLiquidation)/2);
+
+        swapDepositFeeForWbnb(tokenForPlushAMMReward, 0);
+    }
+
+    /**
+     * @dev sell all of a current type of token for weth, to be used in plush liquidity later.
+     * Can only be called by the current operator.
+     */
+    function swapDepositFeeForETH(address token, uint256 tokenType) external onlyOwner {
+        uint256 busdValue = plushToolBox.getTokenBUSDValue(IERC20(token).balanceOf(address(this)), token, tokenType, false, busdCurrencyAddress);
+
+        // If plush or weth already no need to do anything.
+        if (token == address(this) || token == plushSwapRouter.WETH())
+            return;
+
+        // only swap if a certain busd value
+        if (busdValue < busdSwapThreshold)
+            return;
+
+        swapDepositFeeForWbnb(token, tokenType);
+    }
+
+    function swapDepositFeeForWbnb(address token, uint256 tokenType) internal {
+        address toToken = plushSwapRouter.WETH();
+        uint256 totalTokenBalance = IERC20(token).balanceOf(address(this));
+
+        // can't trade to plush inside of plush anyway
+        if (token == toToken || totalTokenBalance == 0 || toToken == address(this))
+            return;
+
+        if (tokenType == 1) {
+            swapLpTokensForFee(token, totalTokenBalance);
+            return;
+        }
+
+        require(IERC20(token).approve(address(plushSwapRouter), totalTokenBalance), "!approved");
+
+        // generate the plushSwap pair path of token -> weth
+        address[] memory path = new address[](2);
+        path[0] = token;
+        path[1] = toToken;
+
+        try
+            // make the swap
+            plushSwapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                totalTokenBalance,
+                0, // accept any amount of tokens
+                path,
+                address(this),
+                block.timestamp
+            )
+        { /* suceeded */ } catch { /* failed, but we avoided reverting */ }
+
+        // Unfortunately can't swap directly to plush inside of plush (Uniswap INVALID_TO Assert, boo).
+        // Also dont want to add an extra swap here.
+        // Will leave as WETH and make the plush Txn AMM utilise available WETH first.
+    }
+
+    // To receive ETH from plushSwapRouter when swapping
+    receive() external payable {}
+
+    /**
+     * @dev Update the transfer tax rate.
+     * Can only be called by the current operator.
+     */
+    function updateTransferTaxRate(uint16 _transferTaxRate, uint16 _extraTransferTaxRate) external onlyOperator {
+        require(_transferTaxRate + _extraTransferTaxRate  <= MAXIMUM_TRANSFER_TAX_RATE,
+            "!valid");
+        transferTaxRate = _transferTaxRate;
+        extraTransferTaxRate = _extraTransferTaxRate;
+
+        emit TransferFeeChanged(transferTaxRate, extraTransferTaxRate);
+    }
+
+    /**
+     * @dev Update the excludeFromMap
+     * Can only be called by the current operator.
+     */
+    function updateFeeMaps(address _contract, bool fromExcluded, bool toExcluded, bool fromHasExtra, bool toHasExtra) external onlyOperator {
+        excludeFromMap[_contract] = fromExcluded;
+        excludeToMap[_contract] = toExcluded;
+        extraFromMap[_contract] = fromHasExtra;
+        extraToMap[_contract] = toHasExtra;
+
+        emit UpdateFeeMaps(_contract, fromExcluded, toExcluded, fromHasExtra, toHasExtra);
+    }
+
+    /**
+     * @dev Update the swap router.
+     * Can only be called by the current operator.
+     */
+    function updatePlushSwapRouter(address _router) external onlyOperator {
+        require(_router != address(0), "!!0");
+        require(address(plushSwapRouter) == address(0), "!unset");
+
+        plushSwapRouter = IUniswapV2Router02(_router);
+        plushSwapPair = IUniswapV2Factory(plushSwapRouter.factory()).getPair(address(this), plushSwapRouter.WETH());
+
+        require(address(plushSwapPair) != address(0), "!bnb pair");
+
+        emit SetPlushRouter(address(plushSwapRouter), plushSwapPair);
+    }
+
+    /**
+     * @dev Transfers operator of the contract to a new account (`newOperator`).
+     * Can only be called by the current operator.
+     */
+    function transferOperator(address newOperator) external onlyOperator {
+        require(newOperator != address(0), "!!0");
+
+        emit OperatorTransferred(operator, newOperator);
+
+        operator = newOperator;
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/Address.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Collection of functions related to the address type
+ */
+library Address {
+    /**
+     * @dev Returns true if `account` is a contract.
+     *
+     * [IMPORTANT]
+     * ====
+     * It is unsafe to assume that an address for which this function returns
+     * false is an externally-owned account (EOA) and not a contract.
+     *
+     * Among others, `isContract` will return false for the following
+     * types of addresses:
+     *
+     *  - an externally-owned account
+     *  - a contract in construction
+     *  - an address where a contract will be created
+     *  - an address where a contract lived, but was destroyed
+     * ====
+     */
+    function isContract(address account) internal view returns (bool) {
+        // This method relies on extcodesize, which returns 0 for contracts in
+        // construction, since the code is only stored at the end of the
+        // constructor execution.
+
+        uint256 size;
+        assembly {
+            size := extcodesize(account)
+        }
+        return size > 0;
+    }
+
+    /**
+     * @dev Replacement for Solidity's `transfer`: sends `amount` wei to
+     * `recipient`, forwarding all available gas and reverting on errors.
+     *
+     * https://eips.ethereum.org/EIPS/eip-1884[EIP1884] increases the gas cost
+     * of certain opcodes, possibly making contracts go over the 2300 gas limit
+     * imposed by `transfer`, making them unable to receive funds via
+     * `transfer`. {sendValue} removes this limitation.
+     *
+     * https://diligence.consensys.net/posts/2019/09/stop-using-soliditys-transfer-now/[Learn more].
+     *
+     * IMPORTANT: because control is transferred to `recipient`, care must be
+     * taken to not create reentrancy vulnerabilities. Consider using
+     * {ReentrancyGuard} or the
+     * https://solidity.readthedocs.io/en/v0.5.11/security-considerations.html#use-the-checks-effects-interactions-pattern[checks-effects-interactions pattern].
+     */
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+
+        (bool success, ) = recipient.call{value: amount}("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+
+    /**
+     * @dev Performs a Solidity function call using a low level `call`. A
+     * plain `call` is an unsafe replacement for a function call: use this
+     * function instead.
+     *
+     * If `target` reverts with a revert reason, it is bubbled up by this
+     * function (like regular Solidity function calls).
+     *
+     * Returns the raw returned data. To convert to the expected return value,
+     * use https://solidity.readthedocs.io/en/latest/units-and-global-variables.html?highlight=abi.decode#abi-encoding-and-decoding-functions[`abi.decode`].
+     *
+     * Requirements:
+     *
+     * - `target` must be a contract.
+     * - calling `target` with `data` must not revert.
+     *
+     * _Available since v3.1._
+     */
+    function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+        return functionCall(target, data, "Address: low-level call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`], but with
+     * `errorMessage` as a fallback revert reason when `target` reverts.
+     *
+     * _Available since v3.1._
+     */
+    function functionCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but also transferring `value` wei to `target`.
+     *
+     * Requirements:
+     *
+     * - the calling contract must have an ETH balance of at least `value`.
+     * - the called Solidity function must be `payable`.
+     *
+     * _Available since v3.1._
+     */
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value
+    ) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCallWithValue-address-bytes-uint256-}[`functionCallWithValue`], but
+     * with `errorMessage` as a fallback revert reason when `target` reverts.
+     *
+     * _Available since v3.1._
+     */
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        require(isContract(target), "Address: call to non-contract");
+
+        (bool success, bytes memory returndata) = target.call{value: value}(data);
+        return _verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but performing a static call.
+     *
+     * _Available since v3.3._
+     */
+    function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+        return functionStaticCall(target, data, "Address: low-level static call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],
+     * but performing a static call.
+     *
+     * _Available since v3.3._
+     */
+    function functionStaticCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal view returns (bytes memory) {
+        require(isContract(target), "Address: static call to non-contract");
+
+        (bool success, bytes memory returndata) = target.staticcall(data);
+        return _verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but performing a delegate call.
+     *
+     * _Available since v3.4._
+     */
+    function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+        return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],
+     * but performing a delegate call.
+     *
+     * _Available since v3.4._
+     */
+    function functionDelegateCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        require(isContract(target), "Address: delegate call to non-contract");
+
+        (bool success, bytes memory returndata) = target.delegatecall(data);
+        return _verifyCallResult(success, returndata, errorMessage);
+    }
+
+    function _verifyCallResult(
+        bool success,
+        bytes memory returndata,
+        string memory errorMessage
+    ) private pure returns (bytes memory) {
+        if (success) {
+            return returndata;
+        } else {
+            // Look for revert reason and bubble it up if present
+            if (returndata.length > 0) {
+                // The easiest way to bubble the revert reason is using memory via assembly
+
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/*
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+// File: contracts/libs/IWETH.sol
+pragma solidity >=0.5.0;
+
+interface IWETH {
+    function deposit() external payable;
+    function transfer(address to, uint value) external returns (bool);
+    function withdraw(uint) external;
+}
+
+// File: @openzeppelin/contracts/utils/structs/EnumerableSet.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Library for managing
+ * https://en.wikipedia.org/wiki/Set_(abstract_data_type)[sets] of primitive
+ * types.
+ *
+ * Sets have the following properties:
+ *
+ * - Elements are added, removed, and checked for existence in constant time
+ * (O(1)).
+ * - Elements are enumerated in O(n). No guarantees are made on the ordering.
+ *
+ * ```
+ * contract Example {
+ *     // Add the library methods
+ *     using EnumerableSet for EnumerableSet.AddressSet;
+ *
+ *     // Declare a set state variable
+ *     EnumerableSet.AddressSet private mySet;
+ * }
+ * ```
+ *
+ * As of v3.3.0, sets of type `bytes32` (`Bytes32Set`), `address` (`AddressSet`)
+ * and `uint256` (`UintSet`) are supported.
+ */
+library EnumerableSet {
+    // To implement this library for multiple types with as little code
+    // repetition as possible, we write it in terms of a generic Set type with
+    // bytes32 values.
+    // The Set implementation uses private functions, and user-facing
+    // implementations (such as AddressSet) are just wrappers around the
+    // underlying Set.
+    // This means that we can only create new EnumerableSets for types that fit
+    // in bytes32.
+
+    struct Set {
+        // Storage of set values
+        bytes32[] _values;
+        // Position of the value in the `values` array, plus 1 because index 0
+        // means a value is not in the set.
+        mapping(bytes32 => uint256) _indexes;
+    }
+
+    /**
+     * @dev Add a value to a set. O(1).
+     *
+     * Returns true if the value was added to the set, that is if it was not
+     * already present.
+     */
+    function _add(Set storage set, bytes32 value) private returns (bool) {
+        if (!_contains(set, value)) {
+            set._values.push(value);
+            // The value is stored at length-1, but we add 1 to all indexes
+            // and use 0 as a sentinel value
+            set._indexes[value] = set._values.length;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    /**
+     * @dev Removes a value from a set. O(1).
+     *
+     * Returns true if the value was removed from the set, that is if it was
+     * present.
+     */
+    function _remove(Set storage set, bytes32 value) private returns (bool) {
+        // We read and store the value's index to prevent multiple reads from the same storage slot
+        uint256 valueIndex = set._indexes[value];
+
+        if (valueIndex != 0) {
+            // Equivalent to contains(set, value)
+            // To delete an element from the _values array in O(1), we swap the element to delete with the last one in
+            // the array, and then remove the last element (sometimes called as 'swap and pop').
+            // This modifies the order of the array, as noted in {at}.
+
+            uint256 toDeleteIndex = valueIndex - 1;
+            uint256 lastIndex = set._values.length - 1;
+
+            if (lastIndex != toDeleteIndex) {
+                bytes32 lastvalue = set._values[lastIndex];
+
+                // Move the last value to the index where the value to delete is
+                set._values[toDeleteIndex] = lastvalue;
+                // Update the index for the moved value
+                set._indexes[lastvalue] = valueIndex; // Replace lastvalue's index to valueIndex
+            }
+
+            // Delete the slot where the moved value was stored
+            set._values.pop();
+
+            // Delete the index for the deleted slot
+            delete set._indexes[value];
+
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    /**
+     * @dev Returns true if the value is in the set. O(1).
+     */
+    function _contains(Set storage set, bytes32 value) private view returns (bool) {
+        return set._indexes[value] != 0;
+    }
+
+    /**
+     * @dev Returns the number of values on the set. O(1).
+     */
+    function _length(Set storage set) private view returns (uint256) {
+        return set._values.length;
+    }
+
+    /**
+     * @dev Returns the value stored at position `index` in the set. O(1).
+     *
+     * Note that there are no guarantees on the ordering of values inside the
+     * array, and it may change when more values are added or removed.
+     *
+     * Requirements:
+     *
+     * - `index` must be strictly less than {length}.
+     */
+    function _at(Set storage set, uint256 index) private view returns (bytes32) {
+        return set._values[index];
+    }
+
+    // Bytes32Set
+
+    struct Bytes32Set {
+        Set _inner;
+    }
+
+    /**
+     * @dev Add a value to a set. O(1).
+     *
+     * Returns true if the value was added to the set, that is if it was not
+     * already present.
+     */
+    function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+        return _add(set._inner, value);
+    }
+
+    /**
+     * @dev Removes a value from a set. O(1).
+     *
+     * Returns true if the value was removed from the set, that is if it was
+     * present.
+     */
+    function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+        return _remove(set._inner, value);
+    }
+
+    /**
+     * @dev Returns true if the value is in the set. O(1).
+     */
+    function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+        return _contains(set._inner, value);
+    }
+
+    /**
+     * @dev Returns the number of values in the set. O(1).
+     */
+    function length(Bytes32Set storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+    /**
+     * @dev Returns the value stored at position `index` in the set. O(1).
+     *
+     * Note that there are no guarantees on the ordering of values inside the
+     * array, and it may change when more values are added or removed.
+     *
+     * Requirements:
+     *
+     * - `index` must be strictly less than {length}.
+     */
+    function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+        return _at(set._inner, index);
+    }
+
+    // AddressSet
+
+    struct AddressSet {
+        Set _inner;
+    }
+
+    /**
+     * @dev Add a value to a set. O(1).
+     *
+     * Returns true if the value was added to the set, that is if it was not
+     * already present.
+     */
+    function add(AddressSet storage set, address value) internal returns (bool) {
+        return _add(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+    /**
+     * @dev Removes a value from a set. O(1).
+     *
+     * Returns true if the value was removed from the set, that is if it was
+     * present.
+     */
+    function remove(AddressSet storage set, address value) internal returns (bool) {
+        return _remove(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+    /**
+     * @dev Returns true if the value is in the set. O(1).
+     */
+    function contains(AddressSet storage set, address value) internal view returns (bool) {
+        return _contains(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+    /**
+     * @dev Returns the number of values in the set. O(1).
+     */
+    function length(AddressSet storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+    /**
+     * @dev Returns the value stored at position `index` in the set. O(1).
+     *
+     * Note that there are no guarantees on the ordering of values inside the
+     * array, and it may change when more values are added or removed.
+     *
+     * Requirements:
+     *
+     * - `index` must be strictly less than {length}.
+     */
+    function at(AddressSet storage set, uint256 index) internal view returns (address) {
+        return address(uint160(uint256(_at(set._inner, index))));
+    }
+
+    // UintSet
+
+    struct UintSet {
+        Set _inner;
+    }
+
+    /**
+     * @dev Add a value to a set. O(1).
+     *
+     * Returns true if the value was added to the set, that is if it was not
+     * already present.
+     */
+    function add(UintSet storage set, uint256 value) internal returns (bool) {
+        return _add(set._inner, bytes32(value));
+    }
+
+    /**
+     * @dev Removes a value from a set. O(1).
+     *
+     * Returns true if the value was removed from the set, that is if it was
+     * present.
+     */
+    function remove(UintSet storage set, uint256 value) internal returns (bool) {
+        return _remove(set._inner, bytes32(value));
+    }
+
+    /**
+     * @dev Returns true if the value is in the set. O(1).
+     */
+    function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+        return _contains(set._inner, bytes32(value));
+    }
+
+    /**
+     * @dev Returns the number of values on the set. O(1).
+     */
+    function length(UintSet storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+    /**
+     * @dev Returns the value stored at position `index` in the set. O(1).
+     *
+     * Note that there are no guarantees on the ordering of values inside the
+     * array, and it may change when more values are added or removed.
+     *
+     * Requirements:
+     *
+     * - `index` must be strictly less than {length}.
+     */
+    function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+        return uint256(_at(set._inner, index));
+    }
+}
+
+
+// File: @openzeppelin/contracts/token/ERC721/IERC721.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "../../utils/introspection/IERC165.sol";
+
+/**
+ * @dev Required interface of an ERC721 compliant contract.
+ */
+interface IERC721 is IERC165 {
+    /**
+     * @dev Emitted when `tokenId` token is transferred from `from` to `to`.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+
+    /**
+     * @dev Emitted when `owner` enables `approved` to manage the `tokenId` token.
+     */
+    event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+
+    /**
+     * @dev Emitted when `owner` enables or disables (`approved`) `operator` to manage all of its assets.
+     */
+    event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+
+    /**
+     * @dev Returns the number of tokens in ``owner``'s account.
+     */
+    function balanceOf(address owner) external view returns (uint256 balance);
+
+    /**
+     * @dev Returns the owner of the `tokenId` token.
+     *
+     * Requirements:
+     *
+     * - `tokenId` must exist.
+     */
+    function ownerOf(uint256 tokenId) external view returns (address owner);
+
+    /**
+     * @dev Safely transfers `tokenId` token from `from` to `to`, checking first that contract recipients
+     * are aware of the ERC721 protocol to prevent tokens from being forever locked.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `tokenId` token must exist and be owned by `from`.
+     * - If the caller is not `from`, it must be have been allowed to move this token by either {approve} or {setApprovalForAll}.
+     * - If `to` refers to a smart contract, it must implement {IERC721Receiver-onERC721Received}, which is called upon a safe transfer.
+     *
+     * Emits a {Transfer} event.
+     */
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) external;
+
+    /**
+     * @dev Transfers `tokenId` token from `from` to `to`.
+     *
+     * WARNING: Usage of this method is discouraged, use {safeTransferFrom} whenever possible.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `tokenId` token must be owned by `from`.
+     * - If the caller is not `from`, it must be approved to move this token by either {approve} or {setApprovalForAll}.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) external;
+
+    /**
+     * @dev Gives permission to `to` to transfer `tokenId` token to another account.
+     * The approval is cleared when the token is transferred.
+     *
+     * Only a single account can be approved at a time, so approving the zero address clears previous approvals.
+     *
+     * Requirements:
+     *
+     * - The caller must own the token or be an approved operator.
+     * - `tokenId` must exist.
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address to, uint256 tokenId) external;
+
+    /**
+     * @dev Returns the account approved for `tokenId` token.
+     *
+     * Requirements:
+     *
+     * - `tokenId` must exist.
+     */
+    function getApproved(uint256 tokenId) external view returns (address operator);
+
+    /**
+     * @dev Approve or remove `operator` as an operator for the caller.
+     * Operators can call {transferFrom} or {safeTransferFrom} for any token owned by the caller.
+     *
+     * Requirements:
+     *
+     * - The `operator` cannot be the caller.
+     *
+     * Emits an {ApprovalForAll} event.
+     */
+    function setApprovalForAll(address operator, bool _approved) external;
+
+    /**
+     * @dev Returns if the `operator` is allowed to manage all of the assets of `owner`.
+     *
+     * See {setApprovalForAll}
+     */
+    function isApprovedForAll(address owner, address operator) external view returns (bool);
+
+    /**
+     * @dev Safely transfers `tokenId` token from `from` to `to`.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `tokenId` token must exist and be owned by `from`.
+     * - If the caller is not `from`, it must be approved to move this token by either {approve} or {setApprovalForAll}.
+     * - If `to` refers to a smart contract, it must implement {IERC721Receiver-onERC721Received}, which is called upon a safe transfer.
+     *
+     * Emits a {Transfer} event.
+     */
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId,
+        bytes calldata data
+    ) external;
+}
+
+
+// File: @openzeppelin/contracts/token/ERC721/IERC721Receiver.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @title ERC721 token receiver interface
+ * @dev Interface for any contract that wants to support safeTransfers
+ * from ERC721 asset contracts.
+ */
+interface IERC721Receiver {
+    /**
+     * @dev Whenever an {IERC721} `tokenId` token is transferred to this contract via {IERC721-safeTransferFrom}
+     * by `operator` from `from`, this function is called.
+     *
+     * It must return its Solidity selector to confirm the token transfer.
+     * If any other value is returned or the interface is not implemented by the recipient, the transfer will be reverted.
+     *
+     * The selector can be obtained in Solidity with `IERC721.onERC721Received.selector`.
+     */
+    function onERC721Received(
+        address operator,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external returns (bytes4);
+}
+
+
+// File: @openzeppelin/contracts/utils/introspection/IERC165.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC165 standard, as defined in the
+ * https://eips.ethereum.org/EIPS/eip-165[EIP].
+ *
+ * Implementers can declare support of contract interfaces, which can then be
+ * queried by others ({ERC165Checker}).
+ *
+ * For an implementation, see {ERC165}.
+ */
+interface IERC165 {
+    /**
+     * @dev Returns true if this contract implements the interface defined by
+     * `interfaceId`. See the corresponding
+     * https://eips.ethereum.org/EIPS/eip-165#how-interfaces-are-identified[EIP section]
+     * to learn more about how these ids are created.
+     *
+     * This function call must use less than 30 000 gas.
+     */
+    function supportsInterface(bytes4 interfaceId) external view returns (bool);
+}
+
+
+// File: contracts/libs/ERC20.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "./IERC20.sol";
+import "./IERC20Metadata.sol";
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Context.sol";
+
+/**
+ * @dev Implementation of the {IERC20} interface.
+ *
+ * This implementation is agnostic to the way tokens are created. This means
+ * that a supply mechanism has to be added in a derived contract using {_mint}.
+ * For a generic mechanism see {ERC20PresetMinterPauser}.
+ *
+ * TIP: For a detailed writeup see our guide
+ * https://forum.zeppelin.solutions/t/how-to-implement-erc20-supply-mechanisms/226[How
+ * to implement supply mechanisms].
+ *
+ * We have followed general OpenZeppelin guidelines: functions revert instead
+ * of returning `false` on failure. This behavior is nonetheless conventional
+ * and does not conflict with the expectations of ERC20 applications.
+ *
+ * Additionally, an {Approval} event is emitted on calls to {transferFrom}.
+ * This allows applications to reconstruct the allowance for all accounts just
+ * by listening to said events. Other implementations of the EIP may not emit
+ * these events, as it isn't required by the specification.
+ *
+ * Finally, the non-standard {decreaseAllowance} and {increaseAllowance}
+ * functions have been added to mitigate the well-known issues around setting
+ * allowances. See {IERC20-approve}.
+ */
+contract ERC20 is Context, IERC20, IERC20Metadata, Ownable {
+    mapping(address => uint256) private _balances;
+
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+
+    string private _name;
+    string private _symbol;
+
+    /**
+     * @dev Sets the values for {name} and {symbol}.
+     *
+     * The default value of {decimals} is 18. To select a different value for
+     * {decimals} you should overload it.
+     *
+     * All two of these values are immutable: they can only be set once during
+     * construction.
+     */
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+    }
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the
+     * name.
+     */
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     * For example, if `decimals` equals `2`, a balance of `505` tokens should
+     * be displayed to a user as `5.05` (`505 / 10 ** 2`).
+     *
+     * Tokens usually opt for a value of 18, imitating the relationship between
+     * Ether and Wei. This is the value {ERC20} uses, unless this function is
+     * overridden;
+     *
+     * NOTE: This information is only used for _display_ purposes: it in
+     * no way affects any of the arithmetic of the contract, including
+     * {IERC20-balanceOf} and {IERC20-transfer}.
+     */
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+
+    /**
+     * @dev See {IERC20-totalSupply}.
+     */
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev See {IERC20-balanceOf}.
+     */
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    /**
+     * @dev See {IERC20-transfer}.
+     *
+     * Requirements:
+     *
+     * - `recipient` cannot be the zero address.
+     * - the caller must have a balance of at least `amount`.
+     */
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-allowance}.
+     */
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    /**
+     * @dev See {IERC20-approve}.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-transferFrom}.
+     *
+     * Emits an {Approval} event indicating the updated allowance. This is not
+     * required by the EIP. See the note at the beginning of {ERC20}.
+     *
+     * Requirements:
+     *
+     * - `sender` and `recipient` cannot be the zero address.
+     * - `sender` must have a balance of at least `amount`.
+     * - the caller must have allowance for ``sender``'s tokens of at least
+     * `amount`.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+
+        uint256 currentAllowance = _allowances[sender][_msgSender()];
+        require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+        unchecked {
+            _approve(sender, _msgSender(), currentAllowance - amount);
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev Atomically increases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);
+        return true;
+    }
+
+    /**
+     * @dev Atomically decreases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     * - `spender` must have allowance for the caller of at least
+     * `subtractedValue`.
+     */
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        uint256 currentAllowance = _allowances[_msgSender()][spender];
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        unchecked {
+            _approve(_msgSender(), spender, currentAllowance - subtractedValue);
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev Moves `amount` of tokens from `sender` to `recipient`.
+     *
+     * This internal function is equivalent to {transfer}, and can be used to
+     * e.g. implement automatic token fees, slashing mechanisms, etc.
+     *
+     * Emits a {Transfer} event.
+     *
+     * Requirements:
+     *
+     * - `sender` cannot be the zero address.
+     * - `recipient` cannot be the zero address.
+     * - `sender` must have a balance of at least `amount`.
+     */
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        _beforeTokenTransfer(sender, recipient, amount);
+
+        uint256 senderBalance = _balances[sender];
+        require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            _balances[sender] = senderBalance - amount;
+        }
+        _balances[recipient] += amount;
+
+        emit Transfer(sender, recipient, amount);
+
+        _afterTokenTransfer(sender, recipient, amount);
+    }
+
+    /** @dev Creates `amount` tokens and assigns them to `account`, increasing
+     * the total supply.
+     *
+     * Emits a {Transfer} event with `from` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     */
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _beforeTokenTransfer(address(0), account, amount);
+
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+
+        _afterTokenTransfer(address(0), account, amount);
+    }
+
+    /**
+     * @dev Destroys `amount` tokens from `account`, reducing the
+     * total supply.
+     *
+     * Emits a {Transfer} event with `to` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     * - `account` must have at least `amount` tokens.
+     */
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _beforeTokenTransfer(account, address(0), amount);
+
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance - amount;
+        }
+        _totalSupply -= amount;
+
+        emit Transfer(account, address(0), amount);
+
+        _afterTokenTransfer(account, address(0), amount);
+    }
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
+     *
+     * This internal function is equivalent to `approve`, and can be used to
+     * e.g. set automatic allowances for certain subsystems, etc.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `owner` cannot be the zero address.
+     * - `spender` cannot be the zero address.
+     */
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    /**
+     * @dev Hook that is called before any transfer of tokens. This includes
+     * minting and burning.
+     *
+     * Calling conditions:
+     *
+     * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+     * will be transferred to `to`.
+     * - when `from` is zero, `amount` tokens will be minted for `to`.
+     * - when `to` is zero, `amount` of ``from``'s tokens will be burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+
+    /**
+     * @dev Hook that is called after any transfer of tokens. This includes
+     * minting and burning.
+     *
+     * Calling conditions:
+     *
+     * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+     * has been transferred to `to`.
+     * - when `from` is zero, `amount` tokens have been minted for `to`.
+     * - when `to` is zero, `amount` of ``from``'s tokens have been burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+}
+
+// File: contracts/libs/PlushToolBox.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "./ERC20.sol";
+import "./IERC20.sol";
+
+import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
+import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
+import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
+
+
+contract PlushToolBox {
+
+    IUniswapV2Router02 public immutable plushSwapRouter;
+
+    uint256 public immutable startBlock;
+
+    /**
+     * @notice Constructs the PlushToken contract.
+     */
+    constructor(uint256 _startBlock, IUniswapV2Router02 _plushSwapRouter) public {
+        startBlock = _startBlock;
+        plushSwapRouter = _plushSwapRouter;
+    }
+
+    function convertToTargetValueFromPair(IUniswapV2Pair pair, uint256 sourceTokenAmount, address targetAddress) public view returns (uint256) {
+        require(pair.token0() == targetAddress || pair.token1() == targetAddress, "one of the pairs must be the targetAddress");
+        if (sourceTokenAmount == 0)
+            return 0;
+
+        (uint256 res0, uint256 res1, ) = pair.getReserves();
+        if (res0 == 0 || res1 == 0)
+            return 0;
+
+        if (pair.token0() == targetAddress)
+            return (res0 * sourceTokenAmount) / res1;
+        else
+            return (res1 * sourceTokenAmount) / res0;
+    }
+
+    function getTokenBUSDValue(uint256 tokenBalance, address token, uint256 tokenType, bool viaBnbBUSD, address busdAddress) external view returns (uint256) {
+        require(tokenType == 0 || tokenType == 1, "invalid token type provided");
+        if (token == address(busdAddress))
+            return tokenBalance;
+
+        // lp type
+        if (tokenType == 1) {
+            IUniswapV2Pair lpToken = IUniswapV2Pair(token);
+            if (lpToken.totalSupply() == 0)
+                return 0;
+            // If lp contains busd, we can take a short-cut
+            if (lpToken.token0() == address(busdAddress)) {
+                return (IERC20(lpToken.token0()).balanceOf(address(lpToken)) * tokenBalance * 2) / lpToken.totalSupply();
+            } else if (lpToken.token1() == address(busdAddress)){
+                return (IERC20(lpToken.token1()).balanceOf(address(lpToken)) * tokenBalance * 2) / lpToken.totalSupply();
+            }
+        }
+
+        // Only used for lp type tokens.
+        address lpTokenAddress = token;
+        // If token0 or token1 is bnb, use that, else use token0.
+        if (tokenType == 1) {
+            token = IUniswapV2Pair(token).token0() == plushSwapRouter.WETH() ? plushSwapRouter.WETH() :
+                        (IUniswapV2Pair(token).token1() == plushSwapRouter.WETH() ? plushSwapRouter.WETH() : IUniswapV2Pair(token).token0());
+        }
+
+        // if it is an LP token we work with all of the reserve in the LP address to scale down later.
+        uint256 tokenAmount = (tokenType == 1) ? IERC20(token).balanceOf(lpTokenAddress) : tokenBalance;
+
+        uint256 busdEquivalentAmount = 0;
+
+        if (viaBnbBUSD) {
+            uint256 bnbAmount = 0;
+
+            if (token == plushSwapRouter.WETH()) {
+                bnbAmount = tokenAmount;
+            } else {
+
+                // As we arent working with busd at this point (early return), this is okay.
+                IUniswapV2Pair bnbPair = IUniswapV2Pair(IUniswapV2Factory(plushSwapRouter.factory()).getPair(plushSwapRouter.WETH(), token));
+
+                if (address(bnbPair) == address(0))
+                    return 0;
+
+                bnbAmount = convertToTargetValueFromPair(bnbPair, tokenAmount, plushSwapRouter.WETH());
+            }
+
+            // As we arent working with busd at this point (early return), this is okay.
+            IUniswapV2Pair busdbnbPair = IUniswapV2Pair(IUniswapV2Factory(plushSwapRouter.factory()).getPair(plushSwapRouter.WETH(), address(busdAddress)));
+
+            if (address(busdbnbPair) == address(0))
+                return 0;
+
+            busdEquivalentAmount = convertToTargetValueFromPair(busdbnbPair, bnbAmount, busdAddress);
+        } else {
+            // As we arent working with busd at this point (early return), this is okay.
+            IUniswapV2Pair busdPair = IUniswapV2Pair(IUniswapV2Factory(plushSwapRouter.factory()).getPair(address(busdAddress), token));
+
+            if (address(busdPair) == address(0))
+                return 0;
+
+            busdEquivalentAmount = convertToTargetValueFromPair(busdPair, tokenAmount, busdAddress);
+        }
+
+        // for the tokenType == 1 path busdEquivalentAmount is the BUSD value of all the tokens in the parent LP contract.
+
+        if (tokenType == 1)
+            return (busdEquivalentAmount * tokenBalance * 2) / IUniswapV2Pair(lpTokenAddress).totalSupply();
+        else
+            return busdEquivalentAmount;
+    }
+
+    function getNumberOfHalvingsSinceStart(uint256 STBReleaseHalfLife, uint256 _to) public view returns (uint256) {
+        if (_to <= startBlock)
+            return 0;
+
+        return (_to - startBlock) / STBReleaseHalfLife;
+    }
+
+    function getPreviousSTBHalvingBlock(uint256 STBReleaseHalfLife, uint256 _block) public view  returns (uint256) {
+        // won't revert from getSTBRelease due to bounds check
+        require(_block >= startBlock, "can't get previous STB halving before startBlock");
+
+        uint256 numberOfHalvings = getNumberOfHalvingsSinceStart(STBReleaseHalfLife, _block);
+        return numberOfHalvings * STBReleaseHalfLife + startBlock;
+    }
+
+    function getNextSTBHalvingBlock(uint256 STBReleaseHalfLife, uint256 _block) public view  returns (uint256) {
+        // won't revert from getSTBRelease due to bounds check
+        require(_block >= startBlock, "can't get previous STB halving before startBlock");
+
+        uint256 numberOfHalvings = getNumberOfHalvingsSinceStart(STBReleaseHalfLife, _block);
+
+        if ((_block - startBlock) % STBReleaseHalfLife == 0)
+            return numberOfHalvings * STBReleaseHalfLife + startBlock;
+        else
+            return (numberOfHalvings + 1) * STBReleaseHalfLife + startBlock;
+    }
+
+    function getSTBReleaseForBlockE24(uint256 initialSTBReleaseRate, uint256 STBReleaseHalfLife, uint256 _block) public view  returns (uint256) {
+        if (_block < startBlock)
+            return 0;
+
+        uint256 numberOfHalvings = getNumberOfHalvingsSinceStart(STBReleaseHalfLife, _block);
+        return (initialSTBReleaseRate * 1e24) / (2 ** numberOfHalvings);
+    }
+
+    // Return STB reward release over the given _from to _to block.
+    function getSTBRelease(uint256 initialSTBReleaseRate, uint256 STBReleaseHalfLife, uint256 _from, uint256 _to) external view returns (uint256) {
+        if (_from < startBlock || _to <= _from)
+            return 0;
+
+        uint256 releaseDuration = _to - _from;
+
+        uint256 startReleaseE24 = getSTBReleaseForBlockE24(initialSTBReleaseRate, STBReleaseHalfLife, _from);
+        uint256 endReleaseE24 = getSTBReleaseForBlockE24(initialSTBReleaseRate, STBReleaseHalfLife, _to);
+
+        // If we are all in the same era its a rectangle problem
+        if (startReleaseE24 == endReleaseE24)
+            return (endReleaseE24 * releaseDuration) / 1e24;
+
+        // The idea here is that if we span multiple halving eras, we can use triangle geometry to take an average.
+        uint256 startSkipBlock = getNextSTBHalvingBlock(STBReleaseHalfLife, _from);
+        uint256 endSkipBlock = getPreviousSTBHalvingBlock(STBReleaseHalfLife, _to);
+
+        // In this case we do span multiple eras (at least 1 complete half-life era)
+        if (startSkipBlock != endSkipBlock) {
+            uint256 numberOfCompleteHalfLifes = getNumberOfHalvingsSinceStart(STBReleaseHalfLife, endSkipBlock) - getNumberOfHalvingsSinceStart(STBReleaseHalfLife, startSkipBlock);
+            uint256 partialEndsRelease = startReleaseE24 * (startSkipBlock - _from) + (endReleaseE24 * (_to - endSkipBlock));
+            uint256 wholeMiddleRelease = (endReleaseE24 * 2 * STBReleaseHalfLife) * ((2 ** numberOfCompleteHalfLifes) - 1);
+            return (partialEndsRelease + wholeMiddleRelease) / 1e24;
+        }
+
+        // In this case we just span across 2 adjacent eras
+        return ((endReleaseE24 * releaseDuration) + (startReleaseE24 - endReleaseE24) * (startSkipBlock - _from)) / 1e24;
+    }
+
+    function getPlushEmissionForBlock(uint256 _block, bool isIncreasingGradient, uint256 releaseGradient, uint256 gradientEndBlock, uint256 endEmission) public pure returns (uint256) {
+        if (_block >= gradientEndBlock)
+            return endEmission;
+
+        if (releaseGradient == 0)
+            return endEmission;
+        uint256 currentPlushEmission = endEmission;
+        uint256 deltaHeight = (releaseGradient * (gradientEndBlock - _block)) / 1e24;
+
+        if (isIncreasingGradient) {
+            // if there is a logical error, we return 0
+            if (endEmission >= deltaHeight)
+                currentPlushEmission = endEmission - deltaHeight;
+            else
+                currentPlushEmission = 0;
+        } else
+            currentPlushEmission = endEmission + deltaHeight;
+
+        return currentPlushEmission;
+    }
+
+    function calcEmissionGradient(uint256 _block, uint256 currentEmission, uint256 gradientEndBlock, uint256 endEmission) external pure returns (uint256) {
+        uint256 plushReleaseGradient;
+
+        // if the gradient is 0 we interpret that as an unchanging 0 gradient.
+        if (currentEmission != endEmission && _block < gradientEndBlock) {
+            bool isIncreasingGradient = endEmission > currentEmission;
+            if (isIncreasingGradient)
+                plushReleaseGradient = ((endEmission - currentEmission) * 1e24) / (gradientEndBlock - _block);
+            else
+                plushReleaseGradient = ((currentEmission - endEmission) * 1e24) / (gradientEndBlock - _block);
+        } else
+            plushReleaseGradient = 0;
+
+        return plushReleaseGradient;
+    }
+
+    // Return if we are in the normal operation era, no promo
+    function isFlatEmission(uint256 _gradientEndBlock, uint256 _blocknum) internal pure returns (bool) {
+        return _blocknum >= _gradientEndBlock;
+    }
+
+    // Return PLUSH reward release over the given _from to _to block.
+    function getPlushRelease(bool isIncreasingGradient, uint256 releaseGradient, uint256 gradientEndBlock, uint256 endEmission, uint256 _from, uint256 _to) external view returns (uint256) {
+        if (_to <= _from || _to <= startBlock)
+            return 0;
+        uint256 clippedFrom = _from < startBlock ? startBlock : _from;
+        uint256 totalWidth = _to - clippedFrom;
+
+        if (releaseGradient == 0 || isFlatEmission(gradientEndBlock, clippedFrom))
+            return totalWidth * endEmission;
+
+        if (!isFlatEmission(gradientEndBlock, _to)) {
+            uint256 heightDelta = releaseGradient * totalWidth;
+
+            uint256 baseEmission;
+            if (isIncreasingGradient)
+                baseEmission = getPlushEmissionForBlock(clippedFrom, isIncreasingGradient, releaseGradient, gradientEndBlock, endEmission);
+            else
+                baseEmission = getPlushEmissionForBlock(_to, isIncreasingGradient, releaseGradient, gradientEndBlock, endEmission);
+            return totalWidth * baseEmission + (((totalWidth * heightDelta) / 2) / 1e24);
+        }
+
+        // Special case when we are transitioning between promo and normal era.
+        if (!isFlatEmission(gradientEndBlock, clippedFrom) && isFlatEmission(gradientEndBlock, _to)) {
+            uint256 blocksUntilGradientEnd = gradientEndBlock - clippedFrom;
+            uint256 heightDelta = releaseGradient * blocksUntilGradientEnd;
+
+            uint256 baseEmission;
+            if (isIncreasingGradient)
+                baseEmission = getPlushEmissionForBlock(_to, isIncreasingGradient, releaseGradient, gradientEndBlock, endEmission);
+            else
+                baseEmission = getPlushEmissionForBlock(clippedFrom, isIncreasingGradient, releaseGradient, gradientEndBlock, endEmission);
+
+            return totalWidth * baseEmission - (((blocksUntilGradientEnd * heightDelta) / 2) / 1e24);
+        }
+
+        // huh?
+        // shouldnt happen, but also don't want to assert false here either.
+        return 0;
+    }
+}
+
+// File: @uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol
+pragma solidity >=0.6.2;
+
+import './IUniswapV2Router01.sol';
+
+interface IUniswapV2Router02 is IUniswapV2Router01 {
+    function removeLiquidityETHSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountETH);
+    function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountETH);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+
+// File: @uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol
+pragma solidity >=0.5.0;
+
+interface IUniswapV2Pair {
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    function name() external pure returns (string memory);
+    function symbol() external pure returns (string memory);
+    function decimals() external pure returns (uint8);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+
+    function approve(address spender, uint value) external returns (bool);
+    function transfer(address to, uint value) external returns (bool);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+    function nonces(address owner) external view returns (uint);
+
+    function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+
+    event Mint(address indexed sender, uint amount0, uint amount1);
+    event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+    event Swap(
+        address indexed sender,
+        uint amount0In,
+        uint amount1In,
+        uint amount0Out,
+        uint amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint);
+    function factory() external view returns (address);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function price0CumulativeLast() external view returns (uint);
+    function price1CumulativeLast() external view returns (uint);
+    function kLast() external view returns (uint);
+
+    function mint(address to) external returns (uint liquidity);
+    function burn(address to) external returns (uint amount0, uint amount1);
+    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+    function skim(address to) external;
+    function sync() external;
+
+    function initialize(address, address) external;
+}
+
+
+// File: @uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol
+pragma solidity >=0.5.0;
+
+interface IUniswapV2Factory {
+    event PairCreated(address indexed token0, address indexed token1, address pair, uint);
+
+    function feeTo() external view returns (address);
+    function feeToSetter() external view returns (address);
+
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+    function allPairs(uint) external view returns (address pair);
+    function allPairsLength() external view returns (uint);
+
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+
+    function setFeeTo(address) external;
+    function setFeeToSetter(address) external;
+}
+
+
+// File: contracts/libs/IERC20Metadata.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "./IERC20.sol";
+
+/**
+ * @dev Interface for the optional metadata functions from the ERC20 standard.
+ *
+ * _Available since v4.1._
+ */
+interface IERC20Metadata is IERC20 {
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev Returns the symbol of the token.
+     */
+    function symbol() external view returns (string memory);
+
+    /**
+     * @dev Returns the decimals places of the token.
+     */
+    function decimals() external view returns (uint8);
+}
+
+// File: @uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router01.sol
+pragma solidity >=0.6.2;
+
+interface IUniswapV2Router01 {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETH(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountToken, uint amountETH);
+    function removeLiquidityWithPermit(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETHWithPermit(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountToken, uint amountETH);
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapTokensForExactTokens(
+        uint amountOut,
+        uint amountInMax,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+    function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+
+    function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+
+// File: contracts/libs/AddLiquidityHelper.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "./ERC20.sol";
+import "./SafeERC20.sol";
+
+import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
+import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
+import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+
+// AddLiquidityHelper, allows anyone to add or remove Plush liquidity tax free
+// Also allows the Plush Token to do buy backs tax free via an external contract.
+contract AddLiquidityHelper is ReentrancyGuard, Ownable {
+    using SafeERC20 for ERC20;
+
+    address public plushAddress;
+
+    IUniswapV2Router02 public immutable plushSwapRouter;
+    // The trading pair
+    address public plushSwapPair;
+
+    // To receive ETH when swapping
+    receive() external payable {}
+
+    event SetPlushAddresses(address plushAddress, address plushSwapPair);
+
+    /**
+     * @notice Constructs the AddLiquidityHelper contract.
+     */
+    constructor(address _router) public  {
+        require(_router != address(0), "_router is the zero address");
+        plushSwapRouter = IUniswapV2Router02(_router);
+    }
+
+    function plushETHLiquidityWithBuyBack(address lpHolder) external payable nonReentrant {
+        require(msg.sender == plushAddress, "can only be used by the plush token!");
+
+        (uint256 res0, uint256 res1, ) = IUniswapV2Pair(plushSwapPair).getReserves();
+
+        if (res0 != 0 && res1 != 0) {
+            // making weth res0
+            if (IUniswapV2Pair(plushSwapPair).token0() == plushAddress)
+                (res1, res0) = (res0, res1);
+
+            uint256 contractTokenBalance = ERC20(plushAddress).balanceOf(address(this));
+
+            // calculate how much eth is needed to use all of contractTokenBalance
+            // also boost precision a tad.
+            uint256 totalETHNeeded = (res0 * contractTokenBalance) / res1;
+
+            uint256 existingETH = address(this).balance;
+
+            uint256 unmatchedPlush = 0;
+
+            if (existingETH < totalETHNeeded) {
+                // calculate how much plush will match up with our existing eth.
+                uint256 matchedPlush = (res1 * existingETH) / res0;
+                if (contractTokenBalance >= matchedPlush)
+                    unmatchedPlush = contractTokenBalance - matchedPlush;
+            } else if (existingETH > totalETHNeeded) {
+                // use excess eth for plush buy back
+                uint256 excessETH = existingETH - totalETHNeeded;
+
+                if (excessETH / 2 > 0) {
+                    // swap half of the excess eth for lp to be balanced
+                    swapETHForTokens(excessETH / 2, plushAddress);
+                }
+            }
+
+            uint256 unmatchedPlushToSwap = unmatchedPlush / 2;
+
+            // swap tokens for ETH
+            if (unmatchedPlushToSwap > 0)
+                swapTokensForEth(plushAddress, unmatchedPlushToSwap);
+
+            uint256 plushBalance = ERC20(plushAddress).balanceOf(address(this));
+
+            // approve token transfer to cover all possible scenarios
+            ERC20(plushAddress).approve(address(plushSwapRouter), plushBalance);
+
+            // add the liquidity
+            plushSwapRouter.addLiquidityETH{value: address(this).balance}(
+                plushAddress,
+                plushBalance,
+                0, // slippage is unavoidable
+                0, // slippage is unavoidable
+                lpHolder,
+                block.timestamp
+            );
+
+        }
+
+        if (address(this).balance > 0) {
+            // not going to require/check return value of this transfer as reverting behaviour is undesirable.
+            payable(address(msg.sender)).call{value: address(this).balance}("");
+        }
+
+        if (ERC20(plushAddress).balanceOf(address(this)) > 0)
+            ERC20(plushAddress).transfer(msg.sender, ERC20(plushAddress).balanceOf(address(this)));
+    }
+
+    function addPlushETHLiquidity(uint256 nativeAmount) external payable nonReentrant {
+        require(msg.value > 0, "!sufficient funds");
+
+        ERC20(plushAddress).safeTransferFrom(msg.sender, address(this), nativeAmount);
+
+        // approve token transfer to cover all possible scenarios
+        ERC20(plushAddress).approve(address(plushSwapRouter), nativeAmount);
+
+        // add the liquidity
+        plushSwapRouter.addLiquidityETH{value: msg.value}(
+            plushAddress,
+            nativeAmount,
+            0, // slippage is unavoidable
+            0, // slippage is unavoidable
+            msg.sender,
+            block.timestamp
+        );
+
+        if (address(this).balance > 0) {
+            // not going to require/check return value of this transfer as reverting behaviour is undesirable.
+            payable(address(msg.sender)).call{value: address(this).balance}("");
+        }
+
+        uint256 plushBalance = ERC20(plushAddress).balanceOf(address(this));
+
+        if (plushBalance > 0)
+            ERC20(plushAddress).transfer(msg.sender, plushBalance);
+    }
+
+    function addPlushLiquidity(address baseTokenAddress, uint256 baseAmount, uint256 nativeAmount) external nonReentrant {
+        ERC20(baseTokenAddress).safeTransferFrom(msg.sender, address(this), baseAmount);
+        ERC20(plushAddress).safeTransferFrom(msg.sender, address(this), nativeAmount);
+
+        // approve token transfer to cover all possible scenarios
+        ERC20(baseTokenAddress).approve(address(plushSwapRouter), baseAmount);
+        ERC20(plushAddress).approve(address(plushSwapRouter), nativeAmount);
+
+        // add the liquidity
+        plushSwapRouter.addLiquidity(
+            baseTokenAddress,
+            plushAddress,
+            baseAmount,
+            nativeAmount ,
+            0, // slippage is unavoidable
+            0, // slippage is unavoidable
+            msg.sender,
+            block.timestamp
+        );
+
+        if (ERC20(baseTokenAddress).balanceOf(address(this)) > 0)
+            ERC20(baseTokenAddress).safeTransfer(msg.sender, ERC20(baseTokenAddress).balanceOf(address(this)));
+
+        if (ERC20(plushAddress).balanceOf(address(this)) > 0)
+            ERC20(plushAddress).transfer(msg.sender, ERC20(plushAddress).balanceOf(address(this)));
+    }
+
+    function removePlushLiquidity(address baseTokenAddress, uint256 liquidity) external nonReentrant {
+        address lpTokenAddress = IUniswapV2Factory(plushSwapRouter.factory()).getPair(baseTokenAddress, plushAddress);
+        require(lpTokenAddress != address(0), "pair hasn't been created yet, so can't remove liquidity!");
+
+        ERC20(lpTokenAddress).safeTransferFrom(msg.sender, address(this), liquidity);
+        // approve token transfer to cover all possible scenarios
+        ERC20(lpTokenAddress).approve(address(plushSwapRouter), liquidity);
+
+        // add the liquidity
+        plushSwapRouter.removeLiquidity(
+            baseTokenAddress,
+            plushAddress,
+            liquidity,
+            0, // slippage is unavoidable
+            0, // slippage is unavoidable
+            msg.sender,
+            block.timestamp
+        );
+    }
+
+    /// @dev Swap tokens for eth
+    function swapTokensForEth(address saleTokenAddress, uint256 tokenAmount) internal {
+        // generate the plushSwap pair path of token -> weth
+        address[] memory path = new address[](2);
+        path[0] = saleTokenAddress;
+        path[1] = plushSwapRouter.WETH();
+
+        ERC20(saleTokenAddress).approve(address(plushSwapRouter), tokenAmount);
+
+        // make the swap
+        plushSwapRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0, // accept any amount of ETH
+            path,
+            address(this),
+            block.timestamp
+        );
+    }
+
+
+    function swapETHForTokens(uint256 ethAmount, address wantedTokenAddress) internal {
+        require(address(this).balance >= ethAmount, "insufficient bnb provided!");
+        require(wantedTokenAddress != address(0), "wanted token address can't be the zero address!");
+
+        // generate the plushSwap pair path of token -> weth
+        address[] memory path = new address[](2);
+        path[0] = plushSwapRouter.WETH();
+        path[1] = wantedTokenAddress;
+
+        // make the swap
+        plushSwapRouter.swapExactETHForTokensSupportingFeeOnTransferTokens{value: ethAmount}(
+            0,
+            path,
+            // cannot send tokens to the token contract of the same type as the output token
+            address(this),
+            block.timestamp
+        );
+    }
+
+    /**
+     * @dev set the plush address.
+     * Can only be called by the current owner.
+     */
+    function setPlushAddress(address _plushAddress) external onlyOwner {
+        require(_plushAddress != address(0), "_plushAddress is the zero address");
+        require(plushAddress == address(0), "plushAddress already set!");
+
+        plushAddress = _plushAddress;
+
+        plushSwapPair = IUniswapV2Factory(plushSwapRouter.factory()).getPair(plushAddress, plushSwapRouter.WETH());
+
+        require(address(plushSwapPair) != address(0), "bnb pair !exist");
+
+        emit SetPlushAddresses(plushAddress, plushSwapPair);
+    }
+}
+
