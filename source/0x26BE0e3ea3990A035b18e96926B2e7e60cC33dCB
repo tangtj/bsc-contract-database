@@ -1,0 +1,601 @@
+// SPDX-License-Identifier: MIT;
+pragma solidity ^0.6.12;
+
+interface IUniswapV2Router02 {
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+   
+}
+
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address who) external view returns (uint256);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function approve(address spender, uint256 value) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+library SafeMath {
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        assert(c / a == b);
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a / b;
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        assert(b <= a);
+        return a - b;
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        assert(c >= a);
+        return c;
+    }
+
+    function ceil(uint256 a, uint256 m) internal pure returns (uint256) {
+        uint256 c = add(a, m);
+        uint256 d = sub(c, 1);
+        return mul(div(d, m), m);
+    }
+}
+
+/// math.sol -- mixin for inline numerical wizardry
+
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+contract DSMath {
+    function add(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        require((z = x + y) >= x, "ds-math-add-overflow");
+    }
+
+    function sub(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        require((z = x - y) <= x, "ds-math-sub-underflow");
+    }
+
+    function mul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        require(y == 0 || (z = x * y) / y == x, "ds-math-mul-overflow");
+    }
+
+    function min(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        return x <= y ? x : y;
+    }
+
+    function max(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        return x >= y ? x : y;
+    }
+
+    function imin(int256 x, int256 y) internal pure returns (int256 z) {
+        return x <= y ? x : y;
+    }
+
+    function imax(int256 x, int256 y) internal pure returns (int256 z) {
+        return x >= y ? x : y;
+    }
+
+    uint256 constant WAD = 10**18;
+    uint256 constant RAY = 10**27;
+
+    function wmul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = add(mul(x, y), WAD / 2) / WAD;
+    }
+
+    function rmul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = add(mul(x, y), RAY / 2) / RAY;
+    }
+
+    function wdiv(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = add(mul(x, WAD), y / 2) / y;
+    }
+
+    function rdiv(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = add(mul(x, RAY), y / 2) / y;
+    }
+
+    // This famous algorithm is called "exponentiation by squaring"
+    // and calculates x^n with x as fixed-point and n as regular unsigned.
+    //
+    // It's O(log n), instead of O(n) for naive repeated multiplication.
+    //
+    // These facts are why it works:
+    //
+    //  If n is even, then x^n = (x^2)^(n/2).
+    //  If n is odd,  then x^n = x * x^(n-1),
+    //   and applying the equation for even x gives
+    //    x^n = x * (x^2)^((n-1) / 2).
+    //
+    //  Also, EVM division is flooring and
+    //    floor[(n-1) / 2] = floor[n / 2].
+    //
+    function rpow(uint256 x, uint256 n) internal pure returns (uint256 z) {
+        z = n % 2 != 0 ? x : RAY;
+
+        for (n /= 2; n != 0; n /= 2) {
+            x = rmul(x, x);
+
+            if (n % 2 != 0) {
+                z = rmul(z, x);
+            }
+        }
+    }
+}
+
+abstract contract ERC20Detailed is IERC20 {
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    constructor(
+        string memory name,
+        string memory symbol,
+        uint8 decimals
+    ) public {
+        _name = name;
+        _symbol = symbol;
+        _decimals = decimals;
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+}
+
+
+contract ECHOStandardV2 is ERC20Detailed, DSMath {
+    using SafeMath for uint256;
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowed;
+
+    string constant tokenName = "echoDeFi";
+    string constant tokenSymbol = "ECHO_V2";
+    uint8 constant tokenDecimals = 18;
+    uint256 _totalSupply = 600_000 ether;
+    uint256 public rate;
+    mapping(address => uint256) public lastTimeBalanceNegative;
+    mapping(address => uint256) public lastTimeBalancePositive;
+    mapping(address => uint256) public userRate;
+    mapping(address => bool) public hasTransfered;
+    mapping(address => uint256) public rateSetTime;
+    mapping(address => bool) public hasClaimed;
+    mapping(address => bool) public isExcluded;
+    mapping(address => uint256) public pendingBalance;
+    mapping(address => bool) public walletLocked;
+
+    uint256 public minRewardable = 50 ether;
+    uint256 public maxRewardable = 40_000 ether;
+    
+    uint256 public minimumHODLTimeRewardable = 7 days;
+    uint256 public maximumHODLTimeRewardable = 90 days;
+    uint256 public weiRaised;
+
+    uint8 public burnRate = 5;
+    uint256 public amountWithdrawn;
+    uint256 public amountSentToExchange;
+    uint256 public maxRate = 3631800000000000000;
+    uint256 public minRate = 100000000000000000;
+    address public owner;
+    uint256 public divFactor = 1;
+    address cakeRouter = 0x05fF2B0DB69458A0750badebc4f9e13aDd608C7F;
+    address WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address constant DEADADDRESS = 0x000000000000000000000000000000000000dEaD;
+    event LiquidityAdded (address sender,  uint256 BNBAmount);
+    event LiquidityWithdrawn (address sender, address to, uint256 BNBAmount);
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "only_owner");
+        _;
+    }
+    
+
+    constructor()
+        public
+        payable
+        ERC20Detailed(tokenName, tokenSymbol, tokenDecimals)
+    {
+        _mint(msg.sender, _totalSupply);
+        owner = msg.sender;
+        lastTimeBalanceNegative[owner] = block.timestamp;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address _owner) public view override returns (uint256) {
+        return _balances[_owner];
+    }
+
+    function allowance(address _owner, address spender)
+        public
+        view
+        override
+        returns (uint256)
+    {
+        return _allowed[_owner][spender];
+    }
+
+    function findBurnVol(uint256 value) internal view returns (uint256) {
+        uint256 roundValue = value.ceil(100);
+        uint256 burnVol = roundValue.mul(burnRate).div(100);
+        return burnVol;
+    }
+
+    function wadToRay(uint256 _wad) internal pure returns (uint256) {
+        return mul(_wad, 10**9);
+    }
+
+    function weiToRay(uint256 _wei) internal pure returns (uint256) {
+        return mul(_wei, 10**27);
+    }
+
+    function yearlyRateToRay(uint256 _rateWad) internal pure returns (uint256) {
+        return
+            add(
+                wadToRay(1 ether),
+                rdiv(wadToRay(_rateWad), weiToRay(365 * 86400))
+            );
+    }
+
+    function viewAccruedPlusCapital(address user)
+        external
+        view
+        returns (uint256)
+    {
+       uint256 time = block.timestamp.sub(lastTimeBalanceNegative[user]);
+            uint256 rewardablePeriod;
+            if(block.timestamp.sub(lastTimeBalancePositive[user]) >= minimumHODLTimeRewardable){
+                
+                if(time >= minimumHODLTimeRewardable && time <= maximumHODLTimeRewardable){
+                    rewardablePeriod = time;
+                }else if(time > maximumHODLTimeRewardable){
+                    rewardablePeriod = maximumHODLTimeRewardable;
+                }else{
+                    rewardablePeriod = 0;
+                }
+            }
+            uint256 rewardableBals;
+            
+            if(_balances[user]>=minRewardable && _balances[user]<=maxRewardable){
+                rewardableBals = _balances[user];
+            }else if(_balances[user]>maxRewardable){
+                rewardableBals = maxRewardable;
+            }else {
+                rewardableBals =0;
+            }
+        return  accrueInterest(rewardableBals, userRate[user], rewardablePeriod).sub(rewardableBals);
+    }
+    
+    
+    function getBalance() view external returns(uint256){
+        return address(this).balance;
+    }
+    
+    function accrueInterest(
+        uint256 _principal,
+        uint256 _rate,
+        uint256 _age
+    ) internal pure returns (uint256) {
+        return rmul(_principal, rpow(_rate, _age));
+    }
+    
+    receive() payable external {
+        if(msg.value < minRate){
+            claimReward(msg.sender);
+            uint256 userTime = rateSetTime[msg.sender];
+            uint256 period = block.timestamp.sub(userTime);
+            bool userHasClaimed =  hasClaimed[msg.sender];
+            if(period > maximumHODLTimeRewardable && userHasClaimed){
+                resetUserRate(msg.sender);
+            }
+        }else if(msg.value >= minRate && msg.value <= maxRate){
+            uint256 value = msg.value.div(divFactor);
+            setUserRate(msg.sender, value);
+        }
+        weiRaised += msg.value;
+    }
+    
+   
+    
+    function setUserRate(address user, uint256 _rate) internal {
+        require( _rate >= minRate && _rate <= maxRate, "out_of_range" );
+        userRate[user] = yearlyRateToRay(_rate);
+        rateSetTime[user] = block.timestamp;
+    }
+    
+    //userRate resets to 0 after 6 months
+   function resetUserRate(address user) internal {
+       userRate[user]=0;
+   }
+    
+    function claimReward (address user )internal {
+        if(!isExcluded[user] && hasTransfered[user]){
+            
+            uint256 time = block.timestamp.sub(lastTimeBalanceNegative[user]);
+            uint256 rewardablePeriod;
+            if(block.timestamp.sub(lastTimeBalancePositive[user]) >= minimumHODLTimeRewardable){
+                
+                if(time >= minimumHODLTimeRewardable && time <= maximumHODLTimeRewardable){
+                    rewardablePeriod = time;
+                }else if(time > maximumHODLTimeRewardable){
+                    rewardablePeriod = maximumHODLTimeRewardable;
+                }else{
+                    rewardablePeriod = 0;
+                }
+            }
+            uint256 rewardableBals;
+            
+            if(_balances[user]>=minRewardable && _balances[user]<=maxRewardable){
+                rewardableBals = _balances[user];
+            }else if(_balances[user]>maxRewardable){
+                rewardableBals = maxRewardable;
+            }else {
+                rewardableBals =0;
+            }
+            if(rewardableBals>0 && rewardablePeriod>0){
+                uint256 earned = accrueInterest(rewardableBals, userRate[user], rewardablePeriod).sub(rewardableBals);
+                if(earned>0){
+                    _mint(user, earned);
+                    _totalSupply = _totalSupply.add(earned);
+                    hasClaimed[user] = true;
+                }
+            }
+        }
+    }
+    
+        
+    function lockMyWallet() external {
+        if(!walletLocked[msg.sender]){
+            
+            walletLocked[msg.sender]=true;
+        }else{ walletLocked[msg.sender] = false;}
+    }
+    
+  
+
+    function transfer(address to, uint256 value)
+        public
+        override
+        returns (bool)
+    {   
+        
+        require(value <= _balances[msg.sender], "Insufficient");
+        require(to != address(0), "Address_zero");
+        require(walletLocked[msg.sender] == false, "walletLocked");
+        _balances[msg.sender] = _balances[msg.sender].sub(value);
+
+        uint256 tokensToBurn = findBurnVol(value);
+        uint256 tokensToTransfer = value.sub(tokensToBurn);
+
+        _balances[to] = _balances[to].add(tokensToTransfer);
+
+        _totalSupply = _totalSupply.sub(tokensToBurn);
+        emit Transfer(msg.sender, address(0), tokensToBurn);
+        emit Transfer(msg.sender, to, tokensToTransfer);
+        lastTimeBalancePositive[to] = block.timestamp;
+        lastTimeBalanceNegative[msg.sender] = block.timestamp;
+        hasTransfered[msg.sender] = true;
+        return true;
+    }
+
+    function multiTransfer(
+        address[] calldata receivers,
+        uint256 amount
+    ) external {
+
+        for (uint256 i = 0; i < receivers.length; i++) {
+            transfer(receivers[i], amount);
+        }
+    }
+
+    function approve(address spender, uint256 value)
+        external
+        override
+        returns (bool)
+    {
+        require(spender != address(0), "Address_zero");
+        _allowed[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external override returns (bool) {
+        require(value <= _balances[from], "Insufficient");
+        require(value <= _allowed[from][msg.sender], "Increase_allowance");
+        require(to != address(0), "Address_zero");
+        require(walletLocked[from] == false, "walletLocked");
+        _balances[from] = _balances[from].sub(value);
+        uint256 tokensToBurn = findBurnVol(value);
+        uint256 tokensToTransfer = value.sub(tokensToBurn);
+
+        _balances[to] = _balances[to].add(tokensToTransfer);
+        _totalSupply = _totalSupply.sub(tokensToBurn);
+        emit Transfer(from, to, tokensToTransfer);
+        emit Transfer(from, address(0), tokensToBurn);
+        lastTimeBalancePositive[to] = block.timestamp;
+        lastTimeBalanceNegative[from] = block.timestamp;
+        hasTransfered[from] = true;
+        _allowed[from][msg.sender] = _allowed[from][msg.sender].sub(value);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue)
+        external
+        returns (bool)
+    {
+        require(spender != address(0), "Address zero");
+        _allowed[msg.sender][spender] = (
+            _allowed[msg.sender][spender].add(addedValue)
+        );
+        emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue)
+        external
+        returns (bool)
+    {
+        require(spender != address(0), "Address zero");
+        _allowed[msg.sender][spender] = (
+            _allowed[msg.sender][spender].sub(subtractedValue)
+        );
+        emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
+        return true;
+    }
+
+    function _mint(address account, uint256 amount) internal {
+        require(amount != 0, "Amount must be > 0");
+        _balances[account] = _balances[account].add(amount);
+        emit Transfer(address(0), account, amount);
+    }
+
+    function burn(uint256 amount) external {
+        _burn(msg.sender, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal {
+        require(amount != 0, "Amount must be > 0");
+        require(amount <= _balances[account], "Insufficient");
+        _totalSupply = _totalSupply.sub(amount);
+        _balances[account] = _balances[account].sub(amount);
+        emit Transfer(account, address(0), amount);
+    }
+
+    function burnFrom(address account, uint256 amount) external {
+        require(amount <= _allowed[account][msg.sender], "Increase allowance");
+        _allowed[account][msg.sender] = _allowed[account][msg.sender].sub(
+            amount
+        );
+        _burn(account, amount);
+    }
+
+    /* Restricted functions */
+   
+    function addLiquidityToPancake(uint256 deadline) external onlyOwner{
+       address[] memory path = new address[](2);
+            path[0] = WBNB;
+            path[1] = address(this);
+            uint256 balance = address(this).balance;
+       IUniswapV2Router02(cakeRouter).swapExactETHForTokensSupportingFeeOnTransferTokens{value: balance}
+       (0, path, DEADADDRESS, deadline);
+       amountSentToExchange += balance;
+        emit LiquidityAdded(owner, balance);
+    }
+    
+    function withdrawLiquidity(uint256 amount) external onlyOwner{
+        require(amount <= address(this).balance, "Insufficient_balance");
+        (bool success, ) =owner.call{value: amount}("");
+        require(success, "Transaction_failed");
+        emit LiquidityWithdrawn(msg.sender, owner, amount);
+        amountWithdrawn += amount;
+    }
+
+    function updateMinMaxRate(uint256 _minRate, uint256 _maxRate) external onlyOwner {
+       minRate = _minRate;
+       maxRate = _maxRate;
+    }
+
+    function updateBurnRate(uint8 bRate) external onlyOwner {
+        burnRate = bRate;
+    }
+
+    function setRewardTimeHODLTime(uint256 _minHodlTime, uint256 _maxHodlTime)
+        external
+        onlyOwner
+    {
+        minimumHODLTimeRewardable = _minHodlTime;
+        maximumHODLTimeRewardable = _maxHodlTime;
+    }
+
+    /*3633332000000000000*/
+    function setMinMaxBalanceRewardable(uint256 _minR, uint256 _maxR)
+        external
+        onlyOwner
+    {
+        minRewardable = _minR;
+        maxRewardable = _maxR;
+    }
+    
+    function updateDivFactor(uint8 _dFactor) onlyOwner external{
+        divFactor = _dFactor;
+    }
+    
+    /*Just for presale participancts only*/
+    function setRateOnbehalf(address[] calldata people, uint256[] calldata values) external onlyOwner{
+        require(people.length == values.length, "invalid_inputs");
+        for(uint256 i = 0; i<people.length; i++){
+             setUserRate(people[i],values[i]);
+        }
+    }
+
+    function transferOwnership(address _newOwner) external onlyOwner {
+        owner = _newOwner;
+    }
+
+    function exclude(address[] calldata _excludes) external onlyOwner {
+        for (uint8 i; i < _excludes.length; ++i) {
+            isExcluded[_excludes[i]] = true;
+        }
+    }
+
+    function include(address[] calldata _excludes) external onlyOwner {
+        for (uint8 i; i < _excludes.length; ++i) {
+            isExcluded[_excludes[i]] = false;
+        }
+    }
+}
