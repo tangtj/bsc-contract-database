@@ -1,0 +1,356 @@
+
+// File: contracts/energy/interfaces/IZirconEnergyFactory.sol
+pragma solidity =0.5.16;
+
+interface IZirconEnergyFactory {
+
+    // Variables
+    function allEnergies(uint p) external view returns (address);
+    function insurancePerMille() external view returns (uint);
+    function feePercentageRev() external view returns (uint);
+    function feePercentageEnergy() external view returns (uint);
+    function getEnergy(address _tokenA, address _tokenB) external view returns (address energy);
+    function getEnergyRevenue(address _tokenA, address _tokenB) external view returns (address energy);
+    function allEnergiesLength() external view returns (uint);
+    function feeToSetter() external pure returns (address);
+    function setMigrator(address _migrator) external;
+    function setFeeToSetter(address _feeToSetter) external;
+    function setInsurancePerMille(uint _insurancePerMille) external;
+    function setFeePercentageRev(uint fee) external;
+    function setFeePercentageEnergy(uint fee) external;
+    // Functions
+    function createEnergy(address, address, address, address) external returns (address energy);
+    function createEnergyRev(address, address, address, address) external returns (address energy);
+    function setFee(uint112 _minPylonFee, uint112 _maxPylonFee) external;
+    function getMinMaxFee() external view returns (uint112 minFee, uint112 maxFee);
+    function getFees(address _token, uint _amount, address _to, address energyRev) external;
+    function migrateEnergyLiquidity(address pair, address token, address newEnergy) external;
+    function migrateEnergyRevenue(address oldEnergy, address newEnergy) external;
+    function migrateEnergyRevenueFees(address oldEnergy, address newEnergy) external;
+    function migrateEnergy(address oldEnergy, address newEnergy) external;
+
+}
+
+
+// File: contracts/governance/Migrator.sol
+pragma solidity =0.5.16;
+import '../interfaces/IZirconPylonFactory.sol';
+import '../interfaces/IZirconPTFactory.sol';
+import '../interfaces/IZirconFactory.sol';
+import '../interfaces/IZirconPylon.sol';
+import '../interfaces/IOldZirconPylon.sol';
+import '../interfaces/IZirconPoolToken.sol';
+import '../energy/interfaces/IZirconEnergyFactory.sol';
+//import "hardhat/console.sol";
+
+// this contract serves as feeToSetter, allowing owner to manage fees in the context of a specific feeTo implementation
+
+contract Migrator {
+
+    // Immutables
+    address public owner;
+    address public energyFactory;
+    address public ptFactory;
+    address public pylonFactory;
+    address public pairFactory;
+
+    modifier onlyOwner {
+        require(msg.sender == owner, 'ZPT: FORBIDDEN');
+        _;
+    }
+
+    constructor() public {
+        owner = msg.sender;
+    }
+
+    function initialize(address energyFactory_, address ptFactory_, address pylonFactory_, address pairFactory_) public onlyOwner {
+        require(energyFactory_ != address(0), 'ZPT: FORBIDDEN');
+        require(ptFactory_ != address(0), 'ZPT: FORBIDDEN');
+        require(pylonFactory_ != address(0), 'ZPT: FORBIDDEN');
+        require(pairFactory_ != address(0), 'ZPT: FORBIDDEN');
+        energyFactory = energyFactory_;
+        ptFactory = ptFactory_;
+        pylonFactory = pylonFactory_;
+        pairFactory = pairFactory_;
+    }
+
+    function setPylonMigrator(address migrator_) public onlyOwner {
+        IZirconPylonFactory(pylonFactory).setMigrator(migrator_);
+    }
+
+    function setEnergyMigrator(address migrator_) public onlyOwner {
+        IZirconEnergyFactory(energyFactory).setMigrator(migrator_);
+    }
+
+    function setFactoryMigrator(address migrator_) public onlyOwner {
+        IZirconFactory(pairFactory).setMigrator(migrator_);
+    }
+
+    function setPTMigrator(address migrator_) public onlyOwner {
+        IZirconPTFactory(pairFactory).setMigrator(migrator_);
+    }
+
+    function setMigrator(address migrator_) public onlyOwner {
+        IZirconPylonFactory(pylonFactory).setMigrator(migrator_);
+        IZirconEnergyFactory(energyFactory).setMigrator(migrator_);
+        IZirconFactory(pairFactory).setMigrator(migrator_);
+        IZirconPTFactory(ptFactory).setMigrator(migrator_);
+    }
+
+    // allows owner to change itself at any time
+    function setOwner(address owner_) public {
+        require(owner_ != address(0), 'ZPT: Address zero');
+        require(msg.sender == owner, 'FeeToSetter::setOwner: not allowed');
+        owner = owner_;
+    }
+
+    function migrate(address newPylonFactory, address newEnergyFactory, address _tokenA, address _tokenB) external onlyOwner {
+
+        // Obtaining old addresses from the old factories
+        address pair = IZirconFactory(pairFactory).getPair(_tokenA, _tokenB);
+        address oldPylon = IZirconPylonFactory(pylonFactory).getPylon(_tokenA, _tokenB);
+
+        // Obtaining Old Energies Address
+        address oldEnergyRev = IZirconEnergyFactory(energyFactory).getEnergyRevenue(_tokenA, _tokenB);
+        address oldEnergy = IZirconEnergyFactory(energyFactory).getEnergy(_tokenA, _tokenB);
+
+        // Migrating Factory to new Energy Factory
+        IZirconFactory(pairFactory).changeEnergyFactoryAddress(newEnergyFactory);
+        {
+            // Creating new energy revenue address
+            address newEnergyRev = IZirconFactory(pairFactory).changeEnergyRevAddress(pair, _tokenA, _tokenB, newPylonFactory);
+            require(newEnergyRev != address(0), 'Energy Rev does not exist');
+
+            // Migrating Liquidity to new energy Revenue
+            IZirconEnergyFactory(energyFactory).migrateEnergyRevenue(oldEnergyRev, newEnergyRev);
+            IZirconEnergyFactory(newEnergyFactory).migrateEnergyRevenueFees(oldEnergyRev, newEnergyRev);
+        }
+
+        // Creating New Pylon with old PT Tokens
+        address poolTokenA = IZirconPTFactory(ptFactory).getPoolToken(oldPylon, _tokenA);
+        address newPylonAddress = IZirconPylonFactory(newPylonFactory).addPylonCustomPT(pair, _tokenA, _tokenB, poolTokenA, IZirconPTFactory(ptFactory).getPoolToken(oldPylon, _tokenB));
+        require(newPylonAddress != address(0), 'Pylon does not exist');
+
+        // Getting New Energy
+        address newEnergy = IZirconEnergyFactory(newEnergyFactory).getEnergy(_tokenA, _tokenB);
+        require(newEnergy != address(0), 'Energy does not exist');
+
+        // Communicating Changes on PT Factory
+        {
+            // Genesis pylon and Genesis Factory are required because PT are created with the first pylon
+            // so in second migrations we cannot use the Pylon from which we are migrating
+            address genesisPylonFactory = IZirconPoolToken(poolTokenA).pylonFactory();
+            address genesisPylon = IZirconPylonFactory(genesisPylonFactory).getPylon(_tokenA, _tokenB);
+            IZirconPTFactory(ptFactory).changePylonAddress(genesisPylon, _tokenA, _tokenB, newPylonAddress, genesisPylonFactory);
+        }
+
+        // Migrating Pylon Liquidity
+        IZirconPylonFactory(pylonFactory).migrateLiquidity(oldPylon, newPylonAddress);
+
+        // Communicating new Pylon Variables
+        IZirconPylonFactory(newPylonFactory).startPylon(
+            newPylonAddress,
+            IOldZirconPylon(oldPylon).gammaMulDecimals(),
+            IOldZirconPylon(oldPylon).virtualAnchorBalance(),
+            IOldZirconPylon(oldPylon).formulaSwitch());
+
+        // Migrating Energy Liquidity
+        IZirconEnergyFactory(energyFactory).migrateEnergy(oldEnergy, newEnergy);
+    }
+
+    function changeEnergyFactoryAddress(address newEnergyFactoryAddress) external onlyOwner {
+        IZirconPylonFactory(pylonFactory).changeEnergyFactoryAddress(newEnergyFactoryAddress);
+        IZirconFactory(pairFactory).changeEnergyFactoryAddress(newEnergyFactoryAddress);
+    }
+
+}
+
+
+// File: contracts/interfaces/IOldZirconPylon.sol
+pragma solidity >=0.5.16;
+interface IOldZirconPylon {
+    function initialized() external view returns (uint);
+    //    function anchorPoolTokenAddress() external view returns (address);
+    //    function floatPoolTokenAddress() external view returns (address);
+    //    function energyAddress() external view returns (address);
+    function gammaMulDecimals() external view returns (uint);
+    function isFloatReserve0() external view returns (bool);
+    function virtualAnchorBalance() external view returns (uint);
+    function virtualFloatBalance() external view returns (uint);
+    function anchorK() external view returns (uint);
+    function lastRootKTranslated() external view returns (uint);
+    function formulaSwitch() external view returns (bool);
+    function lastPrice() external view returns (uint);
+    function EMABlockNumber() external view returns (bool);
+    function getSyncReserves(bool) external view returns  (uint112 _reserve0, uint112 _reserve1);
+    // Called once by the factory at time of deployment
+    // @_floatPoolToken -> Contains Address Of Float PT
+    // @_anchorPoolToken -> Contains Address Of Anchor PT
+    // @token0 -> Float token
+    // @token1 -> Anchor token
+    function initMigratedPylon(uint _gamma, uint _vab, uint _anchorK, bool _formulaSwitch) external;
+    function initialize(address _floatPoolTokenAddress, address _anchorPoolTokenAddress, address _floatToken, address _anchorToken, address _pairAddress, address _pairFactoryAddress, address _energy, address _energyRev) external;
+    // On init pylon we have to handle two cases
+    // The first case is when we initialize the pair through the pylon
+    // And the second one is when initialize the pylon with a pair al ready existing
+    function initPylon(address _to) external returns (uint floatLiquidity, uint anchorLiquidity);
+    // External Function called to mint pool Token
+    // Liquidity have to be sent before
+    function mintPoolTokens(address to, bool isAnchor) external returns (uint liquidity);
+    //    function mintAsync100(address to, bool isAnchor) external returns (uint liquidity);
+    function mintAsync(address to, bool shouldMintAnchor) external returns (uint liquidity);
+    // Burn Async send both tokens 50-50
+    // Liquidity has to be sent before
+    function burnAsync(address _to, bool _isAnchor) external returns (uint amount0, uint amount1);
+    // Burn send liquidity back to user burning Pool tokens
+    // The function first uses the reserves of the Pylon
+    // If not enough reserves it burns The Pool Tokens of the pylon
+    function burn(address _to, bool _isAnchor) external returns (uint amount);
+    function changeEnergyAddress(address _energyAddress, address _energyRevAddress) external;
+    function migrateLiquidity(address newPylon) external;
+
+}
+
+
+// File: contracts/interfaces/IZirconFactory.sol
+pragma solidity >=0.5.16;
+
+interface IZirconFactory {
+    function energyFactory() external view returns (address);
+
+    function getPair(address, address) external view returns (address pair);
+    function allPairs(uint) external view returns (address pair);
+    function allPairsLength() external view returns (uint);
+    function dynamicRatio() external view returns (uint);
+    function liquidityFee() external view returns (uint);
+    function setLiquidityFee(uint _liquidityFee) external;
+
+    function pairCodeHash() external pure returns (bytes32);
+    function createPair(address tokenA, address tokenB, address _pylonFactory) external returns (address pair);
+
+    function setMigrator(address _migrator) external;
+    function setFeeToSetter(address _feeToSetter) external;
+    function changeEnergyRevAddress(address _pairAddress, address _tokenA, address _tokenB, address _pylonFactory) external returns (address newEnergy);
+
+    function changeEnergyFactoryAddress(address _newEnergyFactory) external;
+    function setDynamicRatio(uint _dynamicRatio) external;
+}
+
+
+// File: contracts/interfaces/IZirconPoolToken.sol
+pragma solidity >=0.5.16;
+
+interface IZirconPoolToken {
+    function factory() external view returns (address);
+    function isAnchor() external view returns (bool);
+    function token() external view returns (address);
+    function pair() external view returns (address);
+    function pylonFactory() external view returns (address);
+    function pylon() external view returns (address);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+
+    function mint(address account, uint256 amount) external;
+    function burn(address account, uint256 amount) external;
+    function initialize(address _token0, address _pair, address _pylon, bool _isAnchor) external;
+    function transferFrom(address from, address to, uint value) external returns (bool);
+}
+
+
+// File: contracts/interfaces/IZirconPTFactory.sol
+pragma solidity >=0.5.16;
+
+interface IZirconPTFactory {
+    function getPoolToken(address pylon, address token) external view returns (address pt);
+    function createPTAddress(address _floatToken, address _anchorToken, address pylonAddress, bool isAnchor) external returns (address poolToken);
+    function changePylonAddress(address oldPylon, address tokenA, address tokenB, address newPylon, address pylonFactory) external;
+    function setMigrator(address _migrator) external;
+    function setFeeToSetter(address _feeToSetter) external;
+}
+
+
+// File: contracts/interfaces/IZirconPylon.sol
+pragma solidity >=0.5.16;
+interface IZirconPylon {
+    function initialized() external view returns (uint);
+//    function anchorPoolTokenAddress() external view returns (address);
+//    function floatPoolTokenAddress() external view returns (address);
+//    function energyAddress() external view returns (address);
+    function gammaMulDecimals() external view returns (uint);
+    function isFloatReserve0() external view returns (bool);
+    function virtualAnchorBalance() external view returns (uint);
+    function virtualFloatBalance() external view returns (uint);
+    function p2x() external view returns (uint);
+    function p2y() external view returns (uint);
+    function lastRootKTranslated() external view returns (uint);
+    function formulaSwitch() external view returns (bool);
+    function lastPrice() external view returns (uint);
+    function EMABlockNumber() external view returns (bool);
+    function getSyncReserves() external view returns  (uint112 _reserve0, uint112 _reserve1);
+    // Called once by the factory at time of deployment
+    // @_floatPoolToken -> Contains Address Of Float PT
+    // @_anchorPoolToken -> Contains Address Of Anchor PT
+    // @token0 -> Float token
+    // @token1 -> Anchor token
+    function initMigratedPylon(uint _gamma, uint _vab, bool _formulaSwitch) external;
+    function initialize(address _floatPoolTokenAddress, address _anchorPoolTokenAddress, address _floatToken, address _anchorToken, address _pairAddress, address _pairFactoryAddress, address _energy, address _energyRev) external;
+    // On init pylon we have to handle two cases
+    // The first case is when we initialize the pair through the pylon
+    // And the second one is when initialize the pylon with a pair al ready existing
+    function initPylon(address _to) external returns (uint floatLiquidity, uint anchorLiquidity);
+    // External Function called to mint pool Token
+    // Liquidity have to be sent before
+    function mintPoolTokens(address to, bool isAnchor) external returns (uint liquidity);
+//    function mintAsync100(address to, bool isAnchor) external returns (uint liquidity);
+    function mintAsync(address to, bool shouldMintAnchor) external returns (uint liquidity);
+    // Burn Async send both tokens 50-50
+    // Liquidity has to be sent before
+    function burnAsync(address _to, bool _isAnchor) external returns (uint amount0, uint amount1);
+    // Burn send liquidity back to user burning Pool tokens
+    // The function first uses the reserves of the Pylon
+    // If not enough reserves it burns The Pool Tokens of the pylon
+    function burn(address _to, bool _isAnchor) external returns (uint amount);
+    function changeEnergyAddress(address _energyAddress, address _energyRevAddress) external;
+    function migrateLiquidity(address newPylon) external;
+
+    }
+
+
+// File: contracts/interfaces/IZirconPylonFactory.sol
+pragma solidity >=0.5.16;
+
+interface IZirconPylonFactory {
+    function maximumPercentageSync() external view returns (uint);
+
+    function deltaGammaThreshold() external view returns (uint);
+    function deltaGammaMinFee() external view returns (uint);
+    function muUpdatePeriod() external view returns (uint);
+    function muChangeFactor() external view returns (uint);
+//    function liquidityFee() external view returns (uint);
+    function EMASamples() external view returns (uint);
+    function oracleUpdateSecs() external view returns (uint);
+
+    function allPylons(uint p) external view returns (address);
+    function getPylon(address tokenA, address tokenB) external view returns (address pair);
+    function factory() external view returns (address);
+    function energyFactory() external view returns (address);
+    event PylonCreated(address indexed token0, address indexed token1, address poolToken0, address poolToken1, address pylon, address pair);
+    function allPylonsLength() external view returns (uint);
+    function paused() external view returns (bool);
+    // function setLiquidityFee(uint _liquidityFee) external;
+    // Adding Pylon
+    // First Token is always the Float and the second one is the Anchor
+    function addPylon(address _pairAddress, address _tokenA, address _tokenB) external returns (address pylonAddress);
+    function addPylonCustomPT(address _pairAddress, address _tokenA, address _tokenB, address floatPTAddress, address anchorPTAddress) external returns (address pylonAddress);
+    function setMigrator(address _migrator) external;
+    function setFeeToSetter(address _feeToSetter) external;
+    function setFees(uint _maximumPercentageSync, uint _deltaGammaThreshold, uint _deltaGammaMinFee, uint _muUpdatePeriod, uint _muChangeFactor, uint _EMASamples, uint _oracleUpdate) external;
+    function setPaused(bool _paused) external;
+
+    function changeEnergyAddress(address _newEnergyRev, address _pylonAddress, address _pairAddress, address _tokenA, address _tokenB) external returns (address energy);
+    function migrateLiquidity(address _oldPylon, address _newPylon) external;
+    function startPylon(address _pylon, uint _gamma, uint _vab, bool _formulaSwitch) external;
+    function changeEnergyFactoryAddress(address _newEnergyFactory) external;
+
+}
+

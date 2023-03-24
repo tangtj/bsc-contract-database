@@ -1,0 +1,292 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.4;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        _status = _ENTERED;
+
+        _;
+
+        _status = _NOT_ENTERED;
+    }
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+library SafeMath {
+
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        uint256 c = a + b;
+        if (c < a) return (false, 0);
+        return (true, c);
+    }
+    }
+
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        if (b > a) return (false, 0);
+        return (true, a - b);
+    }
+    }
+
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        if (a == 0) return (true, 0);
+        uint256 c = a * b;
+        if (c / a != b) return (false, 0);
+        return (true, c);
+    }
+    }
+
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        if (b == 0) return (false, 0);
+        return (true, a / b);
+    }
+    }
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        if (b == 0) return (false, 0);
+        return (true, a % b);
+    }
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+    unchecked {
+        require(b <= a, errorMessage);
+        return a - b;
+    }
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+    unchecked {
+        require(b > 0, errorMessage);
+        return a / b;
+    }
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+    unchecked {
+        require(b > 0, errorMessage);
+        return a % b;
+    }
+    }
+}
+
+contract Compensation is Ownable, ReentrancyGuard {
+    using SafeMath for uint256;
+
+    address public rewardToken = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+
+    uint256 public totalClaimed = 0;
+    uint256 public totalPayment = 0;
+
+    struct Payment{
+        uint256 amount;
+        bool isClaimed;
+    }
+
+    mapping(address => Payment[]) private _balances;
+
+    bool public isPaused = false;
+    modifier whenNotPaused() {
+        require(!isPaused, "Paused");
+        _;
+    }
+
+    constructor(
+    ) {
+    }
+
+    function getPaymentCount(address account) public view returns (uint256) {
+        return _balances[account].length;
+    }
+
+    function getPayments(address account) public view returns (Payment[] memory) {
+        Payment[] memory d = _balances[account];
+        return (d);
+    }
+
+    function getPaymentsSlice(address account, uint start, uint end) external view returns (Payment[] memory) {
+        Payment[] memory d = new Payment[](_balances[account].length);
+        for (uint i = start; i < end; i++) {
+            d[i] = _balances[account][i];
+        }
+        return (d);
+    }
+
+    function withdraw(uint256 id) external nonReentrant whenNotPaused {
+        require(_balances[msg.sender].length > id, "Payment does not exist");
+        require(_balances[msg.sender][id].amount > 0, "There is nothing to withdraw");
+        require(_balances[msg.sender][id].isClaimed == false, "This payment has already been withdrawn");
+
+        _transferPayment(msg.sender, id);
+    }
+
+    function _transferPayment(address account, uint256 id) private {
+        uint256 amount = _balances[account][id].amount;
+        require(IERC20(rewardToken).transfer(account, amount), "Transfer failed");
+        _balances[account][id].isClaimed = true;
+
+        totalClaimed = totalClaimed.add(amount);
+
+        emit Withdraw(account, id, amount);
+    }
+
+    function addPayments(address[] memory users, uint256[] memory amounts) external onlyOwner {
+        require(users.length == amounts.length,"Invalid array length");
+
+        for (uint256 i = 0; i < users.length; i++) {
+            _balances[users[i]].push(
+                Payment(
+                    amounts[i],
+                    false
+                )
+            );
+            totalPayment = totalPayment.add(amounts[i]);
+        }
+    }
+
+    function setPaused(bool _status) external onlyOwner{
+        require(isPaused != _status,"Not changed");
+        isPaused = _status;
+    }
+
+    function setRewardToken(address _token) external onlyOwner{
+        rewardToken = _token;
+    }
+
+    function retrieveTokens(address token, uint amount) external onlyOwner{
+        uint balance = IERC20(token).balanceOf(address(this));
+
+        if(amount > balance){
+            amount = balance;
+        }
+
+        require(IERC20(token).transfer(msg.sender, amount), "Transfer failed");
+    }
+
+    function retrieveBNB(uint amount) external onlyOwner{
+        uint balance = address(this).balance;
+
+        if(amount > balance){
+            amount = balance;
+        }
+
+        (bool success,) = payable(msg.sender).call{ value: amount }("");
+        require(success, "Failed");
+    }
+
+    event Withdraw(address indexed user, uint256 id, uint256 amount);
+}

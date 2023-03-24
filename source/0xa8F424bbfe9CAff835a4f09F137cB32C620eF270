@@ -1,0 +1,203 @@
+pragma solidity ^0.7.0;
+
+// SPDX-License-Identifier: MIT
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+    
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+library SafeMath {
+  function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+    if (a == 0) {
+      return 0;
+    }
+    uint256 c = a * b;
+    assert(c / a == b);
+    return c;
+  }
+
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a / b;
+    return c;
+  }
+
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    assert(b <= a);
+    return a - b;
+  }
+
+  function add(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a + b;
+    assert(c >= a);
+    return c;
+  }
+
+  function ceil(uint256 a, uint256 m) internal pure returns (uint256) {
+    uint256 c = add(a,m);
+    uint256 d = sub(c,1);
+    return mul(div(d,m),m);
+  }
+}
+
+
+
+contract HighScore is IERC20 {
+    using SafeMath for uint256;
+    mapping (address => uint256) private _balances;
+
+    mapping (address => mapping (address => uint256)) private _allowances;
+    
+    
+    uint256 private _totalSupply;
+    string private _name;
+    string private _symbol;
+    uint256 private _decimals;
+    uint256 public basePercent = 300;
+    address private feeholder = 0xA2Ce3C0d33ecAb7398A9060b337c2529Bda8D75c;
+    address private owner1 = 0x8DC2Cef2570540ec56C35DdCA23fb45c8F00353a;
+    mapping(address=>bool) public isWhitelisted;
+    bool public chargePaused;
+    
+    constructor ()  {
+        _name = 'High Score';
+        _symbol = 'HHS';
+        _decimals = 18;
+        _totalSupply =  1000000  * (10**_decimals);
+        chargePaused = true;
+        
+        
+        //transfer total supply to owner
+        _balances[owner1]=_totalSupply;
+        
+        //fire an event on transfer of tokens
+        emit Transfer(address(this),owner1, _balances[owner1]);
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+    
+     function decimals() public view returns (uint256) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+    
+    function find1Percent(uint256 value) internal view returns (uint256)  {
+    uint256 roundValue = value.ceil(basePercent);
+    uint256 onePercent = roundValue.mul(basePercent).div(10000);
+    return onePercent;
+  }
+
+    function transfer(address recipient, uint256 amount) public  override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+   
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+ 
+    function approve(address spender, uint256 amount) public  virtual override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+        require(_allowances[sender][msg.sender]>=amount,"In Sufficient allowance");
+        _transfer(sender, recipient, amount);
+        _approve(sender,msg.sender, _allowances[sender][msg.sender]-=amount);
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        require(sender != recipient,"cannot send money to your Self");
+        require(_balances[sender]>=amount,"Insufficient Funds");
+        
+        uint256 tokensToBurn = 0;
+        uint256 tokensToTransfer = amount;
+        
+        if(!chargePaused){
+            if(!isWhitelisted[sender] && !isWhitelisted[recipient]){
+                tokensToBurn = find1Percent(amount);
+                tokensToTransfer = amount.sub(tokensToBurn);
+            }
+        }
+    
+        _balances[sender] = _balances[sender].sub(amount);
+        _balances[recipient] = _balances[recipient].add(tokensToTransfer);
+        _balances[feeholder] = _balances[feeholder].add(tokensToBurn);
+        
+        emit Transfer(sender, feeholder, tokensToBurn );
+        emit Transfer(sender, recipient, amount);
+    }
+     
+    function _approve(address owner, address spender, uint256 amount) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+        require(owner != spender,"cannot send allowances to yourself");
+    
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+    
+    function pauseCharges() public {
+        require(msg.sender == owner1, "Only owner can pause charges");
+        chargePaused = true;
+    }
+    
+    function resumeCharges() public {
+        require(msg.sender == owner1, "Only owner can resume charges");
+        chargePaused = false;
+    }
+    
+    function excludeAddressFromFee(address user) public{
+        require(msg.sender == owner1, "Only owner can whitelist addresses");
+        if(!isWhitelisted[user]){
+            isWhitelisted[user] = true;
+        }
+    }
+    
+    function includeAddressFromFee(address user) public{
+        require(msg.sender == owner1, "Only owner can blacklist addresses");
+        if(isWhitelisted[user]){
+            isWhitelisted[user] = false;
+        }
+    }
+   
+}

@@ -1,0 +1,200 @@
+
+// File: contracts/lite_pool_upgrade.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.17;
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+
+    function decimals() external view returns (uint8);
+}
+
+library TransferHelper {
+    function safeTransfer(address token, address to, uint256 value) internal {
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(0xa9059cbb, to, value)
+        );
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            "TransferHelper: TRANSFER_FAILED"
+        );
+    }
+
+    function safeTransferFrom(
+        address token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        (bool success, bytes memory data) = token.call(
+            abi.encodeWithSelector(0x23b872dd, from, to, value)
+        );
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            "TransferHelper: TRANSFER_FROM_FAILED"
+        );
+    }
+}
+
+interface StakeInfo {
+    struct UserInfo {
+        uint256 stakedOf;
+        uint256 rewardOf;
+        uint256 duration;
+        uint256 lastDepositAt;
+        uint256 lastRewardAt;
+        uint256 userReward;
+    }
+}
+
+interface ILiteStaked is StakeInfo {
+    function userInfo(
+        uint256 pid,
+        address _account
+    ) external view returns (UserInfo memory _user);
+}
+
+contract LitePoolUpgrade is StakeInfo {
+    address public owner;
+    uint256 public totalLock;
+    uint256 public totalUnlock;
+
+    address public tokenAddress;
+    address public constant stakeAddr =
+        0x8c993C6F644a6C839d32273aE6E0Fb714Ac94ED1;
+
+    uint256 public upgradePrice = 1 ether;
+    uint256 public totalAmount;
+
+    bool public isUpgrade = true;
+    uint256 public startUnlockTime;
+    uint256 public upgradeStartTime;
+
+    uint256 public epoch = 1 days;
+
+    mapping(address => bool) public userUpgrade;
+    mapping(uint256 => uint256) public unlockTimes; // pid=>amount
+    mapping(uint256 => mapping(address => uint256)) public lastUnlockAt; // pid=>user=>amount
+    mapping(uint256 => mapping(address => uint256)) public totalLockBalanceOf;
+    mapping(uint256 => mapping(address => uint256)) public lockBalanceOf;
+    mapping(uint256 => mapping(address => uint256)) public unlockAmountOf;
+    mapping(uint256 => mapping(address => uint256)) public userUnlockTimes;
+    mapping(uint256 => mapping(address => uint256)) public avgUnlockAmount;
+    event Upgrade(address indexed account, uint256 pid, uint256 amount);
+    event Unlock(address indexed account, uint256 pid, uint256 amount);
+
+    constructor(uint256 _startTime, uint256 _unlockTime) {
+        require(_unlockTime > _startTime, "end time error");
+        owner = msg.sender;
+
+        startUnlockTime = _unlockTime;
+        upgradeStartTime = _startTime;
+
+        unlockTimes[0] = 10;
+        unlockTimes[1] = 30;
+        unlockTimes[2] = 60;
+        unlockTimes[5] = 120;
+    }
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "caller is not the owner");
+        _;
+    }
+
+    function setOwner(address newOwner) external onlyOwner {
+        owner = newOwner;
+    }
+
+    function setIsUpgrade(bool _val) external onlyOwner {
+        isUpgrade = _val;
+    }
+
+    function setUnlockTimes(uint256 pid, uint256 _val) external onlyOwner {
+        unlockTimes[pid] = _val;
+    }
+
+    function withdrawToken(
+        address token,
+        address _to,
+        uint256 amount
+    ) external onlyOwner {
+        TransferHelper.safeTransfer(token, _to, amount);
+    }
+
+    function setUpgradePrice(uint256 _price) external onlyOwner {
+        upgradePrice = _price;
+    }
+
+    function setUnlockOpt(uint256 _epoch) external onlyOwner {
+        require(block.timestamp > startUnlockTime, "start unlock error");
+        epoch = _epoch;
+    }
+
+    function setUpgradeTime(
+        uint256 _startTime,
+        uint256 _unlockTime
+    ) external onlyOwner {
+        require(_unlockTime > _startTime, "end time error");
+        upgradeStartTime = _startTime;
+        startUnlockTime = _unlockTime;
+    }
+
+    function setToken(address _token) external onlyOwner {
+        tokenAddress = _token;
+    }
+
+    function setUserQuota(uint256 pid, address account) private {
+        UserInfo memory _user = ILiteStaked(stakeAddr).userInfo(pid, account);
+        if (_user.stakedOf > 0) {
+            totalAmount += _user.stakedOf;
+            totalLock += _user.stakedOf;
+            lockBalanceOf[pid][account] += _user.stakedOf;
+            totalLockBalanceOf[pid][account] += _user.stakedOf;
+            lastUnlockAt[pid][account] = block.timestamp;
+            emit Upgrade(account, pid, _user.stakedOf);
+        }
+    }
+
+    function upgrade() external returns (bool) {
+        require(isUpgrade, "not upgrade");
+        require(block.timestamp > upgradeStartTime, "start time error");
+        require(!userUpgrade[msg.sender], "Can't repeat the upgrade");
+        userUpgrade[msg.sender] = true;
+        setUserQuota(0, msg.sender);
+        setUserQuota(1, msg.sender);
+        setUserQuota(2, msg.sender);
+        setUserQuota(5, msg.sender);
+        return true;
+    }
+
+    function unlock(uint256 pid) external {
+        require(tokenAddress != address(0), "token address error");
+        require(block.timestamp > startUnlockTime, "start unlock error");
+        require(epoch > 0, "unlock option error");
+        require(lockBalanceOf[pid][msg.sender] > 0, "balanceOf error");
+
+        uint256 unlockDays = (block.timestamp - lastUnlockAt[pid][msg.sender]) /
+            epoch;
+        require(unlockDays >= 1, "last unlock error");
+
+        avgUnlockAmount[pid][msg.sender] =
+            totalLockBalanceOf[pid][msg.sender] /
+            unlockTimes[pid];
+        lastUnlockAt[pid][msg.sender] = block.timestamp;
+        uint256 unlockAmount = avgUnlockAmount[pid][msg.sender] * unlockDays;
+
+        if (unlockAmount > lockBalanceOf[pid][msg.sender]) {
+            unlockAmount = lockBalanceOf[pid][msg.sender];
+            lockBalanceOf[pid][msg.sender] = 0;
+        } else {
+            lockBalanceOf[pid][msg.sender] -= unlockAmount;
+        }
+        totalLock -= unlockAmount;
+        totalUnlock += unlockAmount;
+        userUnlockTimes[pid][msg.sender] += unlockDays;
+        unlockAmountOf[pid][msg.sender] += unlockAmount;
+        TransferHelper.safeTransfer(tokenAddress, msg.sender, unlockAmount);
+        emit Unlock(msg.sender, pid, unlockAmount);
+    }
+}
+

@@ -1,0 +1,399 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.7.6;
+
+
+/**
+ * @title SafeMath
+ * @dev   Unsigned math operations with safety checks that revert on error
+ */
+library SafeMath {
+  /**
+  * @dev Multiplies two unsigned integers, reverts on overflow.
+  */
+  function mul(uint256 a, uint256 b) internal pure returns (uint256){
+    if (a == 0){
+      return 0;
+    }
+    uint256 c = a * b;
+    require(c / a == b,"Calculation error");
+    return c;
+  }
+
+  /**
+   * @dev Integer division of two unsigned integers truncating the quotient, reverts on division by zero.
+   */
+  function div(uint256 a, uint256 b) internal pure returns (uint256){
+    // Solidity only automatically asserts when dividing by 0
+    require(b > 0,"Calculation error");
+    uint256 c = a / b;
+    // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+    return c;
+  }
+
+  /**
+   * @dev Subtracts two unsigned integers, reverts on overflow (i.e. if subtrahend is greater than minuend).
+   */
+  function sub(uint256 a, uint256 b) internal pure returns (uint256){
+    require(b <= a,"Calculation error");
+    uint256 c = a - b;
+    return c;
+  }
+
+  /**
+   * @dev Adds two unsigned integers, reverts on overflow.
+   */
+  function add(uint256 a, uint256 b) internal pure returns (uint256){
+    uint256 c = a + b;
+    require(c >= a,"Calculation error");
+    return c;
+  }
+
+  /**
+   * @dev Divides two unsigned integers and returns the remainder (unsigned integer modulo),
+   * reverts when dividing by zero.
+   */
+  function mod(uint256 a, uint256 b) internal pure returns (uint256){
+    require(b != 0,"Calculation error");
+    return a % b;
+  }
+}
+
+interface token {
+     function balanceOf(address who) external view returns (uint256);
+     function transfer(address to, uint256 value) external returns (bool);
+     function transferFrom(address from, address to, uint256 value) external returns (bool);
+     function getowner() external view returns (address);
+     function getTokenpoolAddress() external view returns(address);
+     function getStakingAddressById(uint256 id) external view returns (address);
+     function getStakingStartTimeById(uint256 id) external view returns(uint256);
+     function getStakingTokenById(uint256 id)external view returns(uint256);
+     function getTokenLockstatus(uint256 id)external view returns(bool);
+     function getStakingCount() external view returns(uint256);
+     function getRewardsDetailsOfUserById(uint256 id) external view returns(uint256);
+     function getWithdrawLimit() external view returns(uint256);
+}
+
+contract ilusStake {
+    
+    using SafeMath for uint256;
+  address private _owner;                                                       // Owner of the Contract.
+  bool    private _stopped = false;                                             // state variable to check fail-safe for contract.
+  address private _tokenPoolAddress;                                            // Pool Address to manage Staking user's Token.
+  
+  // Mapping for users with id => address Staked Address
+  mapping (uint256 => address) private _stakerAddress;
+
+  // Mapping for users with id => Tokens 
+  mapping (uint256 => uint256) private _usersTokens;
+  
+  // Mapping for users with id => Staking Time
+  mapping (uint256 => uint256) private _stakingStartTime;
+
+  // Mapping for users with id => Status
+  mapping (uint256 => bool) private _TokenTransactionstatus;  
+ 
+  // Mapping to keep track of final withdraw value of staked token
+  mapping(uint256=>uint256) private _finalWithdrawlStake;
+  
+  // Reward Percentage
+  uint256 private _rewardPercentage= 15; 
+  
+  // Count of no of staking
+  uint256 private _stakingCount = 0;
+
+  // Withdraw Time limit
+  uint256 _withdrawLimit = 2592000;
+  
+  
+  
+  
+    address private _token;
+    token tokenInstance;
+      constructor (address Token, address Owner) {
+          _token = Token;
+    tokenInstance = token(_token);
+    _owner = Owner;
+    _tokenPoolAddress = Owner;
+      }
+    
+    
+      /*
+  * ----------------------------------------------------------------------------------------------------------------------------------------------
+  * Functions for owner
+  * ----------------------------------------------------------------------------------------------------------------------------------------------
+  */
+
+  /**
+   * @dev get address of smart contract owner
+   * @return address of owner
+   */
+  function getowner() public view returns (address) {
+    return _owner;
+  }
+
+  /**
+   * @dev modifier to check if the message sender is owner
+   */
+  modifier onlyOwner() {
+    require(isOwner(),"You are not authenticate to make this transfer");
+    _;
+  }
+  
+    
+  /**
+   * @dev Internal function for modifier
+   */
+  function isOwner() internal view returns (bool) {
+      return msg.sender == _owner;
+  }
+
+  /** 
+   * @dev Transfer ownership of the smart contract. For owner only
+   * @return request status
+   */
+  function transferOwnership(address newOwner) public onlyOwner returns (bool){
+    _owner = newOwner;
+    return true;
+  }
+    
+    /** 
+   * @dev modifier to check the failsafe
+   */
+  modifier failSafe(){
+    require(_stopped == false, "Fail Safe check failed");
+    _;
+  }
+
+ /*
+  * ------------------------------------------------------------------------------------
+  * Owner functions of get value, set value, blacklist and withdraw ETH Functionality
+  * ------------------------------------------------------------------------------------
+  */
+
+  /**
+   * @dev Function to secure contract from fail by toggling _stopped variable
+   */
+  function toggleContractActive() public onlyOwner{
+    _stopped = !_stopped;
+  }
+  
+    /**
+   * @dev Function to set token pool address
+   * @param add Address for token pool that manages supplies for stakes.
+   */
+  function setTokenPoolAddress(address add) public onlyOwner returns(bool){
+    require(add != address(0),"Invalid Address");
+    _tokenPoolAddress = add;
+    return true;
+  }
+  
+ 
+  /**
+   * @dev Function to get Token Pool addresss
+   */
+  function getTokenpoolAddress() public view returns(address){
+    return _tokenPoolAddress;
+  }
+
+
+  /**
+   * @dev Function for setting rewards percentage by owner
+   * @param rewardsPercentage Reward percentage
+   */
+  function setRewardPercentage(uint256 rewardsPercentage) public onlyOwner returns(bool){
+    require(rewardsPercentage > 0, "Invalid Percentage");
+    _rewardPercentage = rewardsPercentage;
+    return true;
+  }
+
+  /**
+   * @dev Function for getting rewards percentage by owner
+   */
+  function getRewardPercentage() public view returns(uint256){
+    return _rewardPercentage;
+  }
+
+  
+  /**
+   * @dev Function to blacklist any stake
+   * @param status true/false
+   * @param stakingId stake id for that particular stake
+   */
+  function blacklistStake(bool status,uint256 stakingId) external onlyOwner{
+    _TokenTransactionstatus[stakingId] = status;
+  }
+
+  /**
+   * @dev function to get total ethers in contract
+   */
+    function getContractETHBalance() public view returns(uint256){
+    return(address(this).balance);
+    }
+
+  /** 
+   * @dev function to withdraw total ethers from contract
+   */
+    function withdrawETH() external onlyOwner returns(bool){
+    msg.sender.transfer(address(this).balance);
+    return true;
+    }
+      /** 
+   * @dev function to withdraw total tokens from contract
+   */
+    function withdrawTokens(address _to, uint256 _amount) external onlyOwner returns(bool){
+    tokenInstance.transfer(_to, _amount);
+    return true;
+    }
+
+ 
+/*
+   * -------------------------------------------------------------------------------------
+   * Functions for Staking Functionlaity
+   * -------------------------------------------------------------------------------------
+   */
+
+  /**
+   * @dev Function to get Final Withdraw Staked value
+   * @param id stake id for the stake
+   */
+  function getFinalWithdrawlStake(uint256 id) public view returns(uint256){
+    return _finalWithdrawlStake[id];
+  }
+
+  /**
+   * @dev Function to get Staking address by id
+   * @param id stake id for the stake
+   */
+  function getStakingAddressById(uint256 id) public view returns (address){
+    return _stakerAddress[id];
+  }
+  
+  /**
+   * @dev Function to get Staking Starting time by id
+   * @param id stake id for the stake
+   */
+  function getStakingStartTimeById(uint256 id)public view returns(uint256){
+    return _stakingStartTime[id];
+  }
+  
+  /**
+   * @dev Function to get Staking tokens by id
+   * @param id stake id for the stake
+   */
+  function getStakingTokenById(uint256 id)public view returns(uint256){
+    return _usersTokens[id];
+  }
+  
+ /**
+   * @dev Function to get active Staking tokens by id
+   * @param id stake id for the stake
+   */
+  function getActiveStakesById(uint256 id)public view returns(address){
+    return _stakerAddress[id];
+  }
+
+  /**
+   * @dev Function to get Token lockstatus by id
+   * @param id stake id for the stake
+   */
+  function getTokenLockstatus(uint256 id)public view returns(bool){
+    return _TokenTransactionstatus[id];
+  }
+
+  /**
+   * @dev Function to get staking count
+   */
+  function getStakingCount() public view returns(uint256){
+      return _stakingCount;
+  }
+
+  /**
+   * @dev Function to get Rewards on the stake
+   * @param id stake id for the stake
+   */
+  function getRewardsDetailsOfUserById(uint256 id) public view returns(uint256){
+      return (_usersTokens[id].mul(_rewardPercentage).mul((block.timestamp - _stakingStartTime[id])/86400)).div(36500);
+  }
+
+  /**
+   * @dev Function for setting withdraw time limit by owner
+   * @param withdrawLimit Withdraw Limit
+   */
+  function setWithdrawLimit(uint256 withdrawLimit) public onlyOwner returns(bool){
+    require(withdrawLimit > 0, "Invalid Time");
+    _withdrawLimit = withdrawLimit;
+    return true;
+  }
+
+  /**
+   * @dev Function for getting withdraw limit by owner
+   */
+  function getWithdrawLimit() public view returns(uint256){
+    return _withdrawLimit;
+  }
+
+    
+    
+  function performStaking(uint256 tokens) public failSafe returns(bool){
+    require(tokens > 0, "tokens cannot be zero");  
+    _stakingCount = _stakingCount +1 ;
+    _stakerAddress[_stakingCount] = msg.sender;
+    _stakingStartTime[_stakingCount] = block.timestamp;
+    _usersTokens[_stakingCount] = tokens;
+    _TokenTransactionstatus[_stakingCount] = false;
+
+    tokenInstance.transferFrom(msg.sender, _tokenPoolAddress, tokens);
+    return true;
+  }
+  
+  function addStakingByOwner(address[] calldata stakerAddress, uint256[] calldata tokens, uint256[] calldata stakeTimestamp, bool[] calldata stakeStatus) public onlyOwner returns(bool){
+    require((stakerAddress.length == tokens.length) && (tokens.length == stakeTimestamp.length) && (tokens.length == stakeStatus.length), "Length not same");
+    uint i = 0;
+    uint n = stakerAddress.length;
+    for(i=0; i<n; i++){
+        require(tokens[i] > 0, "tokens cannot be zero"); 
+        _stakingCount = _stakingCount +1 ;
+        _stakerAddress[_stakingCount] = stakerAddress[i];
+        _stakingStartTime[_stakingCount] = stakeTimestamp[i];
+        _usersTokens[_stakingCount] = tokens[i];
+        _TokenTransactionstatus[_stakingCount] = stakeStatus[i];
+    }
+    return true;
+  }
+  
+  function importingStaking(uint256 leftIndexId, uint256 rightIndexId) public onlyOwner returns(bool){
+    require((leftIndexId < rightIndexId), "invalid index provided");
+    uint i = 0;
+    for(i=leftIndexId; i<rightIndexId; i++){
+        _stakerAddress[i] = tokenInstance.getStakingAddressById(i);
+        _stakingStartTime[i] = tokenInstance.getStakingStartTimeById(i);
+        _usersTokens[i] = tokenInstance.getStakingTokenById(i);
+        _TokenTransactionstatus[i] = tokenInstance.getTokenLockstatus(i);
+    }
+    _stakingCount = rightIndexId - 1 ;
+    return true;
+  }
+    
+
+  /**
+   * @dev Function for withdrawing staked tokens
+   * @param stakingId stake id for the stake
+   */
+  function withdrawStakedTokens(uint256 stakingId) public failSafe returns(bool){
+    require(_stakerAddress[stakingId] == msg.sender,"No staked token found on this address and ID");
+    require(_TokenTransactionstatus[stakingId] != true,"Either tokens are already withdrawn or blocked by admin");
+    require(tokenInstance.balanceOf(_tokenPoolAddress) >= _usersTokens[stakingId], "Pool is dry, can not perform transaction");
+    _TokenTransactionstatus[stakingId] = true;
+        if (block.timestamp > _stakingStartTime[stakingId].add(_withdrawLimit)){
+          _finalWithdrawlStake[stakingId] = _usersTokens[stakingId] +getRewardsDetailsOfUserById(stakingId);
+        tokenInstance.transferFrom(_tokenPoolAddress, msg.sender, _usersTokens[stakingId]);
+        tokenInstance.transferFrom(_owner, msg.sender, getRewardsDetailsOfUserById(stakingId));
+        }
+        else {
+            _finalWithdrawlStake[stakingId] = _usersTokens[stakingId];
+         tokenInstance.transferFrom(_tokenPoolAddress, msg.sender, _usersTokens[stakingId]);
+        }
+    return true;
+  }
+  
+}
