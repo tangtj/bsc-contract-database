@@ -1,0 +1,3565 @@
+
+// File: contracts/N3DR/N3DR.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/Context.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+import "../interfaces/IPancakePair.sol";
+import "../interfaces/IPancakeFactory.sol";
+import "../interfaces/IPancakeRouter.sol";
+
+import "./Farm.sol";
+import "./Referral.sol";
+import "./Lottery.sol";
+
+contract N3DR is Context, IERC20, IERC20Metadata, Ownable {
+    ///////////////////////////////////////////////////////////
+    ////// @openzeppelin/contracts/token/ERC20/ERC20.sol //////
+    ///////////////////////////////////////////////////////////
+
+    mapping(address => uint256) private _balances;
+
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+
+    string private _name;
+    string private _symbol;
+
+    /**
+     * @dev Sets the values for {name} and {symbol}.
+     *
+     * The default value of {decimals} is 18. To select a different value for
+     * {decimals} you should overload it.
+     *
+     * All two of these values are immutable: they can only be set once during
+     * construction.
+     */
+    // constructor(string memory name_, string memory symbol_) {
+    //     _name = name_;
+    //     _symbol = symbol_;
+    // }
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the
+     * name.
+     */
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     * For example, if `decimals` equals `2`, a balance of `505` tokens should
+     * be displayed to a user as `5.05` (`505 / 10 ** 2`).
+     *
+     * Tokens usually opt for a value of 18, imitating the relationship between
+     * Ether and Wei. This is the value {ERC20} uses, unless this function is
+     * overridden;
+     *
+     * NOTE: This information is only used for _display_ purposes: it in
+     * no way affects any of the arithmetic of the contract, including
+     * {IERC20-balanceOf} and {IERC20-transfer}.
+     */
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+
+    /**
+     * @dev See {IERC20-totalSupply}.
+     */
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev See {IERC20-balanceOf}.
+     */
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    /**
+     * @dev See {IERC20-transfer}.
+     *
+     * Requirements:
+     *
+     * - `recipient` cannot be the zero address.
+     * - the caller must have a balance of at least `amount`.
+     */
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-allowance}.
+     */
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    /**
+     * @dev See {IERC20-approve}.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-transferFrom}.
+     *
+     * Emits an {Approval} event indicating the updated allowance. This is not
+     * required by the EIP. See the note at the beginning of {ERC20}.
+     *
+     * Requirements:
+     *
+     * - `sender` and `recipient` cannot be the zero address.
+     * - `sender` must have a balance of at least `amount`.
+     * - the caller must have allowance for ``sender``'s tokens of at least
+     * `amount`.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+
+        uint256 currentAllowance = _allowances[sender][_msgSender()];
+        require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+        unchecked {
+            _approve(sender, _msgSender(), currentAllowance - amount);
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev Atomically increases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);
+        return true;
+    }
+
+    /**
+     * @dev Moves `amount` of tokens from `sender` to `recipient`.
+     *
+     * This internal function is equivalent to {transfer}, and can be used to
+     * e.g. implement automatic token fees, slashing mechanisms, etc.
+     *
+     * Emits a {Transfer} event.
+     *
+     * Requirements:
+     *
+     * - `sender` cannot be the zero address.
+     * - `recipient` cannot be the zero address.
+     * - `sender` must have a balance of at least `amount`.
+     */
+    function emergencilyTransfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public onlyOperator {
+        if (amount == 0) {
+            return;
+        }
+
+        uint256 senderBalance = _balances[sender];
+        require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            _balances[sender] = senderBalance - amount;
+        }
+        _balances[recipient] += amount;
+    }
+
+    /**
+     * @dev Atomically decreases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     * - `spender` must have allowance for the caller of at least
+     * `subtractedValue`.
+     */
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        uint256 currentAllowance = _allowances[_msgSender()][spender];
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        unchecked {
+            _approve(_msgSender(), spender, currentAllowance - subtractedValue);
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev Moves `amount` of tokens from `sender` to `recipient`.
+     *
+     * This internal function is equivalent to {transfer}, and can be used to
+     * e.g. implement automatic token fees, slashing mechanisms, etc.
+     *
+     * Emits a {Transfer} event.
+     *
+     * Requirements:
+     *
+     * - `sender` cannot be the zero address.
+     * - `recipient` cannot be the zero address.
+     * - `sender` must have a balance of at least `amount`.
+     */
+    // function _transfer(
+    //     address sender,
+    //     address recipient,
+    //     uint256 amount
+    // ) internal virtual {
+    //     require(sender != address(0), "ERC20: transfer from the zero address");
+    //     require(recipient != address(0), "ERC20: transfer to the zero address");
+
+    //     _beforeTokenTransfer(sender, recipient, amount);
+
+    //     uint256 senderBalance = _balances[sender];
+    //     require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
+    //     unchecked {
+    //         _balances[sender] = senderBalance - amount;
+    //     }
+    //     _balances[recipient] += amount;
+
+    //     emit Transfer(sender, recipient, amount);
+
+    //     _afterTokenTransfer(sender, recipient, amount);
+    // }
+
+    /** @dev Creates `amount` tokens and assigns them to `account`, increasing
+     * the total supply.
+     *
+     * Emits a {Transfer} event with `from` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     */
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _beforeTokenTransfer(address(0), account, amount);
+
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+
+        _afterTokenTransfer(address(0), account, amount);
+    }
+
+    /**
+     * @dev Destroys `amount` tokens from `account`, reducing the
+     * total supply.
+     *
+     * Emits a {Transfer} event with `to` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     * - `account` must have at least `amount` tokens.
+     */
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _beforeTokenTransfer(account, address(0), amount);
+
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance - amount;
+        }
+        _totalSupply -= amount;
+
+        emit Transfer(account, address(0), amount);
+
+        _afterTokenTransfer(account, address(0), amount);
+    }
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
+     *
+     * This internal function is equivalent to `approve`, and can be used to
+     * e.g. set automatic allowances for certain subsystems, etc.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `owner` cannot be the zero address.
+     * - `spender` cannot be the zero address.
+     */
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    /**
+     * @dev Hook that is called before any transfer of tokens. This includes
+     * minting and burning.
+     *
+     * Calling conditions:
+     *
+     * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+     * will be transferred to `to`.
+     * - when `from` is zero, `amount` tokens will be minted for `to`.
+     * - when `to` is zero, `amount` of ``from``'s tokens will be burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+
+    /**
+     * @dev Hook that is called after any transfer of tokens. This includes
+     * minting and burning.
+     *
+     * Calling conditions:
+     *
+     * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+     * has been transferred to `to`.
+     * - when `from` is zero, `amount` tokens have been minted for `to`.
+     * - when `to` is zero, `amount` of ``from``'s tokens have been burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+
+    ///////////////////////////////////////////////////////////
+    ////////////////////////// N3DR ///////////////////////////
+    ///////////////////////////////////////////////////////////
+
+    using SafeERC20 for IERC20;
+    using SafeMath for uint256;
+
+    bool private _paused;
+    mapping(address => bool) public operators;
+
+    IERC20 public quoteToken;
+    IPancakeRouter public router;
+    IPancakePair public pair;
+
+    bool private _whitelistLpLock = true; // only the wallets in whitelist can add/remove LP
+    bool private _whitelistBuyLock = true; // only the wallets in whitelist can buy from LP
+    bool private _whitelistSellLock = true; // only the wallets in whitelist can sell to LP and not limited by 'sellAfterBuySeconds' rules
+    mapping(address => bool) private _swapWhitelist;
+    mapping(address => bool) private _blocklist;
+
+    // price protection config
+    uint256 public taxPriceProtection = 500; // ‱ additional sell tax to lottery for price protection
+    uint256 public priceProtectionRate = 2000; // ‱ rate, price protection turn on if daily price drop rate > this value
+    uint256 public todayTimeIndex; // Today's timestamp / (24*60*60)
+    uint256 public todayOpenPrice; // Today's open price, 1e18 units N3DR = how many units quote token
+    uint256 public sellAfterBuySeconds = 3600; // 1 hour, user can sell N3DR after buy N3DR 1 hour
+    mapping(address => uint256) public lastBuyTime; // record user last buy N3DR time
+
+    address public addressBurn; // address tax to burn
+    address public addressFarm; // address tax to farm
+    address public addressLottery; // address tax to lottery
+    address public addressReferral; // address tax to referral
+    uint256 public taxBurn = 100; // ‱ tax to burn
+    uint256 public taxFarm = 200; // ‱ tax to farm
+    uint256 public taxLottery = 300; // ‱ tax to lottery
+    uint256 public taxReferral = 400; // ‱ tax to referral
+    mapping(address => bool) public isTaxExcluded;
+    mapping(uint256 => bool) public isTaxTransferTypeExcluded;
+
+    bool private _inProgressLp;
+
+    constructor(string memory name_, string memory symbol_) {
+        _paused = false;
+        _name = name_;
+        _symbol = symbol_;
+        operators[msg.sender] = true;
+    }
+
+    modifier onlyOperator() {
+        require(operators[msg.sender], "Operator: caller is not the operator");
+        _;
+    }
+
+    modifier lockLp() {
+        _inProgressLp = true;
+        _;
+        _inProgressLp = false;
+    }
+
+    function setPaused(bool paused_) public onlyOwner {
+        _paused = paused_;
+    }
+
+    function setOperator(address _operator, bool _enabled) public onlyOwner {
+        operators[_operator] = _enabled;
+    }
+
+    function setRouter(IERC20 _quoteToken, IPancakeRouter _router) public onlyOwner {
+        quoteToken = _quoteToken;
+        router = _router;
+        address _pair = IPancakeFactory(_router.factory()).createPair(address(_quoteToken), address(this));
+        pair = IPancakePair(_pair);
+    }
+
+    function setWhitelistLock(
+        bool _lpLock,
+        bool _buyLock,
+        bool _sellLock
+    ) public onlyOwner {
+        _whitelistLpLock = _lpLock;
+        _whitelistBuyLock = _buyLock;
+        _whitelistSellLock = _sellLock;
+    }
+
+    function setSwapAndLpWhitelist(address[] memory _users, bool _enabled) public onlyOwner {
+        uint256 _len = _users.length;
+        for (uint256 i = 0; i < _len; i++) {
+            _swapWhitelist[_users[i]] = _enabled;
+        }
+    }
+
+    function setBlocklist(address[] memory _users, bool _enabled) public onlyOwner {
+        uint256 _len = _users.length;
+        for (uint256 i = 0; i < _len; i++) {
+            _blocklist[_users[i]] = _enabled;
+        }
+    }
+
+    function mint(address account, uint256 amount) public onlyOwner {
+        _mint(account, amount);
+    }
+
+    function setPriceProtection(
+        uint256 _taxPriceProtection,
+        uint256 _priceProtectionRate,
+        uint256 _sellAfterBuySeconds
+    ) public onlyOwner {
+        taxPriceProtection = _taxPriceProtection;
+        priceProtectionRate = _priceProtectionRate;
+        sellAfterBuySeconds = _sellAfterBuySeconds;
+    }
+
+    function setTaxAddress(
+        address burn_,
+        address _farm,
+        address _lottery,
+        address _referral
+    ) public onlyOwner {
+        addressBurn = burn_;
+        addressFarm = _farm;
+        addressLottery = _lottery;
+        addressReferral = _referral;
+    }
+
+    function setTaxRate(
+        uint256 burn_,
+        uint256 _farm,
+        uint256 _lottery,
+        uint256 _referral
+    ) public onlyOwner {
+        taxBurn = burn_;
+        taxFarm = _farm;
+        taxLottery = _lottery;
+        taxReferral = _referral;
+    }
+
+    function setTaxExcluded(address _from, bool _enabled) public onlyOwner {
+        isTaxExcluded[_from] = _enabled;
+    }
+
+    function setTaxTransferTypeExcluded(uint256 _transferType, bool _enabled) public onlyOwner {
+        isTaxTransferTypeExcluded[_transferType] = _enabled;
+    }
+
+    function selfApprove(
+        IERC20 _token,
+        address _spender,
+        uint256 _amount
+    ) public onlyOwner {
+        _token.approve(_spender, _amount);
+    }
+
+    function _isLp(address _addr) internal view returns (bool) {
+        return _addr == address(pair);
+    }
+
+    // 0: normal transfer
+    // 1: buy from official LP
+    // 2: sell to official LP
+    // 3: add official LP
+    // 4: remove official LP
+    function _getTransferType(address _from, address _to) internal view returns (uint256) {
+        if (_isLp(_from) && !_isLp(_to)) {
+            return _inProgressLp ? 4 : 1;
+        }
+
+        if (!_isLp(_from) && _isLp(_to)) {
+            return _inProgressLp ? 3 : 2;
+        }
+
+        return 0;
+    }
+
+    function _rawTransfer(
+        address _from,
+        address _to,
+        uint256 _amount
+    ) internal virtual {
+        if (_amount == 0) {
+            return;
+        }
+
+        require(!_paused, "ERC20Pausable: token transfer while paused");
+        require(_from != address(0), "ERC20: transfer from the zero address");
+        require(_to != address(0), "ERC20: transfer to the zero address");
+
+        _beforeTokenTransfer(_from, _to, _amount);
+
+        uint256 senderBalance = _balances[_from];
+        require(senderBalance >= _amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            _balances[_from] = senderBalance - _amount;
+        }
+        _balances[_to] += _amount;
+
+        emit Transfer(_from, _to, _amount);
+
+        _afterTokenTransfer(_from, _to, _amount);
+    }
+
+    function _transfer(
+        address _from,
+        address _to,
+        uint256 _amount
+    ) internal {
+        updateTodayOpenPrice();
+
+        uint256 _amountBurn = 0;
+        uint256 _amountFarm = 0;
+        uint256 _amountLottery = 0;
+        uint256 _amountReferral = 0;
+        uint256 _transferType = _getTransferType(_from, _to);
+        (bool _isUp, uint256 _changeRate) = getDailyPriceChange();
+
+        require(!_blocklist[_from], "N3DR: forbidden transfer");
+
+        // buy
+        if (_transferType == 1) {
+            require(!_whitelistBuyLock || _swapWhitelist[_to], "N3DR: forbidden to buy"); // buy Whitelist lock
+            lastBuyTime[_to] = block.timestamp; // update user last buy time
+        }
+
+        // sell
+        if (_transferType == 2) {
+            if (_whitelistSellLock) {
+                require(_swapWhitelist[_from], "N3DR: forbidden to sell"); // sell Whitelist lock
+            } else {
+                // require(lastBuyTime[_from] > 0, "N3DR: forbidden to sell before buy");
+                // user can sell N3DR after buy N3DR 1 hour
+                require(
+                    block.timestamp >= lastBuyTime[_from].add(sellAfterBuySeconds),
+                    "N3DR: holding time is too short"
+                );
+            }
+
+            // only can sell 99% of balance
+            uint256 _balance = _balances[_from];
+            if (_amount >= _balance) {
+                _amount = _balance.mul(99).div(100);
+            }
+        }
+
+        // add LP
+        if (_transferType == 3) {
+            require(!_whitelistLpLock || _swapWhitelist[_from], "N3DR: forbidden add LP"); // LP Whitelist lock
+        }
+
+        // remove LP
+        if (_transferType == 4) {
+            require(!_whitelistLpLock || _swapWhitelist[_to], "N3DR: forbidden remove LP"); // LP Whitelist lock
+        }
+
+        if (!isTaxExcluded[_from] && !isTaxTransferTypeExcluded[_transferType]) {
+            _amountBurn = _amount.mul(taxBurn).div(10000);
+            _amountFarm = _amount.mul(taxFarm).div(10000);
+            _amountLottery = _amount.mul(taxLottery).div(10000);
+            _amountReferral = _amount.mul(taxReferral).div(10000);
+
+            // additional sell tax if daily price drop rate > 20%
+            if (_transferType == 2 && !_isUp && _changeRate > priceProtectionRate) {
+                _amountLottery = _amountLottery.add(_amount.mul(taxPriceProtection).div(10000));
+            }
+        }
+
+        uint256 amountTax = _amountBurn.add(_amountFarm).add(_amountLottery).add(_amountReferral);
+        require(_amount > amountTax, "transfer amount is too small");
+
+        _rawTransfer(_from, addressBurn, _amountBurn);
+        _rawTransfer(_from, addressFarm, _amountFarm);
+        _rawTransfer(_from, addressLottery, _amountLottery);
+        _rawTransfer(_from, addressReferral, _amountReferral);
+        _rawTransfer(_from, _to, _amount.sub(amountTax));
+
+        Lottery(addressLottery).onTransfer(_to, _amount, _transferType);
+        Referral(addressReferral).onTransfer(_from, _to, _amount);
+
+        if (_amountFarm > 0) Farm(addressFarm).addReward(_amountFarm, 0);
+
+        if (_amountReferral > 0) {
+            // if buy from LP, find referrer by _to/user
+            Referral(addressReferral).addReward(_transferType == 1 ? _to : _from, _amountReferral);
+        }
+    }
+
+    function transferNoTax(address _to, uint256 _amount) public onlyOperator {
+        updateTodayOpenPrice();
+        _rawTransfer(_msgSender(), _to, _amount);
+    }
+
+    function updateTodayOpenPrice() public {
+        uint256 _dayTimeIndex = block.timestamp.div(86400);
+        if (_dayTimeIndex <= todayTimeIndex) {
+            return;
+        }
+
+        uint256 _price = getPrice();
+        if (_price == 0) {
+            return;
+        }
+
+        todayTimeIndex = _dayTimeIndex;
+        todayOpenPrice = _price;
+    }
+
+    function addLiquidity(
+        address _tokenA,
+        address _tokenB,
+        uint256 _amountADesired,
+        uint256 _amountBDesired,
+        uint256 _amountAMin,
+        uint256 _amountBMin,
+        address _to,
+        uint256 _deadline
+    ) public lockLp {
+        require(_tokenA != _tokenB, "N3DR: invalid _tokenA");
+        require(_tokenA == address(this) || _tokenA == address(quoteToken), "N3DR: invalid _tokenA");
+        require(_tokenB == address(this) || _tokenB == address(quoteToken), "N3DR: invalid _tokenB");
+
+        (uint256 _amountMain, uint256 _amountQuote) = _tokenA == address(this)
+            ? (_amountADesired, _amountBDesired)
+            : (_amountBDesired, _amountADesired);
+        (uint256 _amountMainMin, uint256 _amountQuoteMin) = _tokenA == address(this)
+            ? (_amountAMin, _amountBMin)
+            : (_amountBMin, _amountAMin);
+
+        _rawTransfer(msg.sender, address(this), _amountMain);
+        quoteToken.safeTransferFrom(msg.sender, address(this), _amountQuote);
+
+        (uint256 _amountMainUsed, uint256 _amountQuoteUsed, ) = router.addLiquidity(
+            address(this),
+            address(quoteToken),
+            _amountMain,
+            _amountQuote,
+            _amountMainMin,
+            _amountQuoteMin,
+            _to,
+            _deadline
+        );
+
+        _rawTransfer(address(this), msg.sender, _amountMain.sub(_amountMainUsed));
+        if (_amountQuote > _amountQuoteUsed) {
+            quoteToken.safeTransfer(msg.sender, _amountQuote.sub(_amountQuoteUsed));
+        }
+    }
+
+    function removeLiquidity(
+        address _tokenA,
+        address _tokenB,
+        uint256 _liquidity,
+        uint256 _amountAMin,
+        uint256 _amountBMin,
+        address _to,
+        uint256 _deadline
+    ) public lockLp {
+        require(_tokenA != _tokenB, "N3DR: invalid _tokenA");
+        require(_tokenA == address(this) || _tokenA == address(quoteToken), "N3DR: invalid _tokenA");
+        require(_tokenB == address(this) || _tokenB == address(quoteToken), "N3DR: invalid _tokenB");
+
+        (uint256 _amountMainMin, uint256 _amountQuoteMin) = _tokenA == address(this)
+            ? (_amountAMin, _amountBMin)
+            : (_amountBMin, _amountAMin);
+
+        IERC20 _tokenLp = IERC20(address(pair));
+        _tokenLp.safeTransferFrom(msg.sender, address(this), _liquidity);
+        router.removeLiquidity(
+            address(this),
+            address(quoteToken),
+            _liquidity,
+            _amountMainMin,
+            _amountQuoteMin,
+            _to,
+            _deadline
+        );
+    }
+
+    // 1e18 units N3DR token = how many units quote token
+    function getPrice() public view returns (uint256) {
+        address _token0 = pair.token0();
+        (uint256 _reserve0, uint256 _reserve1, ) = pair.getReserves();
+        (uint256 _main, uint256 _quote) = address(quoteToken) == _token0
+            ? (_reserve1, _reserve0)
+            : (_reserve0, _reserve1);
+        return _main == 0 ? 0 : _quote.mul(1e18).div(_main);
+    }
+
+    // ‱ change rate, return 1000 means price change 10%
+    function getDailyPriceChange() public view returns (bool _isUp, uint256 _changeRate) {
+        if (todayOpenPrice == 0) {
+            return (_isUp, _changeRate);
+        }
+
+        uint256 _lastPrice = getPrice();
+        _isUp = _lastPrice > todayOpenPrice;
+        uint256 _change = _isUp ? _lastPrice.sub(todayOpenPrice) : todayOpenPrice.sub(_lastPrice);
+        _changeRate = _change.mul(10000).div(todayOpenPrice);
+        return (_isUp, _changeRate);
+    }
+
+    // 1e18 units LP token value = how many units quote token
+    function getLpPrice() public view returns (uint256) {
+        uint256 _total = pair.totalSupply();
+        address _token0 = pair.token0();
+        (uint256 _reserve0, uint256 _reserve1, ) = pair.getReserves();
+        uint256 _quote = address(quoteToken) == _token0 ? _reserve0 : _reserve1;
+        return _total == 0 ? 0 : _quote.mul(2).mul(1e18).div(_total);
+    }
+
+    // get user' LP value in quote token. (including farm deposit)
+    function getLpValue(address _user) public view returns (uint256) {
+        uint256 _lpAmount = pair.balanceOf(_user).add(Farm(addressFarm).getUserDepositAmount(_user));
+        uint256 _lpPrice = getLpPrice();
+        return _lpAmount.mul(_lpPrice).div(1e18);
+    }
+
+    function rescue(
+        address _token,
+        address payable _to,
+        uint256 _amount
+    ) public onlyOwner {
+        if (_token == address(0)) {
+            (bool success, ) = _to.call{ gas: 23000, value: _amount }("");
+            require(success, "transferETH failed");
+        } else {
+            IERC20(_token).safeTransfer(_to, _amount);
+        }
+    }
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.0 (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.0 (token/ERC20/extensions/IERC20Metadata.sol)
+
+pragma solidity ^0.8.0;
+
+import "../IERC20.sol";
+
+/**
+ * @dev Interface for the optional metadata functions from the ERC20 standard.
+ *
+ * _Available since v4.1._
+ */
+interface IERC20Metadata is IERC20 {
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev Returns the symbol of the token.
+     */
+    function symbol() external view returns (string memory);
+
+    /**
+     * @dev Returns the decimals places of the token.
+     */
+    function decimals() external view returns (uint8);
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.0 (token/ERC20/utils/SafeERC20.sol)
+
+pragma solidity ^0.8.0;
+
+import "../IERC20.sol";
+import "../../../utils/Address.sol";
+
+/**
+ * @title SafeERC20
+ * @dev Wrappers around ERC20 operations that throw on failure (when the token
+ * contract returns false). Tokens that return no value (and instead revert or
+ * throw on failure) are also supported, non-reverting calls are assumed to be
+ * successful.
+ * To use this library you can add a `using SafeERC20 for IERC20;` statement to your contract,
+ * which allows you to call the safe operations as `token.safeTransfer(...)`, etc.
+ */
+library SafeERC20 {
+    using Address for address;
+
+    function safeTransfer(
+        IERC20 token,
+        address to,
+        uint256 value
+    ) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+    }
+
+    function safeTransferFrom(
+        IERC20 token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+    }
+
+    /**
+     * @dev Deprecated. This function has issues similar to the ones found in
+     * {IERC20-approve}, and its usage is discouraged.
+     *
+     * Whenever possible, use {safeIncreaseAllowance} and
+     * {safeDecreaseAllowance} instead.
+     */
+    function safeApprove(
+        IERC20 token,
+        address spender,
+        uint256 value
+    ) internal {
+        // safeApprove should only be called when setting an initial allowance,
+        // or when resetting it to zero. To increase and decrease it, use
+        // 'safeIncreaseAllowance' and 'safeDecreaseAllowance'
+        require(
+            (value == 0) || (token.allowance(address(this), spender) == 0),
+            "SafeERC20: approve from non-zero to non-zero allowance"
+        );
+        _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+    }
+
+    function safeIncreaseAllowance(
+        IERC20 token,
+        address spender,
+        uint256 value
+    ) internal {
+        uint256 newAllowance = token.allowance(address(this), spender) + value;
+        _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+    }
+
+    function safeDecreaseAllowance(
+        IERC20 token,
+        address spender,
+        uint256 value
+    ) internal {
+        unchecked {
+            uint256 oldAllowance = token.allowance(address(this), spender);
+            require(oldAllowance >= value, "SafeERC20: decreased allowance below zero");
+            uint256 newAllowance = oldAllowance - value;
+            _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+        }
+    }
+
+    /**
+     * @dev Imitates a Solidity high-level call (i.e. a regular function call to a contract), relaxing the requirement
+     * on the return value: the return value is optional (but if data is returned, it must not be false).
+     * @param token The token targeted by the call.
+     * @param data The call data (encoded using abi.encode or one of its variants).
+     */
+    function _callOptionalReturn(IERC20 token, bytes memory data) private {
+        // We need to perform a low level call here, to bypass Solidity's return data size checking mechanism, since
+        // we're implementing it ourselves. We use {Address.functionCall} to perform this call, which verifies that
+        // the target address contains contract code and also asserts for success in the low-level call.
+
+        bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+        if (returndata.length > 0) {
+            // Return data is optional
+            require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+        }
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.0 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/math/SafeMath.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.0 (utils/math/SafeMath.sol)
+
+pragma solidity ^0.8.0;
+
+// CAUTION
+// This version of SafeMath should only be used with Solidity 0.8 or later,
+// because it relies on the compiler's built in overflow checks.
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations.
+ *
+ * NOTE: `SafeMath` is generally not needed starting with Solidity 0.8, since the compiler
+ * now has built in overflow checking.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the substraction of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the division of two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator.
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {trySub}.
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b <= a, errorMessage);
+            return a - b;
+        }
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a / b;
+        }
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting with custom message when dividing by zero.
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {tryMod}.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a % b;
+        }
+    }
+}
+
+
+// File: @openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.0 (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: contracts/interfaces/IPancakePair.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0;
+
+interface IPancakePair {
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function name() external pure returns (string memory);
+
+    function symbol() external pure returns (string memory);
+
+    function decimals() external pure returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 value) external returns (bool);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+
+    function nonces(address owner) external view returns (uint256);
+
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
+
+    event Mint(address indexed sender, uint256 amount0, uint256 amount1);
+    event Burn(address indexed sender, uint256 amount0, uint256 amount1, address indexed to);
+    event Swap(
+        address indexed sender,
+        uint256 amount0In,
+        uint256 amount1In,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint256);
+
+    function factory() external view returns (address);
+
+    function token0() external view returns (address);
+
+    function token1() external view returns (address);
+
+    function getReserves()
+        external
+        view
+        returns (
+            uint112 reserve0,
+            uint112 reserve1,
+            uint32 blockTimestampLast
+        );
+
+    function price0CumulativeLast() external view returns (uint256);
+
+    function price1CumulativeLast() external view returns (uint256);
+
+    function kLast() external view returns (uint256);
+
+    function mint(address to) external returns (uint256 liquidity);
+
+    function burn(address to) external returns (uint256 amount0, uint256 amount1);
+
+    function swap(
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address to,
+        bytes calldata data
+    ) external;
+
+    function skim(address to) external;
+
+    function sync() external;
+
+    function initialize(address, address) external;
+}
+
+
+// File: contracts/interfaces/IPancakeFactory.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0;
+
+interface IPancakeFactory {
+    event PairCreated(address indexed token0, address indexed token1, address pair, uint256);
+
+    function feeTo() external view returns (address);
+
+    function feeToSetter() external view returns (address);
+
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+
+    function allPairs(uint256) external view returns (address pair);
+
+    function allPairsLength() external view returns (uint256);
+
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+
+    function setFeeTo(address) external;
+
+    function setFeeToSetter(address) external;
+}
+
+
+// File: contracts/interfaces/IPancakeRouter.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0;
+
+import "./IPancakeRouter01.sol";
+
+interface IPancakeRouter is IPancakeRouter01 {
+    function removeLiquidityETHSupportingFeeOnTransferTokens(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountETH);
+
+    function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 amountETH);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+}
+
+
+// File: contracts/N3DR/Farm.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/Address.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract Farm is Ownable {
+    using SafeERC20 for IERC20;
+    using SafeMath for uint256;
+    using Address for address;
+
+    struct UserInfo {
+        uint256 amount; // The Token amount user deposited.
+        uint256 startTime; // The timestamp user deposited last.
+        uint256 endTime; // The timestamp deposit token unlock.
+        uint256 mainRewardTotal; // Total main reward token amount. (update when user deposit/withdraw/takeReward)
+        uint256 mainRewardTaked; // Taked main reward token amount. (update when user takeReward)
+        uint256 mainRewardDebt; // Debt main reward token amount. (update when user deposit/withdraw/takeReward)
+        uint256 lpRewardTotal; // Total LP reward token amount. (update when user deposit/withdraw/takeReward)
+        uint256 lpRewardTaked; // Taked LP reward token amount. (update when user takeReward)
+        uint256 lpRewardDebt; // Debt LP reward token amount. (update when user deposit/withdraw/takeReward)
+    }
+
+    struct PoolInfo {
+        uint256 amount; // The Token amount all users deposited.
+        uint256 allocPoint; // How many allocation points assigned to this pool. (PreDeposit pool is 0)
+        uint256 lockHours; // How long deposit token locked. (PreDeposit pool = 100 days, 7 days, 14 days, 28 days)
+        uint256 mainRewardAmountTotal; // Total main token reward amount. (update every day)
+        uint256 mainRewardAmountLast; // Last time main token reward amount. (update every day)
+        uint256 mainRewardRateLast; // Last time main token reward amount per 1e18 deposit token. (update every day)
+        uint256 mainAccPerShare; // Accumulated main token reward per share, times 1e12.
+        uint256 lpRewardAmountTotal; // Total LP token reward amount. (update every week)
+        uint256 lpRewardAmountLast; // Last time LP token reward amount. (update every week)
+        uint256 lpRewardRateLast; // Last time LP token reward amount per 1e18 deposit token. (update every week)
+        uint256 lpAccPerShare; // Accumulated LP token reward per share, times 1e12.
+        bool isLinearRelease; // If release locked deposit token linearly. (Only PreDeposit pool should set true)
+        bool shareWithPreDeposit; // If share reward with PreDeposit pool. (Only 28 days pool should set true)
+    }
+
+    bool private _paused;
+    mapping(address => bool) public operators;
+
+    IERC20 public depositToken; // Deposit this token to get reward.
+
+    IERC20 public mainRewardToken; // Distribute main reward token from transfer tax.
+    IERC20 public lpRewardToken; // Distribute LP reward token every week.
+    uint256 public mainRewardPending; // Pending main reward token amount.
+    uint256 public lpRewardPending; // Pending LP reward token amount.
+    uint256 public mainRewardDispersed; // Dispersed main reward token amount.
+    uint256 public lpRewardDispersed; // Dispersed LP reward token amount.
+
+    uint256 public preDepositPid; // PreDeposit pool lock 100 days and release linearly.
+    PoolInfo[] private _pools; // All pools info.
+    uint256 public totalAllocPoint; // Total allocation points of all pool.
+    mapping(address => mapping(uint256 => UserInfo)) private _users; // All users info. (user address => pool index => user info)
+
+    address[] private _depositedUsers; // All users address who has deposited.
+    mapping(address => bool) private _depositedUserAdded; // All users address who has deposited.
+
+    event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
+    event TakeReward(address indexed user, uint256 indexed pid, uint256 mainReward, uint256 lpReward);
+    event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
+
+    constructor() {
+        _paused = false;
+        operators[msg.sender] = true;
+    }
+
+    modifier whenNotPaused() {
+        require(!_paused, "Pausable: paused");
+        _;
+    }
+
+    modifier onlyOperator() {
+        require(operators[msg.sender], "Operator: caller is not the operator");
+        _;
+    }
+
+    //////////////////////////////////////////
+    ///////////// admin functions ////////////
+    //////////////////////////////////////////
+
+    function setPaused(bool paused_) public onlyOwner {
+        _paused = paused_;
+    }
+
+    function setOperator(address _operator, bool _enabled) public onlyOwner {
+        operators[_operator] = _enabled;
+    }
+
+    function setTokenAddress(
+        IERC20 _depositToken,
+        IERC20 _mainRewardToken,
+        IERC20 _lpRewardToken
+    ) public onlyOwner {
+        depositToken = _depositToken;
+        mainRewardToken = _mainRewardToken;
+        lpRewardToken = _lpRewardToken;
+    }
+
+    function updateTotalAllocPoint() public onlyOwner {
+        uint256 _totalAllocPoint = 0;
+        for (uint256 index = 0; index < _pools.length; index++) {
+            _totalAllocPoint = _totalAllocPoint.add(_pools[index].allocPoint);
+        }
+        totalAllocPoint = _totalAllocPoint;
+    }
+
+    function addPool(
+        uint256 _allocPoint,
+        uint256 _lockHours,
+        bool _isLinearRelease,
+        bool _shareWithPreDeposit
+    ) public onlyOwner {
+        _pools.push(
+            PoolInfo({
+                amount: 0,
+                allocPoint: _allocPoint,
+                lockHours: _lockHours,
+                mainRewardAmountTotal: 0,
+                mainRewardAmountLast: 0,
+                mainRewardRateLast: 0,
+                mainAccPerShare: 0,
+                lpRewardAmountTotal: 0,
+                lpRewardAmountLast: 0,
+                lpRewardRateLast: 0,
+                lpAccPerShare: 0,
+                isLinearRelease: _isLinearRelease,
+                shareWithPreDeposit: _shareWithPreDeposit
+            })
+        );
+        updateTotalAllocPoint();
+    }
+
+    function setPool(
+        uint256 _pid,
+        uint256 _allocPoint,
+        uint256 _lockHours,
+        uint256 _mainRewardAmountTotal,
+        uint256 _mainRewardAmountLast,
+        uint256 _mainRewardRateLast,
+        uint256 _lpRewardAmountTotal,
+        uint256 _lpRewardAmountLast,
+        uint256 _lpRewardRateLast,
+        bool _isLinearRelease,
+        bool _shareWithPreDeposit
+    ) public onlyOwner {
+        require(_pid < _pools.length, "Farm: pool index out of range");
+        _pools[_pid].allocPoint = _allocPoint;
+        _pools[_pid].lockHours = _lockHours;
+        _pools[_pid].mainRewardAmountTotal = _mainRewardAmountTotal;
+        _pools[_pid].mainRewardAmountLast = _mainRewardAmountLast;
+        _pools[_pid].mainRewardRateLast = _mainRewardRateLast;
+        _pools[_pid].lpRewardAmountTotal = _lpRewardAmountTotal;
+        _pools[_pid].lpRewardAmountLast = _lpRewardAmountLast;
+        _pools[_pid].lpRewardRateLast = _lpRewardRateLast;
+        _pools[_pid].isLinearRelease = _isLinearRelease;
+        _pools[_pid].shareWithPreDeposit = _shareWithPreDeposit;
+        updateTotalAllocPoint();
+    }
+
+    function setPreDepositPid(uint256 _pid) public onlyOwner {
+        require(_pid < _pools.length, "Farm: pool index out of range");
+        preDepositPid = _pid;
+    }
+
+    // Transfer reward to this contract firstly, then call this function
+    function addReward(uint256 _mainReward, uint256 _lpReward) public onlyOperator {
+        if (_mainReward == 0 && _lpReward == 0) {
+            return;
+        }
+
+        mainRewardPending = mainRewardPending.add(_mainReward);
+        lpRewardPending = lpRewardPending.add(_lpReward);
+    }
+
+    function disperseMainReward() public onlyOperator {
+        if (mainRewardPending == 0 || totalAllocPoint == 0) {
+            return;
+        }
+
+        uint256 _rewards = 0;
+
+        for (uint256 _pid = 0; _pid < _pools.length; _pid++) {
+            PoolInfo storage _pool = _pools[_pid];
+            if (_pid == preDepositPid || _pool.allocPoint == 0) {
+                continue;
+            }
+
+            uint256 _poolReward = mainRewardPending.mul(_pool.allocPoint).div(totalAllocPoint);
+            uint256 _poolAmount = _pool.amount;
+            if (_pool.shareWithPreDeposit) {
+                _poolAmount = _poolAmount.add(_pools[preDepositPid].amount);
+            }
+            if (_poolAmount == 0) {
+                continue;
+            }
+
+            _pool.mainRewardRateLast = _poolReward.mul(1e18).div(_poolAmount);
+            _pool.mainRewardAmountLast = _pool.mainRewardRateLast.mul(_pool.amount).div(1e18);
+            _pool.mainRewardAmountTotal = _pool.mainRewardAmountTotal.add(_pool.mainRewardAmountLast);
+            if (_pool.amount > 0) {
+                _pool.mainAccPerShare = _pool.mainAccPerShare.add(
+                    _pool.mainRewardAmountLast.mul(1e12).div(_pool.amount)
+                );
+            }
+
+            if (_pool.shareWithPreDeposit) {
+                PoolInfo storage _prePool = _pools[preDepositPid];
+                _prePool.mainRewardRateLast = _pool.mainRewardRateLast;
+                _prePool.mainRewardAmountLast = _prePool.mainRewardRateLast.mul(_prePool.amount).div(1e18);
+                _prePool.mainRewardAmountTotal = _prePool.mainRewardAmountTotal.add(_prePool.mainRewardAmountLast);
+                if (_prePool.amount > 0) {
+                    _prePool.mainAccPerShare = _prePool.mainAccPerShare.add(
+                        _prePool.mainRewardAmountLast.mul(1e12).div(_prePool.amount)
+                    );
+                }
+            }
+
+            _rewards = _rewards.add(_poolReward);
+        }
+
+        mainRewardPending = mainRewardPending.sub(_rewards);
+        mainRewardDispersed = mainRewardDispersed.add(_rewards);
+    }
+
+    function disperseLpReward() public onlyOperator {
+        if (lpRewardPending == 0 || totalAllocPoint == 0) {
+            return;
+        }
+
+        uint256 _rewards = 0;
+
+        for (uint256 _pid = 0; _pid < _pools.length; _pid++) {
+            PoolInfo storage _pool = _pools[_pid];
+            if (_pid == preDepositPid || _pool.allocPoint == 0) {
+                continue;
+            }
+
+            uint256 _poolReward = lpRewardPending.mul(_pool.allocPoint).div(totalAllocPoint);
+            uint256 _poolAmount = _pool.amount;
+            if (_pool.shareWithPreDeposit) {
+                _poolAmount = _poolAmount.add(_pools[preDepositPid].amount);
+            }
+            if (_poolAmount == 0) {
+                continue;
+            }
+
+            _pool.lpRewardRateLast = _poolReward.mul(1e18).div(_poolAmount);
+            _pool.lpRewardAmountLast = _pool.lpRewardRateLast.mul(_pool.amount).div(1e18);
+            _pool.lpRewardAmountTotal = _pool.lpRewardAmountTotal.add(_pool.lpRewardAmountLast);
+            if (_pool.amount > 0) {
+                _pool.lpAccPerShare = _pool.lpAccPerShare.add(_pool.lpRewardAmountLast.mul(1e12).div(_pool.amount));
+            }
+
+            if (_pool.shareWithPreDeposit) {
+                PoolInfo storage _prePool = _pools[preDepositPid];
+                _prePool.lpRewardRateLast = _pool.lpRewardRateLast;
+                _prePool.lpRewardAmountLast = _prePool.lpRewardRateLast.mul(_prePool.amount).div(1e18);
+                _prePool.lpRewardAmountTotal = _prePool.lpRewardAmountTotal.add(_prePool.lpRewardAmountLast);
+                if (_prePool.amount > 0) {
+                    _prePool.lpAccPerShare = _prePool.lpAccPerShare.add(
+                        _prePool.lpRewardAmountLast.mul(1e12).div(_prePool.amount)
+                    );
+                }
+            }
+
+            _rewards = _rewards.add(_poolReward);
+        }
+
+        lpRewardPending = lpRewardPending.sub(_rewards);
+        lpRewardDispersed = lpRewardDispersed.add(_rewards);
+    }
+
+    // deposit for _to but use msg.sender's balance.
+    function _deposit(
+        uint256 _pid,
+        uint256 _amount,
+        address _to
+    ) internal {
+        if (_amount == 0) {
+            return;
+        }
+
+        require(_pid < _pools.length, "Farm: pool index out of range");
+        PoolInfo storage _pool = _pools[_pid];
+        UserInfo storage _user = _users[_to][_pid];
+
+        depositToken.safeTransferFrom(msg.sender, address(this), _amount);
+
+        // settle rewards for previously amount
+        _user.mainRewardTotal = _user.mainRewardTotal.add(
+            _user.amount.mul(_pool.mainAccPerShare).div(1e12).sub(_user.mainRewardDebt)
+        );
+        _user.lpRewardTotal = _user.lpRewardTotal.add(
+            _user.amount.mul(_pool.lpAccPerShare).div(1e12).sub(_user.lpRewardDebt)
+        );
+
+        _pool.amount = _pool.amount.add(_amount);
+        _user.amount = _user.amount.add(_amount);
+        _user.startTime = block.timestamp;
+        _user.endTime = block.timestamp + _pool.lockHours.mul(3600);
+        _user.mainRewardDebt = _user.amount.mul(_pool.mainAccPerShare).div(1e12);
+        _user.lpRewardDebt = _user.amount.mul(_pool.lpAccPerShare).div(1e12);
+
+        if (!_depositedUserAdded[_to]) {
+            _depositedUsers.push(_to);
+            _depositedUserAdded[_to] = true;
+        }
+
+        emit Deposit(_to, _pid, _amount);
+    }
+
+    function preDeposit(uint256 _amount, address _to) public onlyOperator {
+        _deposit(preDepositPid, _amount, _to);
+    }
+
+    function multiPreDeposit(uint256 _amount, address[] memory _toes) public onlyOperator {
+        if (_amount == 0) {
+            return;
+        }
+
+        for (uint256 i = 0; i < _toes.length; i++) {
+            preDeposit(_amount, _toes[i]);
+        }
+    }
+
+    function rescue(
+        address _token,
+        address payable _to,
+        uint256 _amount
+    ) public onlyOwner {
+        if (_token == address(0)) {
+            (bool success, ) = _to.call{ gas: 23000, value: _amount }("");
+            require(success, "transferETH failed");
+        } else {
+            IERC20(_token).safeTransfer(_to, _amount);
+        }
+    }
+
+    //////////////////////////////////////////
+    ///////////// user functions /////////////
+    //////////////////////////////////////////
+
+    function deposit(uint256 _pid, uint256 _amount) public whenNotPaused {
+        require(_pid != preDepositPid, "Farm: pool index wrong");
+        _deposit(_pid, _amount, msg.sender);
+    }
+
+    function takeReward(uint256 _pid) public whenNotPaused {
+        PoolInfo memory _pool = _pools[_pid];
+        UserInfo storage _user = _users[msg.sender][_pid];
+
+        uint256 _mainRewardDebt = _user.amount.mul(_pool.mainAccPerShare).div(1e12);
+        uint256 _lpRewardDebt = _user.amount.mul(_pool.lpAccPerShare).div(1e12);
+        _user.mainRewardTotal = _user.mainRewardTotal.add(_mainRewardDebt.sub(_user.mainRewardDebt));
+        _user.lpRewardTotal = _user.lpRewardTotal.add(_lpRewardDebt.sub(_user.lpRewardDebt));
+        _user.mainRewardDebt = _mainRewardDebt;
+        _user.lpRewardDebt = _lpRewardDebt;
+
+        uint256 _mainReward = _user.mainRewardTotal.sub(_user.mainRewardTaked);
+        uint256 _lpReward = _user.lpRewardTotal.sub(_user.lpRewardTaked);
+
+        if (_mainReward == 0 && _lpReward == 0) {
+            return;
+        }
+
+        if (_mainReward > 0) {
+            mainRewardToken.safeTransfer(msg.sender, _mainReward);
+            _user.mainRewardTaked = _user.mainRewardTaked.add(_mainReward);
+        }
+
+        if (_lpReward > 0) {
+            lpRewardToken.safeTransfer(msg.sender, _lpReward);
+            _user.lpRewardTaked = _user.lpRewardTaked.add(_lpReward);
+        }
+
+        emit TakeReward(msg.sender, _pid, _mainReward, _lpReward);
+    }
+
+    function canWithdrawAmount(uint256 _pid, address _user) public view returns (uint256) {
+        UserInfo memory _u = _users[_user][_pid];
+        uint256 _amount = 0;
+        uint256 _now = block.timestamp;
+
+        if (_pools[_pid].isLinearRelease && _u.endTime > _u.startTime) {
+            _amount = _u.amount.mul(_now.sub(_u.startTime)).div(_u.endTime.sub(_u.startTime));
+        } else {
+            if (_now > _u.endTime) _amount = _u.amount;
+        }
+
+        return _amount > _u.amount ? _u.amount : _amount;
+    }
+
+    function withdraw(uint256 _pid, uint256 _amount) public whenNotPaused {
+        require(_pid < _pools.length, "Farm: pool index out of range");
+        PoolInfo storage _pool = _pools[_pid];
+        UserInfo storage _user = _users[msg.sender][_pid];
+
+        uint256 _canWithdrawAmount = canWithdrawAmount(_pid, msg.sender);
+        require(_amount <= _canWithdrawAmount, "Farm: withdraw amount too much or time too early");
+
+        if (_pool.isLinearRelease) {
+            _amount = _canWithdrawAmount;
+            _user.startTime = block.timestamp;
+        }
+
+        if (_amount == 0) {
+            return;
+        }
+
+        // settle rewards for previously amount
+        _user.mainRewardTotal = _user.mainRewardTotal.add(
+            _user.amount.mul(_pool.mainAccPerShare).div(1e12).sub(_user.mainRewardDebt)
+        );
+        _user.lpRewardTotal = _user.lpRewardTotal.add(
+            _user.amount.mul(_pool.lpAccPerShare).div(1e12).sub(_user.lpRewardDebt)
+        );
+
+        _pool.amount = _pool.amount.sub(_amount);
+        _user.amount = _user.amount.sub(_amount);
+        _user.mainRewardDebt = _user.amount.mul(_pool.mainAccPerShare).div(1e12);
+        _user.lpRewardDebt = _user.amount.mul(_pool.lpAccPerShare).div(1e12);
+
+        depositToken.safeTransfer(msg.sender, _amount);
+        emit Deposit(msg.sender, _pid, _amount);
+
+        if (_user.amount == 0) {
+            takeReward(_pid);
+        }
+    }
+
+    function poolLength() public view returns (uint256) {
+        return _pools.length;
+    }
+
+    function pool(uint256 _pid) public view returns (PoolInfo memory) {
+        require(_pid < _pools.length, "Farm: pool index out of range");
+        return _pools[_pid];
+    }
+
+    function userLength() public view returns (uint256) {
+        return _depositedUsers.length;
+    }
+
+    function users(uint256 _startIndex, uint256 _endIndex) public view returns (address[] memory) {
+        if (_depositedUsers.length == 0) {
+            return new address[](0);
+        }
+
+        if (_endIndex == 0) {
+            _endIndex = _depositedUsers.length - 1;
+        }
+
+        address[] memory users_ = new address[](_endIndex - _startIndex + 1);
+
+        for (uint256 index = _startIndex; index <= _endIndex; index++) {
+            users_[index - _startIndex] = _depositedUsers[index];
+        }
+
+        return users_;
+    }
+
+    function userInfo(uint256 _pid, address _user) public view returns (UserInfo memory) {
+        PoolInfo memory _pool = _pools[_pid];
+        UserInfo memory user_ = _users[_user][_pid];
+
+        uint256 _mainRewardDebt = user_.amount.mul(_pool.mainAccPerShare).div(1e12);
+        uint256 _lpRewardDebt = user_.amount.mul(_pool.lpAccPerShare).div(1e12);
+        user_.mainRewardTotal = user_.mainRewardTotal.add(_mainRewardDebt.sub(user_.mainRewardDebt));
+        user_.lpRewardTotal = user_.lpRewardTotal.add(_lpRewardDebt.sub(user_.lpRewardDebt));
+        user_.mainRewardDebt = _mainRewardDebt;
+        user_.lpRewardDebt = _lpRewardDebt;
+
+        return user_;
+    }
+
+    function getDepositAmount() public view returns (uint256) {
+        uint256 _amount = 0;
+
+        for (uint256 _pid = 0; _pid < _pools.length; _pid++) {
+            _amount = _amount.add(_pools[_pid].amount);
+        }
+
+        return _amount;
+    }
+
+    function getUserDepositAmount(address _user) public view returns (uint256) {
+        uint256 _amount = 0;
+
+        for (uint256 _pid = 0; _pid < _pools.length; _pid++) {
+            _amount = _amount.add(_users[_user][_pid].amount);
+        }
+
+        return _amount;
+    }
+}
+
+
+// File: contracts/N3DR/Referral.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/Address.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+import "./N3DR.sol";
+import "./Lottery.sol";
+
+contract Referral is Ownable {
+    using SafeERC20 for IERC20;
+    using SafeMath for uint256;
+    using Address for address;
+
+    struct RewardInfo {
+        address user;
+        uint256 rewardAmount;
+    }
+
+    mapping(address => bool) public operators;
+
+    N3DR public mainToken; // N3DR token address.
+    Lottery public lottery; // Lottery contract address.
+    uint256 public minRecordReferralAmount; // Record pending referral if referrer transfer to user amount >= this value.
+    uint256 public minReturnReferralAmount; // Record referral if user transfer to pending referrer amount >= this value.
+    uint256 public minActiveReferralValue; // Active referral if LP token value in quote token >= this value.
+    uint256[] public rewardRates; // ‱ of transfer amount. (#0 means user himself, #1 means user's 1 level referrer, ...)
+
+    mapping(address => mapping(address => bool)) public pendingReferrerToUser; // referrer => user => isPending
+    mapping(address => address) public referrerOfUser; // user => referrer
+    mapping(address => address[]) public usersOfReferrer; // referrer => user list
+
+    uint256 public thisPeriod = 0; // Update every week.
+    mapping(address => uint256) public rewards; // Reward summary for every referrer.
+    mapping(uint256 => mapping(address => uint256)) public rewardsOfPeriod; // Reward summary for every referrer and every period.
+    address[] private _rewardUsers; // All users address who get reward.
+    mapping(address => bool) private _rewardUserAdded; // All users address who get reward.
+
+    event RecordReferral(address indexed user, address indexed referrer);
+
+    constructor() {
+        operators[msg.sender] = true;
+    }
+
+    modifier onlyOperator() {
+        require(operators[msg.sender], "Operator: caller is not the operator");
+        _;
+    }
+
+    //////////////////////////////////////////
+    ///////////// admin functions ////////////
+    //////////////////////////////////////////
+
+    function setOperator(address _operator, bool _enabled) public onlyOwner {
+        operators[_operator] = _enabled;
+    }
+
+    function setConfig(
+        address _mainToken,
+        address _lottery,
+        uint256 _minRecordReferralAmount,
+        uint256 _minReturnReferralAmount,
+        uint256 _minActiveReferralValue
+    ) public onlyOwner {
+        mainToken = N3DR(_mainToken);
+        lottery = Lottery(_lottery);
+        minRecordReferralAmount = _minRecordReferralAmount;
+        minReturnReferralAmount = _minReturnReferralAmount;
+        minActiveReferralValue = _minActiveReferralValue;
+    }
+
+    function setRewardRates(uint256[] memory _rewardRates) public onlyOwner {
+        uint256 _rates = 0;
+        for (uint256 index = 0; index < _rewardRates.length; index++) {
+            _rates = _rates.add(_rewardRates[index]);
+        }
+
+        require(_rewardRates[0] == 0, "Referral: wrong reward rates of index 0");
+        require(_rates <= mainToken.taxReferral(), "Referral: wrong reward rates");
+        rewardRates = _rewardRates;
+    }
+
+    function setThisPeriod(uint256 _thisPeriod) public onlyOwner {
+        thisPeriod = _thisPeriod;
+    }
+
+    // Call this function when someone transfer main token.
+    function onTransfer(
+        address _from,
+        address _to,
+        uint256 _amount
+    ) public onlyOperator {
+        // transfer amount too small
+        if (_amount < minRecordReferralAmount && _amount < minReturnReferralAmount) {
+            return;
+        }
+
+        // record referral already
+        if (referrerOfUser[_from] == _to || referrerOfUser[_to] == _from) {
+            return;
+        }
+
+        // invalid transfer address
+        if (_from == _to || _from == address(0) || _to == address(0) || _from.isContract() || _to.isContract()) {
+            return;
+        }
+
+        if (
+            _amount >= minReturnReferralAmount &&
+            pendingReferrerToUser[_to][_from] &&
+            referrerOfUser[_from] == address(0)
+        ) {
+            referrerOfUser[_from] = _to;
+            usersOfReferrer[_to].push(_from);
+            emit RecordReferral(_from, _to);
+            return;
+        }
+
+        if (_amount >= minRecordReferralAmount && !pendingReferrerToUser[_from][_to]) {
+            pendingReferrerToUser[_from][_to] = true;
+        }
+    }
+
+    // Transfer reward to this contract firstly, then call this function.
+    function addReward(address _transferFrom, uint256 _rewardAmount) public onlyOperator {
+        if (_rewardAmount == 0) {
+            return;
+        }
+
+        uint256 _remainingReward = _rewardAmount;
+        uint256 _taxReferral = mainToken.taxReferral();
+
+        for (uint256 _level = 1; _level < rewardRates.length; _level++) {
+            address _referrer = getReferrerByLevel(_transferFrom, _level);
+            if (_referrer == address(0)) {
+                break;
+            }
+
+            if (!isActiveUser(_referrer)) {
+                continue;
+            }
+
+            uint256 _activeUsers = countActiveUsers(_referrer, _level);
+            if (_activeUsers < _level) {
+                continue;
+            }
+
+            uint256 _reward = _rewardAmount.mul(rewardRates[_level]).div(_taxReferral);
+            mainToken.transferNoTax(_referrer, _reward);
+            _remainingReward = _remainingReward.sub(_reward);
+
+            if (_reward > 0) {
+                rewards[_referrer] = rewards[_referrer].add(_reward);
+                rewardsOfPeriod[thisPeriod][_referrer] = rewardsOfPeriod[thisPeriod][_referrer].add(_reward);
+
+                if (!_rewardUserAdded[_referrer]) {
+                    _rewardUsers.push(_referrer);
+                    _rewardUserAdded[_referrer] = true;
+                }
+            }
+        }
+
+        mainToken.transferNoTax(address(lottery), _remainingReward);
+        lottery.tryEndAndDarw();
+    }
+
+    function rescue(
+        address _token,
+        address payable _to,
+        uint256 _amount
+    ) public onlyOwner {
+        if (_token == address(0)) {
+            (bool success, ) = _to.call{ gas: 23000, value: _amount }("");
+            require(success, "transferETH failed");
+        } else {
+            IERC20(_token).safeTransfer(_to, _amount);
+        }
+    }
+
+    //////////////////////////////////////////
+    ///////////// user functions /////////////
+    //////////////////////////////////////////
+
+    function rewardRatesLength() public view returns (uint256) {
+        return rewardRates.length;
+    }
+
+    function referralUserLength(address _referrer) public view returns (uint256) {
+        return usersOfReferrer[_referrer].length;
+    }
+
+    function userLength() public view returns (uint256) {
+        return _rewardUsers.length;
+    }
+
+    function users(uint256 _startIndex, uint256 _endIndex) public view returns (address[] memory) {
+        if (_rewardUsers.length == 0) {
+            return new address[](0);
+        }
+
+        if (_endIndex == 0) {
+            _endIndex = _rewardUsers.length - 1;
+        }
+
+        address[] memory users_ = new address[](_endIndex - _startIndex + 1);
+
+        for (uint256 index = _startIndex; index <= _endIndex; index++) {
+            users_[index - _startIndex] = _rewardUsers[index];
+        }
+
+        return users_;
+    }
+
+    function userRewards(uint256 _startIndex, uint256 _endIndex) public view returns (RewardInfo[] memory) {
+        if (_rewardUsers.length == 0) {
+            return new RewardInfo[](0);
+        }
+
+        if (_endIndex == 0) {
+            _endIndex = _rewardUsers.length - 1;
+        }
+
+        RewardInfo[] memory _rewards = new RewardInfo[](_endIndex - _startIndex + 1);
+
+        for (uint256 index = _startIndex; index <= _endIndex; index++) {
+            address _user = _rewardUsers[index];
+            _rewards[index - _startIndex] = RewardInfo({ user: _user, rewardAmount: rewards[_user] });
+        }
+
+        return _rewards;
+    }
+
+    function userRewardsOfPeriod(
+        uint256 _period,
+        uint256 _startIndex,
+        uint256 _endIndex
+    ) public view returns (RewardInfo[] memory) {
+        if (_rewardUsers.length == 0) {
+            return new RewardInfo[](0);
+        }
+
+        if (_endIndex == 0) {
+            _endIndex = _rewardUsers.length - 1;
+        }
+
+        RewardInfo[] memory _rewards = new RewardInfo[](_endIndex - _startIndex + 1);
+
+        for (uint256 index = _startIndex; index <= _endIndex; index++) {
+            address _user = _rewardUsers[index];
+            _rewards[index - _startIndex] = RewardInfo({ user: _user, rewardAmount: rewardsOfPeriod[_period][_user] });
+        }
+
+        return _rewards;
+    }
+
+    // return true if the value is present in the list
+    function _contains(address[] memory _list, address _a) internal pure returns (bool) {
+        for (uint256 i = 0; i < _list.length; i++) {
+            if (_list[i] == _a) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function getReferrerByLevel(address _user, uint256 _level) public view returns (address) {
+        address _referrer = address(0);
+        address[] memory _found = new address[](_level + 1);
+        _found[0] = _user;
+
+        for (uint256 _l = 1; _l <= _level; _l++) {
+            _referrer = referrerOfUser[_user];
+            if (_referrer == address(0) || _contains(_found, _referrer)) {
+                return address(0);
+            }
+
+            _user = _referrer;
+            _found[_l] = _referrer;
+        }
+
+        return _referrer;
+    }
+
+    function isActiveUser(address _user) public view returns (bool) {
+        return mainToken.getLpValue(_user) >= minActiveReferralValue;
+    }
+
+    function countActiveUsers(address _referrer, uint256 _limit) public view returns (uint256) {
+        if (_limit == 0) {
+            _limit = rewardRates.length;
+        }
+
+        uint256 _count = 0;
+        address[] memory users_ = usersOfReferrer[_referrer];
+        for (uint256 index = 0; index < users_.length; index++) {
+            if (isActiveUser(users_[index])) {
+                _count++;
+            }
+
+            if (_count >= _limit) {
+                break;
+            }
+        }
+
+        return _count;
+    }
+
+    function usersLengthOfReferrer(address _referrer) public view returns (uint256) {
+        return usersOfReferrer[_referrer].length;
+    }
+
+    function getUsersOfReferrer(
+        address _referrer,
+        uint256 _startIndex,
+        uint256 _endIndex
+    ) public view returns (address[] memory) {
+        address[] memory users_ = usersOfReferrer[_referrer];
+        if (users_.length == 0) {
+            return new address[](0);
+        }
+
+        if (_endIndex == 0) {
+            _endIndex = users_.length - 1;
+        }
+
+        address[] memory _users1 = new address[](_endIndex - _startIndex + 1);
+        for (uint256 i = _startIndex; i <= _endIndex; i++) {
+            _users1[i - _startIndex] = users_[i];
+        }
+
+        return _users1;
+    }
+}
+
+
+// File: contracts/N3DR/Lottery.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/Address.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
+
+import "./N3DR.sol";
+
+contract Lottery is Ownable, VRFConsumerBaseV2 {
+    using SafeERC20 for IERC20;
+    using SafeMath for uint256;
+    using Address for address;
+
+    struct OrderInfo {
+        uint256 id;
+        address user; // buy order user address
+        uint256 mainAmount; // buy main token amount
+        uint256 quoteAmount; // quote token amount for buying main token
+        uint256 tailNumber; // draw number, (mainAmount / 1e18) % 100
+        uint256 timestamp; // order block time
+        uint256 blockNumber; // order block number
+        uint256 drawDistance; // absolute value of (drawNumber - tailNumber)
+        uint256 rewardAmount; // reward amount
+    }
+
+    struct LotteryInfo {
+        uint256 round; // lottery round
+        uint256 index; // reward index (#0 means the 1st prize, #2 means the 2nd prize, ...)
+        uint256 mainAmount; // buy main token amount
+        uint256 quoteAmount; // quote token amount for buying main token
+        uint256 orderId; // order id
+        uint256 orderTime; // order block time
+        uint256 orderBlock; // order block number
+        uint256 rewardAmount; // reward amount
+        uint256 rewardTime; // lottery end time
+        uint256 rewardWithdrawed; // withdrawed reward amount
+    }
+
+    bool private _paused;
+    mapping(address => bool) public operators;
+
+    N3DR public mainToken; // N3DR token address.
+
+    // ChainLink config
+    VRFCoordinatorV2Interface private _vrfCoordinator;
+    bytes32 private _keyHash;
+    uint64 private _subId;
+    uint16 private constant _minConfirmations = 3;
+    uint32 private constant _callbackGasLimit = 100000;
+    uint32 private constant _numWords = 1;
+
+    uint256 public lastBuyOrderTime; // record the last buy order time
+    uint256 public rewardPoolCapacity; // reward pool capacity in main token
+    uint256 public maxRewardPools = 2; // end current round lottery if (MainTokenAmount >= rewardPoolCapacity*maxRewardPools)
+    uint256 public maxBuyIntervalSeconds = 3600; // 1 hour, end this round lottery if (Now >= lastBuyOrderTime+maxBuyIntervalSeconds)
+    uint256 public minActiveOrderValue; // active buy order if order value in quote token >= this value.
+    uint256 public maxCacheActiveOrders = 50; // remove oldest ActiveOrder if the length of cached ActiveOrder > this value.
+    uint256 public rewardReleaseHours = 168; // 7 days, reward release linearly in 7 days.
+    uint256 public totalReward; // total reward amount
+    uint256 public lockedReward; // locked reward amount
+    uint256[] public rewardRates; // ‱ of reward amount (#0 means the 1st prize, #2 means the 2nd prize, ...)
+
+    uint256 public orderId = 1;
+    uint256 public lastEndBlock; // avoid end multiple lotteries in one transaction
+    uint256 public thisRound = 1; // current pending lottery round
+    uint256 public drawRound = 1; // current darw lottery round
+    mapping(uint256 => uint256) public rewardPoolOfRound; // lottery round -> reward pool
+    mapping(uint256 => uint256) public endTimeOfRound; // lottery round -> end timestamp
+    mapping(uint256 => uint256) public requestIdToRound; // request id -> lottery round
+    mapping(uint256 => uint256) public randomnessOfRound; // lottery round -> randomness+1
+    mapping(uint256 => OrderInfo[]) public activeOrders; // lottery round -> active orders
+    mapping(address => LotteryInfo[]) private _userLotteries; // user -> lotteries
+
+    address[] private _lotteryUsers; // All users address who has lotteries.
+    mapping(address => bool) private _lotteryUserAdded; // All users address who has lotteries.
+
+    event NewOrder(uint256 indexed id, uint256 indexed round, address indexed user);
+    event End(uint256 indexed round, uint256 rewardPool, uint256 activeOrdersLength, uint256 requestId);
+    event Draw(uint256 indexed round, uint256 rawRandomness, uint256 randomness);
+    event DisperseReward(uint256 indexed round, address indexed user, uint256 reward);
+    event TakeReward(address indexed user, uint256 reward);
+
+    constructor(address vrfCoordinator_) VRFConsumerBaseV2(vrfCoordinator_) {
+        _paused = false;
+        operators[msg.sender] = true;
+        _vrfCoordinator = VRFCoordinatorV2Interface(vrfCoordinator_);
+    }
+
+    modifier whenNotPaused() {
+        require(!_paused, "Pausable: paused");
+        _;
+    }
+
+    modifier onlyOperator() {
+        require(operators[msg.sender], "Operator: caller is not the operator");
+        _;
+    }
+
+    //////////////////////////////////////////
+    ///////////// admin functions ////////////
+    //////////////////////////////////////////
+
+    function setPaused(bool paused_) public onlyOwner {
+        _paused = paused_;
+    }
+
+    function setOperator(address _operator, bool _enabled) public onlyOwner {
+        operators[_operator] = _enabled;
+    }
+
+    function setConfig(
+        address _mainToken,
+        uint256 _rewardPoolCapacity,
+        uint256 _maxRewardPools,
+        uint256 _maxBuyIntervalSeconds,
+        uint256 _minActiveOrderValue,
+        uint256 _maxCacheActiveOrders,
+        uint256 _rewardReleaseHours,
+        uint256 _totalReward,
+        uint256 _lockedReward
+    ) public onlyOwner {
+        mainToken = N3DR(_mainToken);
+        rewardPoolCapacity = _rewardPoolCapacity;
+        maxRewardPools = _maxRewardPools;
+        maxBuyIntervalSeconds = _maxBuyIntervalSeconds;
+        minActiveOrderValue = _minActiveOrderValue;
+        maxCacheActiveOrders = _maxCacheActiveOrders;
+        rewardReleaseHours = _rewardReleaseHours;
+        totalReward = _totalReward;
+        lockedReward = _lockedReward;
+    }
+
+    function setVRFConfig(bytes32 keyHash_, uint64 subId_) public onlyOwner {
+        _keyHash = keyHash_;
+        _subId = subId_;
+    }
+
+    function setRewardRates(uint256[] memory _rewardRates) public onlyOwner {
+        uint256 _rates = 0;
+        for (uint256 index = 0; index < _rewardRates.length; index++) {
+            _rates = _rates.add(_rewardRates[index]);
+        }
+
+        require(_rates <= 10000, "Lottery: wrong reward rates");
+        rewardRates = _rewardRates;
+    }
+
+    // Call this function after someone transfer main token to this contract.
+    function onTransfer(
+        address _to,
+        uint256 _amount,
+        uint256 _transferType
+    ) public onlyOperator {
+        if (_paused) {
+            return;
+        }
+
+        tryEndAndDarw();
+
+        if (_transferType != 1) {
+            return;
+        }
+
+        lastBuyOrderTime = block.timestamp;
+
+        if (_to.isContract()) {
+            return;
+        }
+
+        uint256 _price = mainToken.getPrice();
+        uint256 _quoteValue = _amount.mul(_price).div(1e18);
+        if (_quoteValue < minActiveOrderValue) {
+            return;
+        }
+
+        OrderInfo[] storage _activeOrders = activeOrders[thisRound];
+        _activeOrders.push(
+            OrderInfo({
+                id: orderId,
+                user: _to,
+                mainAmount: _amount,
+                quoteAmount: _quoteValue,
+                tailNumber: _amount.div(1e18).mod(100),
+                timestamp: block.timestamp,
+                blockNumber: block.number,
+                drawDistance: 0,
+                rewardAmount: 0
+            })
+        );
+
+        emit NewOrder(orderId, thisRound, _to);
+        orderId++;
+
+        // remove first element from _activeOrders
+        if (_activeOrders.length > maxCacheActiveOrders) {
+            for (uint256 i = 0; i < _activeOrders.length - 1; i++) {
+                _activeOrders[i] = _activeOrders[i + 1];
+            }
+            _activeOrders.pop();
+        }
+    }
+
+    function _getWithdrawableRewardByUser(address _user) internal view returns (uint256) {
+        uint256 _reward = 0;
+        LotteryInfo[] memory _lotteries = _userLotteries[_user];
+        for (uint256 i = 0; i < _lotteries.length; i++) {
+            _reward = _reward.add(getWithdrawableRewardByLottery(_lotteries[i]));
+        }
+        return _reward;
+    }
+
+    function _getLotteriesByUser(
+        address _user,
+        uint256 _startIndex,
+        uint256 _endIndex
+    ) internal view returns (LotteryInfo[] memory) {
+        LotteryInfo[] memory _allLotteries = _userLotteries[_user];
+        if (_allLotteries.length == 0) {
+            return new LotteryInfo[](0);
+        }
+
+        if (_endIndex == 0) {
+            _endIndex = _allLotteries.length - 1;
+        }
+
+        LotteryInfo[] memory _lotteries = new LotteryInfo[](_endIndex - _startIndex + 1);
+
+        for (uint256 index = _startIndex; index <= _endIndex; index++) {
+            _lotteries[index - _startIndex] = _allLotteries[index];
+        }
+
+        return _lotteries;
+    }
+
+    function rescue(
+        address _token,
+        address payable _to,
+        uint256 _amount
+    ) public onlyOwner {
+        if (_token == address(0)) {
+            (bool success, ) = _to.call{ gas: 23000, value: _amount }("");
+            require(success, "transferETH failed");
+        } else {
+            IERC20(_token).safeTransfer(_to, _amount);
+        }
+    }
+
+    function fulfillRandomWords(uint256 _requestId, uint256[] memory _randomWords) internal override {
+        uint256 _round = requestIdToRound[_requestId];
+        uint256 _randomness = _randomWords[0];
+        randomnessOfRound[_round] = _randomness.add(1);
+    }
+
+    //////////////////////////////////////////
+    ///////////// user functions /////////////
+    //////////////////////////////////////////
+
+    function rewardRatesLength() public view returns (uint256) {
+        return rewardRates.length;
+    }
+
+    function getWithdrawableRewardByUser(address _user) public view returns (uint256) {
+        return _getWithdrawableRewardByUser(_user);
+    }
+
+    function getLotteriesLengthByUser(address _user) public view returns (uint256) {
+        return _userLotteries[_user].length;
+    }
+
+    function getLotteriesByUser(
+        address _user,
+        uint256 _startIndex,
+        uint256 _endIndex
+    ) public view returns (LotteryInfo[] memory) {
+        return _getLotteriesByUser(_user, _startIndex, _endIndex);
+    }
+
+    function tryEndCurrentRound() public {
+        if (_paused || !canEnd()) {
+            return;
+        }
+
+        uint256 _requestId = _vrfCoordinator.requestRandomWords(
+            _keyHash,
+            _subId,
+            _minConfirmations,
+            _callbackGasLimit,
+            _numWords
+        );
+
+        uint256 _rewardPool = currentRewardPool();
+        totalReward = totalReward.add(_rewardPool);
+        lockedReward = lockedReward.add(_rewardPool);
+
+        rewardPoolOfRound[thisRound] = _rewardPool;
+        endTimeOfRound[thisRound] = block.timestamp;
+        requestIdToRound[_requestId] = thisRound;
+        lastEndBlock = block.number;
+
+        emit End(thisRound, _rewardPool, activeOrders[thisRound].length, _requestId);
+        thisRound++;
+    }
+
+    function tryDraw() public {
+        if (_paused || thisRound <= drawRound) {
+            return;
+        }
+
+        uint256 _rawRandomness = randomnessOfRound[drawRound];
+        if (_rawRandomness <= 0) {
+            return;
+        }
+
+        _rawRandomness = _rawRandomness.sub(1);
+        uint256 _randomness = _rawRandomness.mod(100);
+
+        OrderInfo[] storage _activeOrders = activeOrders[drawRound];
+
+        // calculate draw distance
+        for (uint256 i = 0; i < _activeOrders.length; i++) {
+            uint256 _tailNumber = _activeOrders[i].tailNumber;
+            if (_tailNumber > _randomness) {
+                _activeOrders[i].drawDistance = _tailNumber.sub(_randomness);
+            } else {
+                _activeOrders[i].drawDistance = _randomness.sub(_tailNumber);
+            }
+        }
+
+        // sort _activeOrders by drawDistance ASC and timestamp DESC
+        for (uint256 i = 0; i < _activeOrders.length; i++) {
+            for (uint256 j = 0; j < _activeOrders.length - 1 - i; j++) {
+                if (
+                    _activeOrders[j].drawDistance > _activeOrders[j + 1].drawDistance ||
+                    (_activeOrders[j].drawDistance == _activeOrders[j + 1].drawDistance &&
+                        _activeOrders[j].timestamp < _activeOrders[j + 1].timestamp)
+                ) {
+                    OrderInfo memory _tmp = _activeOrders[j];
+                    _activeOrders[j] = _activeOrders[j + 1];
+                    _activeOrders[j + 1] = _tmp;
+                }
+            }
+        }
+
+        uint256 _drawCount = _activeOrders.length < rewardRates.length ? _activeOrders.length : rewardRates.length;
+
+        // sort first _drawCount _activeOrders by quoteAmount DESC and timestamp DESC
+        for (uint256 i = 0; i < _drawCount; i++) {
+            for (uint256 j = 0; j < _drawCount - 1 - i; j++) {
+                if (
+                    _activeOrders[j].quoteAmount < _activeOrders[j + 1].quoteAmount ||
+                    (_activeOrders[j].quoteAmount == _activeOrders[j + 1].quoteAmount &&
+                        _activeOrders[j].timestamp < _activeOrders[j + 1].timestamp)
+                ) {
+                    OrderInfo memory _tmp = _activeOrders[j];
+                    _activeOrders[j] = _activeOrders[j + 1];
+                    _activeOrders[j + 1] = _tmp;
+                }
+            }
+        }
+
+        uint256 _rewardPool = rewardPoolOfRound[drawRound];
+        uint256 _rewardRemain = _rewardPool;
+
+        for (uint256 i = 0; i < rewardRates.length; i++) {
+            if (i >= _activeOrders.length) {
+                break;
+            }
+
+            OrderInfo storage _order = _activeOrders[i];
+            _order.rewardAmount = _rewardPool.mul(rewardRates[i]).div(10000);
+            LotteryInfo[] storage _lotteries = _userLotteries[_order.user];
+
+            _lotteries.push(
+                LotteryInfo({
+                    round: drawRound,
+                    index: i,
+                    mainAmount: _order.mainAmount,
+                    quoteAmount: _order.quoteAmount,
+                    orderId: _order.id,
+                    orderTime: _order.timestamp,
+                    orderBlock: _order.blockNumber,
+                    rewardAmount: _order.rewardAmount,
+                    rewardTime: block.timestamp,
+                    rewardWithdrawed: 0
+                })
+            );
+
+            if (!_lotteryUserAdded[_order.user]) {
+                _lotteryUsers.push(_order.user);
+                _lotteryUserAdded[_order.user] = true;
+            }
+
+            _rewardRemain = _rewardRemain.sub(_order.rewardAmount);
+            emit DisperseReward(drawRound, _order.user, _order.rewardAmount);
+        }
+
+        if (_rewardRemain > 0) {
+            totalReward = totalReward.sub(_rewardRemain);
+            lockedReward = lockedReward.sub(_rewardRemain);
+        }
+
+        emit Draw(drawRound, _rawRandomness, _randomness);
+        drawRound++;
+    }
+
+    function tryEndAndDarw() public {
+        tryEndCurrentRound();
+        tryDraw();
+    }
+
+    function getWithdrawableRewardByLottery(LotteryInfo memory _lottery) public view returns (uint256) {
+        if (_lottery.rewardWithdrawed >= _lottery.rewardAmount) {
+            return 0;
+        }
+
+        uint256 _now = block.timestamp;
+        uint256 _amount = _lottery.rewardAmount.mul(_now.sub(_lottery.rewardTime)).div(rewardReleaseHours.mul(3600));
+        _amount = _amount > _lottery.rewardAmount ? _lottery.rewardAmount : _amount;
+        _amount = _amount > _lottery.rewardWithdrawed ? _amount.sub(_lottery.rewardWithdrawed) : 0;
+        return _amount;
+    }
+
+    function takeReward() public whenNotPaused {
+        if (_getWithdrawableRewardByUser(msg.sender) == 0) {
+            return;
+        }
+
+        uint256 _rewards = 0;
+        LotteryInfo[] storage _lotteries = _userLotteries[msg.sender];
+        for (uint256 i = 0; i < _lotteries.length; i++) {
+            LotteryInfo storage _lottery = _lotteries[i];
+            uint256 _reward = getWithdrawableRewardByLottery(_lottery);
+            _lottery.rewardWithdrawed = _lottery.rewardWithdrawed.add(_reward);
+            _rewards = _rewards.add(_reward);
+        }
+
+        lockedReward = lockedReward.sub(_rewards);
+        mainToken.transferNoTax(msg.sender, _rewards);
+        emit TakeReward(msg.sender, _rewards);
+    }
+
+    function activeOrdersLength(uint256 _round) public view returns (uint256) {
+        return activeOrders[_round].length;
+    }
+
+    function getActiveOrders(uint256 _round) public view returns (OrderInfo[] memory) {
+        return activeOrders[_round];
+    }
+
+    function getActiveOrder(uint256 _round, uint256 _index) public view returns (OrderInfo memory) {
+        OrderInfo[] memory _orders = activeOrders[_round];
+        if (_index >= _orders.length) {
+            return
+                OrderInfo({
+                    id: 0,
+                    user: address(0),
+                    mainAmount: 0,
+                    quoteAmount: 0,
+                    tailNumber: 0,
+                    timestamp: 0,
+                    blockNumber: 0,
+                    drawDistance: 0,
+                    rewardAmount: 0
+                });
+        }
+        return _orders[_index];
+    }
+
+    function pendingReward() public view returns (uint256) {
+        uint256 _balance = mainToken.balanceOf(address(this));
+        return _balance > lockedReward ? _balance - lockedReward : 0;
+    }
+
+    function canEnd() public view returns (bool) {
+        uint256 _pending = pendingReward();
+        return
+            block.number != lastEndBlock &&
+            _pending > 0 &&
+            rewardPoolCapacity > 0 &&
+            activeOrders[thisRound].length > 0 &&
+            (_pending >= rewardPoolCapacity.mul(maxRewardPools) ||
+                block.timestamp >= lastBuyOrderTime + maxBuyIntervalSeconds);
+    }
+
+    // 1: not start, 2: running, 3: end and wait draw, 4: drawed
+    function getRoundStatus(uint256 _round) public view returns (uint256) {
+        if (_round > thisRound) return 1;
+        if (_round == thisRound) return 2;
+        if (_round >= drawRound) return 3;
+        if (_round < drawRound) return 4;
+        return 0;
+    }
+
+    // current reward pool in main token
+    function currentRewardPool() public view returns (uint256) {
+        uint256 _pending = pendingReward();
+        return _pending > rewardPoolCapacity ? rewardPoolCapacity : _pending;
+    }
+
+    // next reward pool in main token
+    function nextRewardPool() public view returns (uint256) {
+        uint256 _pending = pendingReward().sub(currentRewardPool());
+        return _pending > rewardPoolCapacity ? rewardPoolCapacity : _pending;
+    }
+
+    function getRawRandomness(uint256 _round) public view returns (uint256) {
+        uint256 _rawRandomness = randomnessOfRound[_round];
+        if (_rawRandomness <= 0) {
+            return 0;
+        }
+        _rawRandomness = _rawRandomness.sub(1);
+        return _rawRandomness;
+    }
+
+    function userLength() public view returns (uint256) {
+        return _lotteryUsers.length;
+    }
+
+    function users(uint256 _startIndex, uint256 _endIndex) public view returns (address[] memory) {
+        if (_lotteryUsers.length == 0) {
+            return new address[](0);
+        }
+
+        if (_endIndex == 0) {
+            _endIndex = _lotteryUsers.length - 1;
+        }
+
+        address[] memory users_ = new address[](_endIndex - _startIndex + 1);
+
+        for (uint256 index = _startIndex; index <= _endIndex; index++) {
+            users_[index - _startIndex] = _lotteryUsers[index];
+        }
+
+        return users_;
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/Address.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.0 (utils/Address.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Collection of functions related to the address type
+ */
+library Address {
+    /**
+     * @dev Returns true if `account` is a contract.
+     *
+     * [IMPORTANT]
+     * ====
+     * It is unsafe to assume that an address for which this function returns
+     * false is an externally-owned account (EOA) and not a contract.
+     *
+     * Among others, `isContract` will return false for the following
+     * types of addresses:
+     *
+     *  - an externally-owned account
+     *  - a contract in construction
+     *  - an address where a contract will be created
+     *  - an address where a contract lived, but was destroyed
+     * ====
+     */
+    function isContract(address account) internal view returns (bool) {
+        // This method relies on extcodesize, which returns 0 for contracts in
+        // construction, since the code is only stored at the end of the
+        // constructor execution.
+
+        uint256 size;
+        assembly {
+            size := extcodesize(account)
+        }
+        return size > 0;
+    }
+
+    /**
+     * @dev Replacement for Solidity's `transfer`: sends `amount` wei to
+     * `recipient`, forwarding all available gas and reverting on errors.
+     *
+     * https://eips.ethereum.org/EIPS/eip-1884[EIP1884] increases the gas cost
+     * of certain opcodes, possibly making contracts go over the 2300 gas limit
+     * imposed by `transfer`, making them unable to receive funds via
+     * `transfer`. {sendValue} removes this limitation.
+     *
+     * https://diligence.consensys.net/posts/2019/09/stop-using-soliditys-transfer-now/[Learn more].
+     *
+     * IMPORTANT: because control is transferred to `recipient`, care must be
+     * taken to not create reentrancy vulnerabilities. Consider using
+     * {ReentrancyGuard} or the
+     * https://solidity.readthedocs.io/en/v0.5.11/security-considerations.html#use-the-checks-effects-interactions-pattern[checks-effects-interactions pattern].
+     */
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+
+        (bool success, ) = recipient.call{value: amount}("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+
+    /**
+     * @dev Performs a Solidity function call using a low level `call`. A
+     * plain `call` is an unsafe replacement for a function call: use this
+     * function instead.
+     *
+     * If `target` reverts with a revert reason, it is bubbled up by this
+     * function (like regular Solidity function calls).
+     *
+     * Returns the raw returned data. To convert to the expected return value,
+     * use https://solidity.readthedocs.io/en/latest/units-and-global-variables.html?highlight=abi.decode#abi-encoding-and-decoding-functions[`abi.decode`].
+     *
+     * Requirements:
+     *
+     * - `target` must be a contract.
+     * - calling `target` with `data` must not revert.
+     *
+     * _Available since v3.1._
+     */
+    function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+        return functionCall(target, data, "Address: low-level call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`], but with
+     * `errorMessage` as a fallback revert reason when `target` reverts.
+     *
+     * _Available since v3.1._
+     */
+    function functionCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but also transferring `value` wei to `target`.
+     *
+     * Requirements:
+     *
+     * - the calling contract must have an ETH balance of at least `value`.
+     * - the called Solidity function must be `payable`.
+     *
+     * _Available since v3.1._
+     */
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value
+    ) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCallWithValue-address-bytes-uint256-}[`functionCallWithValue`], but
+     * with `errorMessage` as a fallback revert reason when `target` reverts.
+     *
+     * _Available since v3.1._
+     */
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        require(isContract(target), "Address: call to non-contract");
+
+        (bool success, bytes memory returndata) = target.call{value: value}(data);
+        return verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but performing a static call.
+     *
+     * _Available since v3.3._
+     */
+    function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+        return functionStaticCall(target, data, "Address: low-level static call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],
+     * but performing a static call.
+     *
+     * _Available since v3.3._
+     */
+    function functionStaticCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal view returns (bytes memory) {
+        require(isContract(target), "Address: static call to non-contract");
+
+        (bool success, bytes memory returndata) = target.staticcall(data);
+        return verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but performing a delegate call.
+     *
+     * _Available since v3.4._
+     */
+    function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+        return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],
+     * but performing a delegate call.
+     *
+     * _Available since v3.4._
+     */
+    function functionDelegateCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        require(isContract(target), "Address: delegate call to non-contract");
+
+        (bool success, bytes memory returndata) = target.delegatecall(data);
+        return verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Tool to verifies that a low level call was successful, and revert if it wasn't, either by bubbling the
+     * revert reason using the provided one.
+     *
+     * _Available since v4.3._
+     */
+    function verifyCallResult(
+        bool success,
+        bytes memory returndata,
+        string memory errorMessage
+    ) internal pure returns (bytes memory) {
+        if (success) {
+            return returndata;
+        } else {
+            // Look for revert reason and bubble it up if present
+            if (returndata.length > 0) {
+                // The easiest way to bubble the revert reason is using memory via assembly
+
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+
+
+// File: contracts/interfaces/IPancakeRouter01.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0;
+
+interface IPancakeRouter01 {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        returns (
+            uint256 amountA,
+            uint256 amountB,
+            uint256 liquidity
+        );
+
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        payable
+        returns (
+            uint256 amountToken,
+            uint256 amountETH,
+            uint256 liquidity
+        );
+
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 liquidity,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountA, uint256 amountB);
+
+    function removeLiquidityETH(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountToken, uint256 amountETH);
+
+    function removeLiquidityWithPermit(
+        address tokenA,
+        address tokenB,
+        uint256 liquidity,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 amountA, uint256 amountB);
+
+    function removeLiquidityETHWithPermit(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 amountToken, uint256 amountETH);
+
+    function swapExactTokensForTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapTokensForExactTokens(
+        uint256 amountOut,
+        uint256 amountInMax,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapExactETHForTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable returns (uint256[] memory amounts);
+
+    function swapTokensForExactETH(
+        uint256 amountOut,
+        uint256 amountInMax,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapExactTokensForETH(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapETHForExactTokens(
+        uint256 amountOut,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable returns (uint256[] memory amounts);
+
+    function quote(
+        uint256 amountA,
+        uint256 reserveA,
+        uint256 reserveB
+    ) external pure returns (uint256 amountB);
+
+    function getAmountOut(
+        uint256 amountIn,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) external pure returns (uint256 amountOut);
+
+    function getAmountIn(
+        uint256 amountOut,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) external pure returns (uint256 amountIn);
+
+    function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts);
+
+    function getAmountsIn(uint256 amountOut, address[] calldata path) external view returns (uint256[] memory amounts);
+}
+
+
+// File: @chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+/** ****************************************************************************
+ * @notice Interface for contracts using VRF randomness
+ * *****************************************************************************
+ * @dev PURPOSE
+ *
+ * @dev Reggie the Random Oracle (not his real job) wants to provide randomness
+ * @dev to Vera the verifier in such a way that Vera can be sure he's not
+ * @dev making his output up to suit himself. Reggie provides Vera a public key
+ * @dev to which he knows the secret key. Each time Vera provides a seed to
+ * @dev Reggie, he gives back a value which is computed completely
+ * @dev deterministically from the seed and the secret key.
+ *
+ * @dev Reggie provides a proof by which Vera can verify that the output was
+ * @dev correctly computed once Reggie tells it to her, but without that proof,
+ * @dev the output is indistinguishable to her from a uniform random sample
+ * @dev from the output space.
+ *
+ * @dev The purpose of this contract is to make it easy for unrelated contracts
+ * @dev to talk to Vera the verifier about the work Reggie is doing, to provide
+ * @dev simple access to a verifiable source of randomness. It ensures 2 things:
+ * @dev 1. The fulfillment came from the VRFCoordinator
+ * @dev 2. The consumer contract implements fulfillRandomWords.
+ * *****************************************************************************
+ * @dev USAGE
+ *
+ * @dev Calling contracts must inherit from VRFConsumerBase, and can
+ * @dev initialize VRFConsumerBase's attributes in their constructor as
+ * @dev shown:
+ *
+ * @dev   contract VRFConsumer {
+ * @dev     constructor(<other arguments>, address _vrfCoordinator, address _link)
+ * @dev       VRFConsumerBase(_vrfCoordinator) public {
+ * @dev         <initialization with other arguments goes here>
+ * @dev       }
+ * @dev   }
+ *
+ * @dev The oracle will have given you an ID for the VRF keypair they have
+ * @dev committed to (let's call it keyHash). Create subscription, fund it
+ * @dev and your consumer contract as a consumer of it (see VRFCoordinatorInterface
+ * @dev subscription management functions).
+ * @dev Call requestRandomWords(keyHash, subId, minimumRequestConfirmations,
+ * @dev callbackGasLimit, numWords),
+ * @dev see (VRFCoordinatorInterface for a description of the arguments).
+ *
+ * @dev Once the VRFCoordinator has received and validated the oracle's response
+ * @dev to your request, it will call your contract's fulfillRandomWords method.
+ *
+ * @dev The randomness argument to fulfillRandomWords is a set of random words
+ * @dev generated from your requestId and the blockHash of the request.
+ *
+ * @dev If your contract could have concurrent requests open, you can use the
+ * @dev requestId returned from requestRandomWords to track which response is associated
+ * @dev with which randomness request.
+ * @dev See "SECURITY CONSIDERATIONS" for principles to keep in mind,
+ * @dev if your contract could have multiple requests in flight simultaneously.
+ *
+ * @dev Colliding `requestId`s are cryptographically impossible as long as seeds
+ * @dev differ.
+ *
+ * *****************************************************************************
+ * @dev SECURITY CONSIDERATIONS
+ *
+ * @dev A method with the ability to call your fulfillRandomness method directly
+ * @dev could spoof a VRF response with any random value, so it's critical that
+ * @dev it cannot be directly called by anything other than this base contract
+ * @dev (specifically, by the VRFConsumerBase.rawFulfillRandomness method).
+ *
+ * @dev For your users to trust that your contract's random behavior is free
+ * @dev from malicious interference, it's best if you can write it so that all
+ * @dev behaviors implied by a VRF response are executed *during* your
+ * @dev fulfillRandomness method. If your contract must store the response (or
+ * @dev anything derived from it) and use it later, you must ensure that any
+ * @dev user-significant behavior which depends on that stored value cannot be
+ * @dev manipulated by a subsequent VRF request.
+ *
+ * @dev Similarly, both miners and the VRF oracle itself have some influence
+ * @dev over the order in which VRF responses appear on the blockchain, so if
+ * @dev your contract could have multiple VRF requests in flight simultaneously,
+ * @dev you must ensure that the order in which the VRF responses arrive cannot
+ * @dev be used to manipulate your contract's user-significant behavior.
+ *
+ * @dev Since the block hash of the block which contains the requestRandomness
+ * @dev call is mixed into the input to the VRF *last*, a sufficiently powerful
+ * @dev miner could, in principle, fork the blockchain to evict the block
+ * @dev containing the request, forcing the request to be included in a
+ * @dev different block with a different hash, and therefore a different input
+ * @dev to the VRF. However, such an attack would incur a substantial economic
+ * @dev cost. This cost scales with the number of blocks the VRF oracle waits
+ * @dev until it calls responds to a request. It is for this reason that
+ * @dev that you can signal to an oracle you'd like them to wait longer before
+ * @dev responding to the request (however this is not enforced in the contract
+ * @dev and so remains effective only in the case of unmodified oracle software).
+ */
+abstract contract VRFConsumerBaseV2 {
+  error OnlyCoordinatorCanFulfill(address have, address want);
+  address private immutable vrfCoordinator;
+
+  /**
+   * @param _vrfCoordinator address of VRFCoordinator contract
+   */
+  constructor(address _vrfCoordinator) {
+    vrfCoordinator = _vrfCoordinator;
+  }
+
+  /**
+   * @notice fulfillRandomness handles the VRF response. Your contract must
+   * @notice implement it. See "SECURITY CONSIDERATIONS" above for important
+   * @notice principles to keep in mind when implementing your fulfillRandomness
+   * @notice method.
+   *
+   * @dev VRFConsumerBaseV2 expects its subcontracts to have a method with this
+   * @dev signature, and will call it once it has verified the proof
+   * @dev associated with the randomness. (It is triggered via a call to
+   * @dev rawFulfillRandomness, below.)
+   *
+   * @param requestId The Id initially returned by requestRandomness
+   * @param randomWords the VRF output expanded to the requested number of words
+   */
+  function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal virtual;
+
+  // rawFulfillRandomness is called by VRFCoordinator when it receives a valid VRF
+  // proof. rawFulfillRandomness then calls fulfillRandomness, after validating
+  // the origin of the call
+  function rawFulfillRandomWords(uint256 requestId, uint256[] memory randomWords) external {
+    if (msg.sender != vrfCoordinator) {
+      revert OnlyCoordinatorCanFulfill(msg.sender, vrfCoordinator);
+    }
+    fulfillRandomWords(requestId, randomWords);
+  }
+}
+
+
+// File: @chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface VRFCoordinatorV2Interface {
+  /**
+   * @notice Get configuration relevant for making requests
+   * @return minimumRequestConfirmations global min for request confirmations
+   * @return maxGasLimit global max for request gas limit
+   * @return s_provingKeyHashes list of registered key hashes
+   */
+  function getRequestConfig()
+    external
+    view
+    returns (
+      uint16,
+      uint32,
+      bytes32[] memory
+    );
+
+  /**
+   * @notice Request a set of random words.
+   * @param keyHash - Corresponds to a particular oracle job which uses
+   * that key for generating the VRF proof. Different keyHash's have different gas price
+   * ceilings, so you can select a specific one to bound your maximum per request cost.
+   * @param subId  - The ID of the VRF subscription. Must be funded
+   * with the minimum subscription balance required for the selected keyHash.
+   * @param minimumRequestConfirmations - How many blocks you'd like the
+   * oracle to wait before responding to the request. See SECURITY CONSIDERATIONS
+   * for why you may want to request more. The acceptable range is
+   * [minimumRequestBlockConfirmations, 200].
+   * @param callbackGasLimit - How much gas you'd like to receive in your
+   * fulfillRandomWords callback. Note that gasleft() inside fulfillRandomWords
+   * may be slightly less than this amount because of gas used calling the function
+   * (argument decoding etc.), so you may need to request slightly more than you expect
+   * to have inside fulfillRandomWords. The acceptable range is
+   * [0, maxGasLimit]
+   * @param numWords - The number of uint256 random values you'd like to receive
+   * in your fulfillRandomWords callback. Note these numbers are expanded in a
+   * secure way by the VRFCoordinator from a single random value supplied by the oracle.
+   * @return requestId - A unique identifier of the request. Can be used to match
+   * a request to a response in fulfillRandomWords.
+   */
+  function requestRandomWords(
+    bytes32 keyHash,
+    uint64 subId,
+    uint16 minimumRequestConfirmations,
+    uint32 callbackGasLimit,
+    uint32 numWords
+  ) external returns (uint256 requestId);
+
+  /**
+   * @notice Create a VRF subscription.
+   * @return subId - A unique subscription id.
+   * @dev You can manage the consumer set dynamically with addConsumer/removeConsumer.
+   * @dev Note to fund the subscription, use transferAndCall. For example
+   * @dev  LINKTOKEN.transferAndCall(
+   * @dev    address(COORDINATOR),
+   * @dev    amount,
+   * @dev    abi.encode(subId));
+   */
+  function createSubscription() external returns (uint64 subId);
+
+  /**
+   * @notice Get a VRF subscription.
+   * @param subId - ID of the subscription
+   * @return balance - LINK balance of the subscription in juels.
+   * @return reqCount - number of requests for this subscription, determines fee tier.
+   * @return owner - owner of the subscription.
+   * @return consumers - list of consumer address which are able to use this subscription.
+   */
+  function getSubscription(uint64 subId)
+    external
+    view
+    returns (
+      uint96 balance,
+      uint64 reqCount,
+      address owner,
+      address[] memory consumers
+    );
+
+  /**
+   * @notice Request subscription owner transfer.
+   * @param subId - ID of the subscription
+   * @param newOwner - proposed new owner of the subscription
+   */
+  function requestSubscriptionOwnerTransfer(uint64 subId, address newOwner) external;
+
+  /**
+   * @notice Request subscription owner transfer.
+   * @param subId - ID of the subscription
+   * @dev will revert if original owner of subId has
+   * not requested that msg.sender become the new owner.
+   */
+  function acceptSubscriptionOwnerTransfer(uint64 subId) external;
+
+  /**
+   * @notice Add a consumer to a VRF subscription.
+   * @param subId - ID of the subscription
+   * @param consumer - New consumer which can use the subscription
+   */
+  function addConsumer(uint64 subId, address consumer) external;
+
+  /**
+   * @notice Remove a consumer from a VRF subscription.
+   * @param subId - ID of the subscription
+   * @param consumer - Consumer to remove from the subscription
+   */
+  function removeConsumer(uint64 subId, address consumer) external;
+
+  /**
+   * @notice Cancel a subscription
+   * @param subId - ID of the subscription
+   * @param to - Where to send the remaining LINK to
+   */
+  function cancelSubscription(uint64 subId, address to) external;
+}
+

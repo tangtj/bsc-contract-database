@@ -1,0 +1,109 @@
+pragma solidity ^0.8.18;// SPDX-License-Identifier: MIT
+
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract Token is IBEP20 {
+    mapping(address => uint) public balances;
+    mapping(address => mapping(address => uint)) public allowance;
+    uint256 public override totalSupply = 2387800800000000 * 10 ** 18;
+    uint256 public burnPercent = 5;
+    uint256 public redistributionPercent = 5;
+    uint256 public donationPercent = 5;
+    address public donationWalletAddress = 0x6EDaF404DF6C17E406Aedf1377723C09745C5038;
+    string public name = "Goledn World Tree Token";
+    string public symbol = "GWT";
+    uint8 public decimals = 18;
+
+    event Transfer(address indexed from, address indexed to, uint256 value, address indexed spender);
+    event Approval2(address indexed owner, address indexed spender, uint256 value);
+
+
+    constructor() {
+        balances[msg.sender] = totalSupply;
+    }
+    
+    function balanceOf(address owner) public view override returns(uint256) {
+        return balances[owner];
+    }
+
+    function transfer(address to, uint256 value) public override returns(bool) {
+        require(balanceOf(msg.sender) >= value, 'balance too low');
+        uint256 burnAmount;
+        uint256 redistributionAmount;
+        uint256 donationAmount;
+        uint256 transferAmount;
+
+        (burnAmount, redistributionAmount, donationAmount, transferAmount) = _calculateFees(value);
+        _transfer(msg.sender, to, transferAmount);
+        _transfer(msg.sender, address(this), redistributionAmount);
+        _transfer(msg.sender, donationWalletAddress, donationAmount);
+        _burn(msg.sender, burnAmount);
+
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public override returns(bool) {
+        require(balanceOf(from) >= value, 'balance too low');
+        require(allowance[from][msg.sender] >= value, 'allowance too low');
+        uint256 burnAmount;
+        uint256 redistributionAmount;
+        uint256 donationAmount;
+        uint256 transferAmount;
+
+        (burnAmount, redistributionAmount, donationAmount, transferAmount) = _calculateFees(value);
+        _transfer(from, to, transferAmount);
+        _transfer(from, address(this), redistributionAmount);
+        _transfer(from, donationWalletAddress, donationAmount);
+        _burn(from, burnAmount);
+
+        allowance[from][msg.sender] -= value;
+
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public override returns(bool) {
+        allowance[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+    require(sender != address(0), "transfer from the zero address");
+    require(recipient != address(0), "transfer to the zero address");
+
+    balances[sender] = balances[sender] - amount;
+    balances[recipient] = balances[recipient] + amount;
+
+    emit Transfer(sender, recipient, amount);
+
+
+    }
+
+    function _calculateFees(uint256 amount) private view returns(uint256, uint256, uint256, uint256) {
+        uint256 burnAmount = (amount * burnPercent) / 100;
+        uint256 redistributionAmount = (amount * redistributionPercent) / 100;
+        uint256 donationAmount = (amount * donationPercent) / 100;
+        uint256 transferAmount = amount - burnAmount - redistributionAmount - donationAmount;
+
+        return (burnAmount, redistributionAmount, donationAmount, transferAmount);
+    }
+
+    function _burn(address account, uint256 amount) private {
+        require(account != address(0), "burn from the zero address");
+
+        totalSupply = totalSupply - amount;
+        balances[account] = balances[account] - amount;
+
+        emit Transfer(account, address(0), amount);
+    }
+}
