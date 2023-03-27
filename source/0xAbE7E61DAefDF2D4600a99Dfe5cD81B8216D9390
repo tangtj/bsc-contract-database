@@ -1,0 +1,368 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+contract Ownable is Context {
+    address public owner;
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+   
+    function renounceOwnership() public  onlyOwner {
+        owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public  onlyOwner {
+        require(newOwner != address(0),"Ownable: new owner is thezeroAddress address");
+        owner = newOwner;
+    }
+}
+
+library SafeMath {
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            // Gas optimization: this is cheaper than requiring 'a' not beingzeroAddress, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b <= a, errorMessage);
+            return a - b;
+        }
+    }
+
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a / b;
+        }
+    }
+
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a % b;
+        }
+    }
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender,address recipient,uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract CCBMinerV2 is Ownable {
+    using SafeMath for uint256;
+
+    uint256 public cycle;
+    uint256 public oneDay;
+    uint256 public ccbPerShare;
+    uint256 public coppvPerShare;
+    uint256 public standard;      // 100ccb对应的LP值标准
+    uint256 public stakeAmount;   // 质押LP总量
+    uint256 public ccbConsume;
+    uint256 public coppvConsume;
+
+    IERC20 public immutable CCB;
+    IERC20 public immutable COPPV;
+    IERC20 public immutable PAIR;
+
+    bool public over;           // 统一释放剩余代币
+
+    mapping (address => Item) public stakeItems; // 用户质押
+
+    struct Item {
+        uint256 deposit;        // 质押总量
+        uint256 ccbHarvest;     // ccb挖矿总量
+        uint256 coppvHarvest;   // coppv挖矿总量
+        uint256 ccbRelease;     // ccb释放总量
+        uint256 coppvRelease;   // coppv释放总量
+        uint256 claimTime;      // 最新领取时间
+    }
+
+    event Stake(address indexed sender, uint256 amount);
+    event UnStake(address indexed sender, uint256 amount);
+    
+    event Claim(address indexed sender, uint256 ccbAmount, uint256 coppvAmount);
+    event Surplus(address indexed sender, uint256 ccbAmount, uint256 coppvAmount);
+
+    event UpdateOver(address indexed sender, bool over);
+    event UpdateCycle(address indexed sender, uint256 amount);
+    event UpdateStandard(address indexed sender, uint256 amouont);
+    event UpdatePerShare(address indexed sender, uint256 amount1, uint256 amount2);
+
+    event Withdraw(address indexed sender, uint256 amount);
+    
+    constructor(address ccb, address coppv, address pair) {
+        owner = msg.sender;
+        CCB = IERC20(ccb); // 0xABd9418eDb266a1A2e5B701a8Fa0cd85b3852750
+        COPPV = IERC20(coppv); // 0xed99c59190b7a5ac5ad9303d3b24fe00eec167a2
+        PAIR = IERC20(pair); // 0x8e8ec910928eae7a3dd8337baebbac0c2ba6336b
+
+        cycle = 360;
+        oneDay = 86400;
+        ccbPerShare = 1500000;       // ccb每股奖励
+        coppvPerShare = 90000000;   // coppv每股奖励
+        standard = 158398590478885; // 100ccb对应的LP值
+    }
+
+    function stakeItem(address staker) public view returns(Item memory) {
+        return stakeItems[staker];
+    }
+
+    function calculationCurrentHarvest(address staker, uint256 interval) public view returns(uint256 ccbCurrentHarvest, uint256 coppvCurrentHarvest){
+        ccbCurrentHarvest = stakeItems[staker].deposit.mul(ccbPerShare).mul(interval).div(standard);
+        coppvCurrentHarvest = stakeItems[staker].deposit.mul(coppvPerShare).mul(interval).div(standard);
+    }
+
+    // 查询ccb和coppv总量
+    function harvestAmount(address staker) public view returns(uint256, uint256){
+        uint256 interval = (block.timestamp - stakeItems[staker].claimTime) / oneDay;
+        (uint256 ccbCurrentHarvest, uint256 coppvCurrentHarvest) = calculationCurrentHarvest(staker, interval);
+        return (stakeItems[staker].ccbHarvest + ccbCurrentHarvest, stakeItems[staker].coppvHarvest + coppvCurrentHarvest);
+    }
+
+    // 查询ccb和coppv已释放总量
+    function releaseAmount(address staker) public view returns(uint256, uint256){
+        return (stakeItems[staker].ccbRelease, stakeItems[staker].coppvRelease);
+    }
+
+    // 查询可释放ccb和coppv代币数量
+    function claimAmount(address staker) public view returns(uint256 ccbClaimAmount, uint256 coppvClaimAmount){
+        if (stakeItems[staker].deposit <= 0) return (0, 0);
+
+        if (block.timestamp < stakeItems[staker].claimTime + oneDay) return (0, 0);
+
+        // 计算当天收益
+        uint256 interval = (block.timestamp - stakeItems[staker].claimTime) / oneDay;
+        (uint256 ccbCurrentHarvest, uint256 coppvCurrentHarvest) = calculationCurrentHarvest(staker, interval);
+
+        // ccb和coppv总量
+        uint256 ccbStakeHarvestAmount = stakeItems[staker].ccbHarvest.add(ccbCurrentHarvest);
+        uint256 coppvStakeHarvestAmount = stakeItems[staker].coppvHarvest.add(coppvCurrentHarvest);
+
+        // (总量 - 释放量) / 360 * 间隔天数
+        // 如果用户累计360天，第360天领取，那么会直接将360天全部领取
+        interval = interval > cycle ? cycle : interval;
+        ccbClaimAmount = ccbStakeHarvestAmount.sub(stakeItems[staker].ccbRelease).mul(interval).div(cycle);
+        coppvClaimAmount = coppvStakeHarvestAmount.sub(stakeItems[staker].coppvRelease).mul(interval).div(cycle);
+    }
+
+    function calculationHarvest(address staker, uint256 interval) internal returns(uint256 ccbClaimAmount, uint256 coppvClaimAmount) {
+        // 计算当天收益
+        (uint256 ccbCurrentHarvest, uint256 coppvCurrentHarvest) = calculationCurrentHarvest(staker, interval);
+
+        // ccb和coppv总量
+        stakeItems[staker].ccbHarvest = stakeItems[staker].ccbHarvest.add(ccbCurrentHarvest);
+        stakeItems[staker].coppvHarvest = stakeItems[staker].coppvHarvest.add(coppvCurrentHarvest);
+
+        // (总量 - 释放量) / 360 * 间隔天数
+        // 如果用户累计360天，第360天领取，那么会直接将360天全部领取
+        interval = interval > cycle ? cycle : interval;
+        ccbClaimAmount = stakeItems[staker].ccbHarvest.sub(stakeItems[staker].ccbRelease).mul(interval).div(cycle);
+        coppvClaimAmount = stakeItems[staker].coppvHarvest.sub(stakeItems[staker].coppvRelease).mul(interval).div(cycle);
+
+        // 更新释放总量
+        stakeItems[staker].ccbRelease = stakeItems[staker].ccbRelease.add(ccbClaimAmount);
+        stakeItems[staker].coppvRelease = stakeItems[staker].coppvRelease.add(coppvClaimAmount);
+
+        // 更新发放总量
+        ccbConsume = ccbConsume.add(ccbCurrentHarvest);
+        coppvConsume = coppvConsume.add(coppvCurrentHarvest);
+    }
+
+    // 质押
+    function stake(uint256 amount) external {
+        address staker = msg.sender;
+        require(amount > 0, "PARAMETER_ERR");
+        
+        uint256 approveAmount = PAIR.allowance(staker, address(this));
+        require(approveAmount >= amount, "INSUFFICIENT_FUNDS");
+        PAIR.transferFrom(staker, address(this), amount);
+
+        stakeItems[staker].deposit = stakeItems[staker].deposit.add(amount);
+        if (stakeItems[staker].claimTime == 0) stakeItems[staker].claimTime = block.timestamp;
+        
+        stakeAmount = stakeAmount.add(amount);
+        emit Stake(staker, amount);
+    }
+
+    // 赎回
+    function unstake() external {
+        address staker = msg.sender;
+        uint256 amount = stakeItems[staker].deposit;
+        require(amount > 0, "INSUFFICIENT_FUNDS");
+
+        delete stakeItems[staker];
+
+        stakeAmount = stakeAmount.sub(amount);
+        PAIR.transfer(staker, amount);
+        emit UnStake(staker, amount);
+    }
+
+    // 每天领取
+    function claim() external {
+        address staker = msg.sender;
+        require(stakeItems[staker].deposit > 0, "INSUFFICIENT_FUNDS");
+        require(block.timestamp >= stakeItems[staker].claimTime + oneDay, "ALREADY_RECEIVED");
+
+        // 计算当天可领取数量
+        uint256 interval = (block.timestamp - stakeItems[staker].claimTime) / oneDay;
+        (uint256 ccbClaimAmount, uint256 coppvClaimAmount) = calculationHarvest(staker, interval);
+
+        CCB.transfer(staker, ccbClaimAmount);
+        COPPV.transfer(staker, coppvClaimAmount);
+
+        stakeItems[staker].claimTime = stakeItems[staker].claimTime + oneDay * interval;
+
+        emit Claim(staker, ccbClaimAmount, coppvClaimAmount);
+    }
+
+    // 提取剩余
+    function surplus() external {
+        address staker = msg.sender;
+        require(over, "NOT_OPEN");
+        require(stakeItems[staker].deposit > 0, "INSUFFICIENT_FUNDS");
+
+        // 计算收益
+        uint256 interval = (block.timestamp - stakeItems[staker].claimTime) / oneDay;
+        (uint256 ccbCurrentHarvest, uint256 coppvCurrentHarvest) = calculationCurrentHarvest(staker, interval);
+
+        // ccb和coppv总量
+        stakeItems[staker].ccbHarvest = stakeItems[staker].ccbHarvest.add(ccbCurrentHarvest);
+        stakeItems[staker].coppvHarvest = stakeItems[staker].coppvHarvest.add(coppvCurrentHarvest);
+
+        // 计算剩余量
+        uint256 ccbLeftAmount = stakeItems[staker].ccbHarvest.sub(stakeItems[staker].ccbRelease);
+        uint256 coppvLeftAmount = stakeItems[staker].coppvHarvest.sub(stakeItems[staker].coppvRelease);
+
+        // 累加释放量
+        stakeItems[staker].ccbRelease = stakeItems[staker].ccbRelease.add(ccbLeftAmount);
+        stakeItems[staker].coppvRelease = stakeItems[staker].coppvRelease.add(coppvLeftAmount);
+
+        stakeItems[staker].claimTime = stakeItems[staker].claimTime + oneDay * interval;
+
+        CCB.transfer(staker, ccbLeftAmount);
+        COPPV.transfer(staker, coppvLeftAmount);
+
+        emit Surplus(staker, ccbLeftAmount, coppvLeftAmount);
+    }
+
+    function withdraw(IERC20 token, uint256 amount) external onlyOwner{
+        require(token == CCB || token == COPPV, "TOKEN_ERR");
+        uint256 balance = token.balanceOf(address(this));
+        require(balance >= amount, "INSUFFICIENT_FUNDS");
+        token.transfer(owner, amount);
+        emit Withdraw(owner, amount);
+    }
+
+    function updateOver(bool _over) external onlyOwner{
+        over = _over;
+        emit UpdateOver(owner, _over);
+    }
+
+    function updateCycle(uint256 _cycle) external onlyOwner{
+        cycle = _cycle;
+        emit UpdateCycle(owner, _cycle);
+    }
+
+    function updateStandard(uint256 _standard) external onlyOwner{
+        standard = _standard;
+        emit UpdateStandard(owner, _standard);
+    }
+
+    function updatePerShare(uint256 _ccbPerShare, uint256 _coppvPerShare) external onlyOwner{
+        ccbPerShare = _ccbPerShare;
+        coppvPerShare = _coppvPerShare;
+        emit UpdatePerShare(owner, _ccbPerShare, _coppvPerShare);
+    }
+
+    function getUnstakeAmount(address staker) external view returns(uint256){
+        return stakeItems[staker].deposit;
+    }
+}

@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+abstract contract Ownable {
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor () {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+  interface IBEP20 {
+  function totalSupply() external view returns (uint256);
+  function decimals() external view returns (uint8);
+  function symbol() external view returns (string memory);
+  function name() external view returns (string memory);
+  function getOwner() external view returns (address);
+  function balanceOf(address account) external view returns (uint256);
+  function transfer(address recipient, uint256 amount) external returns (bool);
+  function allowance(address _owner, address spender) external view returns (uint256);
+  function approve(address spender, uint256 amount) external returns (bool);
+  function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+interface IPCS{
+        function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+            function WETH() external pure returns (address);
+                function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+}
+interface IML is IBEP20{
+    function totalPayout(address account) external view returns(uint);
+    function getDividents(address account) external view returns(uint);
+}
+
+contract MLCompound is Ownable{
+    mapping(address=>uint) alreadyCompounded;
+    IML ML=IML(0xc4fB957e3F1c04C8Dc4000525e55920861F25bFc);
+    IPCS PCS=IPCS(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+    function Compound() external payable{
+        uint maxCompound=GetMaxCompound(msg.sender);
+        require(msg.value<=maxCompound, "more than max");
+        alreadyCompounded[msg.sender]+=msg.value;
+        ML.transfer(msg.sender, SwapForToken(msg.value,address(ML)));
+    }
+
+    function CompoundBM() external payable{
+        uint maxCompound=GetMaxCompound(msg.sender);
+        require(msg.value<=maxCompound, "more than max");
+        alreadyCompounded[msg.sender]+=msg.value;
+        IBEP20 BM=IBEP20(0x97c6825e6911578A515B11e25B552Ecd5fE58dbA);
+        BM.transfer(msg.sender, SwapForToken(msg.value,address(BM)));
+    }
+    function CompoundPartnerToken(address token,address router,bool viaContract) external payable{
+        uint maxCompound=GetMaxCompound(msg.sender);
+        require(msg.value<=maxCompound, "more than max");
+        alreadyCompounded[msg.sender]+=msg.value;
+        IBEP20 Token=IBEP20(token);
+        IPCS Router=IPCS(router);
+        address[] memory path = new address[](2);
+        path[1] = token;
+        path[0] = Router.WETH();
+        if(viaContract)
+        {
+        uint256 initialBalance=Token.balanceOf(address(this));
+        Router.swapExactETHForTokens{value:msg.value}(
+            0,
+            path,
+            address(this),
+            block.timestamp);
+        Token.transfer(msg.sender, Token.balanceOf(address(this))-initialBalance);
+        }
+        else{
+        Router.swapExactETHForTokensSupportingFeeOnTransferTokens{value:msg.value}(
+            0,
+            path,
+            msg.sender,
+            block.timestamp);
+        }
+    }
+
+
+    function SwapForToken(uint BNBAmount,address token) private returns(uint256){
+        address[] memory path = new address[](2);
+        IBEP20 Token=IBEP20(token);
+        path[1] = token;
+        path[0] = PCS.WETH();
+        uint256 initialBalance=Token.balanceOf(address(this));
+
+        PCS.swapExactETHForTokens{value:BNBAmount}(
+            0,
+            path,
+            address(this),
+            block.timestamp);
+        return Token.balanceOf(address(this))-initialBalance;
+    }
+    function GetMaxCompound(address account) public view returns(uint){
+        uint TotalDividents=ML.totalPayout(account)+ML.getDividents(account);
+        return TotalDividents-alreadyCompounded[account];
+    }
+}

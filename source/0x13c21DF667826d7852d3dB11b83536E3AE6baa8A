@@ -1,0 +1,249 @@
+// SPDX-License-Identifier: MIT
+// Made with ❤ by the RobotGPT Team
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+contract RobotGPT is IBEP20 {
+    string public name = "RobotGPT";
+    string public symbol = "RGPT";
+    uint8 public decimals = 18;
+    uint256 public override totalSupply = 1000000 * 10 ** 18; // Max supply 1000000
+    address public owner;
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) private allowances;
+    // AI Features
+    uint256 public aiFee = 1 * 10 ** 16; // 0.01 BNB
+    mapping(address => uint256) private aiRewards;
+    uint256 private aiPool;
+
+    // Autocompounding
+    uint256 public compoundFee = 2 * 10 ** 16; // 0.02 BNB
+    uint256 private compoundPool;
+
+    // Monthly buyback and autoburn
+    uint256 public buybackPool;
+    uint256 public buybackFee = 10; // 10%
+    uint256 public autoburnPool;
+    uint256 public autoburnFee = 5; // 5%
+
+    // Trading volume airdrop
+    uint256 public airdropThreshold = 1000 * 10 ** 18; // 1000 tokens
+    uint256 public airdropAmount = 50 * 10 ** 18; // 50 tokens
+
+    uint256 public buybackPrice = 0.0001 ether;
+
+    address teamWallet;
+    uint256 teamFee = 10; // 10%
+
+    event Buyback(uint256 amountToBuyback, uint256 buybackPrice);
+
+    constructor(address _teamWallet) {
+        owner = msg.sender;
+        uint256 teamFeeAmount = (teamFee * totalSupply) / 100;
+        balances[msg.sender] = totalSupply - teamFeeAmount;
+        emit Transfer(address(0), msg.sender, totalSupply - teamFeeAmount);
+        teamWallet = _teamWallet;
+        balances[teamWallet] = teamFeeAmount;
+        emit Transfer(address(0), teamWallet, teamFeeAmount);
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return balances[account];
+    }
+
+    // Trading volume airdrop
+    uint256 public constant TRADING_VOLUME = 10000 * 10 ** 18; // 10,000 tokens
+    uint256 public constant AIR_DROP_AMOUNT = 100 * 10 ** 18; // 100 tokens
+    mapping(address => uint256) public tradingVolume;
+
+    function addTradingVolume(address _account, uint256 _amount) internal {
+        tradingVolume[_account] += _amount;
+    }
+
+    function checkAndAirdrop(address _account) internal {
+        if (tradingVolume[_account] >= TRADING_VOLUME) {
+            balances[_account] += AIR_DROP_AMOUNT;
+            balances[owner] -= AIR_DROP_AMOUNT;
+            emit Transfer(owner, _account, AIR_DROP_AMOUNT);
+        }
+    }
+
+    function _approve(
+        address _owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        require(_owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        allowances[_owner][spender] = amount;
+        emit Approval(_owner, spender, amount);
+    }
+
+    /**
+     * @dev See {IERC20-approve}.
+     *
+     * NOTE: If `amount` is the maximum `uint256`, the allowance is not updated on
+     * `transferFrom`. This is semantically equivalent to an infinite approval.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function approve(
+        address spender,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        address _owner = msg.sender;
+        _approve(_owner, spender, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-allowance}.
+     */
+    function allowance(
+        address _owner,
+        address spender
+    ) public view virtual override returns (uint256) {
+        return allowances[_owner][spender];
+    }
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+
+        // AI Features
+        uint256 aiReward = (amount * aiFee) / 100;
+        aiRewards[recipient] += aiReward;
+        aiPool += aiReward;
+
+        // Autocompounding
+        uint256 compoundAmount = (amount * compoundFee) / 100;
+        balances[owner] -= compoundAmount;
+        balances[recipient] += compoundAmount;
+        compoundPool += compoundAmount;
+
+        balances[msg.sender] -= amount;
+        balances[recipient] += amount;
+
+        // Update trading volume
+        addTradingVolume(msg.sender, amount);
+        checkAndAirdrop(msg.sender);
+
+        emit Transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        require(
+            allowances[sender][msg.sender] >= amount,
+            "ERC20: transfer amount exceeds allowance"
+        );
+
+        // AI Features
+        uint256 aiReward = (amount * aiFee) / 100;
+        aiRewards[recipient] += aiReward;
+        aiPool += aiReward;
+        // Autocompounding
+        uint256 compoundAmount = (amount * compoundFee) / 100;
+        balances[owner] -= compoundAmount;
+        balances[recipient] += compoundAmount;
+        compoundPool += compoundAmount;
+
+        balances[sender] -= amount;
+        balances[recipient] += amount;
+        allowances[sender][msg.sender] -= amount;
+
+        // Update trading volume
+        addTradingVolume(sender, amount);
+        checkAndAirdrop(sender);
+
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    // Monthly buyback and autoburn feature
+    uint256 public constant BUYBACK_AMOUNT = 1000 * 10 ** 18; // 1000 tokens
+
+    uint256 public buybackTime;
+    uint256 public lastBuybackTime;
+    uint256 public buybackCount;
+
+    function setBuybackPrice(uint256 _buyBackPrice) public {
+        require(msg.sender == owner, "Only owner can change buyback price");
+
+        buybackPrice = _buyBackPrice;
+    }
+
+    function buybackAndBurn() public {
+        require(
+            msg.sender == owner,
+            "Only owner can initiate buyback and burn"
+        );
+        require(block.timestamp >= buybackTime, "Buyback time not reached yet");
+
+        uint256 amountToBuyback = BUYBACK_AMOUNT;
+        if (balances[owner] < BUYBACK_AMOUNT) {
+            amountToBuyback = balances[owner];
+        }
+        balances[owner] -= amountToBuyback;
+        totalSupply -= amountToBuyback;
+        emit Transfer(owner, address(0), amountToBuyback);
+        // Burn the tokens
+        balances[address(0)] += amountToBuyback;
+        emit Transfer(owner, address(0), amountToBuyback);
+        // Send the ETH to the owner
+        (bool sent, ) = owner.call{value: amountToBuyback * buybackPrice}("");
+        require(sent, "ETH transfer failed");
+        // Send the ETH to the owner
+        (bool sent2, ) = owner.call{value: amountToBuyback * buybackPrice}("");
+        require(sent2, "ETH transfer failed");
+
+        // Burn the tokens
+        balances[address(0)] += amountToBuyback;
+        emit Transfer(owner, address(0), amountToBuyback);
+
+        // Emit event for the buyback
+        emit Buyback(amountToBuyback, buybackPrice);
+    }
+}

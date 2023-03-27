@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract Token {
+    string public name = "TOPTO";
+    string public symbol = "TOP";
+    uint256 public totalSupply = 1000000000000 * 10 ** 18;
+    uint8 public decimals = 18;
+    
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    
+    address public marketingWallet = 0xDd4134A6fF1366A31a8f24eDBEfc50D3BAd1E925;
+    
+    uint256 public buyFeePercent = 70;
+    uint256 public sellFeePercent = 50;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+    }
+    
+    function transfer(address _to, uint256 _value) external returns (bool success) {
+        require(_to != address(0), "Token: transfer to zero address");
+        require(balanceOf[msg.sender] >= _value, "Token: insufficient balance");
+        
+        _transfer(msg.sender, _to, _value);
+        
+        return true;
+    }
+    
+    function approve(address _spender, uint256 _value) external returns (bool success) {
+        require(_spender != address(0), "Token: approve to zero address");
+        
+        allowance[msg.sender][_spender] = _value;
+        
+        emit Approval(msg.sender, _spender, _value);
+        
+        return true;
+    }
+    
+    function transferFrom(address _from, address _to, uint256 _value) external returns (bool success) {
+        require(_to != address(0), "Token: transfer to zero address");
+        require(balanceOf[_from] >= _value, "Token: insufficient balance");
+        require(allowance[_from][msg.sender] >= _value, "Token: insufficient allowance");
+        
+        _transfer(_from, _to, _value);
+        
+        allowance[_from][msg.sender] -= _value;
+        
+        return true;
+    }
+    
+    function buy() external payable returns (bool success) {
+        require(msg.value > 0, "Token: invalid value");
+        
+        uint256 fee = msg.value * buyFeePercent / 100;
+        uint256 amount = msg.value - fee;
+        
+        _transfer(address(this), msg.sender, amount);
+        _transfer(address(this), marketingWallet, fee);
+        
+        return true;
+    }
+    
+    function sell(uint256 _amount) external returns (bool success) {
+        require(_amount > 0, "Token: invalid amount");
+        require(balanceOf[msg.sender] >= _amount, "Token: insufficient balance");
+        
+        uint256 fee = _amount * sellFeePercent / 100;
+        uint256 amount = _amount - fee;
+        
+        _transfer(msg.sender, address(this), _amount);
+        payable(msg.sender).transfer(amount);
+        _transfer(address(this), marketingWallet, fee);
+        
+        return true;
+    }
+    
+    function _transfer(address _from, address _to, uint256 _value) internal {
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += _value;
+        
+        emit Transfer(_from, _to, _value);
+    }
+}

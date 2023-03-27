@@ -1,0 +1,174 @@
+pragma solidity ^0.5.10;
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations.
+ */
+library SafeMath {
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {return 0;}
+        uint256 c = a * b;
+        assert(c / a == b);
+        return c;
+    }
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a / b;
+        return c;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        assert(b <= a);
+        return a - b;
+    }
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        assert(c >= a);
+        return c;
+    }
+    function ceil(uint256 a, uint256 m) internal pure returns (uint256) {
+        uint256 c = add(a,m);
+        uint256 d = sub(c,1);
+        return mul(div(d,m),m);
+    }
+}
+
+/**
+ * @dev The Ownable contract has an owner address, and provides basic authorization control.
+ */
+contract Ownable {
+    address public owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () internal {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    function transferOwnerShip(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+}
+
+/**
+ * @dev Implementation of the {TokenMain} interface.
+ */
+contract TokenMain is Ownable {
+    using SafeMath for uint256;
+    string public name;
+    string public symbol;
+    uint8 public decimals = 18;
+    uint256 public totalSupply;
+    uint256 public basePercent = 100;
+    address public feeAddress = address(0);
+
+    mapping (address => uint256) public balances;
+    mapping (address => mapping (address => uint256)) public allowance;
+    mapping (address => bool) public feeAccount;
+    mapping (address => bool) public frozenAccount;
+
+    event Transfer(address indexed _from, address indexed _to, uint256 _value);
+    event Approval(address indexed _owner, address indexed _spender, uint256 _value);
+    event BurnFeeAddr(address indexed _target);
+    event FreeAddr(address indexed _target, bool _frozen);
+    event FrozenFunds(address indexed _target, bool _frozen);
+    event Burn(address indexed _from, uint256 _value);
+
+    /**
+     * Initialization Construction
+     */
+    constructor (uint256 _initialSupply, string memory _tokenName, string memory _tokenSymbol, address _tokenTo) public {
+        totalSupply = _initialSupply * 10 ** uint256(decimals);
+        balances[_tokenTo] = totalSupply;
+        name = _tokenName;
+        symbol = _tokenSymbol;
+
+        emit Transfer(address(0), _tokenTo, totalSupply);
+    }
+
+    function balanceOf(address _owner) public view returns (uint256) {
+        return balances[_owner];
+    }
+
+    function _transfer(address _from, address _to, uint256 _value) internal {
+        require(!frozenAccount[_from], "Error: Sender frozen");
+        require(_to != address(0), "Error: transfer to the zero address");
+        require(balances[_from] >= _value, "Error: transfer from the balance is not enough");
+
+        uint256 newValue = _value;
+
+        if (feeAccount[_from] == false) {
+            uint256 tokensBurn = transferFee(_value, 2000);
+            uint256 tokensFee = transferFee(_value, 2000);
+            newValue = _value.sub(tokensBurn).sub(tokensFee);
+            balances[address(0)] = balances[address(0)].add(tokensBurn);
+            balances[feeAddress] = balances[feeAddress].add(tokensFee);
+            emit Transfer(_from, address(0), tokensBurn);
+            emit Transfer(_from, feeAddress, tokensFee);
+        }
+
+        balances[_from] = balances[_from].sub(_value);
+        balances[_to] = balances[_to].add(newValue);
+        emit Transfer(_from, _to, newValue);
+    }
+
+    function transfer(address _to, uint256 _value) public returns (bool) {
+        _transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+        require(allowance[_from][msg.sender] >= _value, "Error: transfer amount exceeds allowance");
+        _approve(_from, msg.sender, allowance[_from][msg.sender].sub(_value));
+        _transfer(_from, _to, _value);
+        return true;
+    }
+
+    function _approve(address _from, address _to, uint256 _value) internal {
+        require(_from != address(0), "Error: approve from the zero address");
+        allowance[_from][_to] = _value;
+        emit Approval(_from, _to, _value);
+    }
+
+    function approve(address _spender, uint256 _value) public returns (bool) {
+        _approve(msg.sender, _spender, _value);
+        return true;
+    }
+
+    function transferFee(uint256 _value, uint256 _ratio) public view returns (uint256)  {
+        uint256 roundValue = _value.ceil(basePercent);
+        uint256 onePercent = roundValue.mul(basePercent).div(_ratio);
+        return onePercent;
+    }
+
+    function setFeeAddress(address _target) public onlyOwner {
+        feeAddress = _target;
+        emit BurnFeeAddr(_target);
+    }
+
+    function setFreeAccount(address _target, bool _state) public onlyOwner {
+        feeAccount[_target] = _state;
+        emit FreeAddr(_target, _state);
+    }
+
+    function freezeAccount(address _target, bool _freeze) public onlyOwner {
+        frozenAccount[_target] = _freeze;
+        emit FrozenFunds(_target, _freeze);
+    }
+
+    function mint(address _from, uint256 _value) public onlyOwner returns (bool) {
+        balances[_from] = balances[_from].add(_value);
+        return true;
+    }
+
+    function burn(uint256 _value) public onlyOwner returns (bool) {
+        require(balances[msg.sender] >= _value);
+        balances[msg.sender] = balances[msg.sender].sub(_value);
+        emit Burn(msg.sender, _value);
+        return true;
+    }
+}
