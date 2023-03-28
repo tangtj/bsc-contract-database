@@ -1,0 +1,290 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts with custom message when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+ interface BEP20Interface {
+    function transfer(address to, uint tokens) external returns (bool success);
+    function transferFrom(address from, address to, uint256 tokens) external returns (bool success);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+
+contract ENFTPresale {
+	using SafeMath for uint256;
+
+    struct User{
+        uint256 boughtENFTs;
+        uint256 claimed;
+        uint256 noOfTimesClaimed;
+        address upline;
+        uint256 refEarning;
+        uint256 bonus;
+    }
+	
+	address payable private ownerAddress;
+    BEP20Interface public usdtAddress = BEP20Interface(0x55d398326f99059fF775485246999027B3197955);
+    BEP20Interface public tokenAddress=BEP20Interface(0x3D692F0F5170d749De3D942Aa36F6a7e0eA20dc1);
+
+    uint256 public priceInUsdt;
+    bool public isPaused;
+    mapping(address=>bool) public isBlocked;
+    mapping (address=>User) public users;
+    
+    uint256 min = 100 ether;
+    uint256 max = 10000 ether;
+    uint256 public claimTimeStamp;
+    uint256 public claimInterval=30 days;
+    uint256 public percentageDivider=10000;
+   
+	event priceChange(address indexed user,uint256 price,uint256 date);
+    event buyENFT(address indexed user,uint256 priceInUsdt,uint256 tokens);
+    event claim(address indexed user,uint256 amount,uint256 timestamp);
+    
+    modifier onlyOwner {
+      require(msg.sender == ownerAddress,"Invalid user");
+      _;
+   }
+
+	constructor(address payable marketingAddr) {
+		ownerAddress = marketingAddr;
+		priceInUsdt = 100000;
+	}
+	
+	
+	/*******Swapping ********/
+    function setClaimTimeStamp(uint256 timestamp) external onlyOwner{
+        claimTimeStamp = timestamp;
+    }
+
+    function setPrice(uint256 amount) public onlyOwner
+    {
+        require(amount>0,"Invalid amount or plan");
+        priceInUsdt=amount;
+        emit priceChange(msg.sender, amount, block.timestamp);
+    }
+
+    function blockUser(address _user) external onlyOwner{
+        isBlocked[_user] = true;
+    }
+
+    function unblockUser(address _user) external onlyOwner{
+        isBlocked[_user] = false;
+    }
+
+    function pasueContract() public onlyOwner
+    {
+        isPaused = true;
+    }
+    
+    function unPasueContract() public onlyOwner
+    {
+        isPaused = false;
+    }
+	
+    function exchange(uint256 amount,address upline) public payable
+    {
+        require(!isBlocked[msg.sender],"User is blocked");
+        require(!isPaused,"Contract is paused");
+        require(upline!=address(0),"Invalid upline");
+        require(claimTimeStamp==0,"Claim is on now");
+        require(amount>=min && amount<=max,"Invalid Amount");
+        address payable userAddress = payable(msg.sender);
+        users[msg.sender].upline = upline;
+        convertToToken(amount,userAddress);
+    }
+    
+    function convertToToken(uint256 usdtAmount,address payable userAddress) private
+    {
+        uint256 tokens=((usdtAmount).div(priceInUsdt).mul(100));
+        uint256 bonus = tokens.mul(10).div(100);
+        tokens = tokens.add(bonus);
+
+        require(BEP20Interface(usdtAddress).transferFrom(userAddress,address(this),usdtAmount),"Token transfer failed");
+        address upline = users[userAddress].upline;
+        BEP20Interface(usdtAddress).transfer(upline,usdtAmount.div(10));
+        users[upline].refEarning += usdtAmount.div(10);
+        users[msg.sender].boughtENFTs += tokens;
+        users[msg.sender].bonus += bonus;
+        emit buyENFT(userAddress,usdtAmount,tokens);
+    }
+
+    function claimTokens() external 
+    {
+        require(!isBlocked[msg.sender],"User is blocked");
+        require(!isPaused,"Contract is paused");
+        require(users[msg.sender].boughtENFTs>0,"No ENFT available");
+        require(claimTimeStamp>0,"Claim is not started");
+        require(users[msg.sender].noOfTimesClaimed<4,"All claimed");
+        require(block.timestamp> claimTimeStamp.add(claimInterval * (users[msg.sender].noOfTimesClaimed)),"need to wait");
+
+        uint256 tokens = users[msg.sender].boughtENFTs.div(4);
+        require(BEP20Interface(tokenAddress).transfer(msg.sender,tokens),"Token transfer failed");
+        users[msg.sender].noOfTimesClaimed++;
+        users[msg.sender].claimed+=tokens;
+        emit claim(msg.sender,tokens,block.timestamp);
+    }
+
+    function withdrawUSDT(address userAddress,uint256 amount) external onlyOwner
+    {
+        BEP20Interface(usdtAddress).transfer(userAddress, amount);
+    }
+	
+	function withdrawtoken(address userAddress,uint256 amount) external onlyOwner
+    {
+        BEP20Interface(tokenAddress).transfer(userAddress, amount);
+    }
+
+    function getReferral(address _user) external view returns(address _upline)
+    {
+        return users[_user].upline;
+    }
+
+    function getDetails(address _user) external view returns(uint256 _min,uint256 _max,uint256 _claimTimestamp,uint256 _priceInUsdt,uint256 _boughtENFTs,uint256 _claimed,uint256 _noOfTimesClaimed,uint256 _refEarning,uint256 _bonus){
+        User memory _userdata = users[_user];
+        return (min,max,claimTimeStamp,priceInUsdt,_userdata.boughtENFTs,_userdata.claimed,_userdata.noOfTimesClaimed,_userdata.refEarning,_userdata.bonus);
+    }
+
+}

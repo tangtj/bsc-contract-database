@@ -1,0 +1,312 @@
+// SPDX-License-Identifier: 0BSD
+
+pragma solidity ^0.8.4;
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+
+}
+
+contract Rope {
+
+    using SafeMath for uint256;
+    
+    bool public taxDecreasing = false;
+    bool public oneTimeTaxFreeTransfer = true; // for owner to make the initial liquidity deposit
+    uint8 public decimals;
+    address public owner;
+    address public pairAddress;
+    address public charityAddress;
+    address public marketingAddress;
+    uint public totalSupply;
+    uint public initTime;
+    uint private constant initialRopeSupply = 1e6 * 1e9;
+    uint private strandsPerRope;
+    uint private constant totalStrands = ~uint(0) - (~uint(0) % initialRopeSupply);
+    uint public initialLiquidityTaxRate = 34000;
+    uint public liquidityTaxRate = 4000;
+    uint public redistributeTaxRate = 2000;
+    uint public charityTaxRate = 2000;
+    uint public marketingTaxRate = 2000;
+    string public name;
+    string public symbol;
+    mapping (address => uint256) private balances;
+    mapping (address => mapping (address => uint)) private allowed;
+
+    constructor() {
+        name = "Rope";
+        symbol = "ROPE";
+        decimals = 9;
+        totalSupply = initialRopeSupply;
+        balances[msg.sender] = totalStrands;
+        strandsPerRope = totalStrands.div(totalSupply);
+        owner = msg.sender;
+    }
+    
+    function getLiquidityTaxRate() public view returns(uint) {
+        if (initTime == 0)
+            return initialLiquidityTaxRate;
+        if (block.timestamp - initTime > 86400)
+            return initialLiquidityTaxRate;
+        return (initialLiquidityTaxRate * 86400 - (initialLiquidityTaxRate - liquidityTaxRate) * (block.timestamp - initTime)) / 86400;
+    }
+    
+    function setPairAddress(address _pairAddress) public {
+        require(msg.sender == owner, "function reserved for owner");
+        pairAddress = _pairAddress;
+    }
+    
+    function changeOwner(address newOwner) public {
+        require(msg.sender == owner, "function reserved for owner");
+        owner = newOwner;
+    }
+    
+    function rebase(int supplyDelta) internal returns (uint) {
+        if (supplyDelta == 0) {
+            return totalSupply;
+        }
+        
+        if (supplyDelta < 0) {
+            totalSupply = totalSupply.sub(uint(-supplyDelta));
+        }
+        
+        if (supplyDelta > 0) {
+            totalSupply = totalSupply.add(uint(supplyDelta));
+        }
+        
+        if (totalSupply > ~uint128(0)) {
+            totalSupply = ~uint128(0);
+        }
+
+        strandsPerRope = totalStrands.div(totalSupply);
+
+        return totalSupply;
+    }
+    
+    function manualRebase(int supplyDelta) external { // for future development (change owner to contract that rebases positively if price of BNB decreases?)
+        require(msg.sender == owner, "function reserved for owner");
+        rebase(supplyDelta);
+    }
+    
+    function setTaxDecreasing() public {
+        require(msg.sender == owner, "function reserved for owner");
+        taxDecreasing = true;
+        initTime = block.timestamp;
+    }
+    
+    function setMarketingAddress(address _marketingAddress) public {
+        require(msg.sender == owner, "function reserved for owner");
+        marketingAddress = _marketingAddress;
+    }
+    
+    function setCharityAddress(address _charityAddress) public {
+        require(msg.sender == owner, "function reserved for owner");
+        charityAddress = _charityAddress;
+    }
+    
+    function setInitialLiquidityTaxRate(uint _initialLiquidityTaxRate) public {
+        require(msg.sender == owner, "function reserved for owner");
+        initialLiquidityTaxRate = _initialLiquidityTaxRate;
+    }
+    
+    function setCharityTaxRate(uint _charityTaxRate) public {
+        require(msg.sender == owner, "function reserved for owner");
+        charityTaxRate = _charityTaxRate;
+    }
+    
+    function setMarketingTaxRate(uint _marketingTaxRate) public {
+        require(msg.sender == owner, "function reserved for owner");
+        marketingTaxRate = _marketingTaxRate;
+    }
+    
+    function getTotalSupply() public view returns (uint) {
+        return totalSupply;
+    }
+
+    function balanceOf(address _owner) public view returns (uint256) {
+        return balances[_owner].div(strandsPerRope);
+    }
+
+    function allowance(address _owner, address spender) public view returns (uint256) {
+        return allowed[_owner][spender];
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        uint redistributeTaxValue = value * redistributeTaxRate / 1e5;
+        uint marketingTaxValue = value * marketingTaxRate / 1e5;
+        uint charityTaxValue = value * charityTaxRate / 1e5;
+        uint liquidityTaxValue;
+        uint strandValue = value.mul(strandsPerRope);
+        uint taxValue;
+        uint strandTaxValue;
+        uint postTaxValue;
+        if (msg.sender == pairAddress) {
+            liquidityTaxValue = value * liquidityTaxRate / 1e5;
+            taxValue = redistributeTaxValue + marketingTaxValue + charityTaxValue + liquidityTaxValue;
+            strandTaxValue = taxValue.mul(strandsPerRope);
+            postTaxValue = value.sub(taxValue);
+            uint strandPostTaxValue = postTaxValue.mul(strandsPerRope);
+            balances[msg.sender] = balances[msg.sender].sub(strandValue - liquidityTaxValue.mul(strandsPerRope));
+            balances[to] = balances[to].add(strandPostTaxValue);
+            balances[marketingAddress] = balances[marketingAddress].add(marketingTaxValue.mul(strandsPerRope));
+            balances[charityAddress] = balances[charityAddress].add(charityTaxValue.mul(strandsPerRope));
+        } else {
+            liquidityTaxValue = value * getLiquidityTaxRate() / 1e5;
+            taxValue = redistributeTaxValue + marketingTaxValue + charityTaxValue + liquidityTaxValue;
+            strandTaxValue = taxValue.mul(strandsPerRope);
+            postTaxValue = value.sub(taxValue);
+            uint strandPostTaxValue = postTaxValue.mul(strandsPerRope);
+            balances[msg.sender] = balances[msg.sender].sub(strandValue);
+            balances[marketingAddress] = balances[marketingAddress].add(marketingTaxValue.mul(strandsPerRope));
+            balances[charityAddress] = balances[charityAddress].add(charityTaxValue.mul(strandsPerRope));
+            if (to == pairAddress) {
+                balances[to] = balances[to].add(strandPostTaxValue + liquidityTaxValue.mul(strandsPerRope));
+            } else {
+                balances[to] = balances[to].add(strandPostTaxValue);
+                balances[pairAddress] = balances[pairAddress].add(liquidityTaxValue.mul(strandsPerRope));
+            }
+        }
+        rebase(int(redistributeTaxValue));
+        emit Transfer(msg.sender, to, postTaxValue);
+        emit Transfer(msg.sender, pairAddress, liquidityTaxValue);
+        if (marketingTaxRate > 0)
+            emit Transfer(msg.sender, marketingAddress, marketingTaxValue);
+        if (charityTaxRate > 0)
+            emit Transfer(msg.sender, charityAddress, charityTaxValue);
+        emit Redistribute(msg.sender, taxValue);
+        return true;
+    }
+    
+    receive() external payable {}
+    
+    function retrieveLostBNB(address payable _address) public payable {// to rescue any mistakenly abandoned BNB
+        require(msg.sender == owner, "function reserved for owner");
+        _address.transfer(address(this).balance);
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        allowed[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+    
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        uint strandValue = value.mul(strandsPerRope);
+        if (oneTimeTaxFreeTransfer) { // for initial liquidity deposit
+            oneTimeTaxFreeTransfer = false;
+            allowed[from][msg.sender] = allowed[from][msg.sender].sub(value);
+            balances[to] = balances[to].add(strandValue);
+            balances[from] = balances[from].sub(strandValue);
+            emit Transfer(from, to, value);
+            return true;
+        }
+        uint liquidityTaxValue;
+        uint redistributeTaxValue = value * redistributeTaxRate / 1e5;
+        uint charityTaxValue = value * charityTaxRate / 1e5;
+        uint taxValue;
+        uint strandTaxValue;
+        uint postTaxValue;
+        allowed[from][msg.sender] = allowed[from][msg.sender].sub(value);
+        if (from == pairAddress) {
+            liquidityTaxValue = value * liquidityTaxRate / 1e5;
+            taxValue = redistributeTaxValue + value * marketingTaxRate / 1e5 + charityTaxValue + liquidityTaxValue;
+            strandTaxValue = taxValue.mul(strandsPerRope);
+            postTaxValue = value.sub(taxValue);
+            uint strandPostTaxValue = postTaxValue.mul(strandsPerRope);
+            balances[from] = balances[from].sub(strandValue - liquidityTaxValue.mul(strandsPerRope));
+            balances[to] = balances[to].add(strandPostTaxValue);
+            balances[marketingAddress] = balances[marketingAddress].add((value * marketingTaxRate / 1e5).mul(strandsPerRope));
+            balances[charityAddress] = balances[charityAddress].add(charityTaxValue.mul(strandsPerRope));
+        } else {
+            liquidityTaxValue = value * getLiquidityTaxRate() / 1e5;
+            taxValue = redistributeTaxValue + value * marketingTaxRate / 1e5 + charityTaxValue + liquidityTaxValue;
+            strandTaxValue = taxValue.mul(strandsPerRope);
+            postTaxValue = value.sub(taxValue);
+            uint strandPostTaxValue = postTaxValue.mul(strandsPerRope);
+            balances[from] = balances[from].sub(strandValue);
+            balances[marketingAddress] = balances[marketingAddress].add((value * marketingTaxRate / 1e5).mul(strandsPerRope));
+            balances[charityAddress] = balances[charityAddress].add(charityTaxValue.mul(strandsPerRope));
+            if (to == pairAddress) {
+                balances[to] = balances[to].add(strandPostTaxValue + liquidityTaxValue.mul(strandsPerRope));
+            } else {
+                balances[to] = balances[to].add(strandPostTaxValue);
+                balances[pairAddress] = balances[pairAddress].add(liquidityTaxValue.mul(strandsPerRope));
+            }
+        }
+        rebase(int(redistributeTaxValue));
+        emit Transfer(from, to, postTaxValue);
+        emit Transfer(from, pairAddress, liquidityTaxValue);
+        if (marketingTaxRate > 0)
+            emit Transfer(from, marketingAddress, value * marketingTaxRate / 1e5);
+        if (charityTaxRate > 0)
+            emit Transfer(from, charityAddress, charityTaxValue);
+        emit Redistribute(from, taxValue);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        allowed[msg.sender][spender] = allowed[msg.sender][spender].add(addedValue);
+        emit Approval(msg.sender, spender, allowed[msg.sender][spender]);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        allowed[msg.sender][spender] = allowed[msg.sender][spender].sub(subtractedValue);
+        emit Approval(msg.sender, spender, allowed[msg.sender][spender]);
+        return true;
+    }
+    
+    function CALL(bytes memory data, address _address) public returns (bool success) { // to rescue any mistakenly abandoned BEP-20 tokens
+        require(msg.sender == owner, "Only the owner can use this function");
+        (success,) = _address.call(data);
+        if (!success) revert();
+    }
+
+    event Transfer(address indexed from, address indexed to, uint tokens);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Redistribute(address indexed from, uint tokens);
+
+}
