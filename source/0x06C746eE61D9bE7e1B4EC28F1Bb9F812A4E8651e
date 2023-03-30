@@ -1,0 +1,452 @@
+
+// File: @openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.7.0) (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+// File: contracts/internal-ctf/5-proxy/MyProxy.sol
+pragma solidity ^0.8.0;
+
+import "./UpgradeabilityProxy.sol";
+
+/**
+ * @notice Wrapper around OpenZeppelin's UpgradeabilityProxy contract.
+ * Permissions proxy upgrade logic to My Governance contract.
+ * https://github.com/OpenZeppelin/openzeppelin-sdk/blob/release/2.8/packages/lib/contracts/upgradeability/UpgradeabilityProxy.sol
+ * @dev Any logic contract that has a signature clash with this proxy contract will be unable to call those functions
+ *      Please ensure logic contract functions do not share a signature with any functions defined in this file
+ */
+contract MyProxy is UpgradeabilityProxy {
+    address private proxyAdmin;
+    string private constant ERROR_ONLY_ADMIN = (
+        "MyAdminUpgradeabilityProxy: Caller must be current proxy admin"
+    );
+
+    /**
+     * @notice Sets admin address for future upgrades
+     * @param _logic - address of underlying logic contract.
+     *      Passed to UpgradeabilityProxy constructor.
+     * @param _proxyAdmin - address of proxy admin
+     *      Set to governance contract address for all non-governance contracts
+     *      Governance is deployed and upgraded to have own address as admin
+     * @param _data - data of function to be called on logic contract.
+     *      Passed to UpgradeabilityProxy constructor.
+     */
+    constructor(
+        address _logic,
+        address _proxyAdmin,
+        bytes memory _data
+    )
+    UpgradeabilityProxy(_logic, _data) public payable
+    {
+        proxyAdmin = _proxyAdmin;
+    }
+
+    function upgradeTo(address _newImplementation) external {
+        require(msg.sender == proxyAdmin, ERROR_ONLY_ADMIN);
+        _upgradeTo(_newImplementation);
+    }
+
+    function getMyProxyAdminAddress() external view returns (address) {
+        return proxyAdmin;
+    }
+
+    function implementation() external view returns (address) {
+        return _implementation();
+    }
+
+    function setMyProxyAdminAddress(address _adminAddress) external {
+        require(msg.sender == proxyAdmin, ERROR_ONLY_ADMIN);
+        proxyAdmin = _adminAddress;
+    }
+}
+
+
+// File: contracts/internal-ctf/5-proxy/MyWalletChallenge.sol
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "./MyProxy.sol";
+import "./Wallet.sol";
+
+contract MyWalletChallenge is Ownable {
+    mapping(address => address) public walletMap;
+    mapping(address => bool) public challenged;
+
+
+    modifier onlyChallenger() {
+        require(walletMap[msg.sender] != address(0), "only challenger");
+        require(!challenged[msg.sender], "already challenged 1");
+        _;
+    }
+
+    modifier onlyNotRegister() {
+        require(walletMap[msg.sender] == address(0), "already register");
+        _;
+    }
+
+    receive() external payable {}
+
+    function close() external onlyOwner {
+        payable(msg.sender).transfer(address(this).balance);
+    }
+
+    function register() external onlyNotRegister returns (address) {
+        Wallet impl = new Wallet();
+        MyProxy wallet = new MyProxy(address(impl), address(this), "");
+        address payable walletAddress = payable(address(wallet));
+        Wallet(walletAddress).initialize();
+
+        walletMap[msg.sender] = walletAddress;
+        (bool success, ) = walletAddress.call{ gas: 5000, value: 0.1 ether }("");
+        require(success, "walletAddress init transfer failed");
+
+        return walletAddress;
+    }
+}
+
+
+// File: contracts/internal-ctf/5-proxy/UpgradeabilityProxy.sol
+pragma solidity ^0.8.0;
+
+abstract contract Proxy {
+    /**
+     * @dev Fallback function.
+   * Implemented entirely in `_fallback`.
+   */
+    fallback () payable external {
+        _fallback();
+    }
+
+    /**
+     * @return The Address of the implementation.
+   */
+    function _implementation() internal view virtual returns (address);
+
+    /**
+     * @dev Delegates execution to an implementation contract.
+   * This is a low level function that doesn't return to its internal call site.
+   * It will return to the external caller whatever the implementation returns.
+   * @param implementation Address to delegate.
+   */
+    function _delegate(address implementation) internal virtual {
+        assembly {
+        // Copy msg.data. We take full control of memory in this inline assembly
+        // block because it will not return to Solidity code. We overwrite the
+        // Solidity scratch pad at memory position 0.
+            calldatacopy(0, 0, calldatasize())
+
+        // Call the implementation.
+        // out and outsize are 0 because we don't know the size yet.
+            let result := delegatecall(gas(), implementation, 0, calldatasize(), 0, 0)
+
+        // Copy the returned data.
+            returndatacopy(0, 0, returndatasize())
+
+            switch result
+            // delegatecall returns 0 on error.
+            case 0 {
+                revert(0, returndatasize())
+            }
+            default {
+                return(0, returndatasize())
+            }
+        }
+    }
+
+    /**
+     * @dev Function that is run as the first thing in the fallback function.
+   * Can be redefined in derived contracts to add functionality.
+   * Redefinitions must call super._willFallback().
+   */
+    function _willFallback() internal {
+    }
+
+    /**
+     * @dev fallback implementation.
+   * Extracted to enable manual triggering.
+   */
+    function _fallback() internal {
+        _willFallback();
+        _delegate(_implementation());
+    }
+}
+
+/**
+ * @title BaseUpgradeabilityProxy
+ * @dev This contract implements a proxy that allows to change the
+ * implementation address to which it will delegate.
+ * Such a change is called an implementation upgrade.
+ */
+contract BaseUpgradeabilityProxy is Proxy {
+    /**
+     * @dev Emitted when the implementation is upgraded.
+   * @param implementation Address of the new implementation.
+   */
+    event Upgraded(address indexed implementation);
+
+    /**
+     * @dev Storage slot with the address of the current implementation.
+   * This is the keccak-256 hash of "eip1967.proxy.implementation" subtracted by 1, and is
+   * validated in the constructor.
+   */
+    bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    function _implementation() internal view override returns (address impl) {
+        bytes32 slot = IMPLEMENTATION_SLOT;
+        assembly {
+            impl := sload(slot)
+        }
+    }
+
+    /**
+     * @dev Upgrades the proxy to a new implementation.
+   * @param newImplementation Address of the new implementation.
+   */
+    function _upgradeTo(address newImplementation) internal {
+        _setImplementation(newImplementation);
+        emit Upgraded(newImplementation);
+    }
+
+    /**
+     * @dev Sets the implementation address of the proxy.
+   * @param newImplementation Address of the new implementation.
+   */
+    function _setImplementation(address newImplementation) internal {
+        require(isContract(newImplementation), "Cannot set a proxy implementation to a non-contract address");
+
+        bytes32 slot = IMPLEMENTATION_SLOT;
+
+        assembly {
+            sstore(slot, newImplementation)
+        }
+    }
+
+    function isContract(address account) internal view returns (bool) {
+        return account.code.length > 0;
+    }
+}
+
+/**
+ * @title UpgradeabilityProxy
+ * @dev Extends BaseUpgradeabilityProxy with a constructor for initializing
+ * implementation and init data.
+ */
+contract UpgradeabilityProxy is BaseUpgradeabilityProxy {
+    /**
+     * @dev Contract constructor.
+   * @param _logic Address of the initial implementation.
+   * @param _data Data to send as msg.data to the implementation to initialize the proxied contract.
+   * It should include the signature and the parameters of the function to be called, as described in
+   * https://solidity.readthedocs.io/en/v0.4.24/abi-spec.html#function-selector-and-argument-encoding.
+   * This parameter is optional, if no data is given the initialization call to proxied contract will be skipped.
+   */
+    constructor(address _logic, bytes memory _data) public payable {
+        assert(IMPLEMENTATION_SLOT == bytes32(uint256(keccak256('eip1967.proxy.implementation')) - 1));
+        _setImplementation(_logic);
+        if(_data.length > 0) {
+            (bool success,) = _logic.delegatecall(_data);
+            require(success);
+        }
+    }
+}
+
+
+// File: contracts/internal-ctf/5-proxy/Wallet.sol
+
+pragma solidity ^0.8.0;
+
+
+/**
+ * @title Initializable
+ *
+ * @dev Helper contract to support initializer functions. To use it, replace
+ * the constructor with a function that has the `initializer` modifier.
+ * WARNING: Unlike constructors, initializer functions must be manually
+ * invoked. This applies both to deploying an Initializable contract, as well
+ * as extending an Initializable contract via inheritance.
+ * WARNING: When used with inheritance, manual care must be taken to not invoke
+ * a parent initializer twice, or ensure that all initializers are idempotent,
+ * because this is not dealt with automatically as with constructors.
+ */
+contract Initializable {
+    /**
+     * @dev Indicates that the contract has been initialized.
+   */
+    bool private initialized;
+
+    /**
+     * @dev Indicates that the contract is in the process of being initialized.
+   */
+    bool private initializing;
+
+    /**
+     * @dev Modifier to use in the initializer function of a contract.
+   */
+    modifier initializer() {
+        require(initializing || isConstructor() || !initialized, "Contract instance has already been initialized");
+
+        bool isTopLevelCall = !initializing;
+        if (isTopLevelCall) {
+            initializing = true;
+            initialized = true;
+        }
+
+        _;
+
+        if (isTopLevelCall) {
+            initializing = false;
+        }
+    }
+
+    /// @dev Returns true if and only if the function is running in the constructor
+    function isConstructor() private view returns (bool) {
+        // extcodesize checks the size of the code stored in an address, and
+        // address returns the current address. Since the code is still not
+        // deployed when running a constructor, any checks on its code size will
+        // yield zero, making it an effective way to detect if a contract is
+        // under construction or not.
+        address self = address(this);
+        uint256 cs;
+        assembly { cs := extcodesize(self) }
+        return cs == 0;
+    }
+
+    // Reserved storage space to allow for layout changes in the future.
+    uint256[47] private ______gap;
+}
+
+
+contract Wallet is Initializable {
+    address public owner;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "only owner");
+        _;
+    }
+
+    receive() external payable {}
+
+    function initialize() public initializer {
+        owner = msg.sender;
+    }
+
+    function executeTxByOwner(
+        address to,
+        uint256 value,
+        bytes memory data,
+        uint256 txGas
+    ) external onlyOwner returns (bool success) {
+        (bool _success, ) = to.call{ gas: txGas, value: value }(data);
+        return _success;
+    }
+}
+
