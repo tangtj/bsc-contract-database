@@ -1,0 +1,300 @@
+// SPDX-License-Identifier: None
+pragma solidity ^0.8.5;
+
+interface IBEP20 {
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+
+  function totalSupply() external view returns (uint256);
+  function decimals() external view returns (uint8);
+  function symbol() external view returns (string memory);
+  function name() external view returns (string memory);
+  function getOwner() external view returns (address);
+  function balanceOf(address account) external view returns (uint256);
+  function transfer(address recipient, uint256 amount) external returns (bool);
+  function allowance(address _owner, address spender) external view returns (uint256);
+  function approve(address spender, uint256 amount) external returns (bool);
+  function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+abstract contract Context {
+  function _msgSender() internal view returns (address) {
+    return msg.sender;
+  }
+}
+
+abstract contract Ownable is Context {
+  address private _owner;
+
+  event OwnerChange(address indexed previousOwner, address indexed newOwner);
+
+  constructor () {
+    _owner = _msgSender();
+    emit OwnerChange(address(0), _owner);
+  }
+
+  function owner() internal view returns (address) {
+    return _owner;
+  }
+
+  modifier onlyOwner() {
+    require(_owner == _msgSender(), "Ownable: caller is not the owner");
+    _;
+  }
+
+  function removeOwner() external onlyOwner {
+    emit OwnerChange(_owner, address(0));
+    _owner = address(0);
+  }
+
+  function setOwner(address newOwner) external onlyOwner {
+    require(newOwner != address(0), "Ownable: new owner is the zero address");
+    emit OwnerChange(_owner, newOwner);
+    _owner = newOwner;
+  }
+}
+
+abstract contract Pausable is Ownable {
+  event Pause();
+  event Unpause();
+
+  bool private _paused = false;
+
+  modifier whenNotPaused() {
+    require(!_paused);
+    _;
+  }
+
+  modifier whenPaused() {
+    require(_paused);
+    _;
+  }
+
+  function paused() external view returns (bool) {
+      return _paused;
+  }
+
+  function pause() onlyOwner whenNotPaused external {
+    _paused = true;
+    emit Pause();
+  }
+
+  function unpause() onlyOwner whenPaused external {
+    _paused = false;
+    emit Unpause();
+  }
+}
+
+interface INewContract {
+    function oldTotalSupply() external view returns (uint256);
+    function oldDecimals() external view returns (uint8);
+    function oldSymbol() external view returns (string memory);
+    function oldName() external view returns (string memory);
+
+    function oldBalanceOf(address account) external view returns (uint256);
+    function oldAllowance(address _owner, address spender) external view returns (uint256);
+
+    function oldTransfer(address msgSender, address recipient, uint256 amount) external returns (address, bool);
+    function oldTransferFrom(address msgSender, address sender, address recipient, uint256 amount) external returns (address, uint256, bool);
+    function oldApprove(address msgSender, address spender, uint256 amount) external returns (bool);
+    function oldIncreaseAllowance(address msgSender, address spender, uint256 addedValue) external returns (uint256);
+    function oldDecreaseAllowance(address msgSender, address spender, uint256 subtractedValue) external returns (uint256);
+}
+
+abstract contract Bridgeable is Ownable {
+  event TransferBridge(address indexed to, uint256 value);
+  event BridgeChange(address indexed previousBridge, uint8 previousBits, address indexed newBridge, uint8 newBits);
+
+  address private _bridge = address(0);
+  uint8 private _bits = 0;
+
+  function bridge() public view returns (address, uint8) {
+    return (_bridge, _bits);
+  }
+
+  function removeBridge() external onlyOwner {
+    emit BridgeChange(_bridge, _bits, address(0), 0);
+    _bridge = address(0);
+    _bits = 0;
+  }
+
+  function setBridge(address newBridge, uint8 newBits) external onlyOwner {
+    require(newBridge != address(0), "Bridgeable: new bridge is the zero address");
+    require(newBits > 0 && newBits <= 160, "Bridgeable: new bridge bits is wrong");
+    emit BridgeChange(_bridge, _bits, newBridge, newBits);
+    _bridge = newBridge;
+    _bits = newBits;
+  }
+}
+
+contract NBXToken is Context, IBEP20, Ownable, Pausable, Bridgeable {
+  event Deprecate(address indexed previousNewContract, address indexed newContract);
+
+  mapping (address => uint256) private _balances;
+
+  mapping (address => mapping (address => uint256)) private _allowances;
+
+  uint256 private _totalSupply;
+  uint8 private _decimals;
+  string private _symbol;
+  string private _name;
+  address private _newAddress = address(0);
+  bool _deprecated = false;
+
+  constructor() {
+    _name = "Binance-Peg Netbox Coin";
+    _symbol = "NBXB";
+    _decimals = 8;
+    _totalSupply = 10000000000000000;
+    _balances[msg.sender] = _totalSupply;
+
+    emit Transfer(address(0), msg.sender, _totalSupply);
+  }
+
+  function getOwner() external override view returns (address) {
+    return owner();
+  }
+
+  function decimals() external override view returns (uint8) {
+    if (_deprecated)
+      return INewContract(_newAddress).oldDecimals();
+    return _decimals;
+  }
+
+  function symbol() external override view returns (string memory) {
+    if (_deprecated)
+      return INewContract(_newAddress).oldSymbol();
+    return _symbol;
+  }
+
+  function name() external override view returns (string memory) {
+    if (_deprecated)
+      return INewContract(_newAddress).oldName();
+    return _name;
+  }
+
+  function totalSupply() external override view returns (uint256) {
+    if (_deprecated)
+      return INewContract(_newAddress).oldTotalSupply();
+    return _totalSupply;
+  }
+
+  function newAddress() external view returns (address) {
+    return _newAddress;
+  }
+
+  function deprecated() external view returns (bool) {
+    return _deprecated;
+  }
+
+  function deprecate(address newContractAddress) external onlyOwner {
+    emit Deprecate(_newAddress, newContractAddress);
+    _newAddress = newContractAddress;
+    _deprecated = _newAddress != address(0);
+  }
+
+  function balanceOf(address account) external override view returns (uint256) {
+    if (_deprecated)
+      return INewContract(_newAddress).oldBalanceOf(account);
+    return _balances[account];
+  }
+
+  function transfer(address recipient, uint256 amount) external whenNotPaused override returns (bool) {
+    address msgSender = _msgSender();
+    address newRecipient;
+    bool isBridge;
+    if (_deprecated)
+      (newRecipient, isBridge) = INewContract(_newAddress).oldTransfer(msgSender, recipient, amount);
+    else
+      (newRecipient, isBridge) = _transfer(msgSender, recipient, amount);
+    emit Transfer(msgSender, newRecipient, amount);
+    if (isBridge)
+      emit TransferBridge(recipient, amount);
+    return true;
+  }
+
+  function allowance(address owner, address spender) external override view returns (uint256) {
+    if (_deprecated)
+      return INewContract(_newAddress).oldAllowance(owner, spender);
+    return _allowances[owner][spender];
+  }
+
+  function approve(address spender, uint256 amount) external whenNotPaused override returns (bool) {
+    address msgSender = _msgSender();
+    if (_deprecated)
+      INewContract(_newAddress).oldApprove(msgSender, spender, amount);
+    else
+      _approve(msgSender, spender, amount);
+    emit Approval(msgSender, spender, amount);
+    return true;
+  }
+
+  function transferFrom(address sender, address recipient, uint256 amount) external whenNotPaused override returns (bool) {
+    address msgSender = _msgSender();
+    address newRecipient;
+    bool isBridge;
+    uint256 newAllowance;
+    if (_deprecated)
+      (newRecipient, newAllowance, isBridge) = INewContract(_newAddress).oldTransferFrom(msgSender, sender, recipient, amount);
+    else {
+      newAllowance = (_allowances[sender][msgSender] -= amount);
+      _approve(sender, msgSender, newAllowance);
+      (newRecipient, isBridge) = _transfer(sender, recipient, amount);
+    }
+    emit Approval(sender, msgSender, newAllowance);
+    emit Transfer(sender, newRecipient, amount);
+    if (isBridge)
+      emit TransferBridge(recipient, amount);
+    return true;
+  }
+
+  function increaseAllowance(address spender, uint256 addedValue) external whenNotPaused returns (bool) {
+    address msgSender = _msgSender();
+    uint256 newAllowance;
+    if (_deprecated)
+      newAllowance = INewContract(_newAddress).oldIncreaseAllowance(msgSender, spender, addedValue);
+    else {
+      newAllowance = (_allowances[msgSender][spender] += addedValue);
+      _approve(msgSender, spender, newAllowance);
+    }
+    emit Approval(msgSender, spender, newAllowance);
+    return true;
+  }
+
+  function decreaseAllowance(address spender, uint256 subtractedValue) external whenNotPaused returns (bool) {
+    address msgSender = _msgSender();
+    uint256 newAllowance;
+    if (_deprecated)
+      newAllowance = INewContract(_newAddress).oldDecreaseAllowance(msgSender, spender, subtractedValue);
+    else {
+      newAllowance = (_allowances[msgSender][spender] -= subtractedValue);
+      _approve(msgSender, spender, newAllowance);
+    }
+    emit Approval(msgSender, spender, newAllowance);
+    return true;
+  }
+
+  function _transfer(address sender, address recipient, uint256 amount) internal returns (address, bool) {
+    require(sender != address(0), "BEP20: transfer from the zero address");
+    require(recipient != address(0), "BEP20: transfer to the zero address");
+    require(recipient != address(this), "BEP20: transfer to the contract address");
+    
+    bool isBridge = false;
+    (address bridge, uint8 bits) = bridge();
+    if (uint160(recipient) >> bits == uint160(bridge) >> bits) {
+      isBridge = true;
+      recipient = bridge;
+    }
+
+    _balances[sender] -= amount;
+    _balances[recipient] += amount;
+    return (recipient, isBridge);
+  }
+
+  function _approve(address owner, address spender, uint256 amount) internal {
+    require(owner != address(0), "BEP20: approve from the zero address");
+    require(spender != address(0), "BEP20: approve to the zero address");
+
+    _allowances[owner][spender] = amount;
+  }
+}
