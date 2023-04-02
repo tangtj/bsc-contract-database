@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity >=0.7.0 <0.9.0;
+
+contract Betting {
+    address public owner;
+    uint public winningNumber;
+    uint public pot;
+    uint public nextPot;
+    uint public feePercentage = 20;
+    uint public winnerPercentage = 60;
+    uint public nextPercentage = 20;
+
+    mapping(address => uint) public bets;
+
+    event Bet(address indexed _from, uint _value, uint _number);
+    event Winner(address indexed _winner, uint _value);
+
+    constructor() {
+        owner = msg.sender;
+        generateWinningNumber();
+    }
+
+    function generateWinningNumber() private {
+        winningNumber = uint(keccak256(abi.encodePacked(block.timestamp, block.difficulty, block.number))) % 100;
+    }
+
+    function bet(uint _number) public payable {
+        require(msg.value == 0.01 ether, "You must send 0.01 BNB to place a bet.");
+        require(_number >= 0 && _number <= 99, "Your number must be between 0 and 99.");
+        require(bets[msg.sender] == 0, "You have already placed a bet.");
+
+        bets[msg.sender] = _number;
+        pot += msg.value;
+
+        emit Bet(msg.sender, msg.value, _number);
+
+        if (_number == winningNumber) {
+            uint winnerAmount = (pot * winnerPercentage) / 100;
+            uint feeAmount = (pot * feePercentage) / 100;
+            uint nextAmount = (pot * nextPercentage) / 100;
+
+            nextPot += nextAmount;
+            pot = 0;
+
+            payable(msg.sender).transfer(winnerAmount);
+            payable(owner).transfer(feeAmount);
+
+            emit Winner(msg.sender, winnerAmount);
+        }
+    }
+
+    function withdraw() public {
+        require(msg.sender == owner, "Only the owner can withdraw funds.");
+
+        uint amount = address(this).balance;
+        payable(msg.sender).transfer(amount);
+    }
+
+    function getNextPot() public view returns (uint) {
+        return nextPot;
+    }
+
+    function getPot() public view returns (uint) {
+        return pot;
+    }
+
+    function getWinningNumber() public view returns (uint) {
+        return winningNumber;
+    }
+}
