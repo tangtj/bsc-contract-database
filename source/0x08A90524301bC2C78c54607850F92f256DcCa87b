@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract Lottery {
+    address payable public owner;
+    address payable public treasuryWallet;
+    uint public ticketPrice;
+    uint public ticketCount;
+    uint public lotteryEndTime;
+    uint public lotteryId;
+    uint[] public tickets;
+    mapping(uint => address) public ticketToOwner;
+
+    event NewTicket(address indexed owner, uint ticketId);
+    event LotteryEnded(uint indexed lotteryId, uint indexed winningTicketId);
+    event LotteryCancelled(uint indexed lotteryId);
+
+    constructor() {
+        owner = payable(msg.sender);
+        treasuryWallet = payable(msg.sender);
+        ticketPrice = 100000000000000000; // 0.1 BNB in wei
+        ticketCount = 0;
+        lotteryEndTime = 0;
+        lotteryId = 0;
+    }
+
+    function buyTicket() external payable {
+        require(msg.value == ticketPrice, "Ticket price must be 0.1 BNB.");
+        require(block.timestamp < lotteryEndTime, "Lottery has ended.");
+        require(tickets.length < ticketCount, "All tickets have been sold.");
+
+        uint ticketId = tickets.length;
+        tickets.push(ticketId);
+        ticketToOwner[ticketId] = msg.sender;
+
+        emit NewTicket(msg.sender, ticketId);
+    }
+
+    function endLottery() external {
+        require(msg.sender == owner, "Only the owner can end the lottery.");
+        require(block.timestamp >= lotteryEndTime, "Lottery has not ended yet.");
+
+        uint winningTicketId = uint(keccak256(abi.encodePacked(block.timestamp, block.difficulty, tickets))) % tickets.length;
+        address payable winner = payable(ticketToOwner[winningTicketId]);
+        uint jackpot = address(this).balance;
+
+        winner.transfer(jackpot * 90 / 100);
+        treasuryWallet.transfer(jackpot * 10 / 100);
+
+        lotteryId++;
+        ticketCount = 0;
+        lotteryEndTime = 0;
+
+        emit LotteryEnded(lotteryId, winningTicketId);
+    }
+
+    function getTicketCount() public view returns (uint) {
+        return tickets.length;
+    }
+
+    function startNewLottery(uint _ticketCount, uint _lotteryEndTime, uint _ticketPrice) external {
+        require(msg.sender == owner, "Only the owner can start a new lottery.");
+        require(block.timestamp >= lotteryEndTime, "Lottery has not ended yet.");
+
+        ticketCount = _ticketCount;
+        lotteryEndTime = _lotteryEndTime;
+        ticketPrice = _ticketPrice;
+        tickets = new uint[](0);
+
+        lotteryId++;
+
+        emit LotteryEnded(lotteryId - 1, tickets.length);
+    }
+
+    function cancelLottery() external {
+        require(msg.sender == owner, "Only the owner can cancel the lottery.");
+        require(block.timestamp < lotteryEndTime, "Lottery has already ended.");
+
+        lotteryId++;
+        ticketCount = 0;
+        lotteryEndTime = 0;
+
+        emit LotteryCancelled(lotteryId);
+    }
+
+    function setTreasuryWallet(address payable _treasuryWallet) external {
+        require(msg.sender == owner, "Only the owner can set the treasury wallet.");
+
+        treasuryWallet = _treasuryWallet;
+    }
+
+    function withdraw() external {
+        require(msg.sender == owner, "Only the owner can withdraw funds.");
+        owner.transfer(address(this).balance);
+    }
+
+}

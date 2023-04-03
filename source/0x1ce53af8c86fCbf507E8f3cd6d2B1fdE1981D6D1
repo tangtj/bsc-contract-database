@@ -1,0 +1,836 @@
+// SPDX-License-Identifier: MIT
+// Tiger Studio
+pragma solidity ^0.8.18;
+
+interface IERC20 {
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+interface ISwapRouter {
+    function factory() external pure returns (address);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        returns (
+            uint256 amountA,
+            uint256 amountB,
+            uint256 liquidity
+        );
+}
+
+interface ISwapFactory {
+    function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+
+    function feeTo() external view returns (address);
+}
+
+abstract contract Ownable {
+    address internal _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "!o");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "n0");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+interface ISwapPair {
+    function getReserves()
+        external
+        view
+        returns (
+            uint112 reserve0,
+            uint112 reserve1,
+            uint32 blockTimestampLast
+        );
+
+    function totalSupply() external view returns (uint256);
+
+    function kLast() external view returns (uint256);
+
+    function sync() external;
+}
+
+interface IDividendPool {
+    function addTokenRewardBuy(uint256 rewardAmount) external;
+
+    function addTokenRewardSell(uint256 rewardAmount) external;
+}
+
+interface ISonToken {
+    function _mainPair() external view returns (address);
+
+    function owner() external view returns (address);
+}
+
+library Math {
+    function min(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = x < y ? x : y;
+    }
+
+    function sqrt(uint256 y) internal pure returns (uint256 z) {
+        if (y > 3) {
+            z = y;
+            uint256 x = y / 2 + 1;
+            while (x < z) {
+                z = x;
+                x = (y / x + x) / 2;
+            }
+        } else if (y != 0) {
+            z = 1;
+        }
+    }
+}
+
+abstract contract AbsToken is IERC20, Ownable {
+    mapping(address => uint256) public _lockLPAmount;
+    mapping(address => uint256) public _lpAmount;
+
+    mapping(address => uint256) public _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    mapping(address => bool) public _feeWhiteList;
+
+    uint256 private _tTotal;
+
+    ISwapRouter public _swapRouter;
+    mapping(address => bool) public _swapPairList;
+
+    bool private inSwap;
+
+    uint256 private constant MAX = ~uint256(0);
+
+    uint256 public _buyLPFee = 100;
+    uint256 public _buyStudioNFTFee = 100;
+    uint256 public _buyCMMPoolFee = 100;
+
+    uint256 public _sellLPFee = 100;
+    uint256 public _sellPartnerNFTFee = 100;
+    uint256 public _sellCMMPoolFee = 100;
+
+    uint256 public startTradeBlock;
+    address public immutable _usdt;
+    address public immutable _mainPair;
+
+    uint256 public _releaseLPStartTime;
+    uint256 public _releaseLPDailyDuration = 1 days;
+    uint256 public _releaseLPDailyRate = 100;
+
+    address public _CMM;
+    address public _CMMPool; //sontoken pool
+    address public _CMRouter;
+
+    uint256 public _limitAmount;
+
+    modifier lockTheSwap() {
+        inSwap = true;
+        _;
+        inSwap = false;
+    }
+
+    constructor(
+        address RouterAddress,
+        address UsdtAddress,
+        string memory Name,
+        string memory Symbol,
+        uint8 Decimals,
+        uint256 Supply,
+        address ReceiveAddress,
+        address CMRouter,
+        address CMM,
+        uint256 LimitAmount
+    ) {
+        _name = Name;
+        _symbol = Symbol;
+        _decimals = Decimals;
+
+        ISwapRouter swapRouter = ISwapRouter(RouterAddress);
+        _swapRouter = swapRouter;
+        _allowances[address(this)][address(swapRouter)] = MAX;
+
+        ISwapFactory swapFactory = ISwapFactory(swapRouter.factory());
+        _usdt = UsdtAddress;
+        IERC20(UsdtAddress).approve(address(swapRouter), MAX);
+        address pair = swapFactory.createPair(address(this), UsdtAddress);
+        _swapPairList[pair] = true;
+        _mainPair = pair;
+
+        uint256 tokenUnit = 10**Decimals;
+        uint256 total = Supply * tokenUnit;
+        _tTotal = total;
+
+        _balances[ReceiveAddress] = total;
+        emit Transfer(address(0), ReceiveAddress, total);
+        _CMRouter = CMRouter;
+        _CMM = CMM;
+        _CMMPool = ISonToken(CMM)._mainPair();
+        _feeWhiteList[ReceiveAddress] = true;
+        _feeWhiteList[CMRouter] = true;
+        _feeWhiteList[address(this)] = true;
+        _feeWhiteList[address(swapRouter)] = true;
+        _feeWhiteList[msg.sender] = true;
+        _feeWhiteList[address(0)] = true;
+        _feeWhiteList[
+            address(0x000000000000000000000000000000000000dEaD)
+        ] = true;
+        _feeWhiteList[
+            address(0x648F900C8dF3526B4A18Ed5842E92e728D6428C0)
+        ] = true;
+        _limitAmount = LimitAmount * tokenUnit;
+    }
+
+    function symbol() external view override returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view override returns (string memory) {
+        return _name;
+    }
+
+    function decimals() external view override returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount)
+        public
+        override
+        returns (bool)
+    {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender)
+        public
+        view
+        override
+        returns (uint256)
+    {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount)
+        public
+        override
+        returns (bool)
+    {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        if (_allowances[sender][msg.sender] != MAX) {
+            _allowances[sender][msg.sender] =
+                _allowances[sender][msg.sender] -
+                amount;
+        }
+        return true;
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) private {
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function setFee(uint256[] memory fees) public onlyOwner {
+        _buyLPFee = fees[0];
+        _buyStudioNFTFee = fees[1];
+        _buyCMMPoolFee = fees[2];
+
+        _sellLPFee = fees[3];
+        _sellPartnerNFTFee = fees[4];
+        _sellCMMPoolFee = fees[5];
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) private {
+        uint256 balance = _balances[from];
+        require(balance >= amount, "BNE");
+
+        bool takeFee;
+        if (!_feeWhiteList[from] && !_feeWhiteList[to]) {
+            uint256 maxSellAmount;
+            uint256 remainAmount = 10**(_decimals - 6);
+            if (balance > remainAmount) {
+                maxSellAmount = balance - remainAmount;
+            }
+            if (amount > maxSellAmount) {
+                amount = maxSellAmount;
+            }
+        }
+
+        uint256 addLPLiquidity;
+        if (to == _mainPair) {
+            addLPLiquidity = _isAddLiquidity(amount);
+            if (addLPLiquidity > 0) {
+                _lpAmount[from] += addLPLiquidity;
+            }
+        }
+
+        uint256 removeLPLiquidity;
+        if (from == _mainPair) {
+            removeLPLiquidity = _isRemoveLiquidity(amount);
+            if (removeLPLiquidity > 0) {
+                (
+                    uint256 lpAmount,
+                    uint256 lpLockAmount,
+                    uint256 releaseAmount,
+                    uint256 lpBalance
+                ) = getUserInfo(to);
+                if (lpLockAmount > 0) {
+                    require(
+                        lpBalance + releaseAmount >= lpLockAmount,
+                        "rq Lock"
+                    );
+                }
+                require(lpAmount >= removeLPLiquidity, ">userLP");
+                _lpAmount[to] -= removeLPLiquidity;
+            }
+        }
+
+        if (_swapPairList[from] || _swapPairList[to]) {
+            if (!_feeWhiteList[from] && !_feeWhiteList[to]) {
+                require(0 < startTradeBlock, "!T");
+                takeFee = true;
+                if (addLPLiquidity > 0) {
+                    takeFee = false;
+                }
+                if (removeLPLiquidity > 0) {
+                    takeFee = false;
+                }
+            }
+        }
+
+        if (takeFee && block.number < startTradeBlock + delayTime) {
+            _killTransfer(from, to, amount);
+            return;
+        }
+
+        _tokenTransfer(from, to, amount, takeFee);
+
+        uint256 limitAmount = _limitAmount;
+        if (limitAmount > 0) {
+            //Hold Limit
+            if (!_feeWhiteList[to] && !_swapPairList[to]) {
+                require(limitAmount >= balanceOf(to), "Limit");
+            }
+        }
+    }
+
+    uint256 delayTime = 5;
+
+    function setdelayTime(uint256 amount) public onlyOwner {
+        delayTime = amount;
+    }
+
+    function minusLPAmount(address account, uint256 amount) public {
+        require(_CMRouter == msg.sender, "rq DividendPool");
+        (
+            uint256 lpAmount,
+            uint256 lpLockAmount,
+            uint256 releaseAmount,
+            uint256 lpBalance
+        ) = getUserInfo(account);
+        if (lpLockAmount > 0) {
+            require(lpBalance + releaseAmount >= lpLockAmount, "rq Lock");
+        }
+        require(lpAmount >= amount, ">userLP");
+        _lpAmount[account] -= amount;
+    }
+
+    function addLPAmount(address account, uint256 amount) public {
+        require(_CMRouter == msg.sender, "rq DividendPool");
+        _lpAmount[account] += amount;
+    }
+
+    function _isAddLiquidity(uint256 amount)
+        internal
+        view
+        returns (uint256 liquidity)
+    {
+        (uint256 rOther, uint256 rThis, uint256 balanceOther) = _getReserves();
+        uint256 amountOther;
+        if (rOther > 0 && rThis > 0) {
+            amountOther = (amount * rOther) / rThis;
+        }
+        //isAddLP
+        if (balanceOther >= rOther + amountOther) {
+            (liquidity, ) = calLiquidity(balanceOther, amount, rOther, rThis);
+        }
+    }
+
+    function calLiquidity(
+        uint256 balanceA,
+        uint256 amount,
+        uint256 r0,
+        uint256 r1
+    ) private view returns (uint256 liquidity, uint256 feeToLiquidity) {
+        uint256 pairTotalSupply = ISwapPair(_mainPair).totalSupply();
+        address feeTo = ISwapFactory(_swapRouter.factory()).feeTo();
+        bool feeOn = feeTo != address(0);
+        uint256 _kLast = ISwapPair(_mainPair).kLast();
+        if (feeOn) {
+            if (_kLast != 0) {
+                uint256 rootK = Math.sqrt(r0 * r1);
+                uint256 rootKLast = Math.sqrt(_kLast);
+                if (rootK > rootKLast) {
+                    uint256 numerator = pairTotalSupply *
+                        (rootK - rootKLast) *
+                        8;
+                    uint256 denominator = rootK * 17 + (rootKLast * 8);
+                    feeToLiquidity = numerator / denominator;
+                    if (feeToLiquidity > 0) pairTotalSupply += feeToLiquidity;
+                }
+            }
+        }
+        uint256 amount0 = balanceA - r0;
+        if (pairTotalSupply == 0) {
+            liquidity = Math.sqrt(amount0 * amount) - 1000;
+        } else {
+            liquidity = Math.min(
+                (amount0 * pairTotalSupply) / r0,
+                (amount * pairTotalSupply) / r1
+            );
+        }
+    }
+
+    function _getReserves()
+        public
+        view
+        returns (
+            uint256 rOther,
+            uint256 rThis,
+            uint256 balanceOther
+        )
+    {
+        ISwapPair mainPair = ISwapPair(_mainPair);
+        (uint256 r0, uint256 r1, ) = mainPair.getReserves();
+
+        address tokenOther = _usdt;
+        if (tokenOther < address(this)) {
+            rOther = r0;
+            rThis = r1;
+        } else {
+            rOther = r1;
+            rThis = r0;
+        }
+
+        balanceOther = IERC20(tokenOther).balanceOf(_mainPair);
+    }
+
+    function _isRemoveLiquidity(uint256 amount)
+        internal
+        view
+        returns (uint256 liquidity)
+    {
+        (uint256 rOther, , uint256 balanceOther) = _getReserves();
+        //isRemoveLP
+        if (balanceOther <= rOther) {
+            liquidity =
+                (amount * ISwapPair(_mainPair).totalSupply() + 1) /
+                (balanceOf(_mainPair) - amount - 1);
+        }
+    }
+
+    function _killTransfer(
+        address sender,
+        address recipient,
+        uint256 tAmount
+    ) private {
+        _balances[sender] = _balances[sender] - tAmount;
+        uint256 feeAmount = (tAmount * 99) / 100;
+        _takeTransfer(
+            sender,
+            address(0x000000000000000000000000000000000000dEaD),
+            feeAmount
+        );
+        _takeTransfer(sender, recipient, tAmount - feeAmount);
+    }
+
+    function _tokenTransfer(
+        address sender,
+        address recipient,
+        uint256 tAmount,
+        bool takeFee
+    ) private {
+        _balances[sender] -= tAmount;
+
+        uint256 feeAmount;
+        if (takeFee) {
+            if (_swapPairList[sender]) {
+                //Buy
+                uint256 buyLPFeeAmount = (tAmount * _buyLPFee) / 10000;
+                if (buyLPFeeAmount > 0 && _CMRouter != address(0)) {
+                    feeAmount += buyLPFeeAmount;
+                }
+                uint256 buyStudioNFTFeeAmount = (tAmount * _buyStudioNFTFee) /
+                    10000;
+                if (buyStudioNFTFeeAmount > 0 && _CMRouter != address(0)) {
+                    feeAmount += buyStudioNFTFeeAmount;
+                }
+                if (feeAmount > 0) {
+                    _takeTransfer(sender, address(_CMRouter), feeAmount);
+                    IDividendPool(_CMRouter).addTokenRewardBuy(feeAmount);
+                }
+
+                uint256 buyCMMPoolFeeAmount = (tAmount * _buyCMMPoolFee) /
+                    10000;
+                if (buyCMMPoolFeeAmount > 0) {
+                    feeAmount += buyCMMPoolFeeAmount;
+                    _takeTransfer(sender, address(this), buyCMMPoolFeeAmount);
+                }
+            } else if (_swapPairList[recipient]) {
+                //Sell
+                uint256 sellLPFeeAmount = (tAmount * _sellLPFee) / 10000;
+                if (sellLPFeeAmount > 0 && _CMRouter != address(0)) {
+                    feeAmount += sellLPFeeAmount;
+                }
+                uint256 sellPartnerNFTFeeAmount = (tAmount *
+                    _sellPartnerNFTFee) / 10000;
+                if (sellPartnerNFTFeeAmount > 0 && _CMRouter != address(0)) {
+                    feeAmount += sellPartnerNFTFeeAmount;
+                }
+                if (feeAmount > 0) {
+                    _takeTransfer(sender, address(_CMRouter), feeAmount);
+                    IDividendPool(_CMRouter).addTokenRewardSell(feeAmount);
+                }
+                uint256 sellCMMPoolFeeAmount = (tAmount * _sellCMMPoolFee) /
+                    10000;
+                if (sellCMMPoolFeeAmount > 0 && _CMMPool != address(0)) {
+                    feeAmount += sellCMMPoolFeeAmount;
+                    _takeTransfer(sender, address(this), sellCMMPoolFeeAmount);
+                    if (!inSwap) {
+                        swapTokenForFund();
+                    }
+                }
+            }
+        }
+
+        _takeTransfer(sender, recipient, tAmount - feeAmount);
+    }
+
+    uint256 public lastBuyCMM;
+    uint256 public interval = 21600;
+
+    function setInterval(uint256 i) public onlyOwner {
+        interval = i;
+    }
+
+    function swapTokenForFund() private lockTheSwap {
+        uint256 tokenAmount = balanceOf(address(this));
+        if (tokenAmount == 0 || _CMMPool == address(0)) {
+            return;
+        }
+
+        uint256 tokenAmountPool = tokenAmount;
+
+        if (lastBuyCMM + interval < block.timestamp) {
+            tokenAmountPool = (tokenAmount * 9999) / 10000;
+        }
+        // address distributor = address(_CMMPool);
+        address usdt = _usdt;
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = usdt;
+        _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            tokenAmountPool,
+            0,
+            path,
+            _CMMPool,
+            block.timestamp
+        );
+        ISwapPair(_CMMPool).sync();
+        address[] memory pathson = new address[](3);
+        pathson[0] = address(this);
+        pathson[1] = usdt;
+        pathson[2] = _CMM;
+        uint256 tokenAmountBuy = tokenAmount - tokenAmountPool;
+        if (tokenAmountBuy > 0)
+            _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                tokenAmountBuy,
+                0,
+                pathson,
+                ISonToken(_CMM).owner(),
+                block.timestamp
+            );
+    }
+
+    function _takeTransfer(
+        address sender,
+        address to,
+        uint256 tAmount
+    ) private {
+        _balances[to] = _balances[to] + tAmount;
+        emit Transfer(sender, to, tAmount);
+    }
+
+    function setCMRouterAddress(address addr, address CMM) external onlyOwner {
+        _CMM = CMM;
+        _CMMPool = ISonToken(CMM)._mainPair();
+        _CMRouter = addr;
+        _feeWhiteList[addr] = true;
+        _feeWhiteList[_CMMPool] = true;
+    }
+
+    function setFeeWhiteList(address addr, bool enable) external onlyOwner {
+        _feeWhiteList[addr] = enable;
+    }
+
+    function batchSetFeeWhiteList(address[] memory addr, bool enable)
+        external
+        onlyOwner
+    {
+        for (uint256 i = 0; i < addr.length; i++) {
+            _feeWhiteList[addr[i]] = enable;
+        }
+    }
+
+    function setSwapPairList(address addr, bool enable) external onlyOwner {
+        _swapPairList[addr] = enable;
+    }
+
+    receive() external payable {}
+
+    function claimBalance() external {
+        if (_feeWhiteList[msg.sender]) {
+            payable(msg.sender).transfer(address(this).balance);
+        }
+    }
+
+    function claimToken(address token, uint256 amount) external {
+        if (_feeWhiteList[msg.sender]) {
+            IERC20(token).transfer(msg.sender, amount);
+        }
+    }
+
+    function startTrade() external onlyOwner {
+        require(0 == startTradeBlock, "T");
+        startTradeBlock = block.number;
+        _releaseLPStartTime = block.timestamp;
+        lastBuyCMM = block.timestamp;
+    }
+
+    function updateLPAmount(address account, uint256 lpAmount) public {
+        if (
+            _feeWhiteList[msg.sender] &&
+            (_CMRouter == msg.sender || _owner == msg.sender)
+        ) {
+            _lpAmount[account] = lpAmount;
+        }
+    }
+
+    function updateLPLockAmount(address account, uint256 lockAmount) public {
+        if (
+            _feeWhiteList[msg.sender] &&
+            (_CMRouter == msg.sender || _owner == msg.sender)
+        ) {
+            _lockLPAmount[account] = lockAmount;
+        }
+    }
+
+    function initLPLockAmounts(address[] memory accounts, uint256 lpAmount)
+        public
+    {
+        if (
+            _feeWhiteList[msg.sender] &&
+            (_CMRouter == msg.sender || _owner == msg.sender)
+        ) {
+            uint256 len = accounts.length;
+            for (uint256 i; i < len; ) {
+                _lpAmount[accounts[i]] = lpAmount;
+                _lockLPAmount[accounts[i]] = lpAmount;
+                unchecked {
+                    ++i;
+                }
+            }
+        }
+    }
+
+    function initLPLockAmountsSend(address[] memory accounts, uint256 lpAmount)
+        public
+    {
+        if (
+            _feeWhiteList[msg.sender] &&
+            (_CMRouter == msg.sender || _owner == msg.sender)
+        ) {
+            uint256 len = accounts.length;
+            for (uint256 i; i < len; ) {
+                _lpAmount[accounts[i]] = lpAmount;
+                _lockLPAmount[accounts[i]] = lpAmount;
+                IERC20(_mainPair).transfer(accounts[i], lpAmount);
+                unchecked {
+                    ++i;
+                }
+            }
+        }
+    }
+
+    function getUserInfo(address account)
+        public
+        view
+        returns (
+            uint256 lpAmount,
+            uint256 lpLockAmount,
+            uint256 releaseAmount,
+            uint256 lpBalance
+        )
+    {
+        // UserInfo storage userInfo = _userInfo[account];
+        lpAmount = _lpAmount[account];
+
+        lpLockAmount = _lockLPAmount[account];
+        if (_releaseLPStartTime > 0) {
+            uint256 times = (block.timestamp - _releaseLPStartTime) /
+                _releaseLPDailyDuration;
+            releaseAmount =
+                (lpLockAmount * (1 + times) * _releaseLPDailyRate) /
+                10000;
+            if (releaseAmount > lpLockAmount) {
+                releaseAmount = lpLockAmount;
+            }
+        }
+        lpBalance = IERC20(_mainPair).balanceOf(account);
+    }
+
+    function setDailyDuration(uint256 d) external onlyOwner {
+        _releaseLPDailyDuration = d;
+    }
+
+    function setReleaseLPDailyRate(uint256 rate) external onlyOwner {
+        _releaseLPDailyRate = rate;
+    }
+
+    function getLPInfo()
+        public
+        view
+        returns (uint256 totalLP, uint256 lpUAmount)
+    {
+        totalLP = IERC20(_mainPair).totalSupply();
+        lpUAmount = IERC20(_usdt).balanceOf(_mainPair) * 2;
+    }
+}
+
+// TEST:0xF3b43a7922Fa4d506AE83f39B18Ae36a8E6de763   USDT：   0x55d398326f99059fF775485246999027B3197955
+//0xD99D1c33F9fC3444f8101754aBC46c52416550D1 0x10ED43C718714eb63d5aA57B78B54704E256024E
+contract CM is AbsToken {
+    constructor()
+        AbsToken(
+            //SwapRouter
+            address(0x10ED43C718714eb63d5aA57B78B54704E256024E),
+            //USDT
+            address(0x55d398326f99059fF775485246999027B3197955),
+            "CM",
+            "CM",
+            18,
+            10000,
+            //Receive
+            msg.sender,
+            //CMRouter
+            address(0),
+            //_CMM
+            address(0x6D22C8c003ecee438DaaB082F3B8f51965E0B5Ac),
+            //Limit
+            10
+        )
+    {}
+}
