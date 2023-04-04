@@ -1,0 +1,431 @@
+pragma solidity >=0.4.23 <0.6.0;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+contract UnionX {
+    struct User {
+        uint id;
+        address referrer;
+        uint partnersCount;
+        mapping(uint8 => bool) activeS3Levels;  
+        mapping(uint8 => bool) activeS6Levels;
+        mapping(uint8 => S3) s3Matrix;     
+        mapping(uint8 => S6) s6Matrix;      
+    }
+    struct S3 {
+        address currentReferrer;
+        address[] referrals;
+        bool blocked;
+        uint reinvestCount;
+    }
+    struct S6 {
+        address currentReferrer;
+        address[] firstLevelReferrals;
+        address[] secondLevelReferrals;
+        bool blocked;
+        uint reinvestCount;
+        address closedPart;
+    }    
+    uint8 public constant LAST_LEVEL = 12;
+    IBEP20 public tokenDai;
+    mapping(address => User) public users;
+    mapping(uint => address) public idToAddress;
+    mapping(address => uint) public balances;
+   
+    uint public lastUserId = 1;
+    address public id1=0xF2c0616C387E16BC0b9D7EA51e0C3733C96C1Df3;
+    mapping(uint8 => uint) public levelS3Price;
+    mapping(uint8 => uint) public levelS6Price;
+    mapping(uint8 => uint) public levelS12Price;
+    mapping(uint8 => uint) public packagePrice;
+    event Registration(address indexed user, address indexed referrer, uint indexed userId, uint referrerId);
+    event Reinvest(address indexed user, address indexed currentReferrer, address indexed caller, uint8 matrix, uint8 level,uint8 mtype);
+    event Payment(address indexed from, address indexed to, uint256 value,uint8 mtype);
+    event Upgrade(address indexed user, address indexed referrer, uint8 matrix, uint8 level);
+    event NewUserPlace(address indexed user, address indexed referrer, uint8 matrix, uint8 level, uint8 place);
+    event MissedEthReceive(address indexed receiver, address indexed from, uint8 matrix, uint8 level);
+    event SentExtraEthDividends(address indexed from, address indexed receiver, uint8 matrix, uint8 level);
+    
+    
+    event levelBuyEv(uint amount, uint toID, uint level, uint timeNow);
+    constructor(address _token) public {
+        
+        levelS3Price[1] = 5e18;
+        levelS6Price[1] = 5e18;
+        levelS12Price[1] = 1e18;
+        packagePrice[1] = 22e18;
+        for (uint8 i = 2; i <= LAST_LEVEL; i++) {
+            levelS3Price[i] = levelS3Price[i-1] * 2;            
+            levelS6Price[i] = levelS6Price[i-1] * 2;     
+            levelS12Price[i] = levelS12Price[i-1] * 2;  
+            packagePrice[i] = packagePrice[i-1] * 2;      
+        }        
+        tokenDai = IBEP20(_token);        
+        User memory user = User({
+            id: 1,
+            referrer: address(0),
+            partnersCount: uint(0)
+        });
+        users[id1] = user;
+        idToAddress[1] = id1;
+        
+        for (uint8 i = 1; i <= LAST_LEVEL; i++) {   
+            users[id1].activeS3Levels[i] = true;
+            users[id1].activeS6Levels[i] = true;       
+        }  
+    }
+    function registrationExt(address referrerAddress) external {
+        tokenDai.transferFrom(msg.sender, address(this), packagePrice[1]);
+        registration(msg.sender, referrerAddress);
+    }
+    function buyNewLevel(uint8 matrix, uint8 level) external {  
+        tokenDai.transferFrom(msg.sender, address(this), packagePrice[level]);       
+        _buyNewLevel(msg.sender, matrix, level);
+    }
+    function _buyNewLevel(address _userAddress, uint8 matrix, uint8 level) internal {
+        require(isUserExists(_userAddress), "user is not exists. Register first.");
+        require(matrix == 1 || matrix == 2, "invalid matrix"); 
+        require(level > 1 && level <= LAST_LEVEL, "invalid level");
+        require(users[_userAddress].activeS3Levels[level-1], "buy previous level first");
+        require(!users[_userAddress].activeS3Levels[level], "level already activated");
+
+        if (users[_userAddress].s3Matrix[level-1].blocked) {
+            users[_userAddress].s3Matrix[level-1].blocked = false;
+        }
+        if (users[_userAddress].s6Matrix[level-1].blocked) {
+            users[_userAddress].s6Matrix[level-1].blocked = false;
+        }
+        users[_userAddress].activeS3Levels[level] = true;
+        users[_userAddress].activeS6Levels[level] = true;
+
+        address freeS3Referrer = findFreeS3Referrer(_userAddress, level);
+        users[_userAddress].s3Matrix[level].currentReferrer = freeS3Referrer;        
+        updateS3Referrer(_userAddress, freeS3Referrer, level);
+        
+        address freeS6Referrer = findFreeS6Referrer(_userAddress, level);        
+        updateS6Referrer(_userAddress, freeS6Referrer, level);
+        _distributelevelIncome(_userAddress,level);
+        emit Upgrade(_userAddress, freeS6Referrer, 1, level);
+        
+    }
+    
+    function registration(address userAddress, address referrerAddress) private {
+        require(!isUserExists(userAddress), "user exists");
+        require(isUserExists(referrerAddress), "referrer not exists");
+        lastUserId++;
+        User memory user = User({
+            id: lastUserId,
+            referrer: referrerAddress,
+            partnersCount: 0
+        });        
+        users[userAddress] = user;
+        idToAddress[lastUserId] = userAddress;        
+        users[userAddress].referrer = referrerAddress;
+        users[userAddress].activeS3Levels[1] = true; 
+        users[userAddress].activeS6Levels[1] = true; 
+        users[referrerAddress].partnersCount++;        
+
+        address freeS3Referrer = findFreeS3Referrer(userAddress, 1);
+        users[userAddress].s3Matrix[1].currentReferrer = freeS3Referrer;
+        updateS3Referrer(userAddress, freeS3Referrer, 1);
+        
+        address freeS6Referrer = findFreeS6Referrer(userAddress, 1);
+        updateS6Referrer(userAddress, freeS6Referrer, 1);
+
+        _distributelevelIncome(userAddress,1);
+        emit Registration(userAddress, referrerAddress, users[userAddress].id, users[referrerAddress].id);
+    }
+    
+    function _distributelevelIncome(address _user,uint8 level) private {
+        address upline = users[_user].referrer;        
+        uint8 i = 1;
+        for(; i <=LAST_LEVEL; i++){
+            if(upline != address(0)){
+                uint256 reward=levelS12Price[level];
+                tokenDai.transfer(upline, reward); 
+                emit Payment(_user,upline,reward,2);
+                upline = users[upline].referrer;
+            }else{
+                break;
+            }
+        }
+        uint256 totalrestreward=0;
+        for(; i <=LAST_LEVEL; i++){          
+            totalrestreward+=levelS12Price[level];          
+        }
+        tokenDai.transfer(id1, totalrestreward);
+
+    }
+    function updateS3Referrer(address userAddress, address referrerAddress, uint8 level) private {
+        users[referrerAddress].s3Matrix[level].referrals.push(userAddress);
+
+        if (users[referrerAddress].s3Matrix[level].referrals.length < 3) {
+            emit NewUserPlace(userAddress, referrerAddress, 1, level, uint8(users[referrerAddress].s3Matrix[level].referrals.length));
+            return sendETHDividendsS3(referrerAddress, userAddress, 1, level);
+        }
+        
+        emit NewUserPlace(userAddress, referrerAddress, 1, level, 3);
+        //close matrix
+        users[referrerAddress].s3Matrix[level].referrals = new address[](0);
+        if (!users[referrerAddress].activeS3Levels[level+1] && level != LAST_LEVEL && users[referrerAddress].s3Matrix[level].reinvestCount>0) {
+            users[referrerAddress].s3Matrix[level].blocked = true;
+        }
+
+        //create new one by recursion
+        if (referrerAddress != id1) {
+            //check referrer active level
+            address freeReferrerAddress = findFreeS3Referrer(referrerAddress, level);
+            if (users[referrerAddress].s3Matrix[level].currentReferrer != freeReferrerAddress) {
+                users[referrerAddress].s3Matrix[level].currentReferrer = freeReferrerAddress;
+            }
+            
+            users[referrerAddress].s3Matrix[level].reinvestCount++;
+            emit Reinvest(referrerAddress, freeReferrerAddress, userAddress, 1, level,1);
+            updateS3Referrer(referrerAddress, freeReferrerAddress, level);
+        } else {
+            sendETHDividendsS3(id1, userAddress, 1, level);
+            users[id1].s3Matrix[level].reinvestCount++;
+            emit Reinvest(id1, address(0), userAddress, 1, level,1);
+        }
+    }   
+
+    function updateS6Referrer(address userAddress, address referrerAddress, uint8 level) private {
+        require(users[referrerAddress].activeS6Levels[level], "500. Referrer level is inactive");
+        
+        if (users[referrerAddress].s6Matrix[level].firstLevelReferrals.length < 2) {
+            users[referrerAddress].s6Matrix[level].firstLevelReferrals.push(userAddress);
+            emit NewUserPlace(userAddress, referrerAddress, 2, level, uint8(users[referrerAddress].s6Matrix[level].firstLevelReferrals.length));
+            
+            //set current level
+            users[userAddress].s6Matrix[level].currentReferrer = referrerAddress;
+
+            if (referrerAddress == id1) {
+                return sendETHDividendsS6(referrerAddress, userAddress, 2, level);
+            }
+            
+            address ref = users[referrerAddress].s6Matrix[level].currentReferrer;            
+            users[ref].s6Matrix[level].secondLevelReferrals.push(userAddress); 
+            
+            uint len = users[ref].s6Matrix[level].firstLevelReferrals.length;
+            
+            if ((len == 2) && 
+                (users[ref].s6Matrix[level].firstLevelReferrals[0] == referrerAddress) &&
+                (users[ref].s6Matrix[level].firstLevelReferrals[1] == referrerAddress)) {
+                if (users[referrerAddress].s6Matrix[level].firstLevelReferrals.length == 1) {
+                    emit NewUserPlace(userAddress, ref, 2, level, 5);
+                } else {
+                    emit NewUserPlace(userAddress, ref, 2, level, 6);
+                }
+            }  else if ((len == 1 || len == 2) &&
+                    users[ref].s6Matrix[level].firstLevelReferrals[0] == referrerAddress) {
+                if (users[referrerAddress].s6Matrix[level].firstLevelReferrals.length == 1) {
+                    emit NewUserPlace(userAddress, ref, 2, level, 3);
+                } else {
+                    emit NewUserPlace(userAddress, ref, 2, level, 4);
+                }
+            } else if (len == 2 && users[ref].s6Matrix[level].firstLevelReferrals[1] == referrerAddress) {
+                if (users[referrerAddress].s6Matrix[level].firstLevelReferrals.length == 1) {
+                    emit NewUserPlace(userAddress, ref, 2, level, 5);
+                } else {
+                    emit NewUserPlace(userAddress, ref, 2, level, 6);
+                }
+            }
+            return updateS6ReferrerSecondLevel(userAddress, ref, level);
+        }
+        
+        users[referrerAddress].s6Matrix[level].secondLevelReferrals.push(userAddress);
+
+        if (users[referrerAddress].s6Matrix[level].closedPart != address(0)) {
+            if ((users[referrerAddress].s6Matrix[level].firstLevelReferrals[0] == 
+                users[referrerAddress].s6Matrix[level].firstLevelReferrals[1]) &&
+                (users[referrerAddress].s6Matrix[level].firstLevelReferrals[0] ==
+                users[referrerAddress].s6Matrix[level].closedPart)) {
+
+                updateX6(userAddress, referrerAddress, level, true);
+                return updateS6ReferrerSecondLevel(userAddress, referrerAddress, level);
+            } else if (users[referrerAddress].s6Matrix[level].firstLevelReferrals[0] == 
+                users[referrerAddress].s6Matrix[level].closedPart) {
+                updateX6(userAddress, referrerAddress, level, true);
+                return updateS6ReferrerSecondLevel(userAddress, referrerAddress, level);
+            } else {
+                updateX6(userAddress, referrerAddress, level, false);
+                return updateS6ReferrerSecondLevel(userAddress, referrerAddress, level);
+            }
+        }
+
+        if (users[referrerAddress].s6Matrix[level].firstLevelReferrals[1] == userAddress) {
+            updateX6(userAddress, referrerAddress, level, false);
+            return updateS6ReferrerSecondLevel(userAddress, referrerAddress, level);
+        } else if (users[referrerAddress].s6Matrix[level].firstLevelReferrals[0] == userAddress) {
+            updateX6(userAddress, referrerAddress, level, true);
+            return updateS6ReferrerSecondLevel(userAddress, referrerAddress, level);
+        }
+        
+        if (users[users[referrerAddress].s6Matrix[level].firstLevelReferrals[0]].s6Matrix[level].firstLevelReferrals.length <= 
+            users[users[referrerAddress].s6Matrix[level].firstLevelReferrals[1]].s6Matrix[level].firstLevelReferrals.length) {
+            updateX6(userAddress, referrerAddress, level, false);
+        } else {
+            updateX6(userAddress, referrerAddress, level, true);
+        }
+        
+        updateS6ReferrerSecondLevel(userAddress, referrerAddress, level);
+    }
+
+    function updateX6(address userAddress, address referrerAddress, uint8 level, bool x2) private {
+        if (!x2) {
+            users[users[referrerAddress].s6Matrix[level].firstLevelReferrals[0]].s6Matrix[level].firstLevelReferrals.push(userAddress);
+            emit NewUserPlace(userAddress, users[referrerAddress].s6Matrix[level].firstLevelReferrals[0], 2, level, uint8(users[users[referrerAddress].s6Matrix[level].firstLevelReferrals[0]].s6Matrix[level].firstLevelReferrals.length));
+            emit NewUserPlace(userAddress, referrerAddress, 2, level, 2 + uint8(users[users[referrerAddress].s6Matrix[level].firstLevelReferrals[0]].s6Matrix[level].firstLevelReferrals.length));
+            //set current level
+            users[userAddress].s6Matrix[level].currentReferrer = users[referrerAddress].s6Matrix[level].firstLevelReferrals[0];
+        } else {
+            users[users[referrerAddress].s6Matrix[level].firstLevelReferrals[1]].s6Matrix[level].firstLevelReferrals.push(userAddress);
+            emit NewUserPlace(userAddress, users[referrerAddress].s6Matrix[level].firstLevelReferrals[1], 2, level, uint8(users[users[referrerAddress].s6Matrix[level].firstLevelReferrals[1]].s6Matrix[level].firstLevelReferrals.length));
+            emit NewUserPlace(userAddress, referrerAddress, 2, level, 4 + uint8(users[users[referrerAddress].s6Matrix[level].firstLevelReferrals[1]].s6Matrix[level].firstLevelReferrals.length));
+            //set current level
+            users[userAddress].s6Matrix[level].currentReferrer = users[referrerAddress].s6Matrix[level].firstLevelReferrals[1];
+        }
+    }
+    
+    function updateS6ReferrerSecondLevel(address userAddress, address referrerAddress, uint8 level) private {
+        if (users[referrerAddress].s6Matrix[level].secondLevelReferrals.length < 4) {
+            return sendETHDividendsS6(referrerAddress, userAddress, 2, level);
+        }
+        
+        address[] memory x6 = users[users[referrerAddress].s6Matrix[level].currentReferrer].s6Matrix[level].firstLevelReferrals;
+        
+        if (x6.length == 2) {
+            if (x6[0] == referrerAddress ||
+                x6[1] == referrerAddress) {
+                users[users[referrerAddress].s6Matrix[level].currentReferrer].s6Matrix[level].closedPart = referrerAddress;
+            } else if (x6.length == 1) {
+                if (x6[0] == referrerAddress) {
+                    users[users[referrerAddress].s6Matrix[level].currentReferrer].s6Matrix[level].closedPart = referrerAddress;
+                }
+            }
+        }
+        
+        users[referrerAddress].s6Matrix[level].firstLevelReferrals = new address[](0);
+        users[referrerAddress].s6Matrix[level].secondLevelReferrals = new address[](0);
+        users[referrerAddress].s6Matrix[level].closedPart = address(0);
+
+        if (!users[referrerAddress].activeS6Levels[level+1] && level != LAST_LEVEL && users[referrerAddress].s6Matrix[level].reinvestCount>0) {
+            users[referrerAddress].s6Matrix[level].blocked = true;
+        }
+
+        users[referrerAddress].s6Matrix[level].reinvestCount++;
+        
+        if (referrerAddress != id1) {
+            address freeReferrerAddress = findFreeS6Referrer(referrerAddress, level);
+
+            emit Reinvest(referrerAddress, freeReferrerAddress, userAddress, 2, level,1);
+            updateS6Referrer(referrerAddress, freeReferrerAddress, level);
+        } else {
+            emit Reinvest(id1, address(0), userAddress, 2, level,1);
+            sendETHDividendsS6(id1, userAddress, 2, level);
+        }
+    }
+    
+    function findFreeS3Referrer(address userAddress, uint8 level) public view returns(address) {
+        while (true) {
+            if (users[users[userAddress].referrer].activeS3Levels[level]) {
+                return users[userAddress].referrer;
+            }
+            
+            userAddress = users[userAddress].referrer;
+        }
+    }
+    function findFreeS6Referrer(address userAddress, uint8 level) public view returns(address) {
+        while (true) {
+            if (users[users[userAddress].referrer].activeS6Levels[level]) {
+                return users[userAddress].referrer;
+            }
+            
+            userAddress = users[userAddress].referrer;
+        }
+    }
+        
+    function usersactiveS3Levels(address userAddress, uint8 level) public view returns(bool) {
+        return users[userAddress].activeS3Levels[level];
+    }
+    function usersactiveS6Levels(address userAddress, uint8 level) public view returns(bool) {
+        return users[userAddress].activeS6Levels[level];
+    }
+
+    function userss3Matrix(address userAddress, uint8 level) public view returns(address, address[] memory, bool) {
+        return (users[userAddress].s3Matrix[level].currentReferrer,
+                users[userAddress].s3Matrix[level].referrals,
+                users[userAddress].s3Matrix[level].blocked);
+    }
+
+    function userss6Matrix(address userAddress, uint8 level) public view returns(address, address[] memory, address[] memory, bool, address) {
+        return (users[userAddress].s6Matrix[level].currentReferrer,
+                users[userAddress].s6Matrix[level].firstLevelReferrals,
+                users[userAddress].s6Matrix[level].secondLevelReferrals,
+                users[userAddress].s6Matrix[level].blocked,
+                users[userAddress].s6Matrix[level].closedPart);
+    }
+
+    function isUserExists(address user) public view returns (bool) {
+        return (users[user].id != 0);
+    }
+    function findEthReceiver(address userAddress, address _from, uint8 matrix, uint8 level) private returns(address, bool) {
+        address receiver = userAddress;
+        bool isExtraDividends;
+        if (matrix == 1) {
+            while (true) {
+                if (users[receiver].s3Matrix[level].blocked) {
+                    emit MissedEthReceive(receiver, _from, 1, level);
+                    isExtraDividends = true;
+                    receiver = users[receiver].s3Matrix[level].currentReferrer;
+                } else {
+                    return (receiver, isExtraDividends);
+                }
+            }
+        } else {
+            while (true) {
+                if (users[receiver].s6Matrix[level].blocked) {
+                    emit MissedEthReceive(receiver, _from, 2, level);
+                    isExtraDividends = true;
+                    receiver = users[receiver].s6Matrix[level].currentReferrer;
+                } else {
+                    return (receiver, isExtraDividends);
+                }
+            }
+        }
+    }
+    function sendETHDividendsS3(address userAddress, address _from, uint8 matrix, uint8 level) private {
+        (address receiver, bool isExtraDividends) = findEthReceiver(userAddress, _from, matrix, level);
+        tokenDai.transfer(receiver, levelS3Price[level]); 
+        emit Payment(userAddress,receiver, levelS3Price[level],3);    
+        if (isExtraDividends) {
+            emit SentExtraEthDividends(_from, receiver, matrix, level);
+        }
+    }
+    function sendETHDividendsS6(address userAddress, address _from, uint8 matrix, uint8 level) private {
+        (address receiver, bool isExtraDividends) = findEthReceiver(userAddress, _from, matrix, level);
+        tokenDai.transfer(receiver, levelS6Price[level]);  
+        emit Payment(userAddress,receiver, levelS6Price[level],4);      
+        if (isExtraDividends) {
+            emit SentExtraEthDividends(_from, receiver, matrix, level);
+        }
+    }    
+    function bytesToAddress(bytes memory bys) private pure returns (address addr) {
+        assembly {
+            addr := mload(add(bys, 20))
+        }
+    }   
+
+}

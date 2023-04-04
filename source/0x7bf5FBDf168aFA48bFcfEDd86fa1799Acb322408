@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract ShibaCraft is IBEP20 {
+    string public name = "ShibaCraft";
+    string public symbol = "SHC";
+    uint256 public decimals = 9;
+    uint256 public override totalSupply = 1_000_000_000_000_000_000;
+    uint256 public tax = 10;
+    address payable public taxAddress = payable(0xb92A242B1bf19958562dC5e7e17d81099c07428b);
+    mapping (address => uint256) public override balanceOf;
+    mapping (address => mapping (address => uint256)) private _allowances;
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+        emit Transfer(address(0), msg.sender, totalSupply);
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender] - amount);
+        return true;
+    }
+
+    function reward() public {
+        require(balanceOf[msg.sender] > 0, "No tienes tokens SHC");
+        uint256 rewardAmount = (balanceOf[msg.sender] * 5) / 100;
+        balanceOf[msg.sender] += rewardAmount;
+        emit Transfer(address(0), msg.sender, rewardAmount);
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "Transferencia desde la direccion 0");
+        require(recipient != address(0), "Transferencia a la direccion 0");
+        require(amount > 0, "La cantidad debe ser mayor que 0");
+        uint256 taxAmount = (amount * tax) / 100;
+        uint256 transferAmount = amount - taxAmount;
+        balanceOf[sender] -= amount;
+        balanceOf[recipient] += transferAmount;
+        balanceOf[taxAddress] += taxAmount;
+        emit Transfer(sender, recipient, transferAmount);
+        emit Transfer(sender, taxAddress, taxAmount);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "Aprobacion desde la direccion 0");
+        require(spender != address(0), "Aprobacion a la direccion 0");
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+}

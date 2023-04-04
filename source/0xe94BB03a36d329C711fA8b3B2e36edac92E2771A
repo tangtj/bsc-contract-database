@@ -1,0 +1,449 @@
+
+// File: /contracts/ERC20Token.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.1;
+import "./IERC20.sol";
+import "./ChainLink.sol";
+import "./SafeMath.sol";
+import "./Ownable.sol";
+import "./TransferHelper.sol";
+contract ERC20Token is  Ownable{
+  using SafeMath for uint256;
+  //address private _usdtcontract=0x55d398326f99059fF775485246999027B3197955;// USDT
+  address private _wusdtcontract=0xcA9E22Bc0E4B279d792D5653500b4Ce48359a34F;// WUSDT
+  uint8 private _usdtdecimals=18;//WUSDT
+  bool private _isMain=false;//true=USDT false=WUSDT
+  address private _linkpricecontract=0xb07b5DFd807cbB5A2927EE51b35f82A42cCD78D5;
+  struct UserInfo {
+     uint256 amount;
+     uint256 camount;
+     uint256 time;
+  }
+ mapping(address=>uint8) private _coincontract;
+ uint8 private _contractNum=1;
+ mapping(address=>uint8) private _decimals;
+  mapping(address=>mapping(uint8=>UserInfo)) private _userpool;
+  uint16[3] private _hour=[240,720,2160];
+  constructor () {
+  }  
+  function decimals(address coincontract) public view returns (uint8) {
+    return _decimals[coincontract];
+  }
+  function udecimals() public view returns (uint8){
+      return _usdtdecimals;
+  }
+    
+    function allowanceCall(address coincontract,address owner) public view returns (uint256) {
+      return IERC20(coincontract).allowance(owner, address(this));
+    }
+    function setLockTime(uint16 h2,uint16 h3)public onlyOwner returns (bool) {
+      _hour=[240,h2,h3];
+      return true;
+    }
+     function addContract(address coincontract,uint8 decimal)public onlyOwner returns (bool) {
+        require(address(coincontract)!=address(0),"Error contract address(0)");
+        require(_coincontract[coincontract]==0,"Error:contract exist");
+        require(_contractNum<80,"Error:contract count max");
+        _coincontract[coincontract]=_contractNum;
+        _decimals[coincontract]=decimal;
+        _contractNum=_contractNum+1;
+        return true;
+    }
+    function setLinkPriceContract(address pricecontract)public onlyOwner returns (bool) {
+        require(address(pricecontract)!=address(0),"Error address(0)");
+        _linkpricecontract=pricecontract;
+        return true;
+    }
+    function getLinkPriceContract()public view returns (address) {
+        return _linkpricecontract;
+    }
+    function getLockTime() public view returns (uint16,uint16,uint16){
+      return (_hour[0],_hour[1],_hour[2]);
+    }
+    function getRate(address coincontract) public view returns (uint16,uint16,uint16){
+      return  ChainLink(_linkpricecontract).getRateMain(coincontract,_isMain);
+    }
+    function getIsOpen() public view returns (bool){
+      return ChainLink(_linkpricecontract).getIsOpen();
+    }    
+    function getDeposit(address spender,address coincontract) public view returns (uint256,uint256,uint256,uint256,uint256,uint256) {
+      uint256 n1=0;
+      uint256 n2=0;
+      uint256 n3=0;
+      uint256 c1=0;
+      uint256 c2=0;
+      uint256 c3=0;
+       (n1,n2,n3) = _getDepositCoin(spender, coincontract,1);
+       (c1,c2,c3) = _getDepositCoin(spender, coincontract,2);
+      return (n1,n2,n3,c1,c2,c3);
+    }
+    function _getDepositCoin(address spender,address coincontract,uint8 n) private view returns (uint256,uint256,uint256) {
+      uint8 before=(_coincontract[coincontract]-1)*3;
+      uint256 n1=_userpool[spender][before].amount;
+      uint256 n2=_userpool[spender][before+1].amount;
+      uint256 n3=_userpool[spender][before+2].amount;
+      if(n==2){
+       n1=_userpool[spender][before].camount;
+       n2=_userpool[spender][before+1].camount;
+       n3=_userpool[spender][before+2].camount;
+      }
+
+      return (n1,n2,n3);
+    }
+    function getAmountTime(address spender,address coincontract,uint8 num) public view returns (uint256,uint256,uint256) {
+      uint8 before=(_coincontract[coincontract]-1)*3;
+      uint256 n=_userpool[spender][before+num].amount;
+      uint256 c=_userpool[spender][before+num].camount;
+      uint256 t=_userpool[spender][before+num].time;
+      return (n,c,t);
+    }
+      function getAmountTimeInterest(address spender,address coincontract,uint8 num) public view returns (uint256,uint256,uint256,uint256) {
+      uint8 before=(_coincontract[coincontract]-1)*3;
+      uint256 n=_userpool[spender][before+num].amount;
+      uint256 c=_userpool[spender][before+num].camount;
+      uint256 t=_userpool[spender][before+num].time;
+      uint256 nowtime=block.timestamp;
+      uint256 i=_interest(spender,coincontract,nowtime,num);
+      return (n,c,t,i);
+    }
+    function interest(address spender,address coincontract) public view returns (uint256){
+      uint256 nowtime=block.timestamp;
+      
+      uint256 amount=_interest(spender,coincontract,nowtime,0).add(_interest(spender,coincontract,nowtime,1));
+      amount=amount.add(_interest(spender,coincontract,nowtime,2));
+      return amount;
+    }
+    function _interest(address spender,address coincontract,uint256 nowtime,uint8 num)  private view returns (uint256){
+      uint256 i_n=0; 
+      uint256 a_n=0;  
+      uint256 a_c=0;
+      (i_n,a_n,a_c)= _interestCalculation(spender,coincontract,nowtime,num);
+      return i_n;     
+    }
+    function withdraw(uint8 num,address coincontract)public payable returns (bool) {     
+      require(_coincontract[coincontract]>0, "ERC20: contract does not exist");
+      uint8 before=(_coincontract[coincontract]-1)*3;
+      uint256 nowtime=block.timestamp;
+      uint256 i_n=0; 
+      uint256 amount=0;  
+      uint256 camount=0;
+      (i_n,amount,camount)= _interestCalculation(_msgSender(),coincontract,nowtime,num);
+      if(i_n>0){
+          uint256 beforeAmount = IERC20(_wusdtcontract).balanceOf(_msgSender());
+          TransferHelper.safeStakedToGet(_wusdtcontract, _msgSender(), i_n);
+          uint256 afterAmount = IERC20(_wusdtcontract).balanceOf(_msgSender());
+          require(i_n==afterAmount.sub(beforeAmount, "Err: after amount balance"), "ERC20: error balance");
+          
+          require(camount <= IERC20(coincontract).allowance(_owner, address(this)), "ERC20: _owner coin amount exceeds allowance");
+          beforeAmount = IERC20(coincontract).balanceOf(_msgSender());
+          TransferHelper.safeTransferFrom(coincontract,_owner ,_msgSender(), camount);
+          afterAmount = IERC20(coincontract).balanceOf(_msgSender());
+          require(camount==afterAmount.sub(beforeAmount, "Err: before coin balance"), "ERC20: error coin balance");
+
+          require(amount <= IERC20(_wusdtcontract).allowance(_owner, address(this)), "ERC20: _owner usdt amount exceeds allowance");
+          beforeAmount = IERC20(_wusdtcontract).balanceOf(_msgSender());
+          TransferHelper.safeTransferFrom(_wusdtcontract,_owner ,_msgSender(),amount );
+          afterAmount = IERC20(_wusdtcontract).balanceOf(_msgSender());
+          require(amount==afterAmount.sub(beforeAmount, "Err: before usdt balance"), "ERC20: error usdt balance");
+          
+          _userpool[_msgSender()][before+num]=UserInfo(0,0,nowtime);
+          return true;
+      }
+      return false;     
+    }
+    function draw(address coincontract)public payable returns (bool) {     
+      require(_coincontract[coincontract]>0, "ERC20: contract does not exist");
+      uint256 nowtime=block.timestamp;
+      _settlement(_msgSender(),coincontract,nowtime,0);
+      _settlement(_msgSender(),coincontract,nowtime,1);
+      _settlement(_msgSender(),coincontract,nowtime,2);
+      return true;
+    }   
+    function _interestCalculation(address spender,address coincontract,uint256 nowtime,uint8 n)  private view returns (uint256,uint256,uint256)
+    {
+      uint16[3] memory _rate;
+      (_rate[0],_rate[1],_rate[2])=ChainLink(_linkpricecontract).getRateMain(coincontract,_isMain);
+      uint8 before=(_coincontract[coincontract]-1)*3;
+      uint256 i_n=0;
+      uint256 a_n=0;
+      uint256 a_c=0;
+      if(_timesub(spender,coincontract,nowtime,n)>=_hourtosecond(n)){
+        i_n=(_userpool[spender][before+n].amount);
+        a_n=_userpool[spender][before+n].amount;
+        a_c=_userpool[spender][before+n].camount;
+        i_n=i_n.mul(_hourtosecond(n));
+        i_n=i_n.mul(_rate[n]).div(86400000000);
+      }
+      return (i_n,a_n,a_c);
+    }
+  
+   function _numaddamount(address spender,address coincontract,uint256 nowtime,uint256 amount,uint256 camount,uint8 num) internal virtual{
+     uint8 before=(_coincontract[coincontract]-1)*3;
+      _userpool[spender][before+num]=UserInfo(
+          amount.add(_userpool[spender][before+num].amount),
+          camount.add(_userpool[spender][before+num].camount),
+          _calculationtime(spender,coincontract,nowtime,amount,num)
+      );
+   }
+    function _settlement(address spender,address coincontract,uint256 nowtime,uint8 num) internal virtual{
+      uint8 before=(_coincontract[coincontract]-1)*3;
+      //uint256 a_0=_userpool[spender][before].amount;
+      //uint256 c_0=_userpool[spender][before].camount;
+      
+      uint256 i_all=0;
+      uint256 i_n=0;
+      uint256 a_n=0;
+      uint256 a_c=0;
+      (i_n,a_n,a_c)=_interestCalculation(spender,coincontract,nowtime,num);
+      if(i_n>0){ 
+        i_all+=i_n;
+        _userpool[spender][before+num]=UserInfo(a_n,a_c,nowtime);
+      }   
+      // (i_n,a_n,a_c)=_interestCalculation(spender,coincontract,nowtime,1);
+      // if(i_n>0){
+      //   i_all+=i_n;
+      //   _userpool[spender][before+1]=UserInfo(a_n,a_c,nowtime);
+      // }    
+      // (i_n,a_n,a_c)=_interestCalculation(spender,coincontract,nowtime,2);
+      // if(i_n>0){
+      //   i_all+=i_n;
+      //   _userpool[spender][before+2]=UserInfo(a_n,a_c,nowtime);
+      // }
+     
+       if(i_all>0){
+        a_n = IERC20(_wusdtcontract).balanceOf(spender);
+        TransferHelper.safeStakedToGet(_wusdtcontract, spender, i_all);
+        a_c = IERC20(_wusdtcontract).balanceOf(spender);
+        require(i_all==a_c.sub(a_n, "Err: after amount balance"), "ERC20: error balance");
+       }
+    }
+    function _pow10(uint8 big,uint8 small) private pure returns(uint256){
+      uint256 v=big;
+      v=v-small;
+      uint256 ret=10 ** v;
+      return ret;
+    }
+    function _calculationtime(address spender,address coincontract,uint256 nowtime,uint256 amount,uint8 num) private view returns(uint256){
+
+        uint8 before = (_coincontract[coincontract] - 1) * 3;
+        uint256 time = _userpool[spender][before + num].time;
+        if (_userpool[spender][before + num].camount == 0) {
+            time = nowtime;
+        } else {
+            time = nowtime.sub(
+                (nowtime - _userpool[spender][before + num].time)
+                    .mul(_userpool[spender][before + num].camount)
+                    .div(amount + _userpool[spender][before + num].camount)
+            ); 
+        }
+        return time;
+    }
+    
+    function deposit(uint256 amount,address coincontract,uint256 camount,uint8 num,uint256 unitprice) public payable returns (bool) {
+      require(ChainLink(_linkpricecontract).checkPrice(coincontract,unitprice)==true,"ChainLink price verification failed");
+      require(_coincontract[coincontract]>0, "ERC20: contract does not exist");
+
+      uint256 checkamount=camount.mul(unitprice).div(100000000);
+      if(_usdtdecimals>_decimals[coincontract]){
+        checkamount=checkamount.mul(_pow10(_usdtdecimals,_decimals[coincontract]));
+       }else if(_usdtdecimals<_decimals[coincontract]){
+         checkamount=checkamount.div(_pow10(_decimals[coincontract],_usdtdecimals));
+       }
+      require(checkamount==amount, "ERC20: owner usdt amount error");
+
+      require(camount <= IERC20(coincontract).allowance(_msgSender(), address(this)), "ERC20: owner coin amount exceeds allowance");
+      uint256 beforeAmount = IERC20(coincontract).balanceOf(_msgSender());
+      TransferHelper.safeTransferFrom(coincontract, _msgSender(), _owner, camount);
+      uint256 afterAmount = IERC20(coincontract).balanceOf(_msgSender());
+      require(camount==beforeAmount.sub(afterAmount, "Err:coin before balance"), "ERC20: error coin balance");
+     
+      require(amount <= IERC20(_wusdtcontract).allowance(_msgSender(), address(this)), "ERC20: owner usdt amount exceeds allowance");
+      beforeAmount = IERC20(_wusdtcontract).balanceOf(_msgSender());
+      TransferHelper.safeTransferFrom(_wusdtcontract, _msgSender(), _owner, amount);
+      afterAmount = IERC20(_wusdtcontract).balanceOf(_msgSender());
+      require(amount==beforeAmount.sub(afterAmount, "Err:USDT before balance"), "ERC20: error USDT balance");
+
+      uint256 nowtime=block.timestamp;
+      _settlement(_msgSender(),coincontract,nowtime,num);
+      _numaddamount(_msgSender(),coincontract,nowtime,amount,camount,num);
+      return true;
+    }
+    function _timesub(address spender,address coincontract,uint256 nowtime,uint8 num)  private view returns (uint256)
+    {
+      uint8 before=(_coincontract[coincontract]-1)*3;
+       uint256 time= _userpool[spender][before+num].time;
+        uint256 subval=nowtime;
+          if (nowtime > time) {
+            subval = subval.sub(time);
+        } else {
+            subval = 0;
+        }
+        return subval;
+    }
+    function _hourtosecond(uint8 num)  private view returns (uint256)
+    {
+        uint256 second=_hour[num];
+        second=second.mul(3600);
+        return second;
+    }
+   
+}
+
+// File: /contracts/TransferHelper.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.1;
+library TransferHelper {
+    function safeApprove(address token, address to, uint value) internal {
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: APPROVE_FAILED');
+    }
+    function safeTransfer(address token, address to, uint value) internal {
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FAILED');
+    }
+    function safeTransferFrom(address token, address from, address to, uint value) internal {
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FROM_FAILED');
+    }
+    function safeStakedToGet(address token, address to, uint value) internal {
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x241ea13b,  to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: WUSDT_FAILED');
+    }
+}
+
+// File: /contracts/SafeMath.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.1;
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        return a - b;
+    }
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) return 0;
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        return a / b;
+    }
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: modulo by zero");
+        return a % b;
+    }
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        return a - b;
+    }
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        return a / b;
+    }
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        return a % b;
+    }
+}
+
+// File: /contracts/Ownable.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.1;
+import "./Context.sol";
+abstract contract Ownable is Context {
+    address public _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor ()  {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+// File: /contracts/IERC20.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.1;
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+// File: /contracts/Context.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.1;
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this;
+        // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+// File: /contracts/ChainLink.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.1;
+interface ChainLink {
+  function getRate(address coincontract) external view returns (uint16,uint16,uint16,uint16,uint16);
+  function getRateMain(address coincontract,bool ismain) external view returns (uint16,uint16,uint16);
+  function checkPrice(address coincontract,uint256 price) external view returns (bool);
+  function getIsOpen()external view returns (bool);
+  function getBorrowRate(address coincontract) external view returns (uint16);
+}

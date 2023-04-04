@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.19;
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+      return msg.sender;
+    }
+}
+
+contract Ownable is Context {
+    address private _owner;
+    address private _previousOwner;
+
+    event OwnershipTransferred(address indexed previousOwner,address indexed newOwner);
+
+    constructor() {
+      address msgSender = _msgSender();
+      _owner = msgSender;
+      emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+      return _owner;
+    }
+
+    modifier onlyOwner() {
+      require( _owner == _msgSender());
+      _;
+    }
+
+    function transferOwnership(address account) public virtual onlyOwner {
+      emit OwnershipTransferred(_owner, account);
+      _owner = account;
+    }
+}
+
+contract AkihoICOSale is Context, Ownable {
+
+    uint256 public endedblock;
+
+    struct User {
+        uint256 balance;
+        bool claimed;
+    }
+
+    mapping(address => User) public user;
+    bool public finalized;
+
+    address public finalize_token;
+    uint256 public finalize_balance;
+    uint256 public finalize_totalSupply;
+
+    constructor() {}
+
+    function setEndBlock(uint256 _endedblock) public onlyOwner returns (bool) {
+        endedblock = _endedblock;
+        return true;
+    }
+
+    function getTimerRemaining() public view returns (uint256) {
+        if(block.timestamp<endedblock){
+            return endedblock - block.timestamp;
+        }
+        return 0;
+    }
+
+    function deposit(address adr) public payable returns (bool) {
+      require(endedblock != 0,"!ICO Was not start");
+      require(block.timestamp<endedblock,"!This ICO was out of date");
+      user[adr].balance += msg.value;
+      return true;
+    }
+
+    function earlywithdraw() public returns (bool) {
+      require(endedblock != 0,"!ICO Was not start");
+      require(block.timestamp<endedblock,"!This ICO was out of date");
+      uint256 balance = user[msg.sender].balance;
+      uint256 output = balance * 9 / 10;
+      user[msg.sender].balance = 0;
+      (bool success,) = msg.sender.call{ value: output }("");
+      require(success, "!fail to send eth");
+      return true;
+    }
+
+    function finalize(address token) public onlyOwner returns (bool) {
+      require(endedblock != 0,"!ICO Was not start");
+      require(!finalized,"!Pool was finalized already");
+      require(block.timestamp>endedblock,"!Finalize must be after pool end");
+      finalized = true;
+      finalize_token = token;
+      finalize_totalSupply = IERC20(token).balanceOf(address(this));
+      finalize_balance = address(this).balance;
+      (bool success,) = msg.sender.call{ value: finalize_balance }("");
+      require(success, "!fail to send eth");
+      return true;
+    }
+
+    function claimICO(address adr) public returns (bool) {
+      require(endedblock != 0,"!ICO Was not start");
+      require(finalized,"!Pool was not finalized");
+      require(!user[adr].claimed,"!User already claimed token");
+      user[adr].claimed = true;
+      uint256 claim = user[adr].balance * finalize_totalSupply / finalize_balance;
+      IERC20(finalize_token).transfer(adr,claim);
+      return true;
+    }
+    
+    function purge(address token) public onlyOwner returns (bool) {
+      uint256 amount = IERC20(token).balanceOf(address(this));
+      IERC20(token).transfer(msg.sender,amount);
+      return true;
+    }
+
+    function withdrawStuckNative() public onlyOwner returns (bool) {
+      (bool success,) = msg.sender.call{ value: address(this).balance }("");
+      require(success, "!fail to send eth");
+      return true;
+    }
+
+}
