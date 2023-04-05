@@ -1,0 +1,87 @@
+pragma solidity 0.6.8;
+
+contract AIB {
+    address public owner;
+    string public _name = "AIB";
+    string public _symbol = "AIB";
+    uint256 public totalSupply = 10000000000;
+    uint256 public tokenPrice = 0.0001 ether;
+    mapping(address => uint256) public balances;
+    mapping(address => mapping(address => uint256)) public allowed;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event PriceChanged(uint256 newPrice);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() public {
+        owner = msg.sender;
+        balances[msg.sender] = totalSupply;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can call this function");
+        _;
+    }
+
+    function transfer(address _to, uint256 _value) public returns (bool success) {
+        require(_to != address(0), "Cannot transfer to zero address");
+        require(balances[msg.sender] >= _value, "Insufficient balance");
+        balances[msg.sender] -= _value;
+        balances[_to] += _value;
+        emit Transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    function approve(address _spender, uint256 _value) public returns (bool success) {
+        require(_spender != address(0), "Cannot approve zero address");
+        allowed[msg.sender][_spender] = _value;
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+        require(_to != address(0), "Cannot transfer to zero address");
+        require(balances[_from] >= _value, "Insufficient balance");
+        require(allowed[_from][msg.sender] >= _value, "Not allowed to transfer this amount");
+        balances[_from] -= _value;
+        balances[_to] += _value;
+        allowed[_from][msg.sender] -= _value;
+        emit Transfer(_from, _to, _value);
+        return true;
+    }
+
+    function changePrice(uint256 _newPrice) public onlyOwner {
+        require(_newPrice > 0, "Price must be greater than zero");
+        tokenPrice = _newPrice;
+        emit PriceChanged(_newPrice);
+    }
+
+    function transferOwnership(address _newOwner) public onlyOwner {
+        require(_newOwner != address(0), "Cannot transfer ownership to zero address");
+        address previousOwner = owner;
+        owner = _newOwner;
+        emit OwnershipTransferred(previousOwner, _newOwner);
+    }
+
+    function withdrawBNB() public onlyOwner {
+        uint256 balance = address(this).balance;
+        require(balance > 0, "Contract has no BNB balance");
+        payable(owner).transfer(balance);
+    }
+
+    function buyTokens(address _referral) public payable {
+        require(msg.value > 0, "Amount of BNB sent must be greater than zero");
+        uint256 tokens = msg.value / tokenPrice;
+        require(balances[owner] >= tokens, "Insufficient token balance for sale");
+        balances[owner] -= tokens;
+        balances[msg.sender] += tokens;
+        emit Transfer(owner, msg.sender, tokens);
+        if (_referral != address(0)) {
+            uint256 referralBonus = msg.value / 20;
+            balances[owner] -= referralBonus;
+            balances[_referral] += referralBonus;
+            emit Transfer(owner, _referral, referralBonus);
+        }
+    }
+}
