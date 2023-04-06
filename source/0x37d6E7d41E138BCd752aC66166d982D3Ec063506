@@ -1,0 +1,98 @@
+
+// File: contracts/9420Inviter.sol
+/**
+ *  SPDX-License-Identifier: MIT
+ */
+pragma solidity ^0.8.7;
+
+interface IInviter {
+    function addRelationEx(address recommer, address user) external;
+    function preRelation(address from, address to) external;
+    function getRecommer(address account) external returns (address);
+    function getRefBackMapping(address from, address to) external view returns (bool);
+    function getForefathers(address addr,uint num) external view returns(address[] calldata fathers);
+}
+
+contract Inviter is IInviter{
+    mapping(uint256 => address) public totalUserAddres;
+    mapping (address => address) public _recommerMapping;
+    mapping(address => mapping(address => bool)) public _refBackMapping;
+    uint256 public userTotal = 0;
+
+    address private topAddress; // top user
+    address constant public rootAddress = address(0x000000000000000000000000000000000000dEaD);
+    
+    mapping(address => bool) public isCaller;  // contract caller allowed
+
+    constructor() {
+        isCaller[msg.sender] = true;
+
+        topAddress = msg.sender; 
+        _recommerMapping[rootAddress] = address(0xdeaddead);
+        _recommerMapping[topAddress] = rootAddress;
+        userTotal++;
+        totalUserAddres[userTotal] = topAddress;
+    }
+
+    event AddRelation(address indexed recommer, address indexed user);
+    
+    modifier onlyCaller(){
+        require(isCaller[msg.sender], "Error Caller"); 
+        _;
+    }
+    
+    function addCaller(address _caller) external onlyCaller{
+        isCaller[_caller] = true;
+    }
+
+    function delCaller(address _caller) external onlyCaller{
+        isCaller[_caller] = false;
+    }
+
+    function addRelation(address recommer,address user) internal {
+        if(recommer != user 
+            && _recommerMapping[user] == address(0x0) 
+            && _recommerMapping[recommer] != address(0x0)){
+            _recommerMapping[user] = recommer;
+            userTotal++;
+            totalUserAddres[userTotal] = user;
+            emit AddRelation(recommer, user);
+        }
+    }
+
+    function addRelationEx(address recommer,address user) external onlyCaller{
+        addRelation(recommer, user);
+    }
+
+    event PreAddRelation(address indexed recommer, address indexed user);
+
+    function preRelation(address from, address to) external onlyCaller{
+        //A->B
+        if(_refBackMapping[to][from]){
+            // is A ' ref b?
+            //Search Back B->A
+            addRelation(to, from);
+        } else if (!_refBackMapping[from][to] && !_refBackMapping[to][from]) {
+            _refBackMapping[from][to] = true;
+            emit PreAddRelation(from, to);
+        }
+    }
+
+    function getRefBackMapping(address from, address to) public view returns (bool){
+        return _refBackMapping[from][to];
+    }
+
+    function getRecommer(address addr) public view returns(address){
+        return _recommerMapping[addr];
+    }
+
+    function getForefathers(address addr,uint num) public view returns(address[] memory fathers) {
+        fathers = new address[](num);
+        address parent  = addr;
+        for( uint i = 0; i < num; i++){
+            parent = _recommerMapping[parent];
+            if(parent == address(0xdead) || parent == address(0) ) break;
+            fathers[i] = parent;
+        }
+    }
+}
