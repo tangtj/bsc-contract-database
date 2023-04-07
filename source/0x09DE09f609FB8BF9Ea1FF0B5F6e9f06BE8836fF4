@@ -1,0 +1,262 @@
+//SPDX-License-Identifier: MIT
+
+
+pragma solidity 0.8.0;
+
+interface ITRC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the token decimals.
+     */
+    function decimals() external view returns (uint8);
+
+    /**
+     * @dev Returns the token symbol.
+     */
+    function symbol() external view returns (string memory);
+
+    /**
+     * @dev Returns the token name.
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev Returns the bep token owner.
+     */
+    function getOwner() external view returns (address);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address _owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+
+// This contract keeps all Ether sent to it with no way
+// to get it back.
+contract YOLLLO_Pancake {
+    address private systemWallet;
+    address private _owner;
+    uint8 public maxDestinations = 15;
+    uint16 public percentsMultiplier = 100;
+
+    struct DistributionDestination {
+        address sendTo;
+        uint16 percent;
+    }
+
+    DistributionDestination[] public defaultDistributionDestinations;
+    // mapping(uint256 => DistributionDestination[]) public distributionDestinations;
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    constructor() {
+        systemWallet = msg.sender;
+        defaultDistributionDestinations.push(DistributionDestination({
+            sendTo: address(0x2ef99699164D52E048268bA13DAf5825528E805B),
+            percent: 100 * percentsMultiplier
+        }));
+    }
+
+    function validateDestinations(DistributionDestination[] memory _destinations) view internal {
+        uint16 totalPercents = 0;
+        require(_destinations.length <= maxDestinations, "Max destinations error. Provide destinations <= maxDestinations");
+        for(uint16 i = 0; i < _destinations.length; i ++) {
+            totalPercents += _destinations[i].percent;
+            require(totalPercents <= 100 * percentsMultiplier, "Total percents must be <= 100");
+        }
+    }
+
+    function setSystemWallet(address newSystemWallet) external onlyOwner {
+        systemWallet = newSystemWallet;
+    }
+
+    // function setDistributionDestinations(DistributionDestination[] memory _destinations, uint256 _invoice_id) external onlyOwner {
+    //     validateDestinations(_destinations);
+    //     distributionDestinations[_invoice_id] = _destinations;
+    // }
+
+    // function setDefaultDistributionDestinations(DistributionDestination[] memory _destinations) external onlyOwner {
+    //     validateDestinations(_destinations);
+    //     defaultDistributionDestinations = _destinations;
+    // }
+
+    function processDestinations(ITRC20 token, DistributionDestination[] memory _destinations, uint256 _total_amount, uint256 _invoice_id, bool _sendFromThis) private returns (uint256) {
+        uint256 alreadyPaid = 0;
+        
+        for (uint16 i = 0; i < _destinations.length; i ++) {
+            uint256 toPay = _destinations[i].percent * _total_amount / 100 / percentsMultiplier;
+            if (toPay > _total_amount - alreadyPaid) {
+                toPay = _total_amount - alreadyPaid;
+            }
+
+            if (toPay == 0) {
+                continue;
+            }
+            
+            bool transferResult = false;
+            
+            if (_sendFromThis) {
+            	transferResult = token.transfer(_destinations[i].sendTo, toPay);
+            } else {
+            	transferResult = token.transferFrom(msg.sender, _destinations[i].sendTo, toPay);
+            }
+
+            require(transferResult, "Payment fail");
+
+            alreadyPaid += toPay;
+
+            emit PaymentPartDistributed(_invoice_id, _destinations[i].sendTo, toPay);
+
+            if (_total_amount - alreadyPaid == 0) {
+                break;
+            }
+        }
+
+        return _total_amount - alreadyPaid;
+    }
+    
+    function withdraw(address payable _to, uint256 _amount) external onlyOwner {
+    	(bool sent, bytes memory data) = _to.call{value: _amount}("");
+        require(sent, "Failed to send");
+    }
+    
+    function split(address _token_address, uint256 _amount, uint256 _invoice_id, bool _sendFromThis) external {
+        require(_token_address != address(0), "Token TRC20 address is required");
+        require(_amount > 0, "Amount is required");
+
+
+        ITRC20 token = ITRC20(payable(_token_address));
+        
+        if (_sendFromThis) {
+            uint256 balance = token.balanceOf(address(this));
+        	require(balance >= _amount, "Amount is not sufficient. Please, increase balance and send request again");
+        } else {
+            uint256 allowance = token.allowance(msg.sender, address(this));
+        	require(allowance >= _amount, "Amount is not sufficient. Please, increase allowance and send request again");
+        }
+
+
+        emit PaymentReceived(msg.sender, _invoice_id, _amount);
+
+        uint256 change = 0;
+
+        // if (distributionDestinations[_invoice_id].length > 0) {
+        //     change = processDestinations(token, distributionDestinations[_invoice_id], _amount, _invoice_id);
+        // } else {
+            change = processDestinations(token, defaultDistributionDestinations, _amount, _invoice_id, _sendFromThis);
+        // }
+
+        if (change > 0) {
+            if (_sendFromThis) {
+                require(token.transfer(systemWallet, change), "Payment with change amount failed");
+            } else {
+                require(token.transferFrom(msg.sender, systemWallet, change), "Payment with change amount failed");
+            }
+        }
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+
+    event Received(address, address, uint);
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+    event PaymentReceived(
+        address indexed paymentSender,
+        uint256 indexed invoiceId,
+        uint256 indexed amount
+    );
+    event PaymentPartDistributed(
+        uint256 indexed invoiceId,
+        address indexed paymentDestination,
+        uint256 indexed amount
+    );
+}

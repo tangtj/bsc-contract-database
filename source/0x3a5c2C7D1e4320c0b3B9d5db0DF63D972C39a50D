@@ -1,0 +1,1107 @@
+
+// File: Token.sol
+/*
+
+█▀▄▀█ █ █▀▀ ▄▀█ █   █▀▄▀█ █▀▀
+█░▀░█ █ █▄▄ █▀█ █▄▄ █░▀░█ ██▄
+ 
+is pleased to present to you:
+
+SHOOBLE INU
+-----------------------------------------
+Website:  https://shoobleinu.com
+Twitter:  https://twitter.com/shoobleinu
+Telegram: https://t.me/shoobleinu
+
+JOIN THE TELEGRAM AND FOWLLOW US IN TWITTER...
+HELP TAKE THIS TO THE MOON...
+
+LP LOCKED. ANTI-BOT, ANTI-WHALE, ANTI-DUMP.
+
+*/
+
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.1;
+
+import "Common.sol";
+import "IDEX.sol";
+import "DividendDistributor.sol";
+
+contract Token is IBEP20, Auth {
+    using SafeMath for uint256;
+
+    // For DEX Intengration ---------------------------------------------------------------------
+    address BUSD = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+    address WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address DEAD = 0x000000000000000000000000000000000000dEaD;
+    address ZERO = 0x0000000000000000000000000000000000000000;
+    address PancakewapROUTER = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    uint256 MINUS1 = type(uint256).max; //uint256(-1);
+
+    IDEXRouter _router;
+    address _pair;
+
+    DividendDistributor _distributor;
+    uint256 _distributorGas = 500000;
+
+    // Helps to ensure that the PancakeSwap pool always has sufficient liquidity
+    uint256 _targetLiquidity = 5; // 5% of the circulating supply of the token as liquidity in the pair
+    // ------------------------------------------------------------------------------------------
+
+    // BEP20 standard interface -----------------------------------------------------------------
+    string _name;
+    string _symbol;
+    uint8 constant _decimals = 18;
+
+    mapping(address => uint256) _balances;
+    mapping(address => mapping(address => uint256)) _allowances;
+
+    uint256 _totalSupply;
+    // ------------------------------------------------------------------------------------------
+
+    // For Behabior purposes -------------------------------------------------------------------
+    bool _isTradingOpen = false;
+
+    uint256 constant _liquidityFee = 1;
+    uint256 constant _reflectionFee = 0;
+    uint256 constant _marketingFee = 4;
+
+    address _liquidityWallet;
+    address _marketingWallet;
+
+    // Amount of tokens restrictions
+    uint256 _maxAmountOfTokensInTx; //max tokens transfered
+    uint256 _maxAmountOfTokensInWallet; //max holding of x%
+
+    // Wallets exceptions
+    mapping(address => bool) _isFeeExempt;
+    mapping(address => bool) _isTxLimitExempt;
+    mapping(address => bool) _isTimelockExempt;
+    mapping(address => bool) _isDividendExempt;
+
+    // Cooldown & timer functionality
+    uint8 _cooldownTimerInterval = 15; // 15 secounds by default
+    mapping(address => uint) private _cooldownTimer;
+
+    bool _isSwapEnabled = true;
+    uint256 _swapThreshold; // 0.01% of supply
+    bool _inSwap;
+    modifier swapping() {
+        _inSwap = true;
+        _;
+        _inSwap = false;
+    }
+
+    // ------------------------------------------------------------------------------------------
+
+    // Sets up the initial state of the contract
+    constructor(
+        string memory tokenName,
+        string memory tokenSymbol,
+        uint256 tokenTotalSupply,
+        address tokenMarketingWallet
+    ) Auth(msg.sender) {
+        _name = tokenName;
+        _symbol = tokenSymbol;
+        _totalSupply = tokenTotalSupply * (10 ** _decimals);
+
+        _maxAmountOfTokensInTx = (_totalSupply * 2) / 100; //max tokens transfered
+        _maxAmountOfTokensInWallet = (_totalSupply * 4) / 100; //max holding of x%
+        _swapThreshold = (_totalSupply * 10) / 10000; // 0.01% of supply
+
+        // A way to reduce the circulating supply of the token
+        _liquidityWallet = DEAD; //tokenLiquidityWallet;
+        _marketingWallet = tokenMarketingWallet;
+
+        _router = IDEXRouter(PancakewapROUTER);
+        _pair = IDEXFactory(_router.factory()).createPair(WBNB, address(this));
+        _allowances[address(this)][address(_router)] = MINUS1;
+
+        _distributor = new DividendDistributor(address(_router));
+
+        _isFeeExempt[msg.sender] = true;
+        _isTxLimitExempt[msg.sender] = true;
+        _isTxLimitExempt[DEAD] = true;
+
+        // No timelock for these people
+        _isTimelockExempt[msg.sender] = true;
+        _isTimelockExempt[DEAD] = true;
+        _isTimelockExempt[address(this)] = true;
+
+        _isDividendExempt[_pair] = true;
+        _isDividendExempt[address(this)] = true;
+        _isDividendExempt[DEAD] = true;
+
+        _balances[msg.sender] = _totalSupply;
+        emit Transfer(address(0), msg.sender, _totalSupply);
+    }
+
+    // This is a fallback function that allows the contract to receive BNB
+    receive() external payable {}
+
+    // BEP20 standard interface -----------------------------------------------------------------------
+
+    // This function returns the total supply of tokens
+    function totalSupply() external view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    // This function returns the number of decimal places used for token amounts
+    function decimals() external pure override returns (uint8) {
+        return _decimals;
+    }
+
+    // This function returns the token symbol
+    function symbol() external view override returns (string memory) {
+        return _symbol;
+    }
+
+    // This function returns the token symbol
+    function name() external view override returns (string memory) {
+        return _name;
+    }
+
+    // This function returns the address of the contract owner
+    function getOwner() external view override returns (address) {
+        return owner;
+    }
+
+    // This function returns the balance of tokens held by a given address
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    // This function returns the amount of tokens that a spender is allowed to transfer on behalf of a holder
+    function allowance(
+        address holder,
+        address spender
+    ) external view override returns (uint256) {
+        return _allowances[holder][spender];
+    }
+
+    // This function allows a spender to transfer a specified amount of tokens on behalf of the caller
+    function approve(
+        address spender,
+        uint256 amount
+    ) public override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    // This function allows a spender to transfer an unlimited amount of tokens on behalf of the caller
+    function approveMax(address spender) external returns (bool) {
+        return approve(spender, MINUS1);
+    }
+
+    // This function transfers a specified amount of tokens from the caller's address to a recipient's address
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external override returns (bool) {
+        return _transferFrom(msg.sender, recipient, amount);
+    }
+
+    // This function transfers a specified amount of tokens from the caller's address to a recipient's address
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external override returns (bool) {
+        if (_allowances[sender][msg.sender] != MINUS1) {
+            _allowances[sender][msg.sender] = _allowances[sender][msg.sender]
+                .sub(amount, "Insufficient Allowance");
+        }
+
+        return _transferFrom(sender, recipient, amount);
+    }
+
+    // Behavior functions ----------------------------------------------------------------------------------
+
+    // This is an internal function that performs a token transfer
+    function _transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal returns (bool) {
+        // If we're currently in a swap, simply execute a basic transfer
+        if (_inSwap) {
+            return _basicTransfer(sender, recipient, amount);
+        }
+
+        // Ensure that trading is open to non-authorized senders and recipients
+        if (!authorizations[sender] && !authorizations[recipient]) {
+            require(_isTradingOpen, "Trading not open yet");
+        }
+
+        // Check if the recipient is not authorized and is not one of the excluded addresses
+        if (
+            !authorizations[sender] &&
+            recipient != address(this) &&
+            recipient != address(DEAD) &&
+            recipient != _pair &&
+            recipient != _marketingWallet &&
+            recipient != _liquidityWallet
+        ) {
+            // Ensure that the total holding of the recipient does not exceed the maximum
+            uint256 heldTokens = balanceOf(recipient);
+            require(
+                (heldTokens + amount) <= _maxAmountOfTokensInWallet,
+                "Total Holding is currently limited, you can not buy that much."
+            );
+        }
+
+        // Enforce cooldown timer on buys for non-exempt recipients, so a bot doesnt do quick trades!
+        if (
+            sender == _pair &&
+            isCooldownEnabled() &&
+            !_isTimelockExempt[recipient]
+        ) {
+            require(
+                _cooldownTimer[recipient] < block.timestamp,
+                "Please wait for cooldown between buys"
+            );
+            _cooldownTimer[recipient] =
+                block.timestamp +
+                _cooldownTimerInterval;
+        }
+
+        // Check if the transaction is within the transaction limit
+        isTxInLimit(sender, amount);
+
+        // Swap tokens for liquidity if necessary to maintain 25%
+        if (shouldSwapBack()) {
+            swapBack();
+        }
+
+        // Subtract tokens from the sender's balance and add to the recipient's balance
+        _balances[sender] = _balances[sender].sub(
+            amount,
+            "Insufficient Balance"
+        );
+
+        uint256 amountReceived = shouldTakeFee(sender)
+            ? takeFee(sender, amount)
+            : amount;
+        _balances[recipient] = _balances[recipient].add(amountReceived);
+
+        // Update dividend tracker for sender and recipient
+        if (!_isDividendExempt[sender]) {
+            try _distributor.setShare(sender, _balances[sender]) {} catch {}
+        }
+
+        if (!_isDividendExempt[recipient]) {
+            try
+                _distributor.setShare(recipient, _balances[recipient])
+            {} catch {}
+        }
+
+        try _distributor.process(_distributorGas) {} catch {}
+
+        // Emit a transfer event and return true to indicate success
+        emit Transfer(sender, recipient, amountReceived);
+        return true;
+    }
+
+    // This is an internal function that performs a basic token transfer
+    function _basicTransfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal returns (bool) {
+        _balances[sender] = _balances[sender].sub(
+            amount,
+            "Insufficient Balance"
+        );
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    // This is an internal function that determines whether a fee should be taken for a given transaction
+    function shouldTakeFee(address sender) internal view returns (bool) {
+        return !_isFeeExempt[sender];
+    }
+
+    // This is an internal function that takes a fee from a transaction and adds it to the contract's balance
+    function takeFee(
+        address sender,
+        uint256 amount
+    ) internal returns (uint256) {
+        uint256 feeAmount = amount.mul(getTotalFee()).div(100);
+
+        _balances[address(this)] = _balances[address(this)].add(feeAmount);
+        emit Transfer(sender, address(this), feeAmount);
+
+        return amount.sub(feeAmount);
+    }
+
+    // This is an internal function that determines whether the contract should swap tokens for BNB and add liquidity
+    function shouldSwapBack() internal view returns (bool) {
+        return
+            msg.sender != _pair &&
+            !_inSwap &&
+            _isSwapEnabled &&
+            _balances[address(this)] >= _swapThreshold;
+    }
+
+    event AutoLiquify(uint256 amountBNB, uint256 amountBOG);
+
+    // This is an internal function that swaps tokens for BNB and adds liquidity on PancakeSwap
+    function swapBack() internal swapping {
+        // Sets it to either 0 or _liquidityFee based on whether the contract is over-liquified or not
+        uint256 dynamicLiquidityFee = isOverLiquified(_targetLiquidity, 100)
+            ? 0
+            : _liquidityFee;
+        // This calculates the amount of tokens to be added to the liquidity pool
+        uint256 amountToLiquify = balanceOf(address(this))
+            .mul(dynamicLiquidityFee)
+            .div(getTotalFee())
+            .div(2);
+        // This calculates the amount of tokens to be swapped for BNB
+        uint256 amountToSwap = balanceOf(address(this)).sub(amountToLiquify);
+
+        // Represents the token swap path
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = WBNB;
+
+        // Stores the balance of the contract
+        uint256 balanceBefore = address(this).balance;
+
+        // This swaps amountToSwap tokens for BNB using the PancakeSwap router's
+        _router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amountToSwap,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+
+        // Amount of BNB received from the swap
+        uint256 amountBNB = address(this).balance.sub(balanceBefore);
+
+        // Calculates the total fee in BNB
+        uint256 totalBNBFee = getTotalFee().sub(dynamicLiquidityFee.div(2));
+
+        // Calculates the amount of BNB to be added to the liquidity pool
+        uint256 amountBNBLiquidity = amountBNB
+            .mul(dynamicLiquidityFee)
+            .div(totalBNBFee)
+            .div(2);
+        // Calculates the amount of BNB to be allocated to the reflection wallet
+        uint256 amountBNBReflection = amountBNB.mul(_reflectionFee).div(
+            totalBNBFee
+        );
+        // Calculates the amount of BNB to be allocated to the marketing wallet
+        uint256 amountBNBMarketing = amountBNB.mul(_marketingFee).div(
+            totalBNBFee
+        );
+
+        // Distribute the reflection fee to token holders
+        try _distributor.deposit{value: amountBNBReflection}() {} catch {}
+        // Transfers the marketing fee in BNB to the marketing wallet
+        (bool tmpSuccess, ) = payable(_marketingWallet).call{
+            value: amountBNBMarketing,
+            gas: 30000
+        }("");
+
+        // only to supress warning msg
+        tmpSuccess = false;
+
+        // Checks if the amount of tokens to be added as liquidity is greater than zero
+        if (amountToLiquify > 0) {
+            // Adds liquidity to the PancakeSwap pool
+            _router.addLiquidityETH{value: amountBNBLiquidity}(
+                address(this),
+                amountToLiquify,
+                0,
+                0,
+                _liquidityWallet,
+                block.timestamp
+            );
+            // Emits an event to notify the blockchain about the successful auto-liquification of tokens
+            emit AutoLiquify(amountBNBLiquidity, amountToLiquify);
+        }
+    }
+
+    // This function transfers a specified percentage of the contract's BNB balance to the marketing wallet
+    function clearStuckBalance(uint256 amountPercentage) external onlyOwner {
+        uint256 amountBNB = address(this).balance;
+        payable(_marketingWallet).transfer(
+            (amountBNB * amountPercentage) / 100
+        );
+    }
+
+    // Getting private and calculated values -------------------------------------------------------
+
+    // This function returns the PancakeSwap router contract address
+    function router() public view returns (IDEXRouter) {
+        return _router;
+    }
+
+    // This function returns the liquidity pair contract address
+    function pair() public view returns (address) {
+        return _pair;
+    }
+
+    // This function checks whether the current liquidity backing is greater than a specified target,
+    // and returns a boolean value indicating whether this is the case
+    function isOverLiquified(
+        uint256 target,
+        uint256 accuracy
+    ) public view returns (bool) {
+        return getLiquidityBacking(accuracy) > target;
+    }
+
+    // This is an internal function that checks whether the amount of tokens being transferred in a
+    // given transaction exceeds the maximum amount permitted in a single transaction
+    function isTxInLimit(address sender, uint256 amount) internal view {
+        require(
+            amount <= _maxAmountOfTokensInTx || _isTxLimitExempt[sender],
+            "TX Limit Exceeded"
+        );
+    }
+
+    // This function returns a boolean value indicating whether trading is currently open
+    function isTradingOpen() public view returns (bool) {
+        return _isTradingOpen;
+    }
+
+    //  This function returns a boolean value indicating whether swapping tokens is currently enabled
+    function isSwapEnabled() public view returns (bool) {
+        return _isSwapEnabled;
+    }
+
+    // This function returns a boolean value indicating whether a cooldown period is currently enabled between trades
+    function isCooldownEnabled() public view returns (bool) {
+        return _cooldownTimerInterval > 0;
+    }
+
+    // This function returns the current circulating supply of tokens
+    function getCirculatingSupply() public view returns (uint256) {
+        return _totalSupply.sub(balanceOf(DEAD)).sub(balanceOf(ZERO));
+    }
+
+    // This function returns the total fee percentage, which is calculated by summing the liquidity fee,
+    // reflection fee, and marketing fee
+    function getTotalFee() public pure returns (uint256) {
+        return _liquidityFee.add(_reflectionFee).add(_marketingFee);
+    }
+
+    // This function returns the swap threshold value, which represents the minimum amount of tokens
+    // that must be present in the contract in order for a swap to occur
+    function getSwapThreshold() public view returns (uint256) {
+        return _swapThreshold;
+    }
+
+    // This function returns the current cooldown timer interval, which represents the amount of time
+    // that must elapse between trades
+    function getCooldownTimerInterval() public view returns (uint8) {
+        return _cooldownTimerInterval;
+    }
+
+    // This function returns the current cooldown timer interval, which represents the amount of time
+    // that must elapse between trades
+    function getLiquidityBacking(
+        uint256 accuracy
+    ) public view returns (uint256) {
+        return
+            accuracy.mul(balanceOf(_pair).mul(2)).div(getCirculatingSupply());
+    }
+
+    // Returns the address of the current liquidity wallet
+    function getLiquidityWallet() public view returns (address) {
+        return _liquidityWallet;
+    }
+
+    // Returns the address of the current liquidity wallet
+    function getMarketingWallet() public view returns (address) {
+        return _marketingWallet;
+    }
+
+    // Returns the address of the current liquidity wallet
+    function getBalance() public view returns (uint256) {
+        return address(this).balance;
+    }
+
+    // Setting values ------------------------------------------------------------------------------
+
+    // This function sets the trading open status to either true or false
+    function setIsTradingOpen(bool isOpen) public onlyOwner {
+        _isTradingOpen = isOpen;
+    }
+
+    // This function sets the cooldown timer interval to a specified value
+    function setCooldownTimeInterval(uint8 timeInterval) public authorized {
+        _cooldownTimerInterval = timeInterval;
+    }
+
+    // This function sets the dividend exempt status of a specified address to either true or false
+    function setIsDividendExempt(
+        address holder,
+        bool exempt
+    ) external authorized {
+        require(holder != address(this) && holder != _pair);
+        _isDividendExempt[holder] = exempt;
+        if (exempt) {
+            _distributor.setShare(holder, 0);
+        } else {
+            _distributor.setShare(holder, _balances[holder]);
+        }
+    }
+
+    // This function sets the fee exempt status of a specified address to either true or false
+    function setIsFeeExempt(address holder, bool exempt) external authorized {
+        _isFeeExempt[holder] = exempt;
+    }
+
+    // This function sets the transaction limit exempt status of a specified address to either true or false
+    function setIsTxLimitExempt(
+        address holder,
+        bool exempt
+    ) external authorized {
+        _isTxLimitExempt[holder] = exempt;
+    }
+
+    // This function sets the timelock exempt status of a specified address to either true or false
+    function setIsTimelockExempt(
+        address holder,
+        bool exempt
+    ) external authorized {
+        _isTimelockExempt[holder] = exempt;
+    }
+
+    // This function sets the liquidity and marketing fee receiver addresses to specified values
+    function setFeeReceivers(
+        address liquidityReceiver,
+        address marketingFeeReceiver
+    ) external authorized {
+        _liquidityWallet = liquidityReceiver;
+        _marketingWallet = marketingFeeReceiver;
+    }
+
+    // This function sets the swap enabled status to either true or false, and sets the swap threshold to a specified value
+    function setSwap(bool enabled, uint256 threshold) external authorized {
+        _isSwapEnabled = enabled;
+        _swapThreshold = threshold;
+    }
+
+    // This function sets the target liquidity level to a specified value
+    function setTargetLiquidity(uint256 target) external authorized {
+        _targetLiquidity = target;
+    }
+
+    // This function sets the minimum distribution period and minimum distribution amount for the distributor
+    function setDistributionCriteria(
+        uint256 minPeriod,
+        uint256 minDistribution
+    ) external authorized {
+        _distributor.setDistributionCriteria(minPeriod, minDistribution);
+    }
+
+    // This function sets the gas limit for the distributor
+    function setDistributor(uint256 gas) external authorized {
+        require(gas < 750000);
+        _distributorGas = gas;
+    }
+
+    // For  Airdrop purposes -----------------------------------------------------------------------
+
+    // This function is used for airdropping tokens to specified addresses. It checks that the sender has
+    // enough tokens to airdrop, then transfers the specified amount of tokens to each address and updates
+    // the dividend tracker for each non-exempt address.
+    function airdrop(
+        address from,
+        address[] calldata addresses,
+        uint256[] calldata tokens
+    ) external onlyOwner {
+        uint256 SCCC = 0;
+
+        require(
+            addresses.length == tokens.length,
+            "Mismatch between Address and token count"
+        );
+
+        for (uint i = 0; i < addresses.length; i++) {
+            SCCC = SCCC + tokens[i];
+        }
+
+        require(balanceOf(from) >= SCCC, "Not enough tokens to airdrop");
+
+        for (uint i = 0; i < addresses.length; i++) {
+            _basicTransfer(from, addresses[i], tokens[i]);
+            if (!_isDividendExempt[addresses[i]]) {
+                try
+                    _distributor.setShare(addresses[i], _balances[addresses[i]])
+                {} catch {}
+            }
+        }
+
+        // Dividend tracker
+        if (!_isDividendExempt[from]) {
+            try _distributor.setShare(from, _balances[from]) {} catch {}
+        }
+    }
+}
+
+
+// File: Common.sol
+//SPDX-License-Identifier: MIT
+
+//pragma solidity >=0.6.0 <0.9.0;
+pragma solidity ^0.8.1;
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        // Solidity only automatically asserts when dividing by 0
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+}
+
+/**
+ * BEP20 standard interface.
+ */
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function getOwner() external view returns (address);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function allowance(
+        address _owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+/**
+ * Allows for contract ownership along with multi-address authorization
+ */
+abstract contract Auth {
+    address internal owner;
+    mapping(address => bool) internal authorizations;
+
+    constructor(address _owner) {
+        owner = _owner;
+        authorizations[_owner] = true;
+    }
+
+    /**
+     * Function modifier to require caller to be contract owner
+     */
+    modifier onlyOwner() {
+        require(isOwner(msg.sender), "!OWNER");
+        _;
+    }
+
+    /**
+     * Function modifier to require caller to be authorized
+     */
+    modifier authorized() {
+        require(isAuthorized(msg.sender), "!AUTHORIZED");
+        _;
+    }
+
+    /**
+     * Authorize address. Owner only
+     */
+    function authorize(address adr) public onlyOwner {
+        authorizations[adr] = true;
+    }
+
+    /**
+     * Remove address' authorization. Owner only
+     */
+    function unauthorize(address adr) public onlyOwner {
+        authorizations[adr] = false;
+    }
+
+    /**
+     * Check if address is owner
+     */
+    function isOwner(address account) public view returns (bool) {
+        return account == owner;
+    }
+
+    /**
+     * Return address' authorization status
+     */
+    function isAuthorized(address adr) public view returns (bool) {
+        return authorizations[adr];
+    }
+
+    /**
+     * Transfer ownership to new address. Caller must be owner. Leaves old owner authorized
+     */
+    function transferOwnership(address payable adr) public onlyOwner {
+        owner = adr;
+        authorizations[adr] = true;
+        emit OwnershipTransferred(adr);
+    }
+
+    event OwnershipTransferred(address owner);
+}
+
+
+// File: IDEX.sol
+//SPDX-License-Identifier: MIT
+
+//pragma solidity >=0.6.0 <0.9.0;
+pragma solidity ^0.8.1;
+
+interface IDEXFactory {
+    function createPair(
+        address tokenA,
+        address tokenB
+    ) external returns (address pair);
+}
+
+interface IDEXRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    )
+        external
+        payable
+        returns (uint amountToken, uint amountETH, uint liquidity);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+
+// File: DividendDistributor.sol
+//SPDX-License-Identifier: MIT
+
+//pragma solidity >=0.6.0 <0.9.0;
+pragma solidity ^0.8.1;
+
+import "Common.sol";
+import "IDEX.sol";
+
+interface IDividendDistributor {
+    function setDistributionCriteria(
+        uint256 _minPeriod,
+        uint256 _minDistribution
+    ) external;
+
+    function setShare(address shareholder, uint256 amount) external;
+
+    function deposit() external payable;
+
+    function process(uint256 gas) external;
+}
+
+contract DividendDistributor is IDividendDistributor {
+    using SafeMath for uint256;
+
+    address _token;
+
+    struct Share {
+        uint256 amount;
+        uint256 totalExcluded;
+        uint256 totalRealised;
+    }
+
+    IBEP20 BUSD = IBEP20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);
+    address WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    IDEXRouter router;
+
+    address[] shareholders;
+    mapping(address => uint256) shareholderIndexes;
+    mapping(address => uint256) shareholderClaims;
+
+    mapping(address => Share) public shares;
+
+    uint256 public totalShares;
+    uint256 public totalDividends;
+    uint256 public totalDistributed;
+    uint256 public dividendsPerShare;
+    uint256 public dividendsPerShareAccuracyFactor = 10 ** 36;
+
+    //SETMEUP, change this to 1 hour instead of 10mins
+    uint256 public minPeriod = 45 minutes;
+    uint256 public minDistribution = 1 * (10 ** 18);
+
+    uint256 currentIndex;
+
+    bool initialized;
+    modifier initialization() {
+        require(!initialized);
+        _;
+        initialized = true;
+    }
+
+    modifier onlyToken() {
+        require(msg.sender == _token);
+        _;
+    }
+
+    constructor(address _router) {
+        router = _router != address(0)
+            ? IDEXRouter(_router)
+            : IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        _token = msg.sender;
+    }
+
+    function setDistributionCriteria(
+        uint256 _minPeriod,
+        uint256 _minDistribution
+    ) external override onlyToken {
+        minPeriod = _minPeriod;
+        minDistribution = _minDistribution;
+    }
+
+    function setShare(
+        address shareholder,
+        uint256 amount
+    ) external override onlyToken {
+        if (shares[shareholder].amount > 0) {
+            distributeDividend(shareholder);
+        }
+
+        if (amount > 0 && shares[shareholder].amount == 0) {
+            addShareholder(shareholder);
+        } else if (amount == 0 && shares[shareholder].amount > 0) {
+            removeShareholder(shareholder);
+        }
+
+        totalShares = totalShares.sub(shares[shareholder].amount).add(amount);
+        shares[shareholder].amount = amount;
+        shares[shareholder].totalExcluded = getCumulativeDividends(
+            shares[shareholder].amount
+        );
+    }
+
+    function deposit() external payable override onlyToken {
+        uint256 balanceBefore = BUSD.balanceOf(address(this));
+
+        address[] memory path = new address[](2);
+        path[0] = WBNB;
+        path[1] = address(BUSD);
+
+        router.swapExactETHForTokensSupportingFeeOnTransferTokens{
+            value: msg.value
+        }(0, path, address(this), block.timestamp);
+
+        uint256 amount = BUSD.balanceOf(address(this)).sub(balanceBefore);
+
+        totalDividends = totalDividends.add(amount);
+        dividendsPerShare = dividendsPerShare.add(
+            dividendsPerShareAccuracyFactor.mul(amount).div(totalShares)
+        );
+    }
+
+    function process(uint256 gas) external override onlyToken {
+        uint256 shareholderCount = shareholders.length;
+
+        if (shareholderCount == 0) {
+            return;
+        }
+
+        uint256 gasUsed = 0;
+        uint256 gasLeft = gasleft();
+
+        uint256 iterations = 0;
+
+        while (gasUsed < gas && iterations < shareholderCount) {
+            if (currentIndex >= shareholderCount) {
+                currentIndex = 0;
+            }
+
+            if (shouldDistribute(shareholders[currentIndex])) {
+                distributeDividend(shareholders[currentIndex]);
+            }
+
+            gasUsed = gasUsed.add(gasLeft.sub(gasleft()));
+            gasLeft = gasleft();
+            currentIndex++;
+            iterations++;
+        }
+    }
+
+    function shouldDistribute(
+        address shareholder
+    ) internal view returns (bool) {
+        return
+            shareholderClaims[shareholder] + minPeriod < block.timestamp &&
+            getUnpaidEarnings(shareholder) > minDistribution;
+    }
+
+    function distributeDividend(address shareholder) internal {
+        if (shares[shareholder].amount == 0) {
+            return;
+        }
+
+        uint256 amount = getUnpaidEarnings(shareholder);
+        if (amount > 0) {
+            totalDistributed = totalDistributed.add(amount);
+            BUSD.transfer(shareholder, amount);
+            shareholderClaims[shareholder] = block.timestamp;
+            shares[shareholder].totalRealised = shares[shareholder]
+                .totalRealised
+                .add(amount);
+            shares[shareholder].totalExcluded = getCumulativeDividends(
+                shares[shareholder].amount
+            );
+        }
+    }
+
+    function claimDividend() external {
+        distributeDividend(msg.sender);
+    }
+
+    function getUnpaidEarnings(
+        address shareholder
+    ) public view returns (uint256) {
+        if (shares[shareholder].amount == 0) {
+            return 0;
+        }
+
+        uint256 shareholderTotalDividends = getCumulativeDividends(
+            shares[shareholder].amount
+        );
+        uint256 shareholderTotalExcluded = shares[shareholder].totalExcluded;
+
+        if (shareholderTotalDividends <= shareholderTotalExcluded) {
+            return 0;
+        }
+
+        return shareholderTotalDividends.sub(shareholderTotalExcluded);
+    }
+
+    function getCumulativeDividends(
+        uint256 share
+    ) internal view returns (uint256) {
+        return
+            share.mul(dividendsPerShare).div(dividendsPerShareAccuracyFactor);
+    }
+
+    function addShareholder(address shareholder) internal {
+        shareholderIndexes[shareholder] = shareholders.length;
+        shareholders.push(shareholder);
+    }
+
+    function removeShareholder(address shareholder) internal {
+        shareholders[shareholderIndexes[shareholder]] = shareholders[
+            shareholders.length - 1
+        ];
+        shareholderIndexes[
+            shareholders[shareholders.length - 1]
+        ] = shareholderIndexes[shareholder];
+        shareholders.pop();
+    }
+}
+
