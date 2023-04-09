@@ -1,0 +1,512 @@
+
+// File: contracts/9420IDO.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.7;
+
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IInviter {
+    function preRelation(address from, address to) external;
+    function getRecommer(address account) external returns (address);
+    function addRelationEx(address recommer,address user) external;
+}
+
+interface I9420Token {
+    function dayDestroyTotal(uint) external view returns(uint256);
+}
+
+contract IDO9420 is Ownable {
+    using SafeMath for uint256;
+
+    mapping (address => uint256) private _tokenBalances; // invest
+    mapping (address => uint256) private _idoInvestTotal; // invest usdt total
+
+    address public token9419Address = 0x0cCa1055f3827b6D2f530d52c514E3699c98F3B9;
+    address public token9420Address;
+    address public usdtAddress = 0x55d398326f99059fF775485246999027B3197955;
+
+    address public collectionAddress = 0xBf10138172Ef7E0d142065464295D217DEB88849;
+
+    uint256 public holdThreshold = 1000000000e18;// 1B 9419
+    uint256 public maxIdoAmount = 1000e18;// 1000u
+    uint256 public initPrice = 1e16; // 0.01 u
+    uint256 public initTokenAmount = 100e18;// 100
+
+    bool public idoEnable = true;
+    bool public withdrawEnable = true;
+
+    address public inviter = 0x37d6E7d41E138BCd752aC66166d982D3Ec063506;
+
+    constructor() {   
+    }
+
+    receive() external payable {}
+
+    function setInviter(address _inviter) external onlyOwner{
+        inviter = _inviter;
+    }
+
+    function set9419Address(address addr) external onlyOwner{
+        require(addr != address(0), "Invalid address");
+        token9419Address = addr;
+    }
+
+    function setToken9420Address(address addr) external onlyOwner{
+        token9420Address = addr;
+    }
+
+    function setInitPrice(uint256 price) external onlyOwner{
+        initPrice = price;
+    }
+
+    function setCollectionAddress(address _addr) external onlyOwner{
+        require(_addr != address(0), "Invalid address");
+        collectionAddress = _addr;
+    }
+
+    function setIdoEnable(bool _flag) external onlyOwner{
+        idoEnable = _flag;
+    }
+
+    function setWithdrawEnable(bool _flag) external onlyOwner{
+        withdrawEnable = _flag;
+    }
+
+    function getTokenBal(address user) public view returns (uint256){
+        return _tokenBalances[user];
+    }
+
+    function getInvestedTotal(address user) public view returns (uint256){
+        return _idoInvestTotal[user];
+    }
+
+    /**
+        ido mint
+     */
+    function idoCondition(address user) public view returns (uint256){
+        uint256 holdBal = IERC20(token9419Address).balanceOf(user);
+        uint256 perTime = holdBal.div(holdThreshold);
+        if (perTime > 0){
+            uint256 usdtAmount = perTime.mul(initTokenAmount);
+            return usdtAmount.sub(getInvestedTotal(user));
+        }
+        return 0;
+    }
+
+    /**
+    withrawal hold check
+     */
+    function withdrawHoldNeed(address user) public view returns (uint256){
+        uint256 withdrawWorthUsdt = getTokenBal(user).mul(initPrice).div(1e18);
+        uint256 holdToken = withdrawWorthUsdt.mul(holdThreshold).div(100).div(1e18);
+        return holdToken;
+    }
+
+    /**
+        bind ref
+     */
+    event BindRefEvent(address indexed _sender, address indexed _refer);
+    function bindRef(address referal) external payable {
+        require(msg.sender != referal && referal != address(0), "Invalid Referral address");
+        require(IInviter(inviter).getRecommer(msg.sender) == address(0), "You had binded");
+        IInviter(inviter).addRelationEx(referal, msg.sender);
+        emit BindRefEvent(msg.sender, referal);
+    }
+
+    event MintEvent(address indexed _addr, address indexed _refer, uint256 _tokenAmount, uint256 _referTokenBonus);
+    // take ido
+    function joinIdo(uint256 amount) external payable {
+        require(idoEnable, "Mint disabled");
+        require(amount > 0, "Invaild amount");
+        uint256 allowUsdtAmt = idoCondition(msg.sender);
+        require(allowUsdtAmt >= amount, "9419 Hold Err");
+        require(getInvestedTotal(msg.sender).add(amount) <= maxIdoAmount, "Invalid amount");
+        address userRef = IInviter(inviter).getRecommer(msg.sender);
+        require(userRef != address(0), "Invalid refer");
+
+        IERC20(usdtAddress).transferFrom(msg.sender, collectionAddress, amount);
+        uint256 tokenNum = amount.mul(1e18).div(initPrice);
+        _tokenBalances[msg.sender] += tokenNum;
+        _idoInvestTotal[msg.sender] += amount;
+
+        uint256 refBonus;
+        if(userRef != address(0)){
+            //referal bonus
+            refBonus = tokenNum.mul(10).div(100);
+            _tokenBalances[userRef] += refBonus;
+        }
+        emit MintEvent(msg.sender, userRef, tokenNum, refBonus);
+    }
+
+
+    event WithdrawalEvent(address indexed _addr, uint256 _amount);
+
+    function withdrawal() external payable {
+        require(token9420Address != address(0), "Withdraw is not open");
+        require(withdrawEnable, "Withdraw disabled");
+        uint256 withdrawalAmount = getTokenBal(msg.sender);
+        require(withdrawalAmount > 0, "Insufficient withdraw balance");
+        require(IERC20(token9419Address).balanceOf(msg.sender) >= withdrawHoldNeed(msg.sender), "Insufficient 9419 Hold");
+        require(IERC20(token9420Address).balanceOf(address(this)) >= withdrawalAmount, "Insufficient IDO");
+        _tokenBalances[msg.sender] = 0;
+        IERC20(token9420Address).transfer(msg.sender, withdrawalAmount);
+        emit WithdrawalEvent(msg.sender, withdrawalAmount);
+    }
+
+    function collectionFund(address reciever) external onlyOwner {
+        require(payable(reciever).send(address(this).balance),"Collection failed.");
+    }
+
+    function rescue(address token, address to, uint256 value) external onlyOwner {
+        IERC20(token).transfer(to, value);
+    }
+}
+
+// File: @openzeppelin/contracts/utils/math/SafeMath.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.6.0) (utils/math/SafeMath.sol)
+
+pragma solidity ^0.8.0;
+
+// CAUTION
+// This version of SafeMath should only be used with Solidity 0.8 or later,
+// because it relies on the compiler's built in overflow checks.
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations.
+ *
+ * NOTE: `SafeMath` is generally not needed starting with Solidity 0.8, since the compiler
+ * now has built in overflow checking.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the division of two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator.
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {trySub}.
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b <= a, errorMessage);
+            return a - b;
+        }
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a / b;
+        }
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting with custom message when dividing by zero.
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {tryMod}.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a % b;
+        }
+    }
+}
+
+
+// File: @openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+

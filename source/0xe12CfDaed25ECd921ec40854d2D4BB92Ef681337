@@ -1,0 +1,317 @@
+/*                                                                                                                                                                                      
+ * EirCoin
+ * 
+ * Written by: MrGreenCrypto
+ * Co-Founder of CodeCraftrs.com
+ * 
+ * SPDX-License-Identifier: None
+ */
+
+pragma solidity 0.8.19;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function decimals() external view returns (uint8);
+    function symbol() external view returns (string memory);
+    function name() external view returns (string memory);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount ) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IDEXRouter {
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external;
+    function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts);
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external payable;
+}
+
+contract EIR_COIN is IBEP20 {
+    string private _name = "EirCoin";
+    string private _symbol = "Eir";
+    uint8 constant _decimals = 18;
+    uint256 private _totalSupply = 0;
+
+    address public constant EIR = 0xdd0D0700C81a4851850b3c1eb94A1C1291aafF8F;
+    IBEP20 public eirBase = IBEP20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);
+    IDEXRouter public constant ROUTER = IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+    address public constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    
+    mapping (address => uint256) private _balances;
+    mapping (address => uint256) public excluded;
+    mapping (address => uint256) public claimed;
+    mapping (address => uint256) public compounded;
+    mapping (address => uint256) public initialBeforeTax;
+    mapping (address => uint256) public initialAfterTax;
+
+    mapping (address => mapping(address => uint256)) private _allowances;
+
+    uint256 public totalRewardsPerEirCoin;
+    uint256 public totalRewards;
+
+    uint256 private veryBigNumber = 10 ** 36;
+    
+    uint256 public constant eirTax = 30;
+
+    modifier onlyEIR() {
+        require(msg.sender == EIR, "Only EIR");
+        _;
+    }
+
+	constructor() {
+        eirBase.approve(address(ROUTER), type(uint256).max);
+    }
+
+
+    receive() external payable {
+        turnMyBeansIntoEir(0);
+    }
+
+    function name() public view override returns (string memory) {return _name;}
+    function totalSupply() public view override returns (uint256) {return _totalSupply;}
+    function decimals() public pure override returns (uint8) {return _decimals;}
+    function symbol() public view override returns (string memory) {return _symbol;}
+    function balanceOf(address account) public view override returns (uint256) {return _balances[account];}    
+    function allowance(address holder, address spender) public view override returns (uint256) {return _allowances[holder][spender];}
+    function transfer(address recipient, uint256 amount) external override returns (bool) {return _transferFrom(msg.sender, recipient, amount);}
+    function approveMax(address spender) external returns (bool) {return approve(spender, type(uint256).max);}
+    
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        require(spender != address(0), "Can't use zero address here");
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        require(spender != address(0), "Can't use zero address here");
+        _allowances[msg.sender][spender]  = allowance(msg.sender, spender) + addedValue;
+        emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        require(spender != address(0), "Can't use zero address here");
+        require(allowance(msg.sender, spender) >= subtractedValue, "Can't subtract more than current allowance");
+        _allowances[msg.sender][spender]  = allowance(msg.sender, spender) - subtractedValue;
+        emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount ) external override returns (bool) {
+        if (_allowances[sender][msg.sender] != type(uint256).max) {
+            require(_allowances[sender][msg.sender] >= amount, "Insufficient Allowance");
+            _allowances[sender][msg.sender] -= amount;
+            emit Approval(sender, msg.sender, _allowances[sender][msg.sender]);
+        }
+        return _transferFrom(sender, recipient, amount);
+    }
+
+    function _transferFrom(address sender, address recipient, uint256 amount) internal returns (bool) {
+        require(sender != address(0) && recipient != address(0), "Can't use zero addresses here");
+        require(amount <= _balances[sender], "Can't transfer more than you own");
+        if(amount == 0) return true;
+        _balances[sender] -= amount;
+        _balances[recipient] += amount;
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function _mint(address minter, uint256 amount) internal returns (bool) {
+        if(amount == 0) return true;
+        _balances[minter] += amount;
+        _totalSupply += amount;
+        emit Transfer(address(0), minter, amount);
+        return true;
+    }
+
+    function _burnItAll(address burner) internal returns (bool) {
+        if(_balances[burner] == 0) return true;
+        _totalSupply -= _balances[burner];
+        emit Transfer(burner, address(0), _balances[burner]);
+        _balances[burner] = 0;
+        initialBeforeTax[burner] = 0;
+        initialAfterTax[burner] = 0;
+        return true;
+    }
+
+    function investInEirBase(uint256 amount) external {
+        if(_balances[msg.sender] > 0) compound();
+        require(eirBase.transferFrom(msg.sender, address(this), amount), "failed");
+        uint256 moneyGoingToTreasury = amount * eirTax / 100;
+        require(eirBase.transfer(EIR, moneyGoingToTreasury), "failed");
+        amount -= moneyGoingToTreasury;
+        require(_mint(msg.sender, amount),"Didnt work");
+    }
+
+    function turnMyBeansIntoEir(uint256 minOut) public payable {
+        if(_balances[msg.sender] > 0) compound();
+        uint256 balanceBefore = eirBase.balanceOf(address(this));
+        
+        address[] memory path = new address[](2);
+        path[0] = WBNB;
+        path[1] = address(eirBase);
+        
+        ROUTER.swapExactETHForTokensSupportingFeeOnTransferTokens{value: msg.value}(
+            minOut,
+            path,
+            address(this),
+            block.timestamp
+        );
+        _deposit(msg.sender, balanceBefore);
+    }
+
+    function turnMyMoneyIntoEirWithBeans(uint256 amount, address currency, uint256 minOut) external {
+        if(_balances[msg.sender] > 0) compound();
+        require(IBEP20(currency).transferFrom(msg.sender, address(this), amount), "failed");
+        
+        address[] memory path = new address[](3);
+        path[0] = currency;
+        path[1] = WBNB;
+        path[2] = address(eirBase);
+
+        uint256 balanceBefore = eirBase.balanceOf(address(this));
+        ROUTER.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            amount,
+            minOut,
+            path,
+            address(this),
+            block.timestamp
+        );
+        _deposit(msg.sender, balanceBefore);
+    }
+
+    function turnMyMoneyIntoEirDirectly(uint256 amount, address currency, uint256 minOut) external {
+        if(_balances[msg.sender] > 0) compound();
+        require(IBEP20(currency).transferFrom(msg.sender, address(this), amount), "failed");
+        
+        address[] memory path = new address[](2);
+        path[0] = currency;
+        path[1] = address(eirBase);
+
+        uint256 balanceBefore = eirBase.balanceOf(address(this));
+        ROUTER.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            amount,
+            minOut,
+            path,
+            address(this),
+            block.timestamp
+        );
+        _deposit(msg.sender, balanceBefore);
+    }
+
+    function turnMyMoneyIntoEirImAnExpert(uint256 amount, address[] memory path, uint256 minOut) external {
+        if(_balances[msg.sender] > 0) compound();
+        require(IBEP20(path[0]).transferFrom(msg.sender, address(this), amount), "failed");
+        require(IBEP20(path[path.length - 1]) == eirBase, "wrong");
+        
+        uint256 balanceBefore = eirBase.balanceOf(address(this));
+        ROUTER.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            amount,
+            minOut,
+            path,
+            address(this),
+            block.timestamp
+        );
+        _deposit(msg.sender, balanceBefore);
+    }
+
+    function _deposit(address investor, uint256 balanceBefore) internal {
+        uint256 baseAmount = eirBase.balanceOf(address(this)) - balanceBefore;
+        uint256 moneyGoingToTreasury = baseAmount * eirTax / 100;
+        require(eirBase.transfer(EIR, moneyGoingToTreasury), "payment failed");
+        initialBeforeTax[investor] += baseAmount;
+        baseAmount -= moneyGoingToTreasury;
+        initialAfterTax[investor] += baseAmount;
+        require(_mint(investor, baseAmount),"mint fail");
+    }
+
+    function iWantMyMoneyBackInEirBase() external {
+        if(_balances[msg.sender] == 0) return;
+        claimRewardsInBaseCurrency();
+        require(eirBase.transfer(msg.sender, _balances[msg.sender]), "transfer failed");
+        _burnItAll(msg.sender);
+	}
+
+	function iWantMyMoneyBackImAnExpert(address[] memory path, uint256 minOut) external {
+        if(_balances[msg.sender] == 0) return;
+        claimRewardsInBaseCurrency();
+        ROUTER.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            _balances[msg.sender],
+            minOut,
+            path,
+            msg.sender,
+            block.timestamp
+        );
+        _burnItAll(msg.sender);
+	}
+
+    function compound() public {
+        uint256 claimableNow = _claim(msg.sender);
+        if(claimableNow == 0) return;
+        compounded[msg.sender] += claimableNow;
+        require(_mint(msg.sender, claimableNow),"Didnt work");
+    }
+
+    function claimRewardsInBaseCurrency() public {
+        uint256 claimableNow = _claim(msg.sender);
+        if(claimableNow == 0) return;
+        require(eirBase.transfer(msg.sender, claimableNow), "transfer failed");
+    }
+
+    function claimRewardsInCurrency(address[] memory path, uint256 minOut) public {
+        uint256 claimableNow = _claim(msg.sender);
+        if(claimableNow == 0) return;
+
+        ROUTER.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            claimableNow,
+            minOut,
+            path,
+            msg.sender,
+            block.timestamp
+        );
+    }
+
+    function _claim(address investor) internal returns (uint256) {
+        uint256 claimableNow = checkAvailableRewards(investor);
+        if(claimableNow == 0) return 0;
+        excluded[investor] = totalRewardsPerEirCoin;
+        claimed[msg.sender] += claimableNow;
+        return claimableNow;    
+    }
+
+    function checkAvailableRewards(address investor) public view returns(uint256) {
+        if(excluded[investor] >= totalRewardsPerEirCoin) return 0;
+        return _balances[investor] * (totalRewardsPerEirCoin - excluded[investor]) / veryBigNumber;
+    }
+
+    function addRewards(uint256 amount) public {
+        if(_totalSupply == 0) return;
+        require(eirBase.transferFrom(msg.sender, address(this), amount), "failed hard");
+        totalRewards += amount;
+        totalRewardsPerEirCoin += amount * veryBigNumber / _totalSupply;
+    }
+
+    function rescueAnyToken(IBEP20 tokenToRescue) external onlyEIR {
+        uint256 _balance = tokenToRescue.balanceOf(address(this));
+        tokenToRescue.transfer(msg.sender, _balance);
+    }
+
+    function changeEirBase(address[] memory path) external onlyEIR {
+        uint256 amount = eirBase.balanceOf(address(this));
+        eirBase.approve(address(ROUTER), type(uint256).max);
+
+        ROUTER.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            amount,
+            amount * 99 / 100,
+            path,
+            address(this),
+            block.timestamp
+        );
+        eirBase = IBEP20(path[path.length-1]);
+        eirBase.approve(address(ROUTER), type(uint256).max);
+    }
+}

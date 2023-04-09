@@ -1,0 +1,408 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.10;
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations with added overflow
+ * checks.
+ *
+ * Arithmetic operations in Solidity wrap on overflow. This can easily result
+ * in bugs, because programmers usually assume that an overflow raises an
+ * error, which is the standard behavior in high level programming languages.
+ * `SafeMath` restores this intuition by reverting the transaction when an
+ * operation overflows.
+ *
+ * Using this library instead of the unchecked operations eliminates an entire
+ * class of bugs, so it's recommended to use it always.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     * - Subtraction cannot overflow.
+     */
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     * - The divisor cannot be zero.
+     */
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        // Solidity only automatically asserts when dividing by 0
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+}
+
+interface IAtlasToken {
+    function totalSharesHeldByAccounts(address account) external view returns (uint256);
+
+    function SharesAccounting() external view returns (uint256);
+
+    function changeExtraSupplyForMarketcap(uint256 extraSupply) external;
+
+    function changeExtraSupplyForInterest(uint256 extraSupply) external;
+
+    function CurrentTokenDay() external view returns (uint256);
+}
+
+/**
+ * @dev Abstract contract to manage owner access to contract
+ */
+abstract contract Owner {
+    address public CONTRACT_DEFINER;
+
+    modifier mod_onlyContractDefiner() {
+        require(msg.sender == CONTRACT_DEFINER, "Wrong sender.");
+        _;
+    }
+
+    function renounceOwnership() external mod_onlyContractDefiner {
+        CONTRACT_DEFINER = address(0x0);
+    }
+}
+
+interface IContractsManager {
+    function find(string memory contractName) external view returns (address, bool);
+}
+
+
+/**
+ * @dev Atlas Supply Management contract, used to control the extra marketcap supply and extra interest through a DAO mechanism of stake holders
+ */
+contract AtlasSupplyMgmt is Owner {
+    using SafeMath for uint256;
+    IAtlasToken TOKEN_CONTRACT;
+
+    enum SupplyChangeRequestTypeEnum {
+        MarketCap,
+        Interest
+    }
+    enum RequestStatusEnum {
+        Pending,
+        Approved,
+        Rejected
+    }
+
+    enum VoteOperationEnum {
+        AddVotes,
+        RemoveVotes
+    }
+
+    //used only for reading a SupplyChangeRequest
+    struct SupplyChangeRequestData {
+        uint256 id;
+        SupplyChangeRequestTypeEnum supplyChangeRequestType;
+        RequestStatusEnum requestStatus;
+        uint256 extraSupplyAmount;
+        uint256 totalVotesRequired;
+        uint256 totalVotes;
+        uint256 expirationDate;
+    }
+
+
+    struct SupplyChangeRequest {
+        uint256 id;
+        SupplyChangeRequestTypeEnum supplyChangeRequestType;
+        RequestStatusEnum requestStatus;
+        uint256 extraSupplyAmount;
+        uint256 totalVotesRequired;
+        uint256 totalVotes;
+        uint256 expirationDate;
+        mapping(address => mapping(bytes16 => bool)) stakesLockedByUser;
+        mapping(address => uint256) votesByUser;
+    }
+
+    SupplyChangeRequest[] public SupplyChangeRequests;
+
+    mapping(bytes16 => uint256) public StakesLockedToRequests;
+
+    function SupplyChangeRequestsLength() public view returns (uint256) {
+        return SupplyChangeRequests.length;
+    }
+
+    function SupplyChangeRequestsData(uint256 pos) public view returns (SupplyChangeRequestData memory request) {
+        request.id = SupplyChangeRequests[pos].id;
+        request.supplyChangeRequestType = SupplyChangeRequests[pos].supplyChangeRequestType;
+        request.requestStatus = SupplyChangeRequests[pos].requestStatus;
+        request.extraSupplyAmount = SupplyChangeRequests[pos].extraSupplyAmount;
+        request.totalVotesRequired = SupplyChangeRequests[pos].totalVotesRequired;
+        request.totalVotes = SupplyChangeRequests[pos].totalVotes;
+        request.expirationDate = SupplyChangeRequests[pos].expirationDate;
+    }
+
+    /**
+     * @dev Function to submit a change request to the DAO, marketcap or interest
+     */
+    function submitSupplyChangeRequest(SupplyChangeRequestTypeEnum requestType, uint256 extraSupplyAmount,uint256 expirationDate) external {
+
+        require(TOKEN_CONTRACT.CurrentTokenDay() >= 90, "DAO not open yet");
+
+        //requires the expiration date to be in the future
+        require(expirationDate > block.timestamp, "Expiration date already expired");
+        //requires the expiration date to be at most one week away 60s*60*24*7=604800
+        require(expirationDate <= block.timestamp + uint256(604800), "Expiration must be bounded to one week");
+        //requires the proposer to have at least 1% of all shares
+        require(TOKEN_CONTRACT.totalSharesHeldByAccounts(msg.sender) >= TOKEN_CONTRACT.SharesAccounting().div(100), "Proposer not powerful enough");
+
+        SupplyChangeRequest storage newRequest = SupplyChangeRequests.push();
+
+        //assign the identifier, which is incremental
+        newRequest.id = SupplyChangeRequests.length;
+        //assign the request type
+        newRequest.supplyChangeRequestType = requestType;
+        //assign the extra supply amount
+        newRequest.extraSupplyAmount = extraSupplyAmount;
+        //assign the expiration date
+        newRequest.expirationDate = expirationDate;
+        //requires over 50% of the total shares to be approved
+        newRequest.totalVotesRequired = TOKEN_CONTRACT.SharesAccounting().div(2).add(1);
+
+        //mark it as pending
+        newRequest.requestStatus = RequestStatusEnum.Pending;
+    }
+
+    /**
+     * @dev Function to update the vote power of a user on a supply change request, can be called only by the ATLAS contract
+     */
+    function updateVotesByUser(address account, bytes16 stakeId, uint256 voteAmount, VoteOperationEnum voteOperation, uint256 supplyChangeRequestId) external {
+        //only the token contract can execute this operation
+        require(msg.sender == address(TOKEN_CONTRACT), "Sender not authorized");
+
+        //supply change request id must be in from 1 to length
+        require(supplyChangeRequestId <= SupplyChangeRequests.length, "Supply change request not found");
+
+        SupplyChangeRequest storage request = SupplyChangeRequests[supplyChangeRequestId - 1];
+
+        if (voteOperation == VoteOperationEnum.AddVotes) {
+            //it has to be in a pending state
+            require(request.requestStatus == RequestStatusEnum.Pending, "Proposal terminated");
+            //it can't have expired
+            require(request.expirationDate >= block.timestamp, "Voting time expired");
+            //user can't have voted already with this stake
+            require(!request.stakesLockedByUser[account][stakeId], "Stake already associated to supply change request");
+
+            //1.mark the stake as used for voting
+            request.stakesLockedByUser[account][stakeId] = true;
+            //2.increment the total votes
+            request.totalVotes = request.totalVotes.add(voteAmount);
+            //3.increment the total votes by user
+            request.votesByUser[account] = request.votesByUser[account].add(voteAmount);
+
+            //4.Map the locked stake to the request, for reverse search
+            StakesLockedToRequests[stakeId] = request.id;
+
+            //if proposal got enough votes 
+            if (request.totalVotes >= request.totalVotesRequired) {
+                executeProposal(request.id);
+            }
+
+        } else if (voteOperation == VoteOperationEnum.RemoveVotes) {
+            require(request.stakesLockedByUser[account][stakeId], "Stake not associated to supply change request");
+
+            //if the request has expired
+            if(request.expirationDate < block.timestamp) {
+
+                //1.unlock the stake only
+                request.stakesLockedByUser[account][stakeId] = false;
+
+                //2. and 3.Don't change the voting
+
+                //4.Remove stake mapping
+                StakesLockedToRequests[stakeId] = 0;
+
+
+                //and if it's state is still pending execute the proposal, it will mark it as rejected
+                if(request.requestStatus == RequestStatusEnum.Pending) {
+                    executeProposal(request.id);
+                }
+            }
+            //if it hasn't expired yet
+            else {
+
+                //1.unlock the stake marked as used for voting
+                request.stakesLockedByUser[account][stakeId] = false;
+
+                //2.Decrement the total votes
+                request.totalVotes = request.totalVotes.sub(voteAmount);
+                //3.Decrement the total votes by user
+                request.votesByUser[account] = request.votesByUser[account].sub(voteAmount);
+
+                //4.Remove stake mapping used for reverse search
+                StakesLockedToRequests[stakeId] = 0;
+            }
+
+        }
+        else {
+            require(false, "Incorrect operation");
+        }
+    }
+
+    /**
+     * @dev Function execute a proposal if it got enough votes before expiring, or mark it as rejected if it as expired without enough votes. Otherwise default to doing nothing
+     */
+    function executeProposal(uint256 supplyChangeRequestId) public {
+        require(supplyChangeRequestId <= SupplyChangeRequests.length, "Supply change request not found");
+
+        SupplyChangeRequest storage request = SupplyChangeRequests[supplyChangeRequestId - 1];
+
+        require(request.requestStatus == RequestStatusEnum.Pending, "Proposal already executed");
+
+        //if proposal got enough votes during the voting period
+        if (request.totalVotes >= request.totalVotesRequired) {
+            //deam proposal as executed
+            request.requestStatus = RequestStatusEnum.Approved;
+
+            //apply supply changes
+            if (request.supplyChangeRequestType == SupplyChangeRequestTypeEnum.MarketCap) {
+                TOKEN_CONTRACT.changeExtraSupplyForMarketcap(request.extraSupplyAmount);
+            } 
+            else if (request.supplyChangeRequestType == SupplyChangeRequestTypeEnum.Interest) {
+                TOKEN_CONTRACT.changeExtraSupplyForInterest(request.extraSupplyAmount);
+            }
+        }
+        //if voting period has ended
+        else if (request.expirationDate < block.timestamp) {
+            request.requestStatus = RequestStatusEnum.Rejected;
+        }
+        //otherwise, do nothing
+    }
+
+
+    /**
+     * @dev External function to provide pagination of supply change requests.
+     */
+    function supplyChangeRequestsPagination(uint256 offset, uint256 length) public view returns (SupplyChangeRequestData[] memory requests) {
+        //if offset has exceeded the available elements return an empty array
+        if(offset > SupplyChangeRequests.length) {
+            requests = new SupplyChangeRequestData[](0);
+            return requests;
+        }
+        
+        if(offset + length > SupplyChangeRequests.length) {
+            length = (SupplyChangeRequests.length) - offset;
+        }
+        
+        requests = new SupplyChangeRequestData[](length);
+        
+        uint256 end = offset + length;
+        
+        for(uint256 i = 0; offset < end; offset++) {
+            requests[i].id = SupplyChangeRequests[offset].id;
+            requests[i].supplyChangeRequestType = SupplyChangeRequests[offset].supplyChangeRequestType;
+            requests[i].requestStatus = SupplyChangeRequests[offset].requestStatus;
+            requests[i].extraSupplyAmount = SupplyChangeRequests[offset].extraSupplyAmount;
+            requests[i].totalVotesRequired = SupplyChangeRequests[offset].totalVotesRequired;
+            requests[i].totalVotes = SupplyChangeRequests[offset].totalVotes;
+            requests[i].expirationDate = SupplyChangeRequests[offset].expirationDate;
+            
+            i++;
+        }
+    }
+
+    function setContracts(address contractsManager) external mod_onlyContractDefiner {
+
+        //Atlas contract
+        (address ctr, bool found) = IContractsManager(contractsManager).find("TOKEN_CONTRACT");
+        require(found, "Contract not found");
+        TOKEN_CONTRACT = IAtlasToken(ctr);
+    }
+
+    constructor() {
+        CONTRACT_DEFINER = msg.sender;
+    }
+}

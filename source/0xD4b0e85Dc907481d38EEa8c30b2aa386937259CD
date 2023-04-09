@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.10;
+
+interface IERC20 {
+    
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+}
+
+/**
+ * @dev Abstract contract to manage owner access to contract
+ */
+abstract contract Owner {
+    address public CONTRACT_DEFINER;
+
+    modifier mod_onlyContractDefiner() {
+        require(msg.sender == CONTRACT_DEFINER, "Wrong sender.");
+        _;
+    }
+
+    function renounceOwnership() external mod_onlyContractDefiner {
+        CONTRACT_DEFINER = address(0x0);
+    }
+}
+
+interface IContractsManager {
+    function find(string memory contractName) external view returns (address, bool);
+}
+
+/**
+ * @dev This intermediary contract is required to receive swaps through UniswapV2 that can't go directly to the contract originator
+ */
+contract atlasBusdFeesReceiver is Owner {
+    address public ATLAS_POOL_MGMT;
+    IERC20 public BUSD_CONTRACT;
+
+    function setContracts(address contractsManager) external mod_onlyContractDefiner {
+
+        //Atlas Pool Mgmt
+        (address ctr, bool found) = IContractsManager(contractsManager).find("ATLAS_POOL_MGMT");
+        require(found, "Contract not found");
+        ATLAS_POOL_MGMT = ctr;
+
+        //Busd contract
+        (ctr, found) = IContractsManager(contractsManager).find("BUSD_CONTRACT");
+        require(found, "Contract not found");
+        BUSD_CONTRACT = IERC20(ctr);
+    }
+
+    constructor() {
+        CONTRACT_DEFINER = msg.sender;
+    }
+
+    /**
+     * @dev Can only be called by ATLAS pool management contract. Transfers all BUSD held by the contract to the pool management
+     */
+    function claimBusd() external {
+        require(msg.sender == ATLAS_POOL_MGMT, "Not authorized");
+
+        uint256 busdAmount = BUSD_CONTRACT.balanceOf(address(this));
+        if(busdAmount > 0) {
+            BUSD_CONTRACT.transfer(ATLAS_POOL_MGMT, busdAmount);
+        }
+    }
+}

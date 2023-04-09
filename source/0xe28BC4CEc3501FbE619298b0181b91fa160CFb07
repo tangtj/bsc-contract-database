@@ -1,0 +1,491 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.10;
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations with added overflow
+ * checks.
+ *
+ * Arithmetic operations in Solidity wrap on overflow. This can easily result
+ * in bugs, because programmers usually assume that an overflow raises an
+ * error, which is the standard behavior in high level programming languages.
+ * `SafeMath` restores this intuition by reverting the transaction when an
+ * operation overflows.
+ *
+ * Using this library instead of the unchecked operations eliminates an entire
+ * class of bugs, so it's recommended to use it always.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     * - Subtraction cannot overflow.
+     */
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     * - The divisor cannot be zero.
+     */
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        // Solidity only automatically asserts when dividing by 0
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+}
+
+struct Inflation {
+        uint256 numerator;
+        uint256 denominator;
+        uint256 totalShares;
+        uint256 totalSupply;
+        uint256 tokensStakedAccounting;
+    }
+
+enum StakeState {
+        Active,
+        Moved,
+        Closed,
+        LockedForVoting
+    }
+
+struct Stake {
+        bytes16 stakeId;
+        uint256 stakeAmount;
+        uint256 stakingBonus;
+        uint256 shares;
+        StakeState stakeState;
+        uint256 interestAmount;
+        uint256 stakeStartTokenDay;
+        uint256 stakeDuration;
+        uint256 numDaysAccountedFor;
+        uint256 accountingStartTokenDay;
+        uint256 stakeAmountAfterPenalties;
+        uint256 amountClaimed;
+        bool auctionCreatedStake;
+    }
+
+
+enum EQNOXStakeState {
+    Active,
+    InAccounting,
+    Closed,
+    Moved,
+    Merged
+}
+
+struct EqnoxStake {
+    bytes16 stakeId;
+    uint256 stakeAmount;
+    uint256 shares;
+    EQNOXStakeState stakeState;
+    uint256 interestAmount;
+    uint256 stakeStartTokenDay;
+    uint256 numDaysAccountedFor;
+    uint256 accountingStartTokenDay;
+    uint256 accountingStartDayOfYear;
+    uint256 accountingStartTokenYear;
+}
+
+interface IAtlasToken {
+    function stakes(address account, bytes16 stakeId) external view returns (Stake memory);
+    function stakeCount(address account) external view returns (uint256);
+    function generateID(address x, uint256 y, bytes1 z) external pure returns (bytes16 b);
+    function CurrentTokenDay() external view returns (uint256);
+    function dailyInflations(uint256 day) external view returns (Inflation memory);
+    function SUPPLY_AFTER_AUCTIONS() external view returns (uint256);
+}
+
+interface IEqnoxUtils {
+    function isEqnoxStakeValid(address account, bytes16 stakeId) external view returns (bool, string memory);
+}
+
+interface IEqnoxToken {
+    function CurrentTokenDay() external view returns (uint256);
+    function stakes(address account, bytes16 stakeId) external view returns (EqnoxStake memory);
+    function SharesAccounting() external view returns (uint256);
+}
+
+/**
+ * @dev Abstract contract to manage owner access to contract
+ */
+abstract contract Owner {
+    address public CONTRACT_DEFINER;
+
+    modifier mod_onlyContractDefiner() {
+        require(msg.sender == CONTRACT_DEFINER, "Wrong sender.");
+        _;
+    }
+
+    function renounceOwnership() external mod_onlyContractDefiner {
+        CONTRACT_DEFINER = address(0x0);
+    }
+}
+
+interface IContractsManager {
+    function find(string memory contractName) external view returns (address, bool);
+}
+
+/**
+ * @dev Atlas Stake Math contract, used for calculating staking bonuses and penalties
+ */
+contract AtlasStakeMath is Owner {
+    using SafeMath for uint256;
+    IAtlasToken TOKEN_CONTRACT;
+    IEqnoxToken EQNOX_CONTRACT;
+    IEqnoxUtils EQNOX_UTILS_CONTRACT;
+
+    bytes16 public STAKE_ID_ZERO_ADDRESS = 0x00000000000000000000000000000000;
+
+    uint256 public MAX_STAKE_DURATION_IN_DAYS = 365 * 10;
+
+    //the max multiplication bonuses a stake can get according to time, amount, and eqnox stake
+    uint256 public STAKE_TIME_MAX_BONUS = 10;
+    uint256 public STAKE_AMOUNT_MAX_BONUS = 20;
+    uint256 public STAKE_EQNOX_MAX_BONUS = 30;
+    
+    /**
+     * @dev Calculates the total bonus in atlas tokens according to the length of the stake, the amount to stake, and the eqnox stake associated
+     */
+    function calcBonus(address account, uint256 tokenAmount, bytes16 stakeId, uint256 numDays, uint256 totalSupply, uint256 tokensStakedAccounting) public view returns (uint256) {
+        if (numDays > MAX_STAKE_DURATION_IN_DAYS)
+            numDays = MAX_STAKE_DURATION_IN_DAYS;
+
+        uint256 timeBonus = calcTimeBonus(tokenAmount, numDays);
+        uint256 amountBonus = calcAmountBonus(tokenAmount, totalSupply, tokensStakedAccounting);
+        uint256 eqnoxBonus = calcEqnoxBonus(tokenAmount, account, stakeId);
+
+        return timeBonus.add(amountBonus).add(eqnoxBonus);
+    }
+
+    /**
+     * @dev Calculates the bonus in ATLAS tokens according to the time to stake
+     */
+    function calcTimeBonus(uint256 tokenAmount, uint256 numDays) public view returns (uint256 timeBonus) {
+        //time bonus = tokenAmount * maxBonus * numDays/maxDays
+        //if the numDays is equal to the maxDays the maxBonus multiplier is at its fullest
+        timeBonus = tokenAmount
+            .mul(STAKE_TIME_MAX_BONUS)
+            .mul(numDays)
+            .div(MAX_STAKE_DURATION_IN_DAYS);
+    }
+
+    /**
+     * @dev Calculates the bonus in ATLAS tokens according to the amount to stake
+     */
+    function calcAmountBonus(uint256 tokenAmount, uint256 totalSupply, uint256 tokensStakedAccounting) public view returns (uint256 amountBonus) {
+        
+        //full supply accounts for circulating supply + tokens staked
+        uint256 fullSupply = totalSupply + tokensStakedAccounting;
+
+        //since supply will be inflating during auctions, we need to start at the supply after auctions have ended or higher
+        if(fullSupply < TOKEN_CONTRACT.SUPPLY_AFTER_AUCTIONS()) {
+            fullSupply = TOKEN_CONTRACT.SUPPLY_AFTER_AUCTIONS();
+        }
+
+        //amountBonus = tokenAmount * maxBonus * tokenAmount/fullSupply
+        //if the tokenAmount is equal to the fullSupply the maxBonus multiplier is at its fullest
+        amountBonus = tokenAmount.mul(STAKE_AMOUNT_MAX_BONUS).mul(tokenAmount).div(fullSupply);
+    }
+
+    /**
+     * @dev Calculates the bonus in ATLAS tokens to the EQNOX stake
+     */
+    function calcEqnoxBonus(uint256 tokenAmount, address account, bytes16 stakeId) public view returns (uint256 eqnoxBonus) {
+        (uint256 eqNum, uint256 eqDen) = calcEqnoxStakePower(account, stakeId);
+
+        //amountBonus = tokenAmount * maxBonus * stakeShares/totalShares
+        eqnoxBonus = tokenAmount.mul(STAKE_EQNOX_MAX_BONUS).mul(eqNum).div(eqDen);
+    }
+
+    /**
+     * @dev Calculates the eqnox stake power ratio. If the stake isn't valid, the ratio is (0, 1). Otherwise it's the shares the stake holds divided by all shares
+     */
+    function calcEqnoxStakePower(address account, bytes16 stakeId) public view returns (uint256 num, uint256 den) {
+
+        (bool isValid, ) = EQNOX_UTILS_CONTRACT.isEqnoxStakeValid(account, stakeId);
+        if(!isValid) return (0, 1);
+
+        EqnoxStake memory stake = EQNOX_CONTRACT.stakes(account, stakeId);
+        return (stake.shares, EQNOX_CONTRACT.SharesAccounting());
+    }
+
+
+
+    /**
+     * @dev Public function that calculates the principal and accrued interest for a stake for a given number of elapsed days, without considering any penalties for ending the stake early.
+     */
+    function getPrincipalAndInterestForStake(address addr, bytes16 stakeId, uint256 numDaysToAccountFor) public view returns (uint256 principal, uint256 interest) {
+        
+        Stake memory stake = TOKEN_CONTRACT.stakes(addr,stakeId);
+        bool stakeFound = stake.stakeId == stakeId;
+        require(stakeFound, "Address does not contain stake with provided id");
+
+        principal = stake.stakeAmount;
+        interest = stake.interestAmount;
+
+        //if the stake has been closed or has been moved, return the registered principal and interest
+        if (stake.stakeState == StakeState.Closed || stake.stakeState == StakeState.Moved) return (principal, interest);
+
+        //account at most until the maturity date of the stake
+        uint256 accountStakeUntilTokenDay = stake.stakeStartTokenDay.add(stake.stakeDuration) < TOKEN_CONTRACT.CurrentTokenDay() ? stake.stakeStartTokenDay.add(stake.stakeDuration) : TOKEN_CONTRACT.CurrentTokenDay();
+
+        //go through all days up to the day before the accountStakeUntilTokenDay
+        for (uint256 i = stake.stakeStartTokenDay; i < accountStakeUntilTokenDay; i++) {
+            //solidity doesn't support multivariable fors
+            if (numDaysToAccountFor == 0) break;
+
+            interest = interest.add(
+                //each stakes earns as interest a fraction of the global token inflation according to its share ratio
+                TOKEN_CONTRACT.dailyInflations(i)
+                .totalSupply
+                .add(TOKEN_CONTRACT.dailyInflations(i).tokensStakedAccounting)
+                .mul(TOKEN_CONTRACT.dailyInflations(i).numerator)
+                //multiply by fraction of stake shares to total shares
+                    .mul(stake.shares)
+                    .div(TOKEN_CONTRACT.dailyInflations(i).denominator)
+                    .div(
+                        //since a stake to exist needs to have shares (this is a require on create stake) and that is accounted for in SharesAccounting
+                        //and since the totalShares of a dailyInflation has the day value of SharesAccounting
+                        //therefore this division will never result in a division by zero
+                        TOKEN_CONTRACT.dailyInflations(i).totalShares
+                    )
+            );
+
+            //solidity doesn't support multivariable fors
+            numDaysToAccountFor--;
+        }
+
+        return (principal, interest);
+    }
+
+    /**
+     * @dev Public function that calculates the principal and interest for a stake that is going to be closed
+     */
+    function calculatePrincipalAndInterestIfClosingStakeToday(address addr, bytes16 stakeId, uint256 numDaysToAccountFor) public view returns (uint256 principal, uint256 interest) {
+        
+        Stake memory stake = TOKEN_CONTRACT.stakes(addr, stakeId);
+        bool stakeFound = stake.stakeId == stakeId;
+        require(stakeFound, "Address does not contain stake with provided id");
+        require(stake.stakeState == StakeState.Active, "Stake is not active");
+
+        (principal, interest) = getPrincipalAndInterestForStake(addr, stakeId, numDaysToAccountFor);
+
+        //if the stake is being ended on the same token day it was created, there are no penalties
+        if (stake.stakeStartTokenDay == TOKEN_CONTRACT.CurrentTokenDay()) {
+            return (stake.stakeAmount, stake.interestAmount);
+        }
+
+        (uint256 numerator, uint256 denominator) = calculatePenaltyForEndingStake(stake.stakeStartTokenDay, stake.stakeDuration);
+
+        //remove from the principal the quantity represented by the fraction of penalty to apply
+        //the denominator applied as a divisor is a constant in the function that returned it, therefore this division never results in a division by zero
+        principal = principal.sub(principal.mul(numerator).div(denominator));
+
+        return (principal, interest);
+    }
+
+
+    function calculatePenaltyForEndingStake(uint256 stakeStartTokenDay, uint256 stakeDuration) public view returns (uint256 num, uint256 den) {
+        uint256 currentTokenDay = TOKEN_CONTRACT.CurrentTokenDay();
+        uint256 stakeDays = currentTokenDay.sub(stakeStartTokenDay);
+
+        //if stake has already ended, there's no penalty
+        if (stakeDays >= stakeDuration) return (0, 1);
+
+        //if stake was created today, there's no penalty
+        if (currentTokenDay == stakeStartTokenDay) return (0, 1);
+
+        uint256 stakeMidtime = stakeDuration.div(2);
+
+        //during first half, penalty decreases only to 90%
+        if (stakeDays <= stakeMidtime) {
+            //reduction = 10 * stakeDays/stakeMidTime
+            uint256 reduction = uint256(10).mul(stakeDays).div(stakeMidtime);
+            //returns at most a 10% reduction in penalties
+            return (uint256(100).sub(reduction), 100);
+        }
+        //during the second half penalty decreases linearly from 90% to 0
+        else {
+
+            //how many days to account for after stakeMidtime
+            uint256 remainingDays = stakeDuration.sub(stakeMidtime);
+            //how many days have passed since stakeMidtime
+            uint256 passedDays = stakeDays.sub(stakeMidtime);
+            //reduction = 90 * passedDays/remainingDays
+            //passed days is never higher than remaining days due to the check right at the start of the method (stakeDays >= stakeDuration)
+            uint256 reduction = uint256(90).mul(passedDays).div(remainingDays);
+            //returns at best a total reduction in penalities
+            return (uint256(90).sub(reduction), 100);
+        }
+    }
+
+
+ /**
+     * @dev External function to provide pagination of stakes.
+     */
+    function stakesPagination(address account, uint256 offset, uint256 length) public view returns (Stake[] memory) {
+        Stake[] memory stakeList;
+        if (offset >= TOKEN_CONTRACT.stakeCount(account)) {
+            stakeList = new Stake[](0);
+            return stakeList;
+        }
+
+        if (offset + length > TOKEN_CONTRACT.stakeCount(account)) {
+            length = (TOKEN_CONTRACT.stakeCount(account)) - offset;
+        }
+
+        stakeList = new Stake[](length);
+
+        uint256 end = offset + length;
+
+        for (uint256 i = 0; offset < end; offset++) {
+            bytes16 stakeId = TOKEN_CONTRACT.generateID(account, offset, 0x01);
+            stakeList[i] = TOKEN_CONTRACT.stakes(account,stakeId);
+            i++;
+        }
+
+        return stakeList;
+    }
+
+    /**
+     * @dev External function to provide pagination of daily registered inflations.
+     */
+    function inflationPagination(uint256 offset, uint256 length) external view returns (Inflation[] memory inflations) {
+        //if offset has exceeded the available elements return an empty array
+        uint256 currentTokenDay = TOKEN_CONTRACT.CurrentTokenDay();
+        if(offset > currentTokenDay - 1) {
+            inflations = new Inflation[](0);
+            return inflations;
+        }
+        
+        if(offset + length > currentTokenDay - 1) {
+            length = (currentTokenDay - 1) - offset;
+        }
+        
+        inflations = new Inflation[](length);
+        
+        uint256 end = offset + length;
+        
+        for(uint256 i = 0; offset < end; offset++) {
+            inflations[i] = TOKEN_CONTRACT.dailyInflations(offset+1);
+            i++;
+        }
+    }
+
+    function setContracts(address contractsManager) external mod_onlyContractDefiner {
+
+        //Atlas contract
+        (address ctr, bool found) = IContractsManager(contractsManager).find("TOKEN_CONTRACT");
+        require(found, "Contract not found");
+        TOKEN_CONTRACT = IAtlasToken(ctr);
+
+        //Eqnox contract
+        (ctr, found) = IContractsManager(contractsManager).find("EQNOX_CONTRACT");
+        require(found, "Contract not found");
+        EQNOX_CONTRACT = IEqnoxToken(ctr);
+
+        //Eqnox Utils contract
+        (ctr, found) = IContractsManager(contractsManager).find("EQNOX_UTILS_CONTRACT");
+        require(found, "Contract not found");
+        EQNOX_UTILS_CONTRACT = IEqnoxUtils(ctr);
+    }
+
+    constructor() {
+        CONTRACT_DEFINER = msg.sender;
+    }
+}

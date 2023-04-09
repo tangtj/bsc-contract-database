@@ -1,0 +1,252 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.10;
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations with added overflow
+ * checks.
+ *
+ * Arithmetic operations in Solidity wrap on overflow. This can easily result
+ * in bugs, because programmers usually assume that an overflow raises an
+ * error, which is the standard behavior in high level programming languages.
+ * `SafeMath` restores this intuition by reverting the transaction when an
+ * operation overflows.
+ *
+ * Using this library instead of the unchecked operations eliminates an entire
+ * class of bugs, so it's recommended to use it always.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     * - Subtraction cannot overflow.
+     */
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     * - The divisor cannot be zero.
+     */
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        // Solidity only automatically asserts when dividing by 0
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+}
+
+enum EQNOXStakeState {
+    Active,
+    InAccounting,
+    Closed,
+    Moved,
+    Merged
+}
+
+struct EqnoxStake {
+    bytes16 stakeId;
+    uint256 stakeAmount;
+    uint256 shares;
+    EQNOXStakeState stakeState;
+    uint256 interestAmount;
+    uint256 stakeStartTokenDay;
+    uint256 numDaysAccountedFor;
+    uint256 accountingStartTokenDay;
+    uint256 accountingStartDayOfYear;
+    uint256 accountingStartTokenYear;
+}
+
+
+interface IEqnoxToken {
+    function CurrentTokenDay() external view returns (uint256);
+    function stakes(address account, bytes16 stakeId) external view returns (EqnoxStake memory);
+    function SharesAccounting() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+/**
+ * @dev Abstract contract to manage owner access to contract
+ */
+abstract contract Owner {
+    address public CONTRACT_DEFINER;
+
+    modifier mod_onlyContractDefiner() {
+        require(msg.sender == CONTRACT_DEFINER, "Wrong sender.");
+        _;
+    }
+
+    function renounceOwnership() external mod_onlyContractDefiner {
+        CONTRACT_DEFINER = address(0x0);
+    }
+}
+
+interface IContractsManager {
+    function find(string memory contractName) external view returns (address, bool);
+}
+
+/**
+ * @dev Contract that provides util functions about Eqnox
+ */
+contract EqnoxUtils is Owner {
+    using SafeMath for uint256;
+    
+
+    mapping(address => bytes16) public userBestEqnoxStake;
+    IEqnoxToken EQNOX_CONTRACT;
+    bytes16 public STAKE_ID_ZERO_ADDRESS = 0x00000000000000000000000000000000;
+
+    
+    /**
+     * @dev Calculates the max tax discount a user can have according to his stake
+     */
+    function calcEqnoxStakeTaxDiscount(address account, bytes16 stakeId) public view returns (uint256 num, uint256 den) {
+
+        (bool isStakeValid, ) = isEqnoxStakeValid(account, stakeId);
+        //if the stake isn't valid return 0 discount
+        if(!isStakeValid) return (0, 1);
+        
+        EqnoxStake memory stake = EQNOX_CONTRACT.stakes(account, stakeId);
+
+        //calculate how much is 2% of all shares - the division by 50 returns the 2%
+        uint256 sharesAccounting = EQNOX_CONTRACT.SharesAccounting().div(50);
+
+        //if the stake holds 2% or more of eqnox shares, it has maximum discount
+        if (stake.shares >= sharesAccounting) return (1, 1);
+        //otherwise, calculating the discount proportionally
+        else return (stake.shares, sharesAccounting);
+    }
+
+    /**
+     * @dev Calculates the nominal tax discount a user has, according to his personal best eqnox stake
+     */
+    function calcTaxDiscount(address account, uint256 amount) public view returns (uint256) {
+        (uint256 num, uint256 den) = calcEqnoxStakeTaxDiscount(account, userBestEqnoxStake[account]);
+        return amount.mul(num).div(den);
+    }
+
+    /**
+     * @dev Checks if a stake is valid
+     */
+    function isEqnoxStakeValid(address account, bytes16 stakeId) public view returns (bool, string memory) {
+        EqnoxStake memory stake = EQNOX_CONTRACT.stakes(account, stakeId);
+        if(stake.stakeId == STAKE_ID_ZERO_ADDRESS) return (false, "Stake zero address not allowed");
+        if(stake.stakeId != stakeId) return (false, "Stake not found");
+        if(stake.stakeState != EQNOXStakeState.Active) return (false,"Stake must be active");
+        if(stake.stakeStartTokenDay >= EQNOX_CONTRACT.CurrentTokenDay()) return (false, "Stake must have at least one day");
+        return (true, "");
+    }
+
+    /**
+     * @dev Function to associate one's best eqnox stake
+     */
+    function associateBestEqnoxStake(bytes16 stakeId) public {
+        (bool isStakeValid, string memory message) = isEqnoxStakeValid(msg.sender, stakeId);
+        require(isStakeValid, message);
+        userBestEqnoxStake[msg.sender] = stakeId;
+    }
+
+    function setContracts(address contractsManager) external mod_onlyContractDefiner {
+
+        //Eqnox contract
+        (address ctr, bool found) = IContractsManager(contractsManager).find("EQNOX_CONTRACT");
+        require(found, "Contract not found");
+        EQNOX_CONTRACT = IEqnoxToken(ctr);
+    }
+
+    constructor() {
+        CONTRACT_DEFINER = msg.sender;
+    }
+}
