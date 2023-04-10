@@ -1,0 +1,204 @@
+
+// File: contracts/DbankNode.sol
+// contracts/DbankNode.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.7;
+import "./Governable.sol";
+
+abstract contract SmartNode {
+    function nodeRefererOf(address node) external view virtual returns(address);
+    function nodeIdOf(address node) external view virtual returns(uint256);
+}
+
+contract DbankNode is Governable {
+    uint256 private smartNodeReferer;
+    mapping (uint256 => address) private nodeIds;
+    mapping (address => uint256) private nodeAddresses;
+    mapping (uint256 => uint256) private nodeRefererIds;
+    uint256 private currentId = 0;
+    SmartNode private smartNode;
+    bool public migrated = false;
+    enum Tree { ETHEREUM, BINANCE, TRON, ARBITRUM, AVALANCHE, POLYGON }
+
+    event DbankNodeActivated(address user, address referer, uint256 id);
+
+    constructor(SmartNode _smartNode) {
+        smartNode = _smartNode;
+    }
+
+    function join(uint256 refererId, Tree tree) public {
+        require (migrated, "!Migrated");
+        require (tree == Tree.BINANCE, "!BinanceTree");
+        require(smartNode.nodeIdOf(_msgSender()) == 0, "!SmartNode");
+        address referer = nodeIds[refererId];
+        require (referer != address(0), "!ZeroReferer");
+        _join(_msgSender(), refererId);
+        emit DbankNodeActivated(_msgSender(), referer, currentId);
+    }
+
+    function nodeRefererOf(address node) public view returns(address referer) {
+        uint256 refererId = nodeRefererIds[nodeAddresses[node]];
+        referer = nodeIds[refererId];
+        if (referer == address(0)) {
+            referer = smartNode.nodeRefererOf(node);
+            if (smartNode.nodeIdOf(referer) == 1 ) {
+                return nodeIds[smartNodeReferer];
+            }
+        }
+    }
+
+    function nodeUserOf(uint256 id) public view returns(address node) {
+        return nodeIds[id];
+    }
+
+    function nodeIdOf(address node) public view returns(uint256 id) {
+        return nodeAddresses[node];
+    }
+
+    function nodeUserReferrerOf(uint256 id) public view returns(address node, address referer) {
+        uint256 refererId = nodeRefererIds[id];
+        return (nodeIds[id], nodeIds[refererId]);
+    }
+
+    function totalNodes() public view returns(uint256 nodeCount) {
+        return currentId;
+    }
+
+    function isExistingId(uint256 id) public view returns(bool status) {
+        return nodeIds[id] != address(0);
+    }
+
+    function migrateNodes(address[] calldata nodes, uint256[] calldata ids, uint256[] calldata referrers) external onlyGovernance {
+        for (uint256 i = 0; i < nodes.length; i++) {
+            _migrateNode(nodes[i], ids[i], referrers[i]);
+        }
+    }
+
+    function finishMigration(address[] calldata nodes, address[] calldata referrers) external onlyGovernance {
+        for (uint256 i = 0; i < nodes.length; i++) {
+            currentId++;
+            nodeIds[currentId] = nodes[i];
+            nodeAddresses[nodes[i]] = currentId;
+            nodeRefererIds[currentId] = nodeAddresses[referrers[i]];
+        }
+        smartNodeReferer = currentId;
+        nodeRefererIds[1] = currentId;
+        migrated = true;
+        _transferGovernance(address(0));
+    }
+
+    function _join(address node, uint256 refererId) internal {
+        require(nodeAddresses[node] == 0, "AlreadyJoined!");
+        require(refererId > 0, "!RefererExists");
+        currentId++;
+        nodeIds[currentId] = node;
+        nodeAddresses[node] = currentId;
+        nodeRefererIds[currentId] = refererId;
+    }
+
+    function _migrateNode(address node, uint256 id, uint256 refererId) internal {
+        require(nodeAddresses[node] == 0, "AlreadyJoined!");
+        require(refererId > 0, "!RefererExists");
+        currentId = id;
+        nodeIds[id] = node;
+        nodeAddresses[node] = id;
+        nodeRefererIds[id] = refererId;
+    }
+}
+
+// File: contracts/Governable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (access/Governable.sol)
+
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (a governance) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the governance account will be the one that deploys the contract. This
+ * can later be changed with {transferGovernance}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyGovernance`, which can be applied to your functions to restrict their use to
+ * the governance.
+ */
+abstract contract Governable is Context {
+    address private _governance;
+
+    event GovernanceTransferred(address indexed previousGovernance, address indexed newGovernance);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial governance.
+     */
+    constructor() {
+        _transferGovernance(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current governance.
+     */
+    function governance() public view virtual returns (address) {
+        return _governance;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the governance.
+     */
+    modifier onlyGovernance() {
+        require(governance() == _msgSender(), "Governable: caller is not the governance");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without governance. It will not be possible to call
+     * `onlyGovernance` functions anymore. Can only be called by the current governance.
+     *
+     * NOTE: Renouncing governanceship will leave the contract without an governance,
+     * thereby removing any functionality that is only available to the governance.
+     */
+    function renounceGovernance() public virtual onlyGovernance {
+        _transferGovernance(address(0));
+    }
+
+    /**
+     * @dev Transfers governanceship of the contract to a new account (`newGovernance`).
+     * Internal function without access restriction.
+     */
+    function _transferGovernance(address newGovernance) internal virtual {
+        address oldGovernance = _governance;
+        _governance = newGovernance;
+        emit GovernanceTransferred(oldGovernance, newGovernance);
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+

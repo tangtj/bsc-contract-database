@@ -1,0 +1,75 @@
+pragma solidity ^0.8.0;
+
+contract LoanOrca {
+    string public name = "LoanOrca";
+    string public symbol = "LOCA";
+    uint256 public decimals = 18;
+    uint256 public totalSupply = 100000000000000000000000000000;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    uint256 public sellTaxRate = 11;
+    uint256 public buyTaxRate = 2;
+    uint256 public maxTransactionSize = 100000000000;
+    uint256 public minTransactionSize = 100000;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    function transfer(address to, uint256 value) public returns (bool success) {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance.");
+        require(value >= minTransactionSize, "Transaction size too small.");
+        require(value <= maxTransactionSize, "Transaction size too large.");
+        uint256 tax = 1;
+        if (msg.sender != address(this)) {
+            // Sell transaction
+            tax = (value * sellTaxRate) / 100;
+        } else {
+            // Buy transaction
+            tax = (value * buyTaxRate) / 100;
+        }
+        balanceOf[msg.sender] -= (value + tax);
+        balanceOf[to] += value;
+        emit Transfer(msg.sender, to, value);
+        if (tax > 0) {
+            // Send the tax to this contract's address
+            balanceOf[address(this)] += tax;
+            emit Transfer(msg.sender, address(this), tax);
+        }
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool success) {
+        allowance[msg.sender][spender] = value;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool success) {
+        require(value <= balanceOf[from], "Insufficient balance.");
+        require(value <= allowance[from][msg.sender], "Allowance exceeded.");
+        require(value >= minTransactionSize, "Transaction size too small.");
+        require(value <= maxTransactionSize, "Transaction size too large.");
+        uint256 tax = 0;
+        if (msg.sender != address(this)) {
+            // Sell transaction
+            tax = (value * sellTaxRate) / 100;
+        } else {
+            // Buy transaction
+            tax = (value * buyTaxRate) / 100;
+        }
+        balanceOf[from] -= (value + tax);
+        balanceOf[to] += value;
+        allowance[from][msg.sender] -= value;
+        emit Transfer(from, to, value);
+        if (tax > 0) {
+            // Send the tax to this contract's address
+            balanceOf[address(this)] += tax;
+            emit Transfer(from, address(this), tax);
+        }
+        return true;
+    }
+}

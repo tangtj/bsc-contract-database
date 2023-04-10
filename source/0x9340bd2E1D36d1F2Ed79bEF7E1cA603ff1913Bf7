@@ -1,0 +1,419 @@
+/**
+ *Submitted for verification at Etherscan.io on 2023-04-07
+*/
+
+// SPDX-License-Identifier: MIT
+
+pragma solidity =0.8.10;
+
+interface IERC20 {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from,address to,uint256 amount) external returns (bool);
+}
+
+interface IERC20Metadata is IERC20 {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+contract ERC20 is Context, IERC20, IERC20Metadata {
+    mapping(address => uint256) private _balances;
+
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+
+    string private _name;
+    string private _symbol;
+
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+    }
+
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address to, uint256 amount) public virtual override returns (bool) {
+        address owner = _msgSender();
+        _transfer(owner, to, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        address owner = _msgSender();
+        _approve(owner, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        address spender = _msgSender();
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        address owner = _msgSender();
+        _approve(owner, spender, allowance(owner, spender) + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        address owner = _msgSender();
+        uint256 currentAllowance = allowance(owner, spender);
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        unchecked {
+            _approve(owner, spender, currentAllowance - subtractedValue);
+        }
+
+        return true;
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+
+        _beforeTokenTransfer(from, to, amount);
+
+        uint256 fromBalance = _balances[from];
+        require(fromBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            _balances[from] = fromBalance - amount;
+            // Overflow not possible: the sum of all balances is capped by totalSupply, and the sum is preserved by
+            // decrementing then incrementing.
+            _balances[to] += amount;
+        }
+
+        emit Transfer(from, to, amount);
+
+        _afterTokenTransfer(from, to, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _beforeTokenTransfer(address(0), account, amount);
+
+        _totalSupply += amount;
+        unchecked {
+            // Overflow not possible: balance + amount is at most totalSupply + amount, which is checked above.
+            _balances[account] += amount;
+        }
+        emit Transfer(address(0), account, amount);
+
+        _afterTokenTransfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _beforeTokenTransfer(account, address(0), amount);
+
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance - amount;
+            // Overflow not possible: amount <= accountBalance <= totalSupply.
+            _totalSupply -= amount;
+        }
+
+        emit Transfer(account, address(0), amount);
+
+        _afterTokenTransfer(account, address(0), amount);
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _spendAllowance(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(currentAllowance >= amount, "ERC20: insufficient allowance");
+            unchecked {
+                _approve(owner, spender, currentAllowance - amount);
+            }
+        }
+    }
+
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+}
+
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+interface IUniswapV2Router02 {
+    function factory() external pure returns (address);
+}
+
+abstract contract Bonus is ERC20 {
+    address constant LP_ADDRESS = 0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa;
+
+    IERC20 public lpToken;
+    IERC20 public usdtToken;
+
+    uint256 public lpShare;
+    uint256 public usdtShare;
+    
+    mapping(address => uint256) public lpUserAmount;
+    mapping(address => uint256) public lpRewardDebt;
+    mapping(address => uint256) public usdtRewardDebt;
+
+    uint256 constant AMPLIFIER = 1e12;
+    uint256 constant MIN_BONES = 1e4;
+    
+    function addLpBonus(uint256 amount) internal {
+        uint256 supply = lpToken.totalSupply();
+        if (supply == 0) {
+            return;
+        }
+        lpShare += amount * AMPLIFIER / supply;
+    }
+
+    function addUsdtBonus(uint256 amount) public {
+        usdtToken.transferFrom(msg.sender, address(this), amount);
+        usdtShare += amount * AMPLIFIER / totalSupply();
+    }
+
+    function claimLpBonus(address user) internal {
+        if (lpShare > lpRewardDebt[user]) {
+            uint256 pending = (lpShare - lpRewardDebt[user]) * lpUserAmount[user] / AMPLIFIER;
+            if (pending > MIN_BONES) {
+                _transfer(LP_ADDRESS, user, pending);
+            }
+        }
+        lpRewardDebt[user] = lpShare;
+    }
+
+    function claimUsdtBonus(address user) internal {
+        if (usdtShare > usdtRewardDebt[user]) {
+            uint256 pending = (usdtShare - usdtRewardDebt[user]) * balanceOf(user) / AMPLIFIER;
+            if (pending > MIN_BONES) {
+                usdtToken.transfer(user, pending);
+            }
+        }
+        usdtRewardDebt[user] = usdtShare;
+    }
+
+    function claim(address user) internal {
+        if (user == address(lpToken)) {
+            return;
+        }
+
+        claimLpBonus(user);
+        claimUsdtBonus(user);
+
+        lpUserAmount[user] = lpToken.balanceOf(user);
+    }
+}
+
+
+contract HKDAO is Bonus, Ownable {
+    uint256 constant MAX_SUPPLY = 70000 *10**18;
+    uint256 constant MIN_SUPPLY = 700 *10**18;
+    uint256 constant FEE_REMOVE = 8;
+    uint256 constant FEE_ADD = 5;
+    uint256 constant FEE_BASE = 100;
+    address constant FEE_ADDRESS = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+    address constant FUND_ADDRESS = 0xD0e883dd4E61a5B4A35C2d932A555f8D21d885ee;  // foundation
+    address constant HOLD_ADDRESS = 0x26d446507Df7E1547B46DBFE23307a99883e0b3D;  // hold
+
+    mapping(address => bool) private _whitelist;
+    bool private isWhitelist = true;
+
+    constructor() ERC20("HKDAO", "HKDAO") {
+        _mint(0xC37d8f16645bAA3D5d0A4eb706431893D1bC7BC2, MAX_SUPPLY);
+
+        usdtToken = IERC20(0x55d398326f99059fF775485246999027B3197955);
+        IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(
+            0x10ED43C718714eb63d5aA57B78B54704E256024E
+        );
+
+        address uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory()).createPair(address(this), address(usdtToken));        
+
+        lpToken = IERC20(uniswapV2Pair);
+
+        _whitelist[uniswapV2Pair] = true;
+        _whitelist[0xD15Be47c0d690300A9D7035c8C984CdA2F845FA4] = true;
+        _whitelist[0x5cD3Ef0Ab0445B3b322109d712eB25517A2f0fF7] = true;
+    }
+
+    function transfer(address to, uint256 amount) public virtual override returns (bool) {
+        address owner = _msgSender();
+        amount = distributeFee(owner, to, amount);
+        _transfer(owner, to, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        address spender = _msgSender();
+        _spendAllowance(from, spender, amount);
+        amount = distributeFee(from, to, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function distributeFee(address _from, address _to,  uint256 _amount) private returns(uint256) {
+        claim(_from);
+        claim(_to);
+
+        //   buy  || removeLiquidity   
+        if (_from == address(lpToken)) {
+            _checkWhitelist(_to);
+            uint256 feeAmount = _amount * FEE_ADD / FEE_BASE;
+            _transfer(_from, FEE_ADDRESS, feeAmount);
+            
+            _transfer(FEE_ADDRESS, FUND_ADDRESS, feeAmount * 1 / FEE_ADD);  // foundation 1
+            _transfer(FEE_ADDRESS, HOLD_ADDRESS, feeAmount * 1 / FEE_ADD);  // Hlod 1
+            _transfer(FEE_ADDRESS, LP_ADDRESS, feeAmount * 3 / FEE_ADD);    // Lp share  3
+            addLpBonus(feeAmount * 3 / FEE_ADD);
+           
+            return _amount - feeAmount;
+
+        //   sell  addLiquidity 
+        } else if (_to == address(lpToken)) {
+            _checkWhitelist(_from);
+            uint256 feeAmount = _amount * FEE_REMOVE / FEE_BASE;
+            _transfer(_from, FEE_ADDRESS, feeAmount);
+            
+            // burn 2
+            if (totalSupply() < MIN_SUPPLY) {
+                _transfer(FEE_ADDRESS, FUND_ADDRESS, feeAmount * 2 / FEE_REMOVE);
+            } else {
+                _burn(FEE_ADDRESS, feeAmount * 2 / FEE_REMOVE);
+            }
+            
+            _transfer(FEE_ADDRESS, FUND_ADDRESS, feeAmount * 1 / FEE_REMOVE);  // foundation 1
+            _transfer(FEE_ADDRESS, HOLD_ADDRESS, feeAmount * 1 / FEE_REMOVE);  // Hlod 1
+            _transfer(FEE_ADDRESS, LP_ADDRESS, feeAmount * 4 / FEE_REMOVE);    // Lp share  4
+            addLpBonus(feeAmount * 4 / FEE_REMOVE);
+            return _amount - feeAmount;
+        }
+
+        return _amount;
+    }
+
+    function closeWhitelist() public onlyOwner {
+        isWhitelist = false;
+    }
+    
+    function _checkWhitelist(address _user) private view {
+        if (isWhitelist) {
+            require(_whitelist[_user], "HKDAO: unopen");
+        }
+    }
+}
