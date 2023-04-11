@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.7;
+
+contract FreelanceContract {   
+    struct Order {
+        address payable customer;
+        string description;
+        string fullDescription;
+        string category;
+        uint256 price;
+        bool completed;
+        address payable assignedExecutor;
+        string ipfsHash;
+    }
+
+    struct Proposal {
+        address payable executor;
+        uint256 orderId;
+        string message;
+        bool accepted;
+    }
+
+    mapping(uint256 => Order) public orders;
+    mapping(uint256 => uint256) public escrowBalances;
+    mapping(uint256 => Proposal[]) public orderProposals;
+    uint256 public orderIndex;
+    address public owner;
+    mapping(address => bool) public admins;
+
+    event OrderCreated(address indexed creator, uint256 indexed orderIndex);
+    event PersonalOrderCreated(address customer, uint256 orderId, address assignedExecutor);
+    event OrderAccepted(uint256 orderId, address executor);
+    event OrderCompleted(uint256 orderId);
+    event OrderCancelled(uint256 orderId);
+    event IpfsHashSet(uint256 orderId, string ipfsHash);
+    event ProposalSubmitted(uint256 orderId, address executor);
+    event ProposalAccepted(uint256 orderId, address executor);
+
+    uint256 public orderCount;
+
+    function createOrder(
+            string memory _description,
+            string memory _fullDescription,
+            string memory _category,
+            uint256 _price,
+            address payable _assignedExecutor
+        ) public {
+            uint256 newOrderIndex = orderCount;
+            orders[newOrderIndex] = Order(
+                payable(msg.sender),
+                _description,
+                _fullDescription,
+                _category,
+                _price,
+                false,
+                _assignedExecutor,
+                ""
+            );
+            orderCount++;
+            if (_assignedExecutor != address(0)) {
+                emit PersonalOrderCreated(msg.sender, newOrderIndex, _assignedExecutor);
+            } else {
+                emit OrderCreated(msg.sender, newOrderIndex);
+            }
+    }
+
+    function submitProposal(uint256 orderId, string memory message) public {
+        Order storage order = orders[orderId];
+        require(order.assignedExecutor == address(0), "Order is a personal order");
+        orderProposals[orderId].push(Proposal(payable(msg.sender), orderId, message, false));
+        emit ProposalSubmitted(orderId, msg.sender);
+    }
+
+    function acceptProposal(uint256 orderId, uint256 proposalIndex) public {
+        Order storage order = orders[orderId];
+        require(msg.sender == order.customer, "Only the customer can accept a proposal");
+        require(order.assignedExecutor == address(0), "Order is a personal order");
+        Proposal storage proposal = orderProposals[orderId][proposalIndex];
+        require(!proposal.accepted, "Proposal is already accepted");
+            proposal.accepted = true;
+            order.assignedExecutor = proposal.executor;
+            emit ProposalAccepted(orderId, proposal.executor);
+            }
+            function getOrderProposals(uint256 orderId) public view returns (Proposal[] memory) {
+        return orderProposals[orderId];
+    }
+
+    function cancelOrder(uint256 orderId) public {
+        Order storage order = orders[orderId];
+        require(msg.sender == order.customer, "Only the customer can cancel the order");
+        order.completed = true;
+        emit OrderCancelled(orderId);
+    }
+
+    function setIpfsHash(uint256 orderId, string memory ipfsHash) public {
+        require(msg.sender == orders[orderId].customer, "Only the order customer can set the IPFS hash");
+        orders[orderId].ipfsHash = ipfsHash;
+        emit IpfsHashSet(orderId, ipfsHash);
+    }
+
+}

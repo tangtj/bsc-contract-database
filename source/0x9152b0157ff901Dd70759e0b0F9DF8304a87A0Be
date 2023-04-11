@@ -1,0 +1,335 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.9;
+
+contract SuperFarmer {
+    using SafeMath for uint256;
+
+    uint256 MAX_INT = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+    address _owner;
+    Farmer[] _farmers; //address: address of pool contract
+    bool _isFarming;
+    address _lastPoolAddress;
+    uint _maxFarmerCount;
+    uint _currentFarmerCount;
+
+    constructor(){
+        _owner = msg.sender;
+        _maxFarmerCount = 5;
+        for(uint i=0;i<_maxFarmerCount;i++) {
+            Farmer f = new Farmer();
+            _farmers.push(f);
+        }
+    }
+
+    function setMaxFarmerCount(uint _count) public onlyOwner notFarming{
+        require(_count > _maxFarmerCount, "Must be higher than current count");
+        uint n = _count.sub(_maxFarmerCount);
+        for(uint i=0;i<n;i++) {
+            Farmer f = new Farmer();
+            _farmers.push(f);
+        }
+        _maxFarmerCount = _count;
+    }
+
+    function startFarming(address _poolContractAddress, uint _farmerCount, uint _tokenPerFarmer) public onlyOwner notFarming {
+        require(_farmerCount <= _maxFarmerCount, "Number of farmer exceed Max Count");
+        SmartChefInitializable poolContract = SmartChefInitializable(_poolContractAddress);
+        IERC20Metadata stakedToken = poolContract.stakedToken();
+        uint totalStakedToken = _tokenPerFarmer.mul(_farmerCount);
+        require(stakedToken.balanceOf(address(_owner)) >= totalStakedToken, "Not having enough token!");
+        for(uint i=0;i<_farmerCount;i++) {
+            Farmer f = _farmers[i];
+            stakedToken.transferFrom(_owner, address(f), _tokenPerFarmer);
+            require(f.deposit(_poolContractAddress, _tokenPerFarmer),"Fail to deposit");
+        }
+        _currentFarmerCount = _farmerCount;
+        _lastPoolAddress = _poolContractAddress;
+        _isFarming = true;
+    }
+
+    function stopFarming(address _poolContractAddress) public onlyOwner isFarming {
+        require(_poolContractAddress == _lastPoolAddress, "Wrong Pool!");
+        for(uint i=0;i<_currentFarmerCount;i++){
+            Farmer f = _farmers[i];
+            uint stakedAmount = f.getStakedAmount(_poolContractAddress);
+            require(f.withdraw(_poolContractAddress, stakedAmount));
+        }
+        _isFarming = false;
+    }
+
+    function emergencyStopFarming(address _poolContractAddress) public onlyOwner isFarming {
+        require(_poolContractAddress == _lastPoolAddress, "Wrong Pool!");
+        for(uint i=0;i<_currentFarmerCount;i++){
+            Farmer f = _farmers[i];
+            require(f.emergencyWithdraw(_poolContractAddress));
+        }
+        _isFarming = false;
+    }
+
+    function harvestReward(address _poolContractAddress) public onlyOwner isFarming {
+        require(_poolContractAddress == _lastPoolAddress, "Wrong Pool!");
+        for(uint i=0;i<_currentFarmerCount;i++){
+            Farmer f = _farmers[i];
+            require(f.harvestReward(_poolContractAddress));
+        }
+    }
+    
+    function getPendingReward(address _poolContractAddress) public view onlyOwner isFarming returns(uint)  {
+        uint reward = 0;
+        for(uint i=0;i<_currentFarmerCount;i++) {
+            Farmer f = _farmers[i];
+            reward = reward.add(f.pendingReward(_poolContractAddress));
+        }
+        return reward;
+    }
+
+    function getStakedAmount(address _poolContractAddress) public view onlyOwner isFarming returns(uint){
+        uint amount = 0;
+        for(uint i=0;i<_currentFarmerCount;i++) {
+            Farmer f = _farmers[i];
+            amount = amount.add(f.getStakedAmount(_poolContractAddress));
+        }
+        return amount;
+    }
+
+    function getCurrentFarmerCount() public view onlyOwner returns(uint) {
+        return _currentFarmerCount;
+    }
+
+    function getMaxFarmerCount() public view onlyOwner returns(uint) {
+        return _maxFarmerCount;
+    }
+
+    function getLastPoolAddress() public view onlyOwner returns(address) {
+        return _lastPoolAddress;
+    }
+
+    function getFarmer(uint index) public view onlyOwner returns(Farmer) {
+        require(index >= 0 && index < _farmers.length, "No farmer at this index");
+        return _farmers[index];
+    }
+
+    function getIsFarming() public view onlyOwner returns(bool) {
+        return _isFarming;
+    }
+
+    function getFarmers() public view onlyOwner returns(Farmer[] memory) {
+        return _farmers;
+    }
+
+    function getOwner() public view returns(address)
+    {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == _owner, "Only owner");
+        _;
+    }
+
+    modifier notFarming() {
+        require(!_isFarming, "The contract is still farming!");
+        _;
+    }
+
+    modifier isFarming() {
+        require(_isFarming, "The contract is not farming!");
+        _;
+    }
+}
+
+contract Farmer {
+    uint256 MAX_INT = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+    address _owner; //wallet deploying this contract
+    address _superFarmer; //contract that deploy the contract
+
+    constructor() {
+        _owner = tx.origin;
+        _superFarmer = msg.sender;
+    }
+
+    function deposit(address _poolAddress, uint _amount) public onlyOwnerOrSuperFarmer returns(bool) {
+        SmartChefInitializable poolContract = SmartChefInitializable(_poolAddress);
+        IERC20Metadata stakedToken = poolContract.stakedToken();
+        stakedToken.approve(_poolAddress, MAX_INT);
+        poolContract.deposit(_amount);
+        return true;
+    }
+
+    function withdraw(address _poolAddress, uint _amount) public onlyOwnerOrSuperFarmer returns(bool) {
+        SmartChefInitializable poolContract = SmartChefInitializable(_poolAddress);
+        IERC20Metadata stakedToken = poolContract.stakedToken();
+        IERC20Metadata rewardToken = poolContract.rewardToken();
+        poolContract.withdraw(_amount);
+        require(stakedToken.transfer(_owner, _amount));
+        require(rewardToken.transfer(_owner, rewardToken.balanceOf(address(this))));
+        return true;
+    }
+
+    function emergencyWithdraw(address _poolAddress) public onlyOwnerOrSuperFarmer returns(bool) {
+        SmartChefInitializable poolContract = SmartChefInitializable(_poolAddress);
+        IERC20Metadata stakedToken = poolContract.stakedToken();
+        poolContract.emergencyWithdraw();
+        uint _amount = stakedToken.balanceOf(address(this));
+        require(stakedToken.transfer(_owner, _amount));
+        return true;
+    }
+
+    function harvestReward(address _poolAddress) public onlyOwnerOrSuperFarmer returns(bool) {
+        SmartChefInitializable poolContract = SmartChefInitializable(_poolAddress);
+        IERC20Metadata stakedToken = poolContract.stakedToken();
+        IERC20Metadata rewardToken = poolContract.rewardToken();
+        stakedToken.approve(_poolAddress, MAX_INT);
+        poolContract.deposit(0);
+        require(rewardToken.transfer(_owner, rewardToken.balanceOf(address(this))));
+        return true;
+    }
+
+    function pendingReward(address _poolAddress) public view returns(uint) {
+        SmartChefInitializable poolContract = SmartChefInitializable(_poolAddress);
+        return poolContract.pendingReward(address(this));
+    }
+
+    function transferTokenToOwner(address _tokenAddress, uint _amount) public onlyOwnerOrSuperFarmer returns(bool) {
+        IERC20 token = IERC20(_tokenAddress);
+        return token.transfer(_owner, _amount);
+    }
+
+    function getStakedAmount(address _poolAddress) public view returns(uint) {
+        SmartChefInitializable poolContract = SmartChefInitializable(_poolAddress);
+        (uint stakedAmount,) = poolContract.userInfo(address(this));
+        return stakedAmount;
+    }
+
+    function getOwner() public view returns(address){
+        return _owner;
+    }
+
+    function getSuperFarmer() public view returns(address) {
+        return _superFarmer;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == _owner, "Only owner");
+        _;
+    }
+
+    modifier onlyOwnerOrSuperFarmer() {
+        require(msg.sender == _owner || msg.sender == _superFarmer, "Only owner");
+        _;
+    }
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IERC20Metadata is IERC20 {
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev Returns the symbol of the token.
+     */
+    function symbol() external view returns (string memory);
+
+    /**
+     * @dev Returns the decimals places of the token.
+     */
+    function decimals() external view returns (uint8);
+}
+
+interface SmartChefInitializable {
+    function stakedToken() external view returns(IERC20Metadata);
+    function rewardToken() external view returns(IERC20Metadata);
+    function deposit(uint256 _amount) external;
+    function withdraw(uint256 _amount) external;
+    function emergencyWithdraw() external;
+    function pendingReward(address _user) external view returns (uint256);
+    function userInfo(address _address) external view returns(uint256, uint256);
+}
+
+library SafeMath {
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b <= a, errorMessage);
+            return a - b;
+        }
+    }
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a / b;
+        }
+    }
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a % b;
+        }
+    }
+}

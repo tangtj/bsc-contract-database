@@ -1,0 +1,161 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.16;
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+
+        return c;
+    }
+}
+
+interface IBEP20 {
+    function transfer(address to, uint256 value) external returns (bool);
+    function approve(address spender, uint256 value) external returns (bool);
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+    function allowance(address owner, address spender) external view returns (uint256);
+}
+
+
+contract EggHunt {
+    using SafeMath for uint256;
+    address private constant DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+    string public name;
+    address public owner;
+    uint256 public maxBet;
+    uint256 private applesAndEggs;
+    bool public isTradingEnabled;
+    mapping(address => uint256) private winningBalances;
+
+    event BetResult(bool indexed isWin, uint256 indexed amount);
+    event WinningsWithdrawn(address indexed player, uint256 indexed amount);
+
+    constructor() {
+        name = "Egg Hunt";
+        owner = msg.sender;
+        maxBet = 1 ether;
+        applesAndEggs = 35;
+        isTradingEnabled = false;
+    }
+
+    receive() external payable {}
+
+    function setMaxBet(uint256 _maxBet) external {
+        require(msg.sender == owner, "Only owner can set max bet");
+        maxBet = _maxBet;
+    }
+
+    function playEggHunt(uint256 betAmount) external {
+    require(isTradingEnabled, "Trading is disabled");
+    require(betAmount > 0, "Bet amount must be greater than 0");
+    require(betAmount <= maxBet, "Bet amount exceeds maximum bet");
+    require(betAmount <= IBEP20(0x3e14bb7B5e8BB1FdF275bDE1315BC25485C2AB18).balanceOf(msg.sender), "Insufficient balance");
+
+    require(IBEP20(0x3e14bb7B5e8BB1FdF275bDE1315BC25485C2AB18).transferFrom(msg.sender, address(this), betAmount), "Transfer failed");
+    require(IBEP20(0x3e14bb7B5e8BB1FdF275bDE1315BC25485C2AB18).balanceOf(address(this)) >= SafeMath.mul(betAmount, 2), "Insufficient contract balance");
+
+    bool isWin = uint256(keccak256(abi.encodePacked(block.timestamp, msg.sender))) % 100 < applesAndEggs;
+    uint256 payout = isWin ? SafeMath.mul(betAmount, 2) : 0;
+    uint256 fee = isWin ? 0 : SafeMath.div(SafeMath.mul(betAmount, 25), 100);
+
+    if (fee > 0) {
+        require(IBEP20(0x3e14bb7B5e8BB1FdF275bDE1315BC25485C2AB18).transfer(DEAD_ADDRESS, fee), "Transfer of fee failed");
+    }
+
+    emit BetResult(isWin, payout);
+
+    if (payout > 0) {
+    require(IBEP20(0x3e14bb7B5e8BB1FdF275bDE1315BC25485C2AB18).transfer(msg.sender, payout), "Transfer of winnings failed");
+}
+
+
+
+}
+
+    function setApplesAndEggs(uint256 _applesAndEggs) external {
+        require(msg.sender == owner, "Only owner can set win probability");
+        require(_applesAndEggs <= 100, "Win probability must be between 0 and 100");
+        applesAndEggs = _applesAndEggs;
+    }
+
+    function clearBalance() external {
+        require(msg.sender == owner, "Only owner can clear contract balance");
+        uint256 balance = IBEP20(0x3e14bb7B5e8BB1FdF275bDE1315BC25485C2AB18).balanceOf(address(this));
+        require(balance > 0, "Contract balance is zero");
+        require(IBEP20(0x3e14bb7B5e8BB1FdF275bDE1315BC25485C2AB18).transfer(owner, balance), "Transfer failed");
+    }
+
+    function withdrawWinnings() external {
+        uint256 winnings = winningsBalance(msg.sender);
+        require(winnings > 0, "No winnings to withdraw");
+
+        uint256 currentWinningBalance = winningBalances[msg.sender];
+        winningBalances[msg.sender] = 0;
+        emit WinningsWithdrawn(msg.sender, winnings);
+
+        _transfer(msg.sender, winnings);
+        assert(winningBalances[msg.sender] == 0);
+        assert(IBEP20(0x3e14bb7B5e8BB1FdF275bDE1315BC25485C2AB18).balanceOf(address(this)) >= currentWinningBalance);
+    }
+
+    function winningsBalance(address player) public view returns (uint256) {
+    return winningBalances[player];
+}
+
+function setTradingEnabled(bool _isTradingEnabled) external {
+    require(msg.sender == owner, "Only owner can set trading enabled status");
+    isTradingEnabled = _isTradingEnabled;
+}
+
+function _transfer(address recipient, uint256 amount) private {
+    (bool success, ) = recipient.call{value: amount}("");
+    require(success, "Transfer failed");
+}
+
+function rescueTokens(address _token, address _to, uint256 _amount) external {
+    require(msg.sender == owner, "Only the contract owner can rescue tokens");
+    require(_to != address(0), "Invalid recipient address");
+    require(_token != address(0), "Invalid token address");
+    require(_token != address(this), "Cannot rescue native token");
+    
+    if (_token == 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c) {
+        _transferEther(_to, _amount);
+    } else {
+        IBEP20 token = IBEP20(_token);
+        require(token.transfer(_to, _amount), "Token transfer failed");
+    }
+}
+
+function _transferEther(address _to, uint256 _amount) private {
+    (bool success, ) = _to.call{value: _amount}("");
+    require(success, "ETH transfer failed");
+}
+
+}

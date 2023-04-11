@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+interface IERC721 {
+    // Common
+    function maxSupply() external view returns (uint256);
+    function totalSupply() external view returns (uint256);
+    function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256 tokenId);
+    function safeTransferFrom(address from, address to, uint256 tokenId) external;
+    // Private
+    function publicMint(uint256 quantity) external;
+}
+
+interface IERC721Receiver {
+    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) external returns (bytes4);
+}
+
+contract MultiCall {
+    function call(address _nftAddress, uint256 _quantity, uint256 _times, uint256 startAt) public payable {
+        require(block.timestamp >= startAt, "error: 10000 time is not allowed");
+
+        uint256 max = IERC721(_nftAddress).maxSupply();
+        uint256 total = IERC721(_nftAddress).totalSupply();
+        require(max > total, "error: 10001 quantity is not enough");
+
+        uint256 newTimes = (max - total) >= _times ? _times : max - total;
+
+        for(uint256 i = 0; i < newTimes; ++i){
+            Minter minter = new Minter();
+            minter.mint(_nftAddress, _quantity);
+            minter.send(_nftAddress, _quantity);
+        }
+    }
+
+    function simulateCall(address _nftAddress, uint256 _quantity, uint256 _times, uint256 _startAt) public view returns (uint256 timestamp, uint256 startAt, uint256 quantity, uint256 times) {
+        uint256 max = IERC721(_nftAddress).maxSupply();
+        uint256 total = IERC721(_nftAddress).totalSupply();
+
+        uint256 newTimes = (max - total) >= _times ? _times : max - total;
+        return (block.timestamp, _startAt, _quantity, newTimes);
+    }
+
+    receive() payable external{}
+}
+
+contract Minter is IERC721Receiver  {
+    event ERC721Received(address operator, address from, uint256 tokenId, bytes data);
+
+    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) public override returns (bytes4) {
+        emit ERC721Received(operator, from, tokenId, data);
+        return this.onERC721Received.selector;
+    }
+
+    function mint(address _nftAddress, uint256 _quantity) public {
+        IERC721(_nftAddress).publicMint(_quantity);
+    }
+
+    function send(address _nftAddress, uint256 _quantity) public {
+        for(uint256 i = 0; i < _quantity; ++i){
+            uint256 tokenId = IERC721(_nftAddress).tokenOfOwnerByIndex(address(this), i);
+            IERC721(_nftAddress).safeTransferFrom(address(this), address(tx.origin), tokenId);
+        }
+    }
+
+    receive() payable external{}
+}

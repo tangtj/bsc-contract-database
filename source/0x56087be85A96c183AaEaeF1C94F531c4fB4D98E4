@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+contract TokenDeposit {
+    address public owner;
+    IERC20 public token1;
+    IERC20 public token2;
+    uint public bonus1Date;
+    uint public bonus2Date;
+    mapping(address => uint[]) public deposits;
+    mapping(address => bool) public hasWithdrawn;
+    bool public contractActive; // added contractActive state variable
+
+    modifier onlyOwner {
+        require(msg.sender == owner, "Only the contract owner can call this function.");
+        _;
+    }
+
+    modifier isActive { // added isActive modifier
+        require(contractActive, "Contract is currently inactive.");
+        _;
+    }
+
+    constructor(IERC20 _token1, IERC20 _token2, uint _bonus1Date, uint _bonus2Date) {
+        owner = msg.sender;
+        require(address(_token1) == 0x42981d0bfbAf196529376EE702F2a9Eb9092fcB5, "Token1 address incorrect"); // Replace 0x123...456 with the actual address of the token you want to restrict to
+        require(address(_token2) == 0x000000000000000000000000000000000000dEaD, "Token2 address incorrect"); // Replace 0x789...012 with the actual address of the token you want to restrict to
+        token1 = _token1;
+        token2 = _token2;
+        bonus1Date = 1681225593; // set bonus1Date to 0 by default
+        bonus2Date = 1681226593; // set bonus2Date to 0 by default
+        bonus1Date= _bonus1Date;
+        bonus2Date= _bonus2Date;
+        contractActive = true; // set contractActive to true by default
+    }
+
+
+    function setBonusDates(uint _bonus1Date, uint _bonus2Date) public onlyOwner {
+        require(_bonus1Date > block.timestamp, "Bonus1 date must be in the future");
+        require(_bonus2Date > _bonus1Date, "Bonus2 date must be after Bonus1 date");
+        bonus1Date = _bonus1Date;
+        bonus2Date = _bonus2Date;
+    }
+
+    function toggleContractActive() public onlyOwner {
+        contractActive = !contractActive;
+    }
+
+
+    function setToken2(IERC20 _newToken2) public onlyOwner {
+        require(address(_newToken2) != address(token1), "New token2 cannot be the same as token1");
+        token2 = _newToken2;  // allow owner to set a new address for token2 after we release new ca
+    }
+
+    function deposit(uint amount) public {
+        require(amount > 0, "Amount must be greater than 0");
+        require(token1.transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+        deposits[msg.sender].push(amount); // record users token1 deposits to deposit mapping
+    }
+
+    function getTotalTkn1() public view returns (uint) {
+        return token1.balanceOf(address(this));  // check entire amount of token1 deposited in the ca
+    }
+
+    function getUserDepositTkn1(address user) public view returns (uint) {
+        uint totalDeposit = 0;
+        uint[] memory userDeposits = deposits[user];
+        for (uint i = 0; i < userDeposits.length; i++) {
+            totalDeposit += userDeposits[i];
+        }
+        return totalDeposit;   // get a  users total dposited amount of token1
+    }   
+
+
+    function withdrawToken1(address recipient) public onlyOwner {
+        uint256 balance = token1.balanceOf(address(this));
+        token1.transfer(recipient, balance); // Allow the owner to transfer token1 out of the contract
+    }
+
+    function transferToken2(address recipient, uint256 amount) public onlyOwner {
+        token2.transfer(recipient, amount); // Allow the owner to transfer token2 out of the contract
+    }
+
+    function allocateToken2(address user) public onlyOwner {
+        uint userDepositTkn1 = getUserDepositTkn1(user);
+        require(userDepositTkn1 > 0, "User has no deposits");
+        uint allocationAmount = userDepositTkn1;
+        if (block.timestamp < bonus1Date) { // 10% bonus if deposited before bonus1Date
+            allocationAmount = allocationAmount * 11 / 10;
+        } else if (block.timestamp < bonus2Date) { // 5% bonus if deposited before bonus2Date
+            allocationAmount = allocationAmount * 105 / 100;
+        }
+        token2.transfer(user, allocationAmount); // Transfer allocated token2 to user
+    }
+
+    function withdrawToken2(uint amount) public {
+        require(!hasWithdrawn[msg.sender], "User has already withdrawn their allocated token2");
+        uint userDepositTkn1 = getUserDepositTkn1(msg.sender);
+        require(userDepositTkn1 > 0, "User has no deposits");
+        uint allocationAmount = userDepositTkn1;
+        if (block.timestamp < bonus1Date) { // 10% bonus if deposited before bonus1Date
+            allocationAmount = allocationAmount * 11 / 10;
+        } else if (block.timestamp < bonus2Date) { // 5% bonus if deposited before bonus2Date
+            allocationAmount = allocationAmount * 105 / 100;
+        }
+        require(allocationAmount >= amount, "User is trying to withdraw more token2 than allocated");
+        token2.transfer(msg.sender, amount); // Transfer requested amount of token2 to user
+        if (allocationAmount == amount) {
+            hasWithdrawn[msg.sender] = true; // Mark user as having withdrawn all their allocated token2
+        }
+    }    
+        
+}
