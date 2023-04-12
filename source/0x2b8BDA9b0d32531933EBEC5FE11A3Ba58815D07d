@@ -1,0 +1,210 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.16;
+
+interface IERC20Token {
+    function transferFrom(address _from, address _to, uint256 _value) external returns (bool success);
+}
+
+library ECDSA {
+    enum RecoverError {
+        NoError,
+        InvalidSignature,
+        InvalidSignatureLength,
+        InvalidSignatureS,
+        InvalidSignatureV // Deprecated in v4.8
+    }
+
+    function _throwError(RecoverError error) private pure {
+        if (error == RecoverError.NoError) {
+            return; // no error: do nothing
+        } else if (error == RecoverError.InvalidSignature) {
+            revert("ECDSA: invalid signature");
+        } else if (error == RecoverError.InvalidSignatureLength) {
+            revert("ECDSA: invalid signature length");
+        } else if (error == RecoverError.InvalidSignatureS) {
+            revert("ECDSA: invalid signature 's' value");
+        }
+    }
+
+    function tryRecover(
+        bytes32 hash,
+        bytes memory signature
+    ) internal pure returns (address, RecoverError) {
+        if (signature.length == 65) {
+            bytes32 r;
+            bytes32 s;
+            uint8 v;
+            // ecrecover takes the signature parameters, and the only way to get them
+            // currently is to use assembly.
+            /// @solidity memory-safe-assembly
+            assembly {
+                r := mload(add(signature, 0x20))
+                s := mload(add(signature, 0x40))
+                v := byte(0, mload(add(signature, 0x60)))
+            }
+            return tryRecover(hash, v, r, s);
+        } else {
+            return (address(0), RecoverError.InvalidSignatureLength);
+        }
+    }
+
+    function recover(
+        bytes32 hash,
+        bytes memory signature
+    ) internal pure returns (address) {
+        (address recovered, RecoverError error) = tryRecover(hash, signature);
+        _throwError(error);
+        return recovered;
+    }
+
+    function tryRecover(
+        bytes32 hash,
+        bytes32 r,
+        bytes32 vs
+    ) internal pure returns (address, RecoverError) {
+        bytes32 s = vs &
+            bytes32(
+                0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+            );
+        uint8 v = uint8((uint256(vs) >> 255) + 27);
+        return tryRecover(hash, v, r, s);
+    }
+
+    function recover(
+        bytes32 hash,
+        bytes32 r,
+        bytes32 vs
+    ) internal pure returns (address) {
+        (address recovered, RecoverError error) = tryRecover(hash, r, vs);
+        _throwError(error);
+        return recovered;
+    }
+
+    function tryRecover(
+        bytes32 hash,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) internal pure returns (address, RecoverError) {
+        if (
+            uint256(s) >
+            0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0
+        ) {
+            return (address(0), RecoverError.InvalidSignatureS);
+        }
+
+        address signer = ecrecover(hash, v, r, s);
+        if (signer == address(0)) {
+            return (address(0), RecoverError.InvalidSignature);
+        }
+
+        return (signer, RecoverError.NoError);
+    }
+
+    function recover(
+        bytes32 hash,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) internal pure returns (address) {
+        (address recovered, RecoverError error) = tryRecover(hash, v, r, s);
+        _throwError(error);
+        return recovered;
+    }
+
+    function toEthSignedMessageHash(
+        bytes32 hash
+    ) internal pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encodePacked("\x19Ethereum Signed Message:\n32", hash)
+            );
+    }
+}
+
+contract Managed {
+  mapping(address => bool) public managers;
+  modifier onlyManagers() {
+    require(managers[msg.sender] == true, "Caller is not manager");
+    _;
+  }
+  constructor() {
+    managers[msg.sender] = true;
+  }
+  function setManager(address _wallet, bool _manager) public onlyManagers {
+    require(_wallet != msg.sender, "Not allowed");
+    managers[_wallet] = _manager;
+  }
+}
+
+contract LiquidityBalancer is Managed {
+  bool multiSign;
+  IERC20Token token;
+  address lWallet;
+
+  struct LiquidityP {
+    uint256 timeStamp;
+    uint256 serviceId;
+    uint256 amount;
+    address executer;
+    address approver;
+    address receiver;
+  }
+
+  struct LiquidityR {
+    uint256 timeStamp;
+    uint256 serviceId;
+    uint256 amount;
+    address sender;
+  }
+
+  LiquidityP[] public providedLiquidity;
+  LiquidityR[] public receivedLiquidity;
+
+  constructor () {
+    managers[0x00d6E1038564047244Ad37080E2d695924F8515B] = true;
+    token = IERC20Token(0x6Ae9701B9c423F40d54556C9a443409D79cE170a);
+    lWallet = 0xf7A9F6001ff8b499149569C54852226d719f2D76;
+  }
+
+  function provideLiquidity(uint256 _serviceId, uint256 _amount, address _receiver) public onlyManagers {
+    require(!multiSign, "Multisignature is enabled");
+    _provideLiquidity(_serviceId, _amount, _receiver, msg.sender);
+  }
+
+  function verifySignature(bytes32 _taskHash, bytes memory _sig) private view returns(address) {
+    address mSigner = ECDSA.recover(ECDSA.toEthSignedMessageHash(_taskHash), _sig);
+    require(managers[mSigner] == true, "Invalid signer");
+    return mSigner;
+  }
+  function provideLiquidityMS(uint256 _serviceId, uint256 _amount, address _receiver, bytes memory signature) public onlyManagers {
+    bytes32 taskHash = keccak256(abi.encode(_serviceId, _amount, _receiver));
+    address a = verifySignature(taskHash, signature);
+    require (a!=msg.sender, "Signature must be from another wallet");
+    _provideLiquidity(_serviceId, _amount, _receiver, a);
+  }
+
+  function _provideLiquidity(uint256 _serviceId, uint256 _amount, address _receiver, address _approver) private {
+    require(token.transferFrom(lWallet, _receiver, _amount), "ERC20 Transfer error");
+    LiquidityP memory l = LiquidityP(block.timestamp, _serviceId, _amount, msg.sender, _approver, _receiver);
+    providedLiquidity.push(l);
+  }
+   
+  function receiveLiquidity(uint256 _serviceId, uint256 _amount, uint256 _txTimeStamp, address _sender) public onlyManagers {
+    LiquidityR memory l = LiquidityR(_txTimeStamp, _serviceId, _amount, _sender);
+    receivedLiquidity.push(l);
+  }
+
+  function pCount() public view returns(uint256) {
+    return providedLiquidity.length;
+  }
+
+  function rCount() public view returns(uint256) {
+    return receivedLiquidity.length;
+  }
+
+  function changeLWallet(address _wallet) public onlyManagers {
+    lWallet = _wallet;
+  }
+}

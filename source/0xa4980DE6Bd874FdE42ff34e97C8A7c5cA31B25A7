@@ -1,0 +1,955 @@
+//SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+/**
+* Created By WebooToken
+* Website: https://webooswap.com
+*/
+
+/**
+ * SAFEMATH LIBRARY
+ */
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function decimals() external view returns (uint8);
+    function symbol() external view returns (string memory);
+    function name() external view returns (string memory);
+    function getOwner() external view returns (address);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+abstract contract Auth {
+    address internal owner;
+    mapping (address => bool) internal authorizations;
+
+    constructor(address _owner) {
+        owner = _owner;
+        authorizations[_owner] = true;
+    }
+
+    
+    modifier onlyOwner() {
+        require(isOwner(msg.sender), "!OWNER"); _;
+    }
+
+    
+    modifier authorized() {
+        require(isAuthorized(msg.sender), "!AUTHORIZED"); _;
+    }
+
+    
+    function authorize(address adr) public onlyOwner {
+        authorizations[adr] = true;
+    }
+
+
+    function unauthorize(address adr) public onlyOwner {
+        authorizations[adr] = false;
+    }
+
+    
+    function isOwner(address account) public view returns (bool) {
+        return account == owner;
+    }
+
+    
+    function isAuthorized(address adr) public view returns (bool) {
+        return authorizations[adr];
+    }
+
+    
+    function transferOwnership(address payable adr) public onlyOwner {
+        owner = adr;
+        authorizations[adr] = true;
+        emit OwnershipTransferred(adr);
+    }
+
+    event OwnershipTransferred(address owner);
+}
+library SafeMath {
+    
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b <= a, errorMessage);
+            return a - b;
+        }
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a / b;
+        }
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a % b;
+        }
+    }
+}
+interface IDEXFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+    function getPair(address token0, address token1) external returns (address);
+}
+
+interface IDEXRouter {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+
+    function swapExactTokensForTokens(
+    uint amountIn,
+    uint amountOutMin,
+    address[] calldata path,
+    address to,
+    uint deadline
+    ) external returns (uint[] memory amounts);
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+interface IDividendDistributor {
+    function setDistributionCriteria(uint256 _minPeriod, uint256 _minDistribution) external;
+    function setShare(address shareholder, uint256 amount) external;
+    // function deposit() external payable;
+    function process(uint256 gas) external;
+}
+
+contract DividendDistributor is IDividendDistributor {
+    using SafeMath for uint256;
+
+    address public _token;
+    address public routerAddress;
+
+    struct Share {
+        uint256 amount;
+        uint256 totalExcluded;
+        uint256 totalRealised;
+    }
+
+    IBEP20 Token;
+    IDEXRouter router;
+    address public WBNB;
+
+    address[] shareholders;
+    mapping (address => uint256) shareholderIndexes;
+    mapping (address => uint256) shareholderClaims;
+
+    mapping (address => Share) public shares;
+
+    uint256 public totalShares;
+    uint256 public totalDividends;
+    uint256 public totalDistributed;
+    uint256 public dividendsPerShare;
+    uint256 public dividendsPerShareAccuracyFactor = 10 ** 36;
+
+    uint256 public minPeriod = 1 hours;
+    uint256 public minDistribution = 1 * (10 ** 18);
+
+    uint256 currentIndex;
+
+    bool initialized;
+    modifier initialization() {
+        require(!initialized);
+        _;
+        initialized = true;
+    }
+
+    modifier onlyToken() {
+        require(msg.sender == _token); _;
+    }
+
+    constructor (address _router) {
+        router = IDEXRouter(_router);
+        WBNB = router.WETH();
+        routerAddress = _router;
+        _token = msg.sender;
+        Token = IBEP20(msg.sender);
+    }
+
+    receive() external payable { }
+
+    function setDistributionCriteria(uint256 _minPeriod, uint256 _minDistribution) external override onlyToken {
+        minPeriod = _minPeriod;
+        minDistribution = _minDistribution;
+    }
+
+    function setShare(address shareholder, uint256 amount) external override onlyToken {
+        if(shares[shareholder].amount > 0){
+            distributeDividend(shareholder);
+        }
+
+        if(amount > 0 && shares[shareholder].amount == 0){
+            addShareholder(shareholder);
+        }else if(amount == 0 && shares[shareholder].amount > 0){
+            removeShareholder(shareholder);
+        }
+
+        totalShares = totalShares.sub(shares[shareholder].amount).add(amount);
+        shares[shareholder].amount = amount;
+        shares[shareholder].totalExcluded = getCumulativeDividends(shares[shareholder].amount);
+    }
+
+
+    function calculateDividenPerShare(uint256 amount) external onlyToken {
+        totalDividends = totalDividends.add(amount);
+        dividendsPerShare = dividendsPerShare.add(dividendsPerShareAccuracyFactor.mul(amount).div(totalShares));
+    }
+
+    function process(uint256 gas) external override onlyToken {
+        uint256 shareholderCount = shareholders.length;
+
+        if(shareholderCount == 0) { return; }
+
+        uint256 gasUsed = 0;
+        uint256 gasLeft = gasleft();
+
+        uint256 iterations = 0;
+
+        while(gasUsed < gas && iterations < shareholderCount) {
+            if(currentIndex >= shareholderCount){
+                currentIndex = 0;
+            }
+
+            if(shouldDistribute(shareholders[currentIndex])){
+                distributeDividend(shareholders[currentIndex]);
+            }
+
+            gasUsed = gasUsed.add(gasLeft.sub(gasleft()));
+            gasLeft = gasleft();
+            currentIndex++;
+            iterations++;
+        }
+    }
+
+    function shouldDistribute(address shareholder) internal view returns (bool) {
+        return shareholderClaims[shareholder] + minPeriod < block.timestamp
+        && getUnpaidEarnings(shareholder) > minDistribution;
+    }
+
+    function distributeDividend(address shareholder) internal {
+        if(shares[shareholder].amount == 0){ return; }
+
+        uint256 amount = getUnpaidEarnings(shareholder);
+        if(amount > 0){
+            totalDistributed = totalDistributed.add(amount);
+            Token.approve(shareholder,amount);
+            Token.transfer(shareholder, amount);
+            shareholderClaims[shareholder] = block.timestamp;
+            shares[shareholder].totalRealised = shares[shareholder].totalRealised.add(amount);
+            shares[shareholder].totalExcluded = getCumulativeDividends(shares[shareholder].amount);
+        }
+    }
+
+    function claimDividendToToken(address targetToken) public { 
+        require(targetToken != address(0),"Cannot swap to token 0");
+        require(shares[msg.sender].amount > 0,"Zero Balance");
+
+        uint256 amount = getUnpaidEarnings(msg.sender);
+        Token.approve(address(router), amount);
+
+        address[] memory path;
+        
+
+        if(targetToken == WBNB){
+            path = new address[](2);
+            path[0] = _token;
+            path[1] = WBNB;
+            
+            router.swapExactTokensForTokens(
+                amount,
+                0,
+                path,
+                msg.sender,
+                block.timestamp
+            );
+        } else if(targetToken != WBNB && targetToken != _token) {
+            path = new address[](3);
+            path[0] = _token;
+            path[1] = WBNB;
+            path[2] = targetToken;
+            
+            router.swapExactTokensForTokens(
+                amount,
+                0,
+                path,
+                msg.sender,
+                block.timestamp
+            );
+        } else {
+            distributeDividend(msg.sender);
+        }
+        totalDistributed = totalDistributed.add(amount);
+        shareholderClaims[msg.sender] = block.timestamp;
+        shares[msg.sender].totalRealised = shares[msg.sender].totalRealised.add(amount);
+        shares[msg.sender].totalExcluded = getCumulativeDividends(shares[msg.sender].amount);
+        
+    }
+
+    function claimDividend() external {
+        distributeDividend(msg.sender);
+    }
+
+    function getBalanceToken() external view returns(uint256){
+        return Token.balanceOf(address(this));
+    }
+
+    function getUnpaidEarnings(address shareholder) public view returns (uint256) {
+        if(shares[shareholder].amount == 0){ return 0; }
+
+        uint256 shareholderTotalDividends = getCumulativeDividends(shares[shareholder].amount);
+        uint256 shareholderTotalExcluded = shares[shareholder].totalExcluded;
+
+        if(shareholderTotalDividends <= shareholderTotalExcluded){ return 0; }
+
+        return shareholderTotalDividends.sub(shareholderTotalExcluded);
+    }
+
+    function getCumulativeDividends(uint256 share) internal view returns (uint256) {
+        return share.mul(dividendsPerShare).div(dividendsPerShareAccuracyFactor);
+    }
+
+    function addShareholder(address shareholder) internal {
+        shareholderIndexes[shareholder] = shareholders.length;
+        shareholders.push(shareholder);
+    }
+
+    function removeShareholder(address shareholder) internal {
+        shareholders[shareholderIndexes[shareholder]] = shareholders[shareholders.length-1];
+        shareholderIndexes[shareholders[shareholders.length-1]] = shareholderIndexes[shareholder];
+        shareholders.pop();
+    }
+
+    function totalShareholder() external view returns(uint256){
+        return shareholders.length;
+    }
+}
+contract WebooToken is IBEP20, Auth {
+    using SafeMath for uint256;
+
+    uint256 public constant MASK = type(uint128).max;
+    address private WBNB;
+    address DEAD = 0x000000000000000000000000000000000000dEaD;
+    address ZERO = 0x0000000000000000000000000000000000000000;
+    address routerAddress = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    address defaultReferralAddress = 0x0665693E5a4ED71409cDC9A1f7E28e6E6d5bebe6;
+    address marketingAddress = 0x92250b31B10bF887E5bf98f79463F4FE334c9a8C;
+
+    string constant _name = "Weboo Token";
+    string constant _symbol = "WEBOO";
+    uint8 constant _decimals = 9;
+
+    uint256 _totalSupply = 1_000_000_000 * (10 ** _decimals);
+    // 0.25%
+    uint256 public _maxTxAmount = _totalSupply.div(400);
+
+    mapping (address => uint256) _balances;
+    mapping (address => mapping (address => uint256)) _allowances;
+
+    mapping (address => bool) isFeeExempt;
+    mapping (address => bool) isTxLimitExempt;
+    mapping (address => bool) isDividendExempt;
+
+    
+    uint256 buybackFee = 200;
+    uint256 reflectionFee = 500;
+    uint256 referralFee = 100;
+    uint256 farmingFee = 500;
+    uint256 marketingFee = 100;
+    uint256 totalFee = 1400;
+    uint256 feeDenominator = 10000;
+
+    address public autoLiquidityReceiver;
+
+    uint256 targetLiquidity = 25;
+    uint256 targetLiquidityDenominator = 100;
+
+    IDEXRouter public router;
+
+    mapping(address => bool) private _isPair;
+    mapping(address => address) private _pairFarming;
+    mapping(address => bool) private _isFarmingAddress;
+
+    uint256 public launchedAt;
+    uint256 public launchedAtTimestamp;
+
+    uint256 buybackMultiplierNumerator = 200;
+    uint256 buybackMultiplierDenominator = 100;
+    uint256 buybackMultiplierTriggeredAt;
+    uint256 buybackMultiplierLength = 30 minutes;
+
+    bool public autoBuybackEnabled = false;
+    mapping (address => bool) buyBacker;
+    uint256 autoBuybackCap;
+    uint256 autoBuybackAccumulator;
+    uint256 autoBuybackAmount;
+    uint256 autoBuybackBlockPeriod;
+    uint256 autoBuybackBlockLast;
+
+    mapping(address => address) private _walletReferral;
+    mapping(address => uint256) private _walletReferralTotalEarn;
+    mapping(address => uint256) private _walletReferralTotalChild;
+    mapping(address => bool) private _isCanRegisterReferral;
+
+    DividendDistributor distributor;
+    address public distributorAddress;
+
+    uint256 distributorGas = 500000;
+
+    bool public swapEnabled = true;
+    // for 0.005%
+    uint256 public swapThreshold = _totalSupply / 2000;
+    bool inSwap;
+    modifier swapping() { inSwap = true; _; inSwap = false; }
+
+    constructor (
+        address _routerAddress
+    ) Auth(msg.sender) {
+        routerAddress = _routerAddress;
+        router = IDEXRouter(routerAddress);
+        WBNB = router.WETH();
+        _allowances[address(this)][address(router)] = _totalSupply;
+        distributor = new DividendDistributor(routerAddress);
+        distributorAddress = address(distributor);
+        _allowances[distributorAddress][address(router)] = _totalSupply;
+
+        isFeeExempt[msg.sender] = true;
+        isTxLimitExempt[msg.sender] = true;
+        isDividendExempt[address(this)] = true;
+        isDividendExempt[DEAD] = true;
+        buyBacker[msg.sender] = true;
+        _isCanRegisterReferral[msg.sender] = true;
+
+        autoLiquidityReceiver = msg.sender;
+
+        approve(routerAddress, _totalSupply);
+        _balances[msg.sender] = _totalSupply;
+        emit Transfer(address(0), msg.sender, _totalSupply);
+    }
+
+    receive() external payable { }
+
+    function totalSupply() external view override returns (uint256) { return _totalSupply.sub(balanceOf(ZERO)); }
+    function decimals() external pure override returns (uint8) { return _decimals; }
+    function symbol() external pure override returns (string memory) { return _symbol; }
+    function name() external pure override returns (string memory) { return _name; }
+    function getOwner() external view override returns (address) { return owner; }
+    modifier onlyBuybacker() { require(buyBacker[msg.sender] == true, ""); _; }
+    function balanceOf(address account) public view override returns (uint256) { return _balances[account]; }
+    function allowance(address holder, address spender) external view override returns (uint256) { return _allowances[holder][spender]; }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function approveMax(address spender) external returns (bool) {
+        return approve(spender, _totalSupply);
+    }
+
+    function transfer(address recipient, uint256 amount) external override returns (bool) {
+        return _transferFrom(msg.sender, recipient, amount);
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
+        if(_allowances[sender][msg.sender] != _totalSupply){
+            _allowances[sender][msg.sender] = _allowances[sender][msg.sender].sub(amount, "Insufficient Allowance");
+        }
+
+        return _transferFrom(sender, recipient, amount);
+    }
+
+    function _transferFrom(address sender, address recipient, uint256 amount) internal returns (bool) {
+        if(inSwap){ return _basicTransfer(sender, recipient, amount); }
+
+        checkTxLimit(sender, amount);
+        
+        if(shouldSwapBack()){ swapBack(); }
+        if(shouldAutoBuyback()){ triggerAutoBuyback(); }
+
+        
+
+        _balances[sender] = _balances[sender].sub(amount, "Insufficient Balance");
+
+        uint256 amountReceived = shouldTakeFee(sender) ? takeFee(sender, recipient, amount) : amount;
+
+        _balances[recipient] = _balances[recipient].add(amountReceived);
+
+        if(!isDividendExempt[sender]){ try distributor.setShare(sender, _balances[sender]) {} catch {} }
+        if(!isDividendExempt[recipient]){ try distributor.setShare(recipient, _balances[recipient]) {} catch {} }
+
+        try distributor.process(distributorGas) {} catch {}
+
+        emit Transfer(sender, recipient, amountReceived);
+        return true;
+    }
+
+    function _basicTransfer(address sender, address recipient, uint256 amount) internal returns (bool) {
+        _balances[sender] = _balances[sender].sub(amount, "Insufficient Balance");
+        _balances[recipient] = _balances[recipient].add(amount);
+       emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function setPairAddress(address pairAddress, address farmingAddress)
+        external
+        onlyOwner
+    {
+        
+        _isPair[pairAddress] = true;
+        
+        _pairFarming[pairAddress] = farmingAddress;
+        
+        _isFarmingAddress[farmingAddress] = true;
+        
+        isDividendExempt[pairAddress] = true;
+        _allowances[address(this)][pairAddress] = 0;
+        _allowances[distributorAddress][pairAddress] = _totalSupply;
+        try distributor.setShare(pairAddress, 0) {} catch {}
+        try distributor.setShare(pairAddress, _balances[farmingAddress]) {} catch {}
+        
+    }
+
+    
+    function removePair(address pairAddress) external onlyOwner {
+        _isPair[pairAddress] = false;
+        _pairFarming[pairAddress] = address(0);
+        isDividendExempt[pairAddress] = false;
+        _allowances[address(this)][pairAddress] = 0;
+        _allowances[distributorAddress][pairAddress] = 0;
+        try distributor.setShare(pairAddress, _balances[pairAddress]) {} catch {}
+    }
+
+    function checkTxLimit(address sender, uint256 amount) internal view {
+        require(amount <= _maxTxAmount || isTxLimitExempt[sender], "TX Limit Exceeded");
+    }
+
+    function shouldTakeFee(address sender) internal view returns (bool) {
+        return !isFeeExempt[sender];
+    }
+
+    function getTotalFee(bool selling) public view returns (uint256) {
+        if(launchedAt + 1 >= block.number){ return feeDenominator.sub(1); }
+        if(selling){ return getMultipliedFee(); }
+        return totalFee;
+    }
+
+    function getMultipliedFee() public view returns (uint256) {
+        if (launchedAtTimestamp + 1 days > block.timestamp) {
+            return totalFee.mul(18000).div(feeDenominator);
+        } else if (buybackMultiplierTriggeredAt.add(buybackMultiplierLength) > block.timestamp) {
+            uint256 remainingTime = buybackMultiplierTriggeredAt.add(buybackMultiplierLength).sub(block.timestamp);
+            uint256 feeIncrease = totalFee.mul(buybackMultiplierNumerator).div(buybackMultiplierDenominator).sub(totalFee);
+            return totalFee.add(feeIncrease.mul(remainingTime).div(buybackMultiplierLength));
+        }
+        return totalFee;
+    }
+
+    function takeFee(address sender, address receiver, uint256 amount) internal returns (uint256) {
+        
+        
+        uint256 _marketingFee = amount.mul(marketingFee).div(feeDenominator);
+        uint256 _referralFee = amount.mul(referralFee).div(feeDenominator);
+        uint256 _farmingFee = amount.mul(farmingFee).div(feeDenominator);
+        uint256 _reflectionFee = amount.mul(reflectionFee).div(feeDenominator); 
+        uint256 _buybackFee = amount.mul(buybackFee).div(feeDenominator);
+        uint256 _totalFee = _marketingFee.add(_referralFee.add(_farmingFee).add(_reflectionFee).add(_buybackFee));
+
+        
+        _balances[marketingAddress] = _balances[marketingAddress].add(_marketingFee);
+        emit Transfer(sender, marketingAddress, _marketingFee);
+
+        
+        address walletReferral = getReferralAddress(_isPair[receiver] ? sender : receiver);
+        _balances[walletReferral] = _balances[walletReferral].add(_referralFee);
+        emit Transfer(sender, walletReferral, _referralFee);
+        _walletReferralTotalEarn[walletReferral] = _walletReferralTotalEarn[walletReferral].add(_referralFee); 
+
+        
+        address pairFarmingAddress = getFarmingAddress(sender, receiver);
+        _balances[pairFarmingAddress] = _balances[pairFarmingAddress].add(_farmingFee);
+        emit Transfer(sender, getFarmingAddress(sender, receiver), _farmingFee);
+
+        
+        _balances[address(this)] = _balances[address(this)].add(_buybackFee);
+        emit Transfer(sender, address(this), _buybackFee);
+
+        
+        _balances[address(distributor)] = _balances[address(distributor)].add(_reflectionFee);
+        emit Transfer(sender, address(distributor), _reflectionFee);
+        distributor.calculateDividenPerShare(_reflectionFee);
+
+        return amount.sub(_totalFee);
+    }
+
+    
+    function getEarnReferral(address holder) external view returns(uint256){
+        return _walletReferralTotalEarn[holder];
+    }
+
+    
+    function getFarmingAddress(address sender, address recipient)
+        internal
+        view
+        returns (address)
+    {
+        if (_isPair[sender])
+            return
+                _pairFarming[sender] != address(0)
+                    ? _pairFarming[sender]
+                    : marketingAddress;
+        if (_isPair[recipient])
+            return
+                _pairFarming[recipient] != address(0)
+                    ? _pairFarming[recipient]
+                    : marketingAddress;
+        return marketingAddress;
+    }
+
+    
+    function grantRegisterReferral(address _address) external onlyOwner {
+        _isCanRegisterReferral[_address] = true;
+    }
+
+    
+    function revokeRegisterReferral(address _address) external onlyOwner {
+        _isCanRegisterReferral[_address] = false;
+    }
+
+    
+    function addReferral(address _parent, address _child) external {
+        require(
+            _isCanRegisterReferral[msg.sender],
+            "WebooToken: Sorry you cannot registering referral"
+        );
+        require(
+            _walletReferral[_child] == address(0),
+            "WebooToken: This child already have referral"
+        );
+        /** Set referral for child */
+        _walletReferral[_child] = _parent;
+        /** counting referral parent */
+        _walletReferralTotalChild[_parent] = _walletReferralTotalChild[_parent]
+            .add(1);
+    }
+
+    
+    function removeReferral(address _child) external {
+        require(
+            _isCanRegisterReferral[msg.sender],
+            "WebooToken: Sorry you cannot registering referral"
+        );
+        require(
+            _walletReferral[_child] != address(0),
+            "WebooToken: This child doesn't have referral"
+        );
+        address _parent = _walletReferral[_child];
+        
+        _walletReferralTotalChild[_parent] = _walletReferralTotalChild[_parent]
+            .sub(1);
+        
+        _walletReferral[_child] = address(0);
+    }
+
+    
+    function getReferralAddress(address _child) public view returns (address) {
+        address _parent = _walletReferral[_child];
+        if (_parent == address(0)) return defaultReferralAddress;
+        return _parent;
+    }
+
+    
+    function getReferralTotalEarn(address _parent)
+        external
+        view
+        returns (uint256)
+    {
+        return _walletReferralTotalEarn[_parent];
+    }
+
+    function shouldSwapBack() internal view returns (bool) {
+        return !_isPair[msg.sender]
+        && !inSwap
+        && swapEnabled
+        && _balances[address(this)] >= swapThreshold;
+    }
+
+    
+    function swapBackManual() external onlyOwner swapping {
+        uint256 amountIn = balanceOf(address(this)).sub(1**9); 
+        address[] memory pathRoute = new address[](2);
+        pathRoute[0] = address(this);
+        pathRoute[1] = router.WETH();
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amountIn,
+            0,
+            pathRoute,
+            address(this),
+            block.timestamp
+        );
+    }
+
+    function swapBack() internal swapping {
+        uint256 dynamicLiquidityFee = 0;
+        uint256 amountToLiquify = swapThreshold.mul(dynamicLiquidityFee).div(totalFee).div(2);
+        uint256 amountToSwap = swapThreshold.sub(amountToLiquify);
+
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = WBNB;
+        uint256 balanceBefore = address(this).balance;
+
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amountToSwap,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+
+        uint256 amountBNB = address(this).balance.sub(balanceBefore);
+
+        uint256 totalBNBFee = totalFee.sub(dynamicLiquidityFee.div(2));
+
+        uint256 amountBNBLiquidity = amountBNB.mul(dynamicLiquidityFee).div(totalBNBFee).div(2);
+        
+            
+        
+
+        if(amountToLiquify > 0){
+            /** this command is disable**/
+            emit AutoLiquify(amountBNBLiquidity, amountToLiquify);
+        }
+    }
+
+    function shouldAutoBuyback() internal view returns (bool) {
+        return !_isPair[msg.sender]
+        && !inSwap
+        && autoBuybackEnabled
+        && autoBuybackBlockLast + autoBuybackBlockPeriod <= block.number 
+        && address(this).balance >= autoBuybackAmount;
+    }
+
+    function triggerZeusBuyback(uint256 amount, bool triggerBuybackMultiplier) external authorized {
+        buyTokens(amount, ZERO);
+        if(triggerBuybackMultiplier){
+            buybackMultiplierTriggeredAt = block.timestamp;
+            emit BuybackMultiplierActive(buybackMultiplierLength);
+        }
+    }
+
+    function clearBuybackMultiplier() external authorized {
+        buybackMultiplierTriggeredAt = 0;
+    }
+
+    function triggerAutoBuyback() internal {
+        buyTokens(autoBuybackAmount, ZERO);
+        autoBuybackBlockLast = block.number;
+        autoBuybackAccumulator = autoBuybackAccumulator.add(autoBuybackAmount);
+        if(autoBuybackAccumulator > autoBuybackCap){ autoBuybackEnabled = false; }
+    }
+
+    function buyTokens(uint256 amount, address to) internal swapping {
+        address[] memory path = new address[](2);
+        path[0] = WBNB;
+        path[1] = address(this);
+
+        router.swapExactETHForTokensSupportingFeeOnTransferTokens{value: amount}(
+            0,
+            path,
+            to,
+            block.timestamp
+        );
+    }
+
+    function setAutoBuybackSettings(bool _enabled, uint256 _cap, uint256 _amount, uint256 _period) external authorized {
+        autoBuybackEnabled = _enabled;
+        autoBuybackCap = _cap;
+        autoBuybackAccumulator = 0;
+        autoBuybackAmount = _amount;
+        autoBuybackBlockPeriod = _period;
+        autoBuybackBlockLast = block.number;
+    }
+
+    function setBuybackMultiplierSettings(uint256 numerator, uint256 denominator, uint256 length) external authorized {
+        require(numerator / denominator <= 2 && numerator > denominator);
+        buybackMultiplierNumerator = numerator;
+        buybackMultiplierDenominator = denominator;
+        buybackMultiplierLength = length;
+    }
+
+    function launched() internal view returns (bool) {
+        return launchedAt != 0;
+    }
+
+    function launch() public authorized {
+        require(launchedAt == 0, "Already launched boi");
+        launchedAt = block.number;
+        launchedAtTimestamp = block.timestamp;
+    }
+
+    function setTxLimit(uint256 amount) external authorized {
+        require(amount >= _totalSupply / 1000);
+        _maxTxAmount = amount;
+    }
+
+    function setIsDividendExempt(address holder, bool exempt) external authorized {
+        require(holder != address(this) && !_isPair[holder]);
+        isDividendExempt[holder] = exempt;
+        if(exempt){
+            distributor.setShare(holder, 0);
+        }else{
+            distributor.setShare(holder, _balances[holder]);
+        }
+    }
+
+    function setIsFeeExempt(address holder, bool exempt) external authorized {
+        isFeeExempt[holder] = exempt;
+    }
+
+    function setIsTxLimitExempt(address holder, bool exempt) external authorized {
+        isTxLimitExempt[holder] = exempt;
+    }
+
+    function setFeeReceivers(address _autoLiquidityReceiver, address _marketingFeeReceiver, address _defaultReferral) external authorized {
+        autoLiquidityReceiver = _autoLiquidityReceiver;
+        marketingAddress = _marketingFeeReceiver;
+        defaultReferralAddress = _defaultReferral; 
+    }
+
+    function setSwapBackSettings(bool _enabled, uint256 _amount) external authorized {
+        swapEnabled = _enabled;
+        swapThreshold = _amount;
+    }
+
+    function setTargetLiquidity(uint256 _target, uint256 _denominator) external authorized {
+        targetLiquidity = _target;
+        targetLiquidityDenominator = _denominator;
+    }
+
+    function setDistributionCriteria(uint256 _minPeriod, uint256 _minDistribution) external authorized {
+        distributor.setDistributionCriteria(_minPeriod, _minDistribution);
+    }
+
+    function setDistributorSettings(uint256 gas) external authorized {
+        require(gas < 750000);
+        distributorGas = gas;
+    }
+
+    function getCirculatingSupply() public view returns (uint256) {
+        return _totalSupply.sub(balanceOf(DEAD)).sub(balanceOf(ZERO));
+    }
+
+    event AutoLiquify(uint256 amountBNB, uint256 amountBOG);
+    event BuybackMultiplierActive(uint256 duration);
+}

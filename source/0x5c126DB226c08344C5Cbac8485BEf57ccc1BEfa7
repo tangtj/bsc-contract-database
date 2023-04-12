@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+contract IERC20 {
+    function totalSupply() public view virtual returns (uint256) {}
+    function balanceOf(address account) public view virtual returns (uint256) {}
+    function transfer(address recipient, uint256 amount) public virtual returns (bool) {}
+    function allowance(address owner, address spender) public view virtual returns (uint256) {}
+    function approve(address spender, uint256 amount) public virtual returns (bool) {}
+    function transferFrom(address sender, address recipient, uint256 amount) public virtual returns (bool) {}
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+library Address {
+    function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+        return _functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+    function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+        require(isContract(target), "Address: call to non-contract");
+        (bool success, bytes memory returndata) = target.call{value: weiValue}(data);
+        return _verifyCallResult(success, returndata, errorMessage);
+    }
+
+    function isContract(address account) internal view returns (bool) {
+        uint256 size;
+        assembly { size := extcodesize(account) }
+        return size > 0;
+    }
+
+    function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+        if (success) {
+            return returndata;
+        } else {
+            if (returndata.length > 0) {
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+
+library SafeERC20 {
+    using Address for address;
+
+    function safeTransfer(IERC20 token, address to, uint256 value) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+    }
+
+    function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+    }
+
+    function _callOptionalReturn(IERC20 token, bytes memory data) private {
+        bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+        if (returndata.length > 0) {
+            require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+        }
+    }
+}
+
+contract FTHRefund {
+    using SafeERC20 for IERC20;
+
+    address public owner;
+    IERC20 public fthToken;
+    uint256 public constant rate = 224300000; // 0.00000000000002243 BNB per token, scaled up by 10^9
+    address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+
+    constructor() {
+        owner = msg.sender;
+        fthToken = IERC20(0xd51D0e1A1cea1d1fa144B7327730fa001F984874);
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can call this function");
+        _;
+    }
+
+    function fundContract() external payable onlyOwner {}
+
+    function refundTokens(uint256 tokensToRefund) external {
+        uint256 bnbAmount = tokensToRefund * rate / (10 ** 9);
+
+        require(address(this).balance >= bnbAmount, "Insufficient BNB balance in the contract");
+
+        fthToken.safeTransferFrom(msg.sender, BURN_ADDRESS, tokensToRefund);
+        payable(msg.sender).transfer(bnbAmount);
+    }
+
+    function withdrawRemainingBNB() external onlyOwner {
+        payable(owner).transfer(address(this).balance);
+    }
+}

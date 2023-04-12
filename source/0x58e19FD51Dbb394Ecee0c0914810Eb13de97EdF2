@@ -1,0 +1,346 @@
+/**
+
+██████╗ ██╗   ██╗███████╗██████╗     ███████╗ █████╗ ██████╗ ███╗   ███╗
+██╔══██╗██║   ██║██╔════╝██╔══██╗    ██╔════╝██╔══██╗██╔══██╗████╗ ████║
+██████╔╝██║   ██║███████╗██║  ██║    █████╗  ███████║██████╔╝██╔████╔██║
+██╔══██╗██║   ██║╚════██║██║  ██║    ██╔══╝  ██╔══██║██╔══██╗██║╚██╔╝██║
+██████╔╝╚██████╔╝███████║██████╔╝    ██║     ██║  ██║██║  ██║██║ ╚═╝ ██║
+╚═════╝  ╚═════╝ ╚══════╝╚═════╝     ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝
+                                                                        
+
+TG: https://t.me/BUSDFARMBSC
+Website: https://busdfarm.dev/
+Miner: https://miner.busdfarm.dev/
+ */
+
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.13;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+interface IERC20 {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+interface ITOKEN {
+    function balanceOf(address) external view returns (uint256);
+}
+
+contract BUSDMINER is Ownable {
+    struct DISCOUNT_INFO {
+        address tokenAddress;
+        uint256 fee;
+        uint256 minimumHolding;
+        uint256 tokenType;
+    }
+
+    uint256 private BUSD_TO_HATCH_1Battery = 1080000;
+    uint256 private PSN = 10000;
+    uint256 private PSNH = 5000;
+    uint256 private devFeeVal = 10;
+    bool private initialized = false;
+    bool public withdrawCooldownEnabled = true;
+    address payable private devWallet;
+    mapping(address => uint256) private ChargingBattery;
+    mapping(address => uint256) private claimedBUSD;
+    mapping(address => uint256) private lastCharge;
+    mapping(address => address) private referrals;
+    uint256 private marketBUSD;
+    IERC20 private miningToken =
+        IERC20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);
+    mapping(address => uint256) private lastSell;
+    uint256 public WITHDRAW_COOLDOWN = 6 days;
+    DISCOUNT_INFO[] private discountTokens;
+    mapping(address => uint256) discountTokenIndex;
+    uint256 private batterCount;
+
+    event Charge(address indexed user, uint256 VoltBought, uint256 BUSDAmount);
+
+    constructor(address _token) {
+        devWallet = payable(msg.sender);
+        miningToken = IERC20(_token);
+    }
+
+    function reCharge(address ref) public {
+        require(initialized);
+
+        if (ref == msg.sender) {
+            ref = address(0);
+        }
+
+        if (
+            referrals[msg.sender] == address(0) &&
+            referrals[msg.sender] != msg.sender
+        ) {
+            referrals[msg.sender] = ref;
+        }
+
+        uint256 VoltCharged = getMyBUSD(msg.sender);
+        uint256 newBattery = VoltCharged / BUSD_TO_HATCH_1Battery;
+        ChargingBattery[msg.sender] = ChargingBattery[msg.sender] + newBattery;
+        claimedBUSD[msg.sender] = 0;
+        lastCharge[msg.sender] = block.timestamp;
+
+        claimedBUSD[referrals[msg.sender]] =
+            claimedBUSD[referrals[msg.sender]] +
+            VoltCharged /
+            10;
+
+        marketBUSD = marketBUSD + VoltCharged / 5;
+    }
+
+    function ClaimBUSD() public {
+        require(initialized);
+        if (withdrawCooldownEnabled) {
+            require(
+                lastSell[msg.sender] + WITHDRAW_COOLDOWN <= block.timestamp,
+                "You can't withdraw for a while"
+            );
+        }
+
+        uint256 hasVolt = getMyBUSD(msg.sender);
+        uint256 VoltValue = calculateBUSDSell(hasVolt);
+        uint256 fee = devFee(VoltValue);
+        claimedBUSD[msg.sender] = 0;
+        lastCharge[msg.sender] = block.timestamp;
+        marketBUSD = marketBUSD + hasVolt;
+        miningToken.transfer(devWallet, fee);
+        miningToken.transfer(msg.sender, VoltValue - fee);
+        lastSell[msg.sender] = block.timestamp;
+    }
+
+    function BUSDRewards(address adr) public view returns (uint256) {
+        uint256 hasVolt = getMyBUSD(adr);
+        uint256 VoltValue = calculateBUSDSell(hasVolt);
+        return VoltValue;
+    }
+
+    function isWithdrawCooldownEnabled() external view returns (bool) {
+        return withdrawCooldownEnabled;
+    }
+
+    function ChargeBUSD(address ref, uint256 amount) public {
+        require(initialized);
+        uint256 contractBalance = miningToken.balanceOf(address(this));
+        miningToken.transferFrom(msg.sender, address(this), amount);
+        uint256 VoltBought = calculateBUSDBuy(amount, contractBalance);
+        VoltBought = VoltBought - devFee(VoltBought);
+        uint256 fee = devFee(amount);
+        miningToken.transfer(devWallet, fee);
+        claimedBUSD[msg.sender] = claimedBUSD[msg.sender] + VoltBought;
+        if (ChargingBattery[msg.sender] == 0) {
+            batterCount += 1;
+        }
+        reCharge(ref);
+
+        uint256 BUSDAmount = calculateTrade(
+            VoltBought,
+            marketBUSD,
+            miningToken.balanceOf(address(this))
+        );
+
+        emit Charge(msg.sender, VoltBought, BUSDAmount);
+
+        lastSell[msg.sender] = block.timestamp;
+    }
+
+    function calculateTrade(
+        uint256 rt,
+        uint256 rs,
+        uint256 bs
+    ) private view returns (uint256) {
+        return (PSN * bs) / (PSNH + (((PSN * rs) + (PSNH * rt)) / rt));
+    }
+
+    function calculateBUSDSell(uint256 Volts) public view returns (uint256) {
+        return
+            calculateTrade(
+                Volts,
+                marketBUSD,
+                miningToken.balanceOf(address(this))
+            );
+    }
+
+    function calculateBUSDBuy(
+        uint256 eth,
+        uint256 contractBalance
+    ) public view returns (uint256) {
+        return calculateTrade(eth, contractBalance, marketBUSD);
+    }
+
+    function calculateBUSDBuySimple(
+        uint256 eth
+    ) public view returns (uint256) {
+        return calculateBUSDBuy(eth, miningToken.balanceOf(address(this)));
+    }
+
+    function devFee(uint256 amount) private view returns (uint256) {
+        uint256 discountFee = getDevFee();
+
+        return (amount * discountFee) / 100;
+    }
+
+    function setWithdrawCooldown(uint256 newCooldown) public onlyOwner {
+        require(newCooldown <= 6 days, "Cooldown cannot be longer than 6 days");
+        WITHDRAW_COOLDOWN = newCooldown;
+    }
+
+    function getDevFee() public view returns (uint256) {
+        uint256 discountFee = devFeeVal;
+        for (uint256 i = 0; i < discountTokens.length; i++) {
+            DISCOUNT_INFO storage info = discountTokens[i];
+            ITOKEN token = ITOKEN(info.tokenAddress);
+            if (token.balanceOf(msg.sender) >= info.minimumHolding) {
+                if (info.fee < discountFee) discountFee = info.fee;
+            }
+        }
+        return discountFee;
+    }
+
+    function setWithdrawCooldownEnabled(bool _enabled) external onlyOwner {
+        withdrawCooldownEnabled = _enabled;
+    }
+
+    function seedMarket(uint256 amount) public onlyOwner {
+        require(marketBUSD == 0);
+        if (amount > 0) {
+            miningToken.transferFrom(msg.sender, address(this), amount);
+        }
+        initialized = true;
+        marketBUSD = 108000000000;
+    }
+
+    function getBalance() public view returns (uint256) {
+        return miningToken.balanceOf(address(this));
+    }
+
+    function getMyMiners(address adr) public view returns (uint256) {
+        return ChargingBattery[adr];
+    }
+
+    function getMyBUSD(address adr) public view returns (uint256) {
+        return claimedBUSD[adr] + getBUSDSinceLastHatch(adr);
+    }
+
+    function getBUSDSinceLastHatch(address adr) public view returns (uint256) {
+        uint256 secondsPassed = min(
+            BUSD_TO_HATCH_1Battery,
+            block.timestamp - lastCharge[adr]
+        );
+        return secondsPassed * ChargingBattery[adr];
+    }
+
+    function min(uint256 a, uint256 b) private pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+    function addOrUpdateDiscountToken(
+        address _address,
+        uint256 _fee,
+        uint256 _minimum,
+        uint256 _type
+    ) external onlyOwner {
+        if (discountTokenIndex[_address] == 0) {
+            discountTokens.push(DISCOUNT_INFO(_address, _fee, _minimum, _type));
+            discountTokenIndex[_address] = discountTokens.length;
+        } else {
+            uint256 tokenIndex = discountTokenIndex[_address] - 1;
+            discountTokens[tokenIndex] = DISCOUNT_INFO(
+                _address,
+                _fee,
+                _minimum,
+                _type
+            );
+        }
+    }
+
+    function removeDiscountToken(address _address) external onlyOwner {
+        require(discountTokenIndex[_address] > 0, "Invalid Address");
+        uint256 tokenIndex = discountTokenIndex[_address] - 1;
+        uint256 lastIndex = discountTokens.length - 1;
+        discountTokens[tokenIndex] = discountTokens[lastIndex];
+        discountTokens.pop();
+        delete discountTokenIndex[_address];
+    }
+
+    function getInvestorCount() external view returns (uint256) {
+        return batterCount;
+    }
+}

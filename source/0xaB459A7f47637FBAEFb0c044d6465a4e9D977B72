@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+interface IERC721 {
+    // Common
+    function maxSupply() external view returns (uint256);
+    function totalSupply() external view returns (uint256);
+    function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256 tokenId);
+    function safeTransferFrom(address from, address to, uint256 tokenId) external;
+    // Private
+    function publicMint(uint256 quantity) external;
+}
+
+interface IERC721Receiver {
+    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) external returns (bytes4);
+}
+
+contract MultiCall {
+    function call(address _nftAddress, uint256 _times, uint256 _startAt) public payable {
+        require(block.timestamp >= _startAt, "error: 10000 time is not allowed");
+        IERC721 nft = IERC721(_nftAddress);
+        uint256 max = nft.maxSupply();
+        uint256 total = nft.totalSupply();
+        require(max > total, "error: 10001 quantity is not enough");
+
+        uint256 newTimes = (max - total) >= _times ? _times : max - total;
+
+        for(uint256 i = 0; i < newTimes; ++i){
+            Minter minter = new Minter();
+            minter.mint(_nftAddress);
+        }
+    }
+    
+    receive() payable external{}
+}
+
+contract Minter is IERC721Receiver  {
+    event ERC721Received(address operator, address from, uint256 tokenId, bytes data);
+
+    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) public override returns (bytes4) {
+        emit ERC721Received(operator, from, tokenId, data);
+        return this.onERC721Received.selector;
+    }
+
+    function mint(address _nftAddress) public {
+        IERC721 nft = IERC721(_nftAddress);
+        // mint
+        nft.publicMint(1);
+        // send
+        uint256 tokenId = nft.tokenOfOwnerByIndex(address(this), 0);
+        nft.safeTransferFrom(address(this), address(tx.origin), tokenId);
+    }
+
+    receive() payable external{}
+}
