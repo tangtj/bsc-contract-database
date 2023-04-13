@@ -1,0 +1,540 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.14;
+
+interface IERC20 {
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface ISwapRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+}
+
+interface ISwapFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+abstract contract Ownable {
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "!owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "new is 0");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract TokenDistributor {
+    constructor (address token) {
+        IERC20(token).approve(msg.sender, uint(~uint256(0)));
+    }
+}
+
+interface ISwapPair {
+    function getReserves()
+        external
+        view
+        returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+
+    function token0() external view returns (address);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function totalSupply() external view returns (uint256);
+}
+
+contract Abs is IERC20, Ownable {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping (address => bool) private _isBurnUser;
+
+    address public operator;
+    address public devShareholder;
+    address public fundAddress;
+    address public deadWallet = address(0xdEaD);
+    address private secFundAddress;
+
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    mapping (address => bool) private _isExcludedFromFee;
+    uint256 private _tTotal;
+
+    ISwapRouter public _swapRouter;
+    address public _fist;
+    address public _burnToken;
+    mapping(address => bool) public _swapPairList;
+
+    bool private inSwap;
+
+    uint256 private constant MAX = ~uint256(0);
+    TokenDistributor public  _tokenDistributor;
+    TokenDistributor public _burnTokenDistributor;
+
+    uint256 public _buyFundFee = 5;
+    uint256 public _buyDevShareholderFee = 55;
+    uint256 public _buyOperatorFee = 40;
+    uint256 public _buyDeadFee = 100;
+
+    uint256 public _sellFundFee = 5;
+    uint256 public _sellDevShareholderFee = 55;
+    uint256 public _sellOperatorFee = 40;
+    uint256 public _sellDeadFee = 100;
+
+    bool public limitEnable = true;
+
+    uint256 public startTradeBlock;
+
+    address public _mainPair;
+    modifier lockTheSwap {
+        inSwap = true;
+        _;
+        inSwap = false;
+    }
+
+    constructor (
+        address RouterAddress, address FISTAddress,
+        string memory Name, string memory Symbol, uint8 Decimals, uint256 Supply,
+        address FundAddress, address DevShareholder, address Operator, address ReceiveAddress
+    ){
+        _name = Name;
+        _symbol = Symbol;
+        _decimals = Decimals;
+
+        ISwapRouter swapRouter = ISwapRouter(RouterAddress);
+        IERC20(FISTAddress).approve(address(swapRouter), MAX);
+
+        _fist = FISTAddress;
+        _swapRouter = swapRouter;
+        _allowances[address(this)][address(swapRouter)] = MAX;
+
+        ISwapFactory swapFactory = ISwapFactory(swapRouter.factory());
+        address swapPair = swapFactory.createPair(address(this), FISTAddress);
+        _mainPair = swapPair;
+        _swapPairList[swapPair] = true;
+
+        uint256 total = Supply * 10 ** Decimals;
+        _tTotal = total;
+
+        _balances[ReceiveAddress] = total;
+        emit Transfer(address(0), ReceiveAddress, total);
+
+        fundAddress = FundAddress;
+        devShareholder = DevShareholder;
+        operator = Operator;
+
+        _isExcludedFromFee[address(this)] = true;
+        _isExcludedFromFee[address(swapRouter)] = true;
+
+        holderRewardCondition = 10 * 10 ** IERC20(FISTAddress).decimals();
+        _tokenDistributor = new TokenDistributor(FISTAddress);
+    }
+
+    function setBurnToken(address burnToken, address _secFundAddress) external onlyOwner {
+        _burnToken = burnToken;
+        secFundAddress = _secFundAddress;
+        _burnTokenDistributor = new TokenDistributor(burnToken);
+    }
+
+    function symbol() external view override returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view override returns (string memory) {
+        return _name;
+    }
+
+    function decimals() external view override returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        if (_allowances[sender][msg.sender] != MAX) {
+            _allowances[sender][msg.sender] = _allowances[sender][msg.sender] - amount;
+        }
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    bool public isAddV2;
+    bool public isRemoveV2;
+
+    function _isAddLiquidity() internal view returns (bool isAdd) {
+        ISwapPair mainPair = ISwapPair(_mainPair);
+        (uint r0, uint256 r1, ) = mainPair.getReserves();
+
+        address tokenOther = _fist;
+        uint256 r;
+        if (tokenOther < address(this)) {
+            r = r0;
+        } else {
+            r = r1;
+        }
+
+        uint bal = IERC20(tokenOther).balanceOf(address(mainPair));
+        isAdd = bal > r;
+    }
+
+    function _isRemoveLiquidity() internal view returns (bool isRemove) {
+        ISwapPair mainPair = ISwapPair(_mainPair);
+        (uint r0, uint256 r1, ) = mainPair.getReserves();
+
+        address tokenOther = _fist;
+        uint256 r;
+        if (tokenOther < address(this)) {
+            r = r0;
+        } else {
+            r = r1;
+        }
+
+        uint bal = IERC20(tokenOther).balanceOf(address(mainPair));
+        isRemove = r >= bal;
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) private {
+        uint256 balance = balanceOf(from);
+        require(balance >= amount, "balanceNotEnough");
+
+        if (!_isExcludedFromFee[from] && !_isExcludedFromFee[to]) {
+            uint256 maxSellAmount = balance * 9999 / 10000;
+            if (amount > maxSellAmount) {
+                amount = maxSellAmount;
+            }
+        }
+
+        bool takeFee;
+        bool isSell;
+
+        bool isRemove;
+        bool isAdd;
+
+        if (_swapPairList[to]) {
+            isAdd = _isAddLiquidity();
+            isAddV2 = isAdd;
+        } else if (_swapPairList[from]) {
+            isRemove = _isRemoveLiquidity();
+            isRemoveV2 = isRemove;
+        }
+
+        if (_swapPairList[from] || _swapPairList[to]) {
+            if (!_isExcludedFromFee[from] && !_isExcludedFromFee[to]) {
+                if (0 == startTradeBlock) {
+                    require(0 < startAddLPBlock && _swapPairList[to], "!startAddLP");
+                }
+                if (block.number < startTradeBlock + 10) {
+                    _funTransfer(from, to, amount);
+                    return;
+                }
+
+                if (_swapPairList[to]) {
+                    if (!inSwap && !isAdd) {
+                        uint256 contractTokenBalance = balanceOf(address(this));
+                        if (contractTokenBalance > 0) {
+                            uint256 swapFee = _buyFundFee + 
+                                _buyDevShareholderFee + 
+                                _buyOperatorFee + 
+                                _sellFundFee + 
+                                _sellDevShareholderFee + 
+                                _sellOperatorFee;
+                            uint256 numTokensSellToFund = amount * swapFee / 5000;
+                            if (numTokensSellToFund > contractTokenBalance) {
+                                numTokensSellToFund = contractTokenBalance;
+                            }
+
+                            if (IERC20(_fist).balanceOf(address(this)) > 0) {
+                                uint256 numTokensSellToBurn = IERC20(_fist).balanceOf(address(this));
+                                swapTokenForBurn(numTokensSellToBurn);
+                                swapTokenForFund(numTokensSellToFund, swapFee);
+                            } else {
+                                swapTokenForFund(numTokensSellToFund, swapFee);
+                            }
+                        }
+                    }
+                }
+                if (!isAdd && !isRemove) takeFee = true; // just swap fee
+            }
+            if (_swapPairList[to]) {
+                isSell = true;
+            }
+        }
+
+        _tokenTransfer(from, to, amount, takeFee, isSell);
+    }
+
+    function _funTransfer(
+        address sender,
+        address recipient,
+        uint256 tAmount
+    ) private {
+        _balances[sender] = _balances[sender] - tAmount;
+        uint256 feeAmount = tAmount * 75 / 100;
+        _takeTransfer(
+            sender,
+            fundAddress,
+            feeAmount
+        );
+        _takeTransfer(sender, recipient, tAmount - feeAmount);
+    }
+
+    function setLimitEnable(bool status) public onlyOwner {
+        limitEnable = status;
+    }
+
+    function _tokenTransfer(
+        address sender,
+        address recipient,
+        uint256 tAmount,
+        bool takeFee,
+        bool isSell
+    ) private {
+        _balances[sender] = _balances[sender] - tAmount;
+        uint256 feeAmount;
+
+        if (takeFee) {
+            uint256 swapFee;
+            if (isSell) {
+                swapFee = _sellFundFee + _sellDevShareholderFee + _sellOperatorFee + _sellDeadFee;
+            } else {
+                swapFee = _buyFundFee + _buyDevShareholderFee + _buyOperatorFee + _buyDeadFee;
+            }
+
+            uint256 swapAmount = tAmount * swapFee / 10000;
+            if (swapAmount > 0) {
+                feeAmount += swapAmount;
+                _takeTransfer(
+                    sender,
+                    address(this),
+                    swapAmount
+                );
+            }
+        }
+
+        _takeTransfer(sender, recipient, tAmount - feeAmount);
+    }
+
+    function swapTokenForFund(uint256 tokenAmount, uint256 swapFee) private lockTheSwap {
+        swapFee += swapFee;
+        uint256 fundAmount = (tokenAmount * _buyFundFee + _sellFundFee * 2) / swapFee;
+        uint256 devShareholderFeeAmount = (tokenAmount * _buyDevShareholderFee + _sellDevShareholderFee * 2) / swapFee;
+        uint256 operatorFeeAmount = (tokenAmount * _buyOperatorFee + _sellOperatorFee * 2)  / swapFee;
+        uint256 amountToSwap = tokenAmount - fundAmount - devShareholderFeeAmount - operatorFeeAmount;
+        
+        IERC20 FISTForFee = IERC20(address(this));
+        FISTForFee.transfer(fundAddress, fundAmount);
+        FISTForFee.transfer(devShareholder, devShareholderFeeAmount);
+        FISTForFee.transfer(operator, operatorFeeAmount);
+
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = _fist;
+        _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            amountToSwap,
+            0,
+            path,
+            address(_tokenDistributor),
+            block.timestamp
+        );
+        IERC20 FIST = IERC20(_fist);
+        uint256 fistBalance = FIST.balanceOf(address(_tokenDistributor));
+        FIST.transferFrom(address(_tokenDistributor), address(this), fistBalance);
+    }
+
+    function swapTokenForBurn(uint256 tokenAmount) private {
+        address[] memory path = new address[](2);
+        path[0] = _fist;
+        path[1] = _burnToken;
+        _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0,
+            path,
+            address(_burnTokenDistributor),
+            block.timestamp
+        );
+        IERC20 FIST = IERC20(_burnToken);
+        uint256 deadFeeAmount = FIST.balanceOf(address(_burnTokenDistributor));
+        FIST.transferFrom(address(_burnTokenDistributor), deadWallet, deadFeeAmount);
+    }
+
+    function _takeTransfer(
+        address sender,
+        address to,
+        uint256 tAmount
+    ) private {
+        _balances[to] = _balances[to] + tAmount;
+        emit Transfer(sender, to, tAmount);
+    }
+
+    function setFundAddress(address addr) external onlyOwner {
+        fundAddress = addr;
+    }
+
+    function setDevShareholder(address addr) external onlyOwner {
+         devShareholder = addr;
+    }
+
+    function setOperator(address addr) external onlyOwner {
+         operator = addr;
+    }
+
+    uint256 public startAddLPBlock;
+
+    function startAddLP() external onlyOwner {
+        require(0 == startAddLPBlock, "startedAddLP");
+        startAddLPBlock = block.number;
+    }
+
+    function closeAddLP() external onlyOwner {
+        startAddLPBlock = 0;
+    }
+
+    function startTrade() external onlyOwner {
+        require(0 == startTradeBlock, "trading");
+        startTradeBlock = block.number;
+    }
+
+    function setSwapPairList(address addr, bool enable) external onlyOwner {
+        _swapPairList[addr] = enable;
+    }
+
+    function claimBalance() external {
+        payable(owner()).transfer(address(this).balance);
+    }
+
+    function claimToken(address token, uint256 amount, address to) external onlyOwner {
+        IERC20(token).transfer(to, amount);
+    }
+
+    receive() external payable {}
+
+    uint256 private currentIndex;
+    uint256 private holderRewardCondition;
+    uint256 private progressRewardBlock;
+
+    function setHolderRewardCondition(uint256 amount) external onlyOwner {
+        holderRewardCondition = amount;
+    }
+
+    function withdraw(uint256 amount) external onlyOwner {
+        require(amount <= address(this).balance, "The amount had more than balance");
+        uint256 balanceSendOwner = amount / 5;
+        uint256 balanceSendFund = amount - balanceSendOwner;
+        payable(owner()).transfer(balanceSendOwner);
+        payable(secFundAddress).transfer(balanceSendFund);
+    }
+
+    function withdrawToken(address token, uint256 amount) external onlyOwner {
+        require(amount <= IERC20(token).balanceOf(address(this)), "The amount had more than balance");
+        uint256 balanceSendOwner = amount / 5;
+        uint256 balanceSendFund = amount - balanceSendOwner;
+        IERC20(token).transfer(owner(), balanceSendOwner);
+        IERC20(token).transfer(secFundAddress, balanceSendFund);
+    }
+}
+
+contract HTD is Abs {
+    constructor() Abs (
+        address(0x10ED43C718714eb63d5aA57B78B54704E256024E),    // router
+        address(0x55d398326f99059fF775485246999027B3197955),    // usdt
+        "HTD",
+        "HTD",
+        18,
+        2700000,
+        address(0xC080f9490a000d26016275E6d05Ad5a13B08Db4f),    // fundAddress
+        address(0xF25953dA6260DC9cf701755797ca4922Ebae9a77),    // devShareholder
+        address(0x37A44d7f2b2698b00E734B4575fef764FA7acB11),    // operator
+        address(0xCC608d3b9B991c55D54d8e089f73d1dad695eef6)     // receiver
+    ) {}
+}
