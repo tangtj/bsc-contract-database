@@ -1,0 +1,139 @@
+pragma solidity ^0.5.16;
+
+contract Ownable{
+    address private _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() internal {
+        _owner = msg.sender;
+        emit OwnershipTransferred(address(0), msg.sender);
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(_owner == msg.sender, 'Ownable: caller is not the owner');
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(
+            newOwner != address(0),
+            'Ownable: new owner is the zero address'
+        );
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract Operator is Ownable {
+    address private _operator;
+
+    event OperatorTransferred(
+        address indexed previousOperator,
+        address indexed newOperator
+    );
+
+    constructor() internal {
+        _operator = msg.sender;
+        emit OperatorTransferred(address(0), _operator);
+    }
+
+    function operator() public view returns (address) {
+        return _operator;
+    }
+
+    modifier onlyOperator() {
+        require(
+            _operator == msg.sender,
+            'operator: caller is not the operator'
+        );
+        _;
+    }
+
+    function isOperator() public view returns (bool) {
+        return msg.sender == _operator;
+    }
+
+    function transferOperator(address newOperator_) public onlyOwner {
+        _transferOperator(newOperator_);
+    }
+
+    function _transferOperator(address newOperator_) internal {
+        require(
+            newOperator_ != address(0),
+            'operator: zero address given for new operator'
+        );
+        emit OperatorTransferred(address(0), newOperator_);
+        _operator = newOperator_;
+    }
+}
+
+contract FeedOracle is Operator {
+    struct Price {
+        bool enable;
+        address underlying;
+        uint256 decimal;
+        uint256 price;
+    }
+    mapping(address => Price) public prices;
+    
+    function feed(address[] memory ctoken, uint256[] memory price) public onlyOperator {
+        require(ctoken.length == price.length, "length not match");
+        for (uint256 i = 0; i < ctoken.length; i++) {
+            Price storage p = prices[ctoken[i]];
+            if (p.enable) {
+                p.price = price[i];
+            }
+        }
+    }
+    
+    function setCtoken(address[] memory ctoken, address[] memory underlying, bool[] memory enable, uint256[] memory decimal) public onlyOwner {
+        require(ctoken.length == underlying.length && ctoken.length == enable.length && ctoken.length == decimal.length, "length not match");
+        for (uint256 i = 0; i < ctoken.length; i++) {
+            Price storage p = prices[ctoken[i]];
+            p.enable = enable[i];
+            p.underlying = underlying[i];
+            p.decimal = decimal[i];
+        }
+    }
+    
+    function getUnderlyingPrice(address ctoken) external view returns (uint256) {
+        Price memory p = prices[ctoken];
+        if (p.enable) {
+            return p.price * (10**p.decimal);
+        }
+        return 0;
+    }
+}

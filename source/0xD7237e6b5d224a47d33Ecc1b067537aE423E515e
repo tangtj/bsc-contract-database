@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+contract PoweirdLocker {
+    struct TokenLock {
+        uint256 amount;
+        uint256 unlockTime;
+    }
+
+    mapping(address => mapping(address => TokenLock[])) public lockedTokens;
+
+    function lockTokens(IERC20 token, uint256 amount, uint256 duration) external {
+        require(amount > 0, "PoweirdLocker: Token amount should be greater than 0");
+        require(duration > 0, "PoweirdLocker: Duration should be greater than 0");
+
+        token.transferFrom(msg.sender, address(this), amount);
+
+        uint256 unlockTime = block.timestamp + duration;
+        lockedTokens[msg.sender][address(token)].push(TokenLock(amount, unlockTime));
+    }
+
+    function unlockTokens(IERC20 token) external {
+        uint256 totalUnlockedAmount = 0;
+
+        for (uint256 i = 0; i < lockedTokens[msg.sender][address(token)].length; i++) {
+            TokenLock storage tokenLock = lockedTokens[msg.sender][address(token)][i];
+
+            if (block.timestamp >= tokenLock.unlockTime) {
+                totalUnlockedAmount += tokenLock.amount;
+                tokenLock.amount = 0;
+            }
+        }
+
+        require(totalUnlockedAmount > 0, "PoweirdLocker: No tokens to unlock");
+
+        token.transfer(msg.sender, totalUnlockedAmount);
+    }
+
+    function getRemainingLockTime(address holder, IERC20 token, uint256 index) public view returns (uint256) {
+        require(index < lockedTokens[holder][address(token)].length, "PoweirdLocker: Invalid index");
+
+        TokenLock storage tokenLock = lockedTokens[holder][address(token)][index];
+        if (tokenLock.unlockTime > block.timestamp) {
+            return tokenLock.unlockTime - block.timestamp;
+        } else {
+            return 0;
+        }
+    }
+
+    function getLockCount(address holder, IERC20 token) public view returns (uint256) {
+        return lockedTokens[holder][address(token)].length;
+    }
+}

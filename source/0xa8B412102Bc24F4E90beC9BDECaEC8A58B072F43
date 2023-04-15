@@ -1,0 +1,418 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+    event Received(address caller, uint256 amount, string message);
+}
+
+interface ISwapRouter {
+    function factory() external pure returns (address);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountA, uint256 amountB, uint256 liquidity);
+
+    function quote(
+        uint256 amountA,
+        uint256 reserveA,
+        uint256 reserveB
+    ) external pure returns (uint256 amountB);
+
+    function getAmountOut(
+        uint256 amountIn,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) external pure returns (uint256 amountOut);
+
+    function getAmountIn(
+        uint256 amountOut,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) external pure returns (uint256 amountIn);
+
+    function getAmountsOut(
+        uint256 amountIn,
+        address[] calldata path
+    ) external view returns (uint256[] memory amounts);
+
+    function getAmountsIn(
+        uint256 amountOut,
+        address[] calldata path
+    ) external view returns (uint256[] memory amounts);
+}
+
+interface ISwapFactory {
+    function createPair(
+        address tokenA,
+        address tokenB
+    ) external returns (address pair);
+}
+
+abstract contract Ownable {
+    address private _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract TokenDistributor {
+    constructor(address token1, address token2) {
+        IERC20(token1).approve(msg.sender, ~uint256(0));
+        IERC20(token2).approve(msg.sender, ~uint256(0));
+    }
+}
+
+abstract contract AbsToken is IERC20, Ownable {
+    uint256 private _tTotal;
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    address private fundAddress;
+    string private _symbol;
+    string private _name;
+    uint8 private _decimals;
+    uint256 private fundFee = 200;
+    uint256 private dividendFee = 300;
+    uint256 private burnFee = 100;
+    uint256 private swapTokensAtAmount = 100 * (10 ** 18);
+    address private mainPair;
+    uint256 private constant MAX = ~uint256(0);
+    ISwapRouter private _swapRouter;
+    TokenDistributor private _tokenDistributor;
+    address private usdt;
+    address private shib;
+
+    uint256 public grantDividendTime;
+    uint256 public totalDividend;
+    mapping(address => uint256) private _receiveDividendTime;
+    mapping(address => uint256) private _lastReceiveTokenTime;
+
+    mapping(address => bool) private _feeWhiteList;
+    address DEAD = 0x000000000000000000000000000000000000dEaD;
+
+    constructor(
+        string memory Name,
+        string memory Symbol,
+        uint8 Decimals,
+        uint256 Supply
+    ) {
+        _name = Name;
+        _symbol = Symbol;
+        _decimals = Decimals;
+        _swapRouter = ISwapRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        usdt = address(0x55d398326f99059fF775485246999027B3197955);
+        shib = address(0x2859e4544C4bB03966803b044A93563Bd2D0DD4D);
+        mainPair = ISwapFactory(_swapRouter.factory()).createPair(
+            address(this),
+            usdt
+        );
+        _allowances[address(this)][address(_swapRouter)] = MAX;
+        IERC20(usdt).approve(address(_swapRouter), MAX);
+        IERC20(usdt).approve(msg.sender, MAX);
+        IERC20(shib).approve(msg.sender, MAX);
+        _allowances[address(this)][msg.sender] = MAX;
+        uint256 tTotal = Supply * 10 ** _decimals;
+        _tTotal = tTotal;
+        _balances[msg.sender] = _tTotal;
+        emit Transfer(address(0), msg.sender, _tTotal);
+        _feeWhiteList[msg.sender] = true;
+        _feeWhiteList[address(this)] = true;
+        _feeWhiteList[address(_swapRouter)] = true;
+        _tokenDistributor = new TokenDistributor(usdt, shib);
+    }
+
+    function symbol() external view override returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view override returns (string memory) {
+        return _name;
+    }
+
+    function decimals() external view override returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() external view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(
+        address owner,
+        address spender
+    ) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(
+        address spender,
+        uint256 amount
+    ) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        if (_allowances[sender][msg.sender] != MAX) {
+            _allowances[sender][msg.sender] =
+                _allowances[sender][msg.sender] -
+                amount;
+        }
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        require(owner != address(0), "approve from the zero address");
+        require(spender != address(0), "approve to the zero address");
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _transfer(address from, address to, uint256 amount) private {
+        require(from != address(0), "Transfer from the zero address");
+        require(to != address(0), "Transfer to the zero address");
+        bool takeFee = false;
+         _lastReceiveTokenTime[to]=block.timestamp;
+        if (from == mainPair || to == mainPair) {
+            if (!_feeWhiteList[from] && !_feeWhiteList[to]) {
+                takeFee = true;
+                uint256 contractTokenBalance = balanceOf(address(this));
+                if (contractTokenBalance > 0) {
+                    bool overMinTokenBalance = (getTokenPrice(contractTokenBalance) >= swapTokensAtAmount);
+                    if (overMinTokenBalance) {
+                        swapTokenForFund(contractTokenBalance);
+                    }
+                }
+            }
+        }        
+        _tokenTransfer(from, to, amount, takeFee);
+    }
+
+    function _tokenTransfer(
+        address sender,
+        address recipient,
+        uint256 tAmount,
+        bool takeFee
+    ) private {
+        uint256 realAmount = tAmount;
+        _balances[sender] -= realAmount;
+        uint256 feeAmount;
+        uint256 burnAmount;
+        if (takeFee) {
+            feeAmount = (realAmount * (fundFee + dividendFee)) / 10000;
+            if (feeAmount > 0) {
+                _takeTransfer(sender, address(this), feeAmount);
+            }
+            burnAmount = (realAmount * burnFee) / 10000;
+            if (burnAmount > 0) {
+                _takeTransfer(sender, DEAD, burnAmount);
+            }
+            feeAmount += burnAmount;
+        }
+        uint256 recipientRealAmount = realAmount - feeAmount;
+        _takeTransfer(sender, recipient, recipientRealAmount);
+    }
+
+    function _takeTransfer(
+        address sender,
+        address to,
+        uint256 tAmount
+    ) private {
+        _balances[to] = _balances[to] + tAmount;
+        emit Transfer(sender, to, tAmount);
+    }
+
+    function getTokenPrice(uint total) public view returns (uint) {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = usdt;
+        uint[] memory amount1 = _swapRouter.getAmountsOut(total, path);
+        return amount1[1];
+    }
+
+    function claimDividends(address sender, uint256 amount) internal virtual {
+        if (
+            grantDividendTime > 0 &&
+            totalDividend > 0 &&
+            amount == 0 &&
+            _receiveDividendTime[sender] <= grantDividendTime &&
+            _lastReceiveTokenTime[sender] <= grantDividendTime &&
+            _balances[sender] >= 1000 * 10 ** 18
+        ) {
+            uint256 burnTotal = _balances[DEAD];
+            uint256 relTotal = _tTotal - burnTotal;
+            uint256 dividendShibTotal = _balances[sender] * totalDividend / relTotal;
+            IERC20(shib).transfer(sender, dividendShibTotal);
+            _receiveDividendTime[sender] = block.timestamp;
+        }
+    }
+
+    function swapTokenForFund(uint256 tokenAmount) private {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = usdt;
+        _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0,
+            path,
+            address(_tokenDistributor),
+            block.timestamp
+        );
+        IERC20 USDT = IERC20(usdt);
+        uint256 usdtBalance = USDT.balanceOf(address(_tokenDistributor));
+        uint256 totalUsdtFee = fundFee + dividendFee;
+
+        uint256 usdtFund = (usdtBalance * fundFee) / totalUsdtFee;
+        USDT.transferFrom(address(_tokenDistributor), fundAddress, usdtFund);
+
+        uint256 dividendUsdt = usdtBalance - usdtFund;
+        USDT.transferFrom(
+            address(_tokenDistributor),
+            address(this),
+            dividendUsdt
+        );
+
+        uint256 usdtThisBalance = USDT.balanceOf(address(this));
+        if (usdtThisBalance > 0) {
+            swapTokenForShib(usdtThisBalance);
+        }
+    }
+
+    function swapTokenForShib(uint256 tokenAmount) private {
+        address[] memory path = new address[](2);
+        path[0] = usdt;
+        path[1] = shib;
+        _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0,
+            path,
+            address(_tokenDistributor),
+            block.timestamp
+        );
+        IERC20 SHIB = IERC20(shib);
+        uint256 shibBalance = SHIB.balanceOf(address(_tokenDistributor));
+        SHIB.transferFrom(
+            address(_tokenDistributor),
+            address(this),
+            shibBalance
+        );
+        totalDividend = SHIB.balanceOf(address(this));
+        grantDividendTime = block.timestamp;
+    }
+
+    function setFundAddress(address addr) external onlyOwner {
+        _feeWhiteList[addr] = true;
+        fundAddress = addr;
+    }
+
+    function getFundAddress() external view returns (address) {
+        return fundAddress;
+    }
+
+    receive() external payable {
+        claimDividends(msg.sender, msg.value);
+        emit Received(msg.sender, msg.value, "fallback was called");
+    }
+}
+
+contract XTQ is AbsToken {
+    constructor() AbsToken("XTQ", "XTQ", 18, 210 * 10 ** 4) {}
+}

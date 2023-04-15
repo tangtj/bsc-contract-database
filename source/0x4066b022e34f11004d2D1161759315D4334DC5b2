@@ -1,0 +1,127 @@
+pragma solidity ^0.8.17;
+// SPDX-License-Identifier: MIT
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    constructor() {
+        _setOwner(_msgSender());
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function _setOwner(address newOwner) private {
+        _owner = newOwner;
+    }
+}
+
+contract Lottery is Context, Ownable {
+    
+    struct Player {
+        address addr;
+        uint256 holding;
+    }
+    
+    Player[] public  players;
+    uint256 public totalHolding;
+    uint256 public totalPlayer;
+    
+    struct Round {
+        uint256 timestamp;
+        address top1;
+        address top2;
+        address top3;
+    }
+    
+    Round[] public history;
+
+
+    function addPlayers(address[] memory _addrs, uint256[] memory _holdings) public onlyOwner {
+        require(_addrs.length == _holdings.length, "Input arrays must have the same length");
+        for (uint256 i = 0; i < _addrs.length; i++) {
+            players.push(Player(_addrs[i], _holdings[i]));
+            totalPlayer ++;
+            totalHolding += _holdings[i];
+        }
+    }
+    
+    // 1 người có thể thắng cùng lúc nhiều giải
+    function Start01() public onlyOwner {
+        address[] memory winners = new address[](3);
+        uint256[] memory winningNumbers = new uint256[](3);
+        winningNumbers[0] = uint256(keccak256(abi.encodePacked(block.timestamp, block.difficulty))) % totalHolding;
+        winningNumbers[1] = uint256(keccak256(abi.encodePacked(block.timestamp + 1, block.difficulty))) % totalHolding;
+        winningNumbers[2] = uint256(keccak256(abi.encodePacked(block.timestamp + 2, block.difficulty))) % totalHolding;
+
+        for (uint256 j = 0; j < 3; j++) {
+            uint256 currentNumber = 0;
+            for (uint256 i = 0; i < players.length; i++) {
+                currentNumber += players[i].holding;
+                if (currentNumber > winningNumbers[j]) {
+                    winners[j] = players[i].addr;
+                    break;
+                }
+            }
+        }
+        history.push(Round(block.timestamp, winners[0], winners[1], winners[2]));
+    }
+    
+    // mỗi người chỉ có thể trúng 1 giải
+    function Start02() public onlyOwner {
+        address[] memory winners = new address[](3);
+        uint256[] memory winningNumbers = new uint256[](3);
+        winningNumbers[0] = uint256(keccak256(abi.encodePacked(block.timestamp, block.difficulty))) % totalHolding;
+        winningNumbers[1] = uint256(keccak256(abi.encodePacked(block.timestamp + 1, block.difficulty))) % totalHolding;
+        winningNumbers[2] = uint256(keccak256(abi.encodePacked(block.timestamp + 2, block.difficulty))) % totalHolding;
+
+        for (uint256 j = 0; j < 3; j++) {
+            uint256 currentNumber = 0;
+            for (uint256 i = 0; i < players.length; i++) {
+                bool isWinner = false;
+                for (uint256 k = 0; k < j; k++) {
+                    if (players[i].addr == winners[k]) {
+                        isWinner = true;
+                        break;
+                    }
+                }
+                if (isWinner) {
+                    continue;
+                }
+                currentNumber += players[i].holding;
+                if (currentNumber > winningNumbers[j]) {
+                    winners[j] = players[i].addr;
+                    break;
+                }
+            }
+        }
+        history.push(Round(block.timestamp, winners[0], winners[1], winners[2]));
+    }
+
+    function clear() public onlyOwner {
+        delete players;
+        totalHolding = 0;
+    }
+
+    function getRound(uint256 _index) public view returns (uint256 timestamp, address top1, address top2, address top3) {
+        Round memory round = history[_index];
+        return (round.timestamp, round.top1, round.top2, round.top3);
+    }
+}

@@ -1,0 +1,137 @@
+
+// File: /contracts/bsc/HPOPresale.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function transfer(address to, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+interface IUSDT {
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+}
+
+
+contract PresaleProxy {
+    address public tokenAddress;
+    uint256 public tokenPrice;
+    uint256 public bonusPercentage;
+    uint256 public presaleStart;
+    uint256 public presaleEnd;
+    bool public canWithdraw = false;
+    address payable public deployer;
+
+    mapping(address => uint256) public balances;
+
+
+    event BuyTokens(address indexed buyer, uint256 amount);
+    event WithdrawETH(address indexed recipient, uint256 amount);
+    event WithdrawUSDT(address indexed recipient, uint256 amount);
+    event SetPresaleDate(uint256 startDate, uint256 endDate);
+    event UpdateTokenAddress(address tokenAddress);
+    event UpdateBonusPercentage(uint256 bonus);
+    event CanWithdraw(bool canWithdraw);
+
+    constructor(
+    ) {
+        deployer = payable(msg.sender);
+    }
+
+    function updatePresalePrice(uint256 newPrice) public {
+         require(msg.sender == deployer, "You are not authorized to call this function");
+        tokenPrice = newPrice;
+    }
+
+    function updateTokenAddress(address newAddress) public {
+        require(msg.sender == deployer, "You are not authorized to call this function");
+        tokenAddress = newAddress;
+        emit UpdateTokenAddress(tokenAddress);
+    }
+
+    function updateBonusPercentage(uint256 newBonus) public {
+        require(msg.sender == deployer, "You are not authorized to call this function");
+        bonusPercentage = newBonus;
+        emit UpdateBonusPercentage(newBonus);
+    }
+
+    function setPresaleDate(uint256 startDate, uint256 endDate) public {
+        require(msg.sender == deployer, "You are not authorized to call this function");
+            presaleStart = startDate;
+            presaleEnd = endDate;
+            emit SetPresaleDate(presaleStart, presaleEnd);
+    }
+    function canWithdrawToken() public {
+        require(msg.sender == deployer, "You are not authorized to call this function");
+        canWithdraw  = !canWithdraw;
+        emit CanWithdraw(canWithdraw);
+    }
+
+    function buyTokens() public payable {
+        require(block.timestamp >= presaleStart, "Presale has not started yet");
+        require(block.timestamp < presaleEnd, "Presale has ended");
+        uint256 amt = msg.value * tokenPrice;
+        uint256 bonus = (bonusPercentage/100) * amt;
+        uint256 amount = amt + bonus;
+        require(amount > 0, "You must send ETH or BNB to buy tokens");
+        require(IERC20(tokenAddress).balanceOf(address(this)) >= amount, "Not enough tokens in the contract");
+        balances[msg.sender] += amount;
+        emit BuyTokens(msg.sender, amount);
+    }
+
+  function buyWithUSDT(uint256 amountInUsdt) public {
+        require(block.timestamp >= presaleStart, "Presale has not started yet");
+        require(block.timestamp < presaleEnd, "Presale has ended");
+        address usdtAddress = 0xdAC17F958D2ee523a2206206994597C13D831ec7; // USDT contract address
+        uint256 usdtAmount = amountInUsdt * 10 ** 6; // USDT amount in smallest unit (6 decimals)
+
+        // Check that the buyer has approved the contract to spend the required amount of USDT
+        IUSDT usdt = IUSDT(usdtAddress);
+        require(
+            usdt.allowance(msg.sender, address(this)) >= usdtAmount,
+            "USDT allowance not enough"
+        );
+
+        // Transfer the USDT tokens from the buyer to the contract
+        require(
+            usdt.transferFrom(msg.sender, address(this), usdtAmount),
+            "USDT transfer failed"
+        );
+
+        // Send the corresponding number of tokens to the buyer
+        uint256 amt = amountInUsdt * tokenPrice;
+        uint256 bonus = (bonusPercentage/100) * amt;
+        uint256 amount = amt + bonus;
+        require(amount > 0, "You must send ETH or BNB to buy tokens");
+        require(IERC20(tokenAddress).balanceOf(address(this)) >= amount, "Not enough tokens in the contract");
+        balances[msg.sender] += amount;
+        emit BuyTokens(msg.sender, amount);
+    }
+
+
+    function withdrawTokens() public {
+        require (canWithdraw == true, "Cannot Withdraw until Set Date");
+        require(balances[msg.sender] > 0, "You do not have any tokens to withdraw");
+        uint256 amount = balances[msg.sender];
+        balances[msg.sender] = 0;
+        require(IERC20(tokenAddress).transfer(msg.sender, amount), "Token transfer failed");
+    }
+
+
+    function withdrawETH() public {
+        require(msg.sender == deployer, "You are not authorized to withdraw ETH");
+        payable(deployer).transfer(address(this).balance);
+        emit WithdrawETH(deployer, address(this).balance);
+    }
+
+    function withdrawUSDT(address recipient, uint256 amount) public {
+        require(msg.sender == deployer, "You are not authorized to withdraw USDT");
+        address usdtAddress = 0xdAC17F958D2ee523a2206206994597C13D831ec7; // Example USDT contract address
+        IERC20 usdt = IERC20(usdtAddress);
+        uint256 balance = usdt.balanceOf(address(this));
+        require(balance >= amount, "Insufficient USDT balance in the contract");
+        usdt.transfer(recipient, amount);
+        emit WithdrawUSDT(recipient, amount);
+    }
+}
+

@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: UNLICENSED
+
+pragma solidity ^0.8.4;
+
+interface IERC20 {
+    
+
+     // Returns the tokens owned by account.
+
+    function balanceOf(address account) external view returns (uint256);
+
+
+     //returns the decimal places of a token
+
+    function decimals() external view returns (uint8);
+
+    /**
+     * @dev transfers the `amount` of tokens from caller's account
+     * to the `recipient` account.
+     *
+     * returns boolean value indicating the operation status.
+     *
+     * Emits a {Transfer} event
+     */
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+ 
+}
+
+contract ClaimFreeToken {
+    
+    // The underlying token of the Claim Free Token  
+    IERC20 token;
+    
+    // The address of the smart contract owner
+    address owner;
+    
+    // For rate limiting
+    mapping(address=>uint256) nextRequestAt;
+    
+    // Number of tokens to send when requested
+    uint256 claimAmount = 5;
+
+    // Sets the addresses of the owner and the underlying token
+    constructor (address _tokenContract, address _ownerAddress) {
+        token = IERC20(_tokenContract);
+        owner = _ownerAddress;
+    }   
+    
+    // Verifies whether the caller is the owner 
+    modifier onlyOwner{
+        require(msg.sender == owner,"Error: Caller not owner");
+        _;
+    }
+
+    // Sends the tokens to the caller
+    function claim() external {
+
+        // Checks to make sure there is BSCWIN in the smart contract 
+        require(token.balanceOf(address(this)) > 5,"Error: Wallet is empty");
+
+        // Checks that the function can execute 
+        require(nextRequestAt[msg.sender] < block.timestamp, "Error: lock time has not expired");
+        
+        // Next request from the address can be made only after 1 year         
+        nextRequestAt[msg.sender] = block.timestamp + (525600 minutes); 
+        
+        token.transfer(msg.sender,claimAmount * 10**token.decimals());
+    } 
+
+    // Updates the underlying token address
+     function setTokenAddress(address _tokenAddress) external onlyOwner {
+        token = IERC20(_tokenAddress);
+    }    
+    
+    // Updates the number of tokens output per claim
+     function setClaimAmount(uint256 _amount) external onlyOwner {
+        claimAmount = _amount;
+    }  
+     
+     // Allows the owner to withdraw tokens from the contract.
+     function withdrawTokens(address _receiver, uint256 _amount) external onlyOwner {
+        require(token.balanceOf(address(this)) >= _amount,"Error: Insufficient funds");
+        token.transfer(_receiver,_amount);
+    }    
+
+    // Change smart contract ownership 
+    function transferOwnership(address _newOwner) external onlyOwner {
+        require(_newOwner != address(0), "Error: Invalid address");
+        owner = _newOwner;
+    } 
+}
