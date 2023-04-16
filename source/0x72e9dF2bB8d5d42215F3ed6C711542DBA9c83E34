@@ -1,0 +1,212 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+/**
+ * @dev Collection of functions related to the address type
+ */
+library AddressUtils {
+    /**
+     * @dev Returns true if `account` is a contract.
+     */
+    function isContract(address account) internal view returns (bool) {
+        // This method relies on extcodesize, which returns 0 for contracts in
+        // construction, since the code is only stored at the end of the
+        // constructor execution.
+
+        uint256 size;
+        // solhint-disable-next-line no-inline-assembly
+        assembly { size := extcodesize(account) }
+        return size > 0;
+    }
+}
+
+/**
+ * @dev Library for reading and writing primitive types to specific storage slots.
+ * _Available since v4.1 for `address`, `bool`, `bytes32`, and `uint256`._
+ */
+library StorageSlot {
+    struct AddressSlot {
+        address value;
+    }
+    struct BooleanSlot {
+        bool value;
+    }
+    struct Bytes32Slot {
+        bytes32 value;
+    }
+    struct Uint256Slot {
+        uint256 value;
+    }
+    /**
+     * @dev Returns an `AddressSlot` with member `value` located at `slot`.
+     */
+    function getAddressSlot(bytes32 slot) internal pure returns (AddressSlot storage r) {
+        assembly {
+            r.slot := slot
+        }
+    }
+    /**
+     * @dev Returns an `BooleanSlot` with member `value` located at `slot`.
+     */
+    function getBooleanSlot(bytes32 slot) internal pure returns (BooleanSlot storage r) {
+        assembly {
+            r.slot := slot
+        }
+    }
+    /**
+     * @dev Returns an `Bytes32Slot` with member `value` located at `slot`.
+     */
+    function getBytes32Slot(bytes32 slot) internal pure returns (Bytes32Slot storage r) {
+        assembly {
+            r.slot := slot
+        }
+    }
+    /**
+     * @dev Returns an `Uint256Slot` with member `value` located at `slot`.
+     */
+    function getUint256Slot(bytes32 slot) internal pure returns (Uint256Slot storage r) {
+        assembly {
+            r.slot := slot
+        }
+    }
+}
+
+/**
+ * @dev This abstract contract provides a fallback function that delegates all calls to another contract using the EVM
+ * instruction `delegatecall`. We refer to the second contract as the _implementation_ behind the proxy, and it has to
+ * be specified by overriding the virtual {_implementation} function.
+ *
+ * Additionally, delegation to the implementation can be triggered manually through the {_fallback} function, or to a
+ * different contract through the {_delegate} function.
+ *
+ * The success and return data of the delegated call will be returned back to the caller of the proxy.
+ */
+abstract contract Proxy {
+    /**
+     * @dev Delegates the current call to `implementation`.
+     * This function does not return to its internall call site, it will return directly to the external caller.
+     */
+    function _delegate(address implementation) internal {
+        assembly {
+            // Copy msg.data. We take full control of memory in this inline assembly
+            // block because it will not return to Solidity code. We overwrite the
+            // Solidity scratch pad at memory position 0.
+            calldatacopy(0, 0, calldatasize())
+
+            // Call the implementation.
+            // out and outsize are 0 because we don't know the size yet.
+            let result := delegatecall(gas(), implementation, 0, calldatasize(), 0, 0)
+
+            // Copy the returned data.
+            returndatacopy(0, 0, returndatasize())
+
+            switch result
+                // delegatecall returns 0 on error.
+                case 0 { revert(0, returndatasize()) }
+                default { return(0, returndatasize()) }
+        }
+    }
+
+    /**
+     * @dev This is a virtual function that should be overriden so it returns the address to which the fallback function
+     * and {_fallback} should delegate.
+     */
+    function _implementation() internal view virtual returns (address);
+
+    /**
+     * @dev Delegates the current call to the address returned by `_implementation()`.
+     * This function does not return to its internall call site, it will return directly to the external caller.
+     */
+    function _fallback() internal virtual {
+        _beforeFallback();
+        _delegate(_implementation());
+    }
+
+    /**
+     * @dev Fallback function that delegates calls to the address returned by `_implementation()`. Will run if no other
+     * function in the contract matches the call data.
+     */
+    fallback() external payable virtual {
+        _fallback();
+    }
+
+    /**
+     * @dev Fallback function that delegates calls to the address returned by `_implementation()`. Will run if call data
+     * is empty.
+     */
+    receive() external payable virtual {
+        _fallback();
+    }
+
+    /**
+     * @dev Hook that is called before falling back to the implementation. Can happen as part of a manual `_fallback`
+     * call, or as part of the Solidity `fallback` or `receive` functions.
+     *
+     * If overriden should call `super._beforeFallback()`.
+     */
+    function _beforeFallback() internal virtual {
+    }
+}
+
+/**
+ * @dev The Proxy Ownable contract has an owner address, and provides basic authorization control
+ * functions, this simplifies the implementation of "user permissions".
+ */
+contract ProxyOwnable {
+    address private proxyOwner;
+
+    event OwnershipProxyTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial proxy owner.
+     */
+    constructor () {
+        proxyOwner = msg.sender;
+        emit OwnershipProxyTransferred(address(0), msg.sender);
+    }
+
+    /**
+     * @dev Throws if called by any account other than the proxy owner.
+     */
+    modifier onlyProxyOwner() {
+        require(proxyOwner == msg.sender, "ProxyOwnable: caller is not the proxy owner");
+        _;
+    }
+
+    /**
+     * @dev Transfers proxy ownership of the contract to a new account (`_newProxyOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferProxyOwnerShip(address _newProxyOwner) public onlyProxyOwner {
+        emit OwnershipProxyTransferred(proxyOwner, _newProxyOwner);
+        proxyOwner = _newProxyOwner;
+    }
+}
+
+contract MainProxy is Proxy, ProxyOwnable {
+    bytes32 internal constant _IMPLEMENTATION_SLOT = keccak256("org.zeppelinos.proxy.implementation");
+
+    /**
+     * @dev Initializes the upgradeable proxy with an initial implementation specified by `_impl`.
+     * function call, and allows initializating the storage of the proxy like a Solidity constructor.
+     */
+    constructor(address _impl)  {
+        assert(_IMPLEMENTATION_SLOT == keccak256("org.zeppelinos.proxy.implementation"));
+        updateImplementation(_impl);
+    }
+
+    /**
+     * @dev Update a new address in the implementation slot.
+     */
+    function updateImplementation(address _newImplementation) public onlyProxyOwner {
+        require(AddressUtils.isContract(_newImplementation), "Cannot set a proxy implementation to a non-contract address");
+        StorageSlot.getAddressSlot(_IMPLEMENTATION_SLOT).value = _newImplementation;
+    }
+
+    /**
+     * @dev Returns the current implementation address.
+     */
+    function _implementation() internal view virtual override returns (address impl) {
+        return StorageSlot.getAddressSlot(_IMPLEMENTATION_SLOT).value;
+    }
+}

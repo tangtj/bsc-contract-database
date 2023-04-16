@@ -1,0 +1,200 @@
+
+// File: homieads.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.6;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        this; 
+        return msg.data;
+    }
+}
+
+
+contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+
+contract HomieAds is Ownable {
+
+
+    address payable public secondWallet = payable(address(0));
+    address payable public thirdWallet = payable(address(0));
+
+    uint256 public firstWalletPercentage = 70;
+    uint256 public secondWalletPercentage = 20;
+    uint256 public thirdWalletPercentage = 10;
+    
+
+
+    struct AdvertisingSpace {
+        uint256 id;
+        uint256 price;
+        address renter;
+        bool isAvailable;
+        uint256 rentalTime;
+        uint256 startDate;
+    }
+
+    mapping(uint256 => AdvertisingSpace) public spaces;
+
+    uint256 public spacesCounter;
+
+
+    function setOtherWallets(address payable _secondWallet, address payable _thirdWallet) public onlyOwner {
+        secondWallet = _secondWallet;
+        thirdWallet = _thirdWallet;
+    }
+
+    function setWalletPercentages(uint256 _firstWalletPercentage, uint256 _secondWalletPercentage, uint256 _thirdWalletPercentage) public onlyOwner {
+        require(_firstWalletPercentage + _secondWalletPercentage + _thirdWalletPercentage == 100, "Total percentage must be 100");
+        firstWalletPercentage = _firstWalletPercentage;
+        secondWalletPercentage = _secondWalletPercentage;
+        thirdWalletPercentage = _thirdWalletPercentage;
+    }
+
+
+    function addSpace(uint256 _price) public onlyOwner {
+        spacesCounter++;
+        spaces[spacesCounter] = AdvertisingSpace(spacesCounter, _price, address(0), true, 0, 0);
+    }
+
+    function modifySpace(uint256 _id, uint256 _price) public onlyOwner {
+        require(spaces[_id].id != 0, "Space not found");
+        spaces[_id].price = _price;
+    }
+
+    function rentSpace(uint256 _id, uint256 _days) public payable {
+        require(_days > 0, "Rent days must be greater than 0");
+        AdvertisingSpace storage space = spaces[_id];
+        require(space.id != 0, "Space not found");
+        require(space.isAvailable, "Space not available");
+        uint256 totalCost = space.price * _days;
+        require(msg.value == totalCost, "Incorrect amount sent");
+        space.renter = msg.sender;
+        space.isAvailable = false;
+        space.rentalTime = _days * 1 days;
+        space.startDate = block.timestamp;
+    }
+
+    function releaseSpace(uint256 _id) public onlyOwner {
+        AdvertisingSpace storage space = spaces[_id];
+        require(space.id != 0, "Space not found");
+        if (!space.isAvailable && block.timestamp >= space.startDate + space.rentalTime) {
+            space.renter = address(0);
+            space.isAvailable = true;
+            space.rentalTime = 0;
+            space.startDate = 0;
+        }
+    }
+
+    function releaseSpaces() public onlyOwner {
+        for (uint256 i = 1; i <= spacesCounter; i++) {
+            releaseSpace(i);
+        }
+    }
+
+    function forceReleaseSpace(uint256 _id) public onlyOwner {
+        AdvertisingSpace storage space = spaces[_id];
+        require(space.id != 0, "Space not found");
+        space.renter = address(0);
+        space.isAvailable = true;
+        space.rentalTime = 0;
+        space.startDate = 0;
+    }
+
+    function getSpaces() public view returns (AdvertisingSpace[] memory) {
+        AdvertisingSpace[] memory result = new AdvertisingSpace[](spacesCounter);
+        for (uint256 i = 1; i <= spacesCounter; i++) {
+            result[i - 1] = spaces[i];
+        }
+        return result;
+    }
+
+    function getAdSpace(uint256 _id) public view returns (AdvertisingSpace memory) {
+        require(_id >= 1 && _id <= spacesCounter, "Invalid ID");
+        return spaces[_id];
+    }
+
+    function withdraw() public onlyOwner {
+        require(secondWallet != address(0), "Second wallet not set");
+        require(thirdWallet != address(0), "Third wallet not set");
+
+        uint256 balance = address(this).balance;
+
+        uint256 ownerShare = (balance * firstWalletPercentage) / 100;
+        uint256 secondWalletShare = (balance * secondWalletPercentage) / 100;
+        uint256 thirdWalletShare = balance - ownerShare - secondWalletShare;
+
+        // Transfer the shares using the `transfer` function
+        payable(owner()).transfer(ownerShare);
+        secondWallet.transfer(secondWalletShare);
+        thirdWallet.transfer(thirdWalletShare);
+    }
+
+    function rescueBNB() public onlyOwner {
+        uint256 balance = address(this).balance;
+        require(balance > 0, "No BNB to rescue");
+        (bool success, ) = payable(owner()).call{value: balance}("");
+        require(success, "Rescue BNB transfer failed");
+    }
+
+    function deleteSpace(uint256 _id) public onlyOwner {
+        require(spaces[_id].id != 0, "Space not found");
+        // Move spaces to fill the gap created by the deleted space
+         for (uint256 i = _id; i < spacesCounter; i++) {
+            spaces[i] = spaces[i + 1];
+         }
+        // Decrease the spacesCounter
+         spacesCounter--;
+        // Remove the last space as it has been shifted
+        delete spaces[spacesCounter + 1];
+    }
+
+    function setSpace(uint256 _id, uint256 _price, address _renter, bool _isAvailable, uint256 _rentalTime, uint256 _startDate) public onlyOwner {
+        require(spaces[_id].id != 0, "Space not found");
+        spaces[_id] = AdvertisingSpace(_id, _price, _renter, _isAvailable, _rentalTime, _startDate);
+    }
+    
+    function getWalletPercentages() public view returns (uint256, uint256, uint256) {
+        return (firstWalletPercentage, secondWalletPercentage, thirdWalletPercentage);
+    }
+
+  
+
+}
+
