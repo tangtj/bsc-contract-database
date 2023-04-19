@@ -1,0 +1,365 @@
+// Dependency file: contracts/interfaces/IDgas.sol
+
+// pragma solidity >=0.5.0;
+
+interface IDgas {
+    function amountPerBlock() external view returns (uint);
+    function changeInterestRatePerBlock(uint value) external returns (bool);
+    function getProductivity(address user) external view returns (uint, uint);
+    function increaseProductivity(address user, uint value) external returns (bool);
+    function decreaseProductivity(address user, uint value) external returns (bool);
+    function take() external view returns (uint);
+    function takeWithBlock() external view returns (uint, uint);
+    function mint() external returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function upgradeImpl(address _newImpl) external;
+    function upgradeGovernance(address _newGovernor) external;
+    function transfer(address to, uint value) external returns (bool);
+    function approve(address spender, uint value) external returns (bool);
+}
+
+// Dependency file: contracts/interfaces/IERC20.sol
+
+// SPDX-License-Identifier: MIT
+// pragma solidity >=0.5.0;
+
+interface IERC20 {
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+
+    function approve(address spender, uint value) external returns (bool);
+    function transfer(address to, uint value) external returns (bool);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+}
+
+
+// Dependency file: contracts/interfaces/ICBurger.sol
+
+// pragma solidity >=0.5.0;
+
+interface ICBurger {
+    function burn(uint value) external returns (bool);
+}
+
+// Dependency file: contracts/libraries/SafeMath.sol
+
+
+// pragma solidity >=0.6.0;
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations with added overflow
+ * checks.
+ *
+ * Arithmetic operations in Solidity wrap on overflow. This can easily result
+ * in bugs, because programmers usually assume that an overflow raises an
+ * error, which is the standard behavior in high level programming languages.
+ * `SafeMath` restores this intuition by reverting the transaction when an
+ * operation overflows.
+ *
+ * Using this library instead of the unchecked operations eliminates an entire
+ * class of bugs, so it's recommended to use it always.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts with custom message when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+// Dependency file: contracts/modules/Ownable.sol
+
+// pragma solidity >=0.6.0;
+
+contract Ownable {
+    address public owner;
+
+    event OwnerChanged(address indexed _oldOwner, address indexed _newOwner);
+
+    constructor () public {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, 'Ownable: FORBIDDEN');
+        _;
+    }
+
+    function changeOwner(address _newOwner) public onlyOwner {
+        require(_newOwner != address(0), 'Ownable: INVALID_ADDRESS');
+        emit OwnerChanged(owner, _newOwner);
+        owner = _newOwner;
+    }
+
+}
+
+
+// Root file: contracts/BurgerSave.sol
+
+pragma solidity >=0.6.12;
+// pragma experimental ABIEncoderV2;
+
+// import 'contracts/interfaces/IDgas.sol';
+// import 'contracts/interfaces/IERC20.sol';
+// import 'contracts/interfaces/ICBurger.sol';
+// import 'contracts/libraries/SafeMath.sol';
+// import 'contracts/modules/Ownable.sol';
+
+contract BurgerSave is Ownable {
+    using SafeMath for uint;
+    
+    bytes4 private constant SELECTOR = bytes4(keccak256(bytes('transfer(address,uint256)')));
+    address public DGAS;
+    address public CBURGER;
+    uint public BLOCKSPACE;
+
+    uint totalSupply;
+    uint totalDepositedAmount;
+    uint totalHarvestedAmount;
+
+    struct UserInfo {
+        uint startBlock;
+        uint stakeAmount;
+        uint harvestedAmount;
+        uint accAmountPerBlock;
+        uint totalHarvestedAmount;
+    }
+
+    mapping (address=>UserInfo) public userData;
+    mapping (address=>bool) public userExist;
+
+    event Deposit(address indexed _user, uint startBlock, uint _amount);
+    event Harvest(address indexed _user, uint _amount);
+    event Withdraw(address indexed _user, uint _amount);
+
+    constructor(address _dgas, address _cburger, uint _totalSupply, uint _blockSpace) public {
+        DGAS = _dgas;
+        CBURGER = _cburger;
+        BLOCKSPACE = _blockSpace;
+        totalSupply = _totalSupply;
+    }
+    
+    function configure(uint _totalSupply, uint _blockSpace) public onlyOwner {
+        BLOCKSPACE = _blockSpace;
+        totalSupply = _totalSupply;
+    }
+
+    function getHarvestAmount(address _user) public view returns(uint) {
+        return _getHarvestAmount(_user);
+    }
+
+    function getWithdrawAmount() public view returns(uint) {
+        return _getWithdrawAmount();
+    }
+    
+    function getInfo() public view returns(uint, uint, uint) {
+        return(totalSupply, totalDepositedAmount, totalHarvestedAmount);
+    }
+
+    function deposit(uint _amount) public {
+        IERC20(CBURGER).transferFrom(address(msg.sender), address(this), _amount);
+        UserInfo storage userInfo = userData[msg.sender];
+        userInfo.stakeAmount = userInfo.stakeAmount.add(_amount);
+        userInfo.accAmountPerBlock = userInfo.stakeAmount.sub(userInfo.totalHarvestedAmount).div(BLOCKSPACE);
+        userInfo.harvestedAmount = 0;
+        userInfo.startBlock = block.number;
+        totalDepositedAmount = totalDepositedAmount.add(_amount);
+        emit Deposit(msg.sender, block.number, _amount);
+    }
+
+    function harvest(uint _amount) public {
+        uint amount = _getHarvestAmount(msg.sender);
+        require(_amount <= amount && _amount > 0, 'BurgerSave: HARVEST_AMOUNT_OVER');
+        UserInfo storage userInfo = userData[msg.sender];
+        userInfo.harvestedAmount = userInfo.harvestedAmount.add(_amount);
+        userInfo.totalHarvestedAmount = userInfo.totalHarvestedAmount.add(_amount);
+        totalHarvestedAmount = totalHarvestedAmount.add(_amount);
+        _mintDGAS();
+        IDgas(DGAS).transfer(address(msg.sender), _amount);
+        emit Harvest(msg.sender, _amount);
+    }
+
+    function burn() public onlyOwner {
+        uint amount = IERC20(CBURGER).balanceOf(address(this));
+        ICBurger(CBURGER).burn(amount);
+    }
+    
+    function sync() public onlyOwner {
+        _mintDGAS();
+    }
+
+    function withdraw(uint _amount) public onlyOwner {
+        uint amount = _getWithdrawAmount();
+        require(_amount <= amount, 'BurgerSave: WITHDRAW_AMOUNT_OVER');
+        IDgas(DGAS).transfer(address(msg.sender), _amount);
+        emit Withdraw(msg.sender, _amount);
+    }
+
+    function _getHarvestAmount(address user) internal view  returns(uint amount) {
+        UserInfo memory userInfo = userData[user];
+        uint blockSpac = block.number.sub(userInfo.startBlock);
+        if (blockSpac > BLOCKSPACE) {
+            blockSpac = BLOCKSPACE;
+        }
+        amount = userInfo.accAmountPerBlock.mul(blockSpac).sub(userInfo.harvestedAmount);
+        return amount;
+    }
+
+    function _getWithdrawAmount() internal view returns(uint amount) {
+        uint balance = IDgas(DGAS).balanceOf(address(this));
+        if (balance.add(totalHarvestedAmount) <= totalSupply) {
+            amount = 0;
+        } else {
+            amount = balance.add(totalHarvestedAmount).sub(totalSupply);
+        }
+        return amount;
+    }
+
+    function _mintDGAS() internal {
+        if(IDgas(DGAS).take() > 0) {
+            IDgas(DGAS).mint();
+        }
+    }
+}

@@ -1,0 +1,1331 @@
+
+// File: AdoToken.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+import "./AdoAffiliates.sol";
+import "./libraries/SafeMath.sol";
+import "./LPManager.sol";
+import "./abstracts/Ownable.sol";
+import "./interfaces/IBEP20.sol";
+import "./interfaces/IPancakeSwapV2Pair.sol";
+import "./interfaces/IPancakeSwapV2Factory.sol";
+import "./interfaces/IPancakeSwapV2Router02.sol";
+
+contract AdoToken is IBEP20, Ownable {
+	using SafeMath for uint256;
+	address private constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+	address public immutable deployer;
+	address public mainLPToken;
+	IPancakeSwapV2Router02 public pancakeSwapV2Router;
+	IPancakeSwapV2Pair public pancakeSwapWETHV2Pair;
+	IPancakeSwapV2Pair public pancakeSwapBUSDV2Pair;
+	AdoAffiliates public affiliatesContract;
+	LPManager public lpManager;
+	IBEP20 public busdContract;
+
+	string private _name = "ADO Protocol";
+	string private _symbol = "ADO";
+	uint8 private _decimals = 18;
+	bool public swapEnabled = false;
+	bool private _swapping = false;
+	bool private _affiliateContractSet = false;
+	bool private _busdContractSet = false;
+	bool private _lpManagerSet = false;
+	uint256 private _totalSupply = 1000000000 * (10 ** _decimals);
+	uint256 private _tokensToLiqudate = _totalSupply.div(10000);
+	uint256 private _lpWeight;
+	uint256 private _buyBackBalance;
+	uint256 private _feeDivider = 1;
+	uint256 private _fee = 10;
+	uint256 private _cursor;
+	mapping(address => uint256) private _balances;
+	mapping(address => mapping(address => uint256)) private _allowances;
+	mapping (address => bool) private _isExcludedFromFee;
+
+	event ExcludedAddress(address indexed account);
+	event TokenFeeUpdate(uint256 oldFee, uint256 newFee);
+	event LPWeight(uint256 lp, uint256 bb);
+	event TokenBalanceToLiqudate(uint256 indexed newValue, uint256 indexed oldValue);
+	event BuyBackUpdate(address indexed token, uint256 indexed eth, uint256 busd);
+	event MainLPSwitch(address indexed newToken);
+	event MinTxValueForCommission(uint256 indexed oldValue, uint256 indexed newValue);
+
+	modifier onlyDeployer() {
+		require(_msgSender() == deployer, "Token: Only the token deployer can call this function");
+		_;
+	}
+
+	constructor() {
+		deployer = owner();
+		_isExcludedFromFee[owner()] = true;
+		_isExcludedFromFee[address(this)] = true;
+		_isExcludedFromFee[BURN_ADDRESS] = true;
+		_balances[owner()] = _totalSupply;
+		emit Transfer(address(0), owner(), _totalSupply);
+	}
+
+	receive() external payable {}
+
+	function name() external view override returns (string memory) {
+		return _name;
+	}
+
+	function symbol() external view override returns (string memory) {
+		return _symbol;
+	}
+
+	function decimals() external view override returns (uint8) {
+		return _decimals;
+	}
+
+	function totalSupply() external view override returns (uint256) {
+		return _totalSupply;
+	}
+
+	function getOwner() public view returns (address) {
+		return owner();
+	}
+
+	function fee() external view returns(uint256 value, uint256 divider) {
+		value = _fee;
+		divider = _feeDivider;
+	}
+
+	function balanceOf(address account) external view override returns (uint256) {
+		return _balances[account];
+	}
+
+	function isExcludedFromFee(address account) external view returns(bool) {
+		return _isExcludedFromFee[account];
+	}
+
+	function tokensToLiqudate() external view returns(uint256) {
+		return _tokensToLiqudate;
+	}
+
+	function cursor() external view returns(uint256) {
+		return _cursor;
+	}
+
+	function lpvsbb() external view returns(uint256 lp, uint256 bb) {
+		uint256 weight = 10;
+		lp = _lpWeight;
+		bb = weight.sub(_lpWeight);
+	}
+
+	function buyBackBalance() external view returns(uint256 eth, uint256 busd) {
+		eth = _buyBackBalance;
+		busd = busdContract.balanceOf(address(this));
+	}
+
+	function referrerStats(address account) external view returns (uint256 transactions, uint256 bonus, uint256 totalValue, uint256 commissions) {
+		return affiliatesContract.referrerStats(account);
+	}
+
+	function referredSwaps() external view returns (uint256) {
+		return affiliatesContract.referredSwaps();
+	}
+
+	function minTxValue() external view returns (uint256) {
+		return affiliatesContract.minTxValue();
+	}
+
+	function transfer(address recipient, uint256 amount) external override returns (bool) {
+		_transfer(_msgSender(), recipient, amount);
+		return true;
+	}
+
+	function allowance(address owner, address spender) external view override returns (uint256) {
+		return _allowances[owner][spender];
+	}
+
+	function approve(address spender, uint256 amount) external override returns (bool) {
+		_approve(_msgSender(), spender, amount);
+		return true;
+	}
+
+	function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
+		_transfer(sender, recipient, amount);
+		_approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "Token: transfer amount exceeds allowance"));
+		return true;
+	}
+
+	function updateLPWeight(uint256 lpWeight) external onlyDeployer returns (bool) {
+		require(lpWeight <= 10, "Token: LPWeight must be between 0 and 10");
+		_lpWeight = lpWeight;
+		emit LPWeight(_lpWeight, 10 - _lpWeight);
+		return true;
+	}
+
+	function updateFee(uint256 newFee) external onlyDeployer returns (bool) {
+		require(_fee != 0, "Token: The Fee has been removed");
+		require(newFee != _fee, "Token: The Fee is already set to the requested value");
+		require(newFee == 2 || newFee == 5 || newFee == 10, "Token: The fee can only be 2 5 or 10");
+		emit TokenFeeUpdate(_fee, newFee);
+		_fee = newFee;
+		_feeDivider = newFee == 10 ? 1 : newFee == 5 ? 2 : 5;
+		return true;
+	}
+
+	function updateMinTxValue(uint256 newValue) external onlyDeployer {
+		require(newValue >= 10 ** 18 && newValue <= 100000 * 10 ** 18, "Token: minTxValue must be between 1 and 100.000 ADO");
+		emit MinTxValueForCommission(affiliatesContract.minTxValue(), newValue);
+		affiliatesContract.updateMinTxValue(newValue);
+	}
+
+	function updateTokensToLiqudate(uint256 newValue) external onlyDeployer returns (bool) {
+		require(newValue >= 10 ** 18 && newValue <= 1000000 * 10 ** 18, "Token: numTokensToLiqudate must be between 100 and 1.000.000 ADO");
+		emit TokenBalanceToLiqudate(newValue, _tokensToLiqudate);
+		_tokensToLiqudate = newValue;
+		return true;
+	}
+
+	function buyBack(uint256 amount) external onlyDeployer {
+		if (mainLPToken == pancakeSwapV2Router.WETH()) {
+			require(amount <= _buyBackBalance, "Token: Insufficient funds.");
+			swapETHForTokens(BURN_ADDRESS, 0, amount);
+			_buyBackBalance = address(this).balance;
+		} else {
+			require(amount <= busdContract.balanceOf(address(this)), "Token: Insufficient funds.");
+			address[] memory path = new address[](2);
+			path[0] = address(busdContract);
+			path[1] = address(this);
+			busdContract.approve(address(pancakeSwapV2Router), amount);
+			pancakeSwapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+				amount,
+				0,
+				path,
+				BURN_ADDRESS,
+				block.timestamp
+			);
+		}
+	}
+
+	function processTax() external onlyDeployer {
+		require(_balances[address(this)] > _tokensToLiqudate, "Token: Insufficient tokens");
+		_swapping = true;
+		swapAndAddLpOrBB();
+		_swapping = false;
+	}
+
+	function excludeAddressFromFee(address account) external onlyDeployer returns (bool) {
+		require(_isExcludedFromFee[account] == false, "Token: Account is already excluded");
+		_isExcludedFromFee[account] = true;
+		emit ExcludedAddress(account);
+		return true;
+	}
+
+	function removeTax() external onlyDeployer returns (uint256) {
+		_fee = 0;
+		uint256 burnedAmount = _balances[address(this)];
+		_transfer(address(this), BURN_ADDRESS, burnedAmount);
+		_buyBackBalance = address(this).balance;
+		uint256 dBurnedAmount = affiliatesContract.burnTheHouseDown();
+		return burnedAmount.add(dBurnedAmount);
+	}
+
+	function _approve(address owner, address spender, uint256 amount) private {
+		require(owner != address(0), "Token: approve from the zero address");
+		require(spender != address(0), "Token: approve to the zero address");
+		_allowances[owner][spender] = amount;
+		emit Approval(owner, spender, amount);
+	}
+
+	function swapBUSDforETH(uint256 amount, address to) private returns (uint256) {
+		uint256 initialBalance = address(this).balance;
+		address[] memory path = new address[](2);
+		path[0] = address(busdContract);
+		path[1] = pancakeSwapV2Router.WETH();
+		busdContract.approve(address(pancakeSwapV2Router), amount);
+		pancakeSwapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+			amount,
+			0,
+			path,
+			to,
+			block.timestamp
+		);
+		return address(this).balance.sub(initialBalance);
+	}
+
+	function swapETHforBUSD(uint256 amount, address to) private returns (uint256) {
+		uint256 initialBalance = busdContract.balanceOf(address(this));
+		address[] memory path = new address[](2);
+		path[0] = pancakeSwapV2Router.WETH();
+		path[1] = address(busdContract);
+		pancakeSwapV2Router.swapExactETHForTokensSupportingFeeOnTransferTokens{value: amount}(0, path, to, block.timestamp);
+		return busdContract.balanceOf(address(this)).sub(initialBalance);
+	}
+
+	function swapETHForTokens(address recipient, uint256 minTokenAmount, uint256 amount) private {
+		address[] memory path = new address[](2);
+		path[0] = pancakeSwapV2Router.WETH();
+		path[1] = address(this);
+		pancakeSwapV2Router.swapExactETHForTokensSupportingFeeOnTransferTokens{value: amount}(
+			minTokenAmount,
+			path,
+			recipient,
+			block.timestamp
+		);
+	}
+	
+	function swapTokensForETH(uint256 tokenAmount) private returns (uint256) {
+		uint256 pathlength = mainLPToken == pancakeSwapV2Router.WETH() ? 2 : 3;
+		address[] memory path = new address[](pathlength);
+		path[0] = address(this);
+		path[1] = mainLPToken;
+		if (mainLPToken != pancakeSwapV2Router.WETH()) {
+			path[2] = pancakeSwapV2Router.WETH();
+		}
+		uint256 initialBalance = address(this).balance;
+		_approve(address(this), address(pancakeSwapV2Router), tokenAmount);
+		pancakeSwapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+			tokenAmount,
+			0,
+			path,
+			address(this),
+			block.timestamp
+		);
+		uint256 eth = address(this).balance.sub(initialBalance);
+		return eth;
+	}
+
+	function addLiquidityETH(uint256 tokenAmount, uint256 ethAmount) private {
+		_approve(address(this), address(pancakeSwapV2Router), tokenAmount);
+		pancakeSwapV2Router.addLiquidityETH{value: ethAmount}(
+			address(this),
+			tokenAmount,
+			0,
+			0,
+			address(lpManager),
+			block.timestamp
+		);
+	}
+
+	function addLiquidityBUSD(uint256 tokenAmount, uint256 busdAmount) private {
+		_approve(address(this), address(pancakeSwapV2Router), tokenAmount);
+		busdContract.approve(address(pancakeSwapV2Router), busdAmount);
+		pancakeSwapV2Router.addLiquidity(
+			address(this),
+			address(busdContract),
+			tokenAmount,
+			busdAmount,
+			0,
+			0,
+			address(lpManager),
+			block.timestamp
+		);
+	}
+
+	function swapAndAddLpOrBB() private {
+		_cursor++;
+		uint256 swapTokensAmount = _tokensToLiqudate;
+		bool addLP = _cursor.mod(10) < _lpWeight;
+		if (addLP) {
+			swapTokensAmount = _tokensToLiqudate.div(2);
+		}
+		uint256 eth = swapTokensForETH(swapTokensAmount);
+		if (mainLPToken == pancakeSwapV2Router.WETH()) {
+			if (addLP) {
+				addLiquidityETH(swapTokensAmount, eth);
+			}
+			_buyBackBalance = address(this).balance;
+		} else {
+			uint256 busd = swapETHforBUSD(eth, address(this));
+			if (addLP) {
+				addLiquidityBUSD(swapTokensAmount, busd);
+			}
+		}
+	}
+
+	function _transfer(address from, address to, uint256 amount) private {
+		require(from != address(0), "Token: Transfer from the zero address");
+		require(to != address(0), "Token: Transfer to the zero address");
+		require(amount > 0, "Token: Transfer amount must be greater than zero");
+		require(swapEnabled || from == deployer, "Token: Public transfer has not yet been activated");
+		require(_affiliateContractSet, "Token: Dividend Contract Token is not set");
+
+		bool takeFee = true;
+		if (
+			_isExcludedFromFee[from] ||
+			_isExcludedFromFee[to]
+		) {
+			takeFee = false;
+		}
+		if (!_swapping && _fee > 0 && takeFee) {
+			uint256 contractTokenBalance = _balances[address(this)];
+			bool canSwap = contractTokenBalance > _tokensToLiqudate;
+			if (canSwap) {
+				if (
+					(mainLPToken == pancakeSwapV2Router.WETH() && from != address(pancakeSwapWETHV2Pair)) ||
+					(mainLPToken == address(busdContract) && from != address(pancakeSwapBUSDV2Pair)))
+				{
+					_swapping = true;
+					swapAndAddLpOrBB();
+					_swapping = false;
+				}
+			}
+			if (
+				to == address(pancakeSwapWETHV2Pair) ||
+				to == address(pancakeSwapBUSDV2Pair) ||
+				from == address(pancakeSwapWETHV2Pair) ||
+				from == address(pancakeSwapBUSDV2Pair)
+			) {
+				uint256 txFee = amount.div(100).mul(_fee);
+				amount = amount.sub(txFee);
+				_balances[from] = _balances[from].sub(txFee, "Token: Transfer amount exceeds balance");
+				_balances[address(this)] = _balances[address(this)].add(txFee);
+				emit Transfer(from, address(this), txFee);
+			}
+		}
+		_balances[from] = _balances[from].sub(amount, "Token: Transfer amount exceeds balance");
+		_balances[to] = _balances[to].add(amount);
+		emit Transfer(from, to, amount);
+	}
+
+	function setAffiliateContract(address _adoAffiliates) external onlyOwner {
+		affiliatesContract = AdoAffiliates(_adoAffiliates);
+		_affiliateContractSet = true;
+		_isExcludedFromFee[_adoAffiliates] = true;
+	}
+
+	function setLPManeger(address _lpManager) external onlyOwner {
+		require(!_lpManagerSet, "Token: LP Maneger is already set");
+		require(address(pancakeSwapV2Router) != address(0), "Token: PancakeSwapV2 Router is not set");
+		require(address(pancakeSwapWETHV2Pair) != address(0), "Token: PancakeSwapV2 WETH Pair is not set");
+		require(address(pancakeSwapBUSDV2Pair) != address(0), "Token: PancakeSwapV2 BUSD Pair is not set");
+		lpManager = LPManager(payable(_lpManager));
+		_lpManagerSet = true;
+		_isExcludedFromFee[_lpManager] = true;
+	}
+
+	function setBUSDContract(address _busd) external onlyOwner {
+		require(!_busdContractSet, "Token: BUSD Token is already set");
+		busdContract = IBEP20(_busd);
+		_busdContractSet = true;
+	}
+
+	function createPancakeSwapPairs(address PancakeSwapRouter) external onlyOwner {
+		require(_affiliateContractSet, "Token: Affiliate Contract is not set");
+		require(_busdContractSet, "Token: BUSD Token Contract is not set");
+		pancakeSwapV2Router = IPancakeSwapV2Router02(PancakeSwapRouter);
+		pancakeSwapWETHV2Pair = IPancakeSwapV2Pair(IPancakeSwapV2Factory(pancakeSwapV2Router
+			.factory())
+			.createPair(address(this), pancakeSwapV2Router.WETH()));
+		mainLPToken = pancakeSwapV2Router.WETH();
+		pancakeSwapBUSDV2Pair = IPancakeSwapV2Pair(IPancakeSwapV2Factory(pancakeSwapV2Router
+			.factory())
+			.createPair(address(this), address(busdContract)));
+	}
+
+	function enableSwap() external onlyDeployer returns (bool) {
+		require(!swapEnabled, "Token: PublicSwap is already enabeled");
+		require(address(pancakeSwapV2Router) != address(0), "Token: PancakeSwapV2 Router is not set");
+		swapEnabled = true;
+		return swapEnabled;
+	}
+
+	function swapETHForExactTokens(uint256 amountOut, address referrer) external payable returns (uint256) {
+		address[] memory path = new address[](2);
+		path[1] = address(this);
+		if (mainLPToken == pancakeSwapV2Router.WETH()) {
+			path[0] = pancakeSwapV2Router.WETH();
+			pancakeSwapV2Router.swapETHForExactTokens{value: msg.value}(
+				amountOut,
+				path,
+				_msgSender(),
+				block.timestamp
+			);
+			uint256 ethBack = address(this).balance
+				.sub(_buyBackBalance);
+			(bool refund, ) = _msgSender().call{value: ethBack, gas: 3000}("");
+			require(refund, "Token: Refund Failed");
+		} else {
+			uint256 initialBUSDBalance = busdContract.balanceOf(address(this));
+			path[0] = address(busdContract);
+			uint256 busdAmount = swapETHforBUSD(msg.value, address(this));
+			busdContract.approve(address(pancakeSwapV2Router), busdAmount);
+			pancakeSwapV2Router.swapTokensForExactTokens(
+				amountOut,
+				busdAmount,
+				path,
+				_msgSender(),
+				block.timestamp
+			);
+			uint256 busdBack = busdContract.balanceOf(address(this))
+				.sub(initialBUSDBalance);
+			swapBUSDforETH(busdBack, _msgSender());
+		}
+		uint256 txFee = amountOut.div(100).mul(_fee);
+		uint256 amount = amountOut.sub(txFee);
+		if (referrer != address(0) && referrer != _msgSender() && _fee > 0) {
+			affiliatesContract.payCommission(referrer, amount, _feeDivider);
+		}
+		return amount;
+	}
+
+	function swapBUSDForExactTokens(uint256 busdAmount, uint256 amountOut, address referrer) external returns (uint256) {
+		uint256 initialBUSDBalance = busdContract.balanceOf(address(this));
+		busdContract.transferFrom(_msgSender(), address(this), busdAmount);
+		address[] memory path = new address[](2);
+		path[1] = address(this);
+		if (mainLPToken == pancakeSwapV2Router.WETH()) {
+			uint256 eth = swapBUSDforETH(busdAmount, address(this));
+			path[0] = pancakeSwapV2Router.WETH();
+			pancakeSwapV2Router.swapETHForExactTokens{value: eth}(
+				amountOut,
+				path,
+				_msgSender(),
+				block.timestamp
+			);
+			uint256 ethBack = address(this).balance
+				.sub(_buyBackBalance);
+			swapETHforBUSD(ethBack, _msgSender());
+		} else {
+			path[0] = address(busdContract);
+			busdContract.approve(address(pancakeSwapV2Router), busdAmount);
+			pancakeSwapV2Router.swapTokensForExactTokens(
+				amountOut,
+				busdAmount,
+				path,
+				_msgSender(),
+				block.timestamp
+			);
+			uint256 busdBack = busdContract.balanceOf(address(this))
+				.sub(initialBUSDBalance);
+			busdContract.transfer(_msgSender(), busdBack);
+		}
+		uint256 txFee = amountOut.div(100).mul(_fee);
+		uint256 amount = amountOut.sub(txFee);
+		if (referrer != address(0) && referrer != _msgSender() && _fee > 0) {
+			affiliatesContract.payCommission(referrer, amount, _feeDivider);
+		}
+		return amount;
+	}
+
+	function swapExactETHForTokens(uint256 amountOutMin, address referrer) external payable returns (uint256) {
+		uint256 initialTokenBalance = _balances[_msgSender()];
+		if (mainLPToken == pancakeSwapV2Router.WETH()) {
+			swapETHForTokens(_msgSender(), amountOutMin, msg.value);
+		} else {
+			uint256 busdAmount = swapETHforBUSD(msg.value, address(this));
+			address[] memory path = new address[](2);
+			path[0] = address(busdContract);
+			path[1] = address(this);
+			busdContract.approve(address(pancakeSwapV2Router), busdAmount);
+			pancakeSwapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+				busdAmount,
+				amountOutMin,
+				path,
+				_msgSender(),
+				block.timestamp
+			);
+		}
+		uint256 amount = _balances[_msgSender()].sub(initialTokenBalance);
+		if (referrer != address(0) && referrer != _msgSender() && _fee > 0) {
+			affiliatesContract.payCommission(referrer, amount, _feeDivider);
+		}
+		return amount;
+	}
+
+	function swapExactBUSDForTokens(uint256 busdAmount, uint256 amountOutMin, address referrer) external returns (uint256) {
+		busdContract.transferFrom(_msgSender(), address(this), busdAmount);
+		uint256 initialTokenBalance = _balances[_msgSender()];
+		if (mainLPToken == pancakeSwapV2Router.WETH()) {
+			uint256 eth = swapBUSDforETH(busdAmount, address(this));
+			swapETHForTokens(_msgSender(), amountOutMin, eth);
+		} else {
+			address[] memory path = new address[](2);
+			path[0] = address(busdContract);
+			path[1] = address(this);
+			busdContract.approve(address(pancakeSwapV2Router), busdAmount);
+			pancakeSwapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+				busdAmount,
+				amountOutMin,
+				path,
+				_msgSender(),
+				block.timestamp
+			);
+		}
+		uint256 amount = _balances[_msgSender()].sub(initialTokenBalance);
+		if (referrer != address(0) && referrer != _msgSender() && _fee > 0) {
+			affiliatesContract.payCommission(referrer, amount, _feeDivider);
+		}
+		return amount;
+	}
+
+	function switchPool(uint bp) external onlyDeployer returns (address) {
+		require(bp <= 5 , "Token: Burn to high");
+		_swapping = true;
+		(address lptoken, bool updateBB) = lpManager.switchPool(bp);
+		_swapping = false;
+		mainLPToken = lptoken;
+		if (updateBB) {
+			_buyBackBalance = address(this).balance;
+		}
+		emit MainLPSwitch(mainLPToken);
+		return lptoken;
+	}
+
+	function addToBuyBack() external payable returns (uint256) {
+		require(msg.value > 0, "Token: Transfer amount must be greater than zero");
+		_buyBackBalance = _buyBackBalance.add(msg.value);
+		emit BuyBackUpdate(_msgSender(), msg.value, 0);
+		return _buyBackBalance;
+	}
+
+	function swapBuyBack2BNB() external onlyDeployer returns (uint256) {
+		uint256 busd = busdContract.balanceOf(address(this));
+		require(busd > 0, "Token: Insufficient funds.");
+		uint256 eth = swapBUSDforETH(busdContract.balanceOf(address(this)), address(this));
+		emit BuyBackUpdate(pancakeSwapV2Router.WETH(), eth, busd);
+		_buyBackBalance = _buyBackBalance.add(eth);
+		return eth;
+	}
+
+	function swapBuyBack2BUSD() external onlyDeployer returns (uint256) {
+		require(_buyBackBalance > 0, "Token: Insufficient funds.");
+		uint256 busd = swapETHforBUSD(_buyBackBalance, address(this));
+		emit BuyBackUpdate(address(busdContract), _buyBackBalance, busd);
+		_buyBackBalance = 0;
+		return busd;
+	}
+}
+
+// File: interfaces/IPancakeSwapV2Router02.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+import "./IPancakeSwapV2Router01.sol";
+interface IPancakeSwapV2Router02 is IPancakeSwapV2Router01 {
+	function removeLiquidityETHSupportingFeeOnTransferTokens(address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external returns (uint amountETH);
+	function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s) external returns (uint amountETH);
+	function swapExactTokensForTokensSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external;
+	function swapExactETHForTokensSupportingFeeOnTransferTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable;
+	function swapExactTokensForETHSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external;
+}
+
+// File: interfaces/IPancakeSwapV2Factory.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+interface IPancakeSwapV2Factory {
+	function feeTo() external view returns (address);
+	function feeToSetter() external view returns (address);
+	function getPair(address tokenA, address tokenB) external view returns (address pair);
+	function allPairs(uint) external view returns (address pair);
+	function allPairsLength() external view returns (uint);
+	function createPair(address tokenA, address tokenB) external returns (address pair);
+	function setFeeTo(address) external;
+	function setFeeToSetter(address) external;
+	event PairCreated(address indexed token0, address indexed token1, address pair, uint);
+}
+
+// File: interfaces/IPancakeSwapV2Pair.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+interface IPancakeSwapV2Pair {
+	function name() external pure returns (string memory);
+	function symbol() external pure returns (string memory);
+	function decimals() external pure returns (uint8);
+	function totalSupply() external view returns (uint);
+	function balanceOf(address owner) external view returns (uint);
+	function allowance(address owner, address spender) external view returns (uint);
+	function approve(address spender, uint value) external returns (bool);
+	function transfer(address to, uint value) external returns (bool);
+	function transferFrom(address from, address to, uint value) external returns (bool);
+	function DOMAIN_SEPARATOR() external view returns (bytes32);
+	function PERMIT_TYPEHASH() external pure returns (bytes32);
+	function nonces(address owner) external view returns (uint);
+	function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+	function MINIMUM_LIQUIDITY() external pure returns (uint);
+	function factory() external view returns (address);
+	function token0() external view returns (address);
+	function token1() external view returns (address);
+	function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+	function price0CumulativeLast() external view returns (uint);
+	function price1CumulativeLast() external view returns (uint);
+	function kLast() external view returns (uint);
+	function mint(address to) external returns (uint liquidity);
+	function burn(address to) external returns (uint amount0, uint amount1);
+	function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+	function skim(address to) external;
+	function sync() external;
+	function initialize(address, address) external;
+	event Approval(address indexed owner, address indexed spender, uint value);
+	event Transfer(address indexed from, address indexed to, uint value);
+	event Mint(address indexed sender, uint amount0, uint amount1);
+	event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+	event Swap(address indexed sender, uint amount0In, uint amount1In, uint amount0Out, uint amount1Out, address indexed to);
+	event Sync(uint112 reserve0, uint112 reserve1);
+}
+
+// File: interfaces/IBEP20.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+interface IBEP20 {
+	function totalSupply() external view returns (uint256);
+	function decimals() external view returns (uint8);
+	function symbol() external view returns (string memory);
+	function name() external view returns (string memory);
+	function getOwner() external view returns (address);
+	function balanceOf(address account) external view returns (uint256);
+	function transfer(address recipient, uint256 amount) external returns (bool);
+	function allowance(address _owner, address spender) external view returns (uint256);
+	function approve(address spender, uint256 amount) external returns (bool);
+	function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+	event Transfer(address indexed from, address indexed to, uint256 value);
+	event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+// File: abstracts/Ownable.sol
+// SPDX-License-Identifier: MIT License
+pragma solidity 0.8.19;
+
+import "./Context.sol";
+
+abstract contract Ownable is Context {
+	address private _owner;
+	event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+	/**
+	 * @dev Initializes the contract setting the deployer as the initial owner.
+	 */
+	constructor () {
+		address msgSender = _msgSender();
+		_owner = msgSender;
+		emit OwnershipTransferred(address(0), msgSender);
+	}
+
+	/**
+	 * @dev Returns the address of the current owner.
+	 */
+	function owner() public view returns (address) {
+		return _owner;
+	}
+
+	/**
+	 * @dev Throws if called by any account other than the owner.
+	 */
+	modifier onlyOwner() {
+		require(_owner == _msgSender(), "Ownable: caller is not the owner");
+		_;
+	}
+
+	/**
+	 * @dev Leaves the contract without owner. It will not be possible to call
+	 * `onlyOwner` functions anymore. Can only be called by the current owner.
+	 *
+	 * NOTE: Renouncing ownership will leave the contract without an owner,
+	 * thereby removing any functionality that is only available to the owner.
+	 */
+	function renounceOwnership() public virtual onlyOwner {
+		emit OwnershipTransferred(_owner, address(0));
+		_owner = address(0);
+	}
+
+	/**
+	 * @dev Transfers ownership of the contract to a new account (`newOwner`).
+	 * Can only be called by the current owner.
+	 */
+	function transferOwnership(address newOwner) public virtual onlyOwner {
+		require(newOwner != address(0), "Ownable: new owner is the zero address");
+		emit OwnershipTransferred(_owner, newOwner);
+		_owner = newOwner;
+	}
+}
+
+// File: LPManager.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+import "./abstracts/Context.sol";
+import "./libraries/SafeMath.sol";
+import "./AdoToken.sol";
+import "./interfaces/IBEP20.sol";
+import "./interfaces/IPancakeSwapV2Pair.sol";
+import "./interfaces/IPancakeSwapV2Router02.sol";
+
+contract LPManager is Context {
+	using SafeMath for uint256;
+
+	address private _owner;
+	uint private _lockedUntil;
+	address private constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+	AdoToken public tokenContract;
+	address public mainLPToken;
+	IBEP20 public busdContract;
+	IPancakeSwapV2Router02 public pancakeSwapV2Router;
+	IPancakeSwapV2Pair public pancakeSwapWETHV2Pair;
+	IPancakeSwapV2Pair public pancakeSwapBUSDV2Pair;
+
+	event LPLocked(uint indexed newDate);
+
+	modifier onlyOwner() {
+		require(_owner == _msgSender(), "LPManager: caller is not the owner");
+		_;
+	}
+
+	modifier onlyTokenContract() {
+		require(
+			_msgSender() == address(tokenContract),
+			"LPManager: Only the token contract can call this function"
+		);
+		_;
+	}
+
+	constructor(AdoToken _tokenContract) {
+		_owner = _msgSender();
+		tokenContract = _tokenContract;
+		_lockedUntil = block.timestamp;
+	}
+
+	receive() external payable {}
+
+	function owner() external view returns (address) {
+		return _owner;
+	}
+
+	function lpWBNB() external view returns (uint256) {
+		return pancakeSwapWETHV2Pair.balanceOf(address(this));
+	}
+
+	function lpBUSD() external view returns (uint256) {
+		return pancakeSwapBUSDV2Pair.balanceOf(address(this));
+	}
+
+	function totalWBNBLPs() external view returns (uint256) {
+		return pancakeSwapWETHV2Pair.totalSupply();
+	}
+
+	function totalBUSDLPs() external view returns (uint256) {
+		return pancakeSwapBUSDV2Pair.totalSupply();
+	}
+
+	function lockedUntil() external view returns (uint) {
+		return _lockedUntil;
+	}
+
+	function updateTokenDetails() external onlyOwner {
+		require(address(tokenContract.pancakeSwapV2Router()) != address(0), "LPManager: PancakeSwapV2Router is invalid");
+		require(address(tokenContract.busdContract()) != address(0), "LPManager: BusdContract is invalid");
+		require(address(tokenContract.pancakeSwapWETHV2Pair()) != address(0), "LPManager: PancakeSwap WETHV2Pair: is invalid");
+		require(address(tokenContract.pancakeSwapBUSDV2Pair()) != address(0), "LPManager: PancakeSwap BUSDV2Pair is invalid");
+		pancakeSwapV2Router = tokenContract.pancakeSwapV2Router();
+		busdContract = tokenContract.busdContract();
+		pancakeSwapWETHV2Pair = tokenContract.pancakeSwapWETHV2Pair();
+		pancakeSwapBUSDV2Pair = tokenContract.pancakeSwapBUSDV2Pair();
+		mainLPToken = tokenContract.mainLPToken();
+	}
+
+	function checkAmountsOut() public view returns (bool, uint256, uint256) {
+		address[] memory path = new address[](3);
+		path[0] = address(tokenContract);
+		path[1] = mainLPToken;
+		path[2] = mainLPToken == pancakeSwapV2Router.WETH()
+			? address(busdContract)
+			: pancakeSwapV2Router.WETH();
+		uint256 mp = pancakeSwapV2Router.getAmountsOut(10**18, path)[1];
+		path[1] = path[2];
+		path[2] = mainLPToken;
+		uint256 sp = pancakeSwapV2Router.getAmountsOut(10**18, path)[2];
+		uint256 op = mp.div(100);
+		uint256 tp = op.mul(3);
+		if (sp >= mp) {
+			return (false, mp.sub(tp), mp.sub(op));
+		} else {
+			uint256 pd = mp.sub(sp);
+			return (pd > op && pd < tp, mp.sub(tp), mp.sub(op));
+		}
+	}
+
+	function switchPool(uint256 bp) external onlyTokenContract returns (address, bool) {
+		require(pancakeSwapWETHV2Pair.balanceOf(address(this)) > 0, "LPManager: ADO WETH LPs Balance is 0");
+		require(pancakeSwapBUSDV2Pair.balanceOf(address(this)) > 0, "LPManager: ADO BUSD LPs Balance is 0");
+		(bool canBeSwitched,,) = checkAmountsOut();
+		require(canBeSwitched == true, "LPManager: The parity between the liquidity pools is invalid");
+		bool updateBB = false;
+		if (mainLPToken == pancakeSwapV2Router.WETH()) {
+			uint256 liquidity = pancakeSwapWETHV2Pair.balanceOf(address(this)).div(100).mul(99);
+			pancakeSwapWETHV2Pair.approve(address(pancakeSwapV2Router), liquidity);
+			uint256 amountETH = pancakeSwapV2Router.removeLiquidityETHSupportingFeeOnTransferTokens(
+				address(tokenContract),
+				liquidity,
+				0,
+				0,
+				address(this),
+				block.timestamp
+			);
+			uint256 amountADO = tokenContract.balanceOf(address(this));
+			if (bp > 0) {
+				uint256 burn = amountADO.div(100).mul(bp);
+				tokenContract.transfer(BURN_ADDRESS, burn);
+				amountADO = amountADO.sub(burn);
+			}
+			address[] memory path = new address[](2);
+			path[0] = pancakeSwapV2Router.WETH();
+			path[1] = address(busdContract);
+			pancakeSwapV2Router.swapExactETHForTokensSupportingFeeOnTransferTokens{value: amountETH}(
+				0,
+				path,
+				address(this),
+				block.timestamp
+			);
+			uint256 amountBUSD = busdContract.balanceOf(address(this));
+			busdContract.approve(address(pancakeSwapV2Router), amountBUSD);
+			tokenContract.approve(address(pancakeSwapV2Router), amountADO);
+			pancakeSwapV2Router.addLiquidity(
+				address(tokenContract),
+				address(busdContract),
+				amountADO,
+				amountBUSD,
+				amountADO,
+				0,
+				address(this),
+				block.timestamp
+			);
+			amountBUSD = busdContract.balanceOf(address(this));
+			if (amountBUSD > 0) {
+				busdContract.transfer(address(tokenContract), amountBUSD);
+			}
+			mainLPToken = address(busdContract);
+		} else {
+			uint256 liquidity = pancakeSwapBUSDV2Pair.balanceOf(address(this)).div(100).mul(99);
+			pancakeSwapBUSDV2Pair.approve(address(pancakeSwapV2Router), liquidity);
+			(uint256 amountADO, uint256 amountBUSD) = pancakeSwapV2Router.removeLiquidity(
+				address(tokenContract),
+				address(busdContract),
+				liquidity,
+				0,
+				0,
+				address(this),
+				block.timestamp
+			);
+			if (bp > 0) {
+				uint256 burn = amountADO.div(100).mul(bp);
+				tokenContract.transfer(BURN_ADDRESS, burn);
+				amountADO = amountADO.sub(burn);
+			}
+			address[] memory path = new address[](2);
+			path[0] = address(busdContract);
+			path[1] = pancakeSwapV2Router.WETH();
+			busdContract.approve(address(pancakeSwapV2Router), amountBUSD);
+			pancakeSwapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+				amountBUSD,
+				0,
+				path,
+				address(this),
+				block.timestamp
+			);
+			uint256 ethBalance = address(this).balance;
+			tokenContract.approve(address(pancakeSwapV2Router), amountADO);
+			pancakeSwapV2Router.addLiquidityETH{value: ethBalance}(
+				address(tokenContract),
+				amountADO,
+				amountADO,
+				0,
+				address(this),
+				block.timestamp
+			);
+			ethBalance = address(this).balance;
+			if (ethBalance > 0) {
+				(updateBB,) = payable(address(tokenContract)).call{value: ethBalance, gas: 3000}("");
+			}
+			mainLPToken = pancakeSwapV2Router.WETH();
+		}
+		return (mainLPToken, updateBB);
+	}
+
+	function extendLockedLPs(uint _days) external onlyOwner returns (bool) {
+		uint timeunit = 1 days;
+		if (_lockedUntil < block.timestamp) {
+			_lockedUntil = block.timestamp + (_days * timeunit);
+		} else {
+			_lockedUntil = _lockedUntil + (_days * timeunit);
+		}
+		emit LPLocked(_lockedUntil);
+		return true;
+	}
+
+	function withdrawalLPs() external onlyOwner returns (bool) {
+		require(block.timestamp > _lockedUntil, "LPManager: LP tokens cannot be withdrawn");
+		bool success = true;
+		uint256 wethl = pancakeSwapWETHV2Pair.balanceOf(address(this));
+		if (wethl > 0) {
+			pancakeSwapWETHV2Pair.transfer(_owner, wethl);
+		}
+		uint256 busdl = pancakeSwapBUSDV2Pair.balanceOf(address(this));
+		if (busdl > 0) {
+			pancakeSwapBUSDV2Pair.transfer(_owner, busdl);
+		}
+		uint256 busd = busdContract.balanceOf(address(this));
+		if (busd > 0) {
+			busdContract.transfer(_owner, busd);
+		}
+		uint256 token = tokenContract.balanceOf(address(this));
+		if (token > 0) {
+			tokenContract.transfer(_owner, token);
+		}
+		uint256 eth = address(this).balance;
+		if (eth > 0) {
+			(success,) = payable(_owner).call{value: eth, gas: 3000}("");
+		}
+		return success;
+	}
+}
+
+// File: libraries/SafeMath.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+/**
+ * @dev Wrappers over Solidity's arithmetic operations.
+ *
+ * CAUTION
+ * This version of SafeMath should only be used with Solidity 0.8 or later,
+ * because it relies on the compiler's built in overflow checks.
+ *
+ * NOTE: `SafeMath` is no longer needed starting with Solidity 0.8. The compiler
+ * now has built in overflow checking.
+ */
+library SafeMath {
+	/**
+	 * @dev Returns the addition of two unsigned integers, with an overflow flag.
+	 *
+	 * _Available since v3.4._
+	 */
+	function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+		unchecked {
+			uint256 c = a + b;
+			if (c < a) return (false, 0);
+			return (true, c);
+		}
+	}
+	/**
+	 * @dev Returns the substraction of two unsigned integers, with an overflow flag.
+	 *
+	 * _Available since v3.4._
+	 */
+	function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+		unchecked {
+			if (b > a) return (false, 0);
+			return (true, a - b);
+		}
+	}
+	/**
+	 * @dev Returns the multiplication of two unsigned integers, with an overflow flag.
+	 *
+	 * _Available since v3.4._
+	 */
+	function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+		unchecked {
+			// Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+			// benefit is lost if 'b' is also tested.
+			// See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+			if (a == 0) return (true, 0);
+			uint256 c = a * b;
+			if (c / a != b) return (false, 0);
+			return (true, c);
+		}
+	}
+	/**
+	 * @dev Returns the division of two unsigned integers, with a division by zero flag.
+	 *
+	 * _Available since v3.4._
+	 */
+	function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+		unchecked {
+			if (b == 0) return (false, 0);
+			return (true, a / b);
+		}
+	}
+	/**
+	 * @dev Returns the remainder of dividing two unsigned integers, with a division by zero flag.
+	 *
+	 * _Available since v3.4._
+	 */
+	function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+		unchecked {
+			if (b == 0) return (false, 0);
+			return (true, a % b);
+		}
+	}
+	/**
+	 * @dev Returns the addition of two unsigned integers, reverting on
+	 * overflow.
+	 *
+	 * Counterpart to Solidity's `+` operator.
+	 *
+	 * Requirements:
+	 *
+	 * - Addition cannot overflow.
+	 */
+	function add(uint256 a, uint256 b) internal pure returns (uint256) {
+		return a + b;
+	}
+	/**
+	 * @dev Returns the subtraction of two unsigned integers, reverting on
+	 * overflow (when the result is negative).
+	 *
+	 * Counterpart to Solidity's `-` operator.
+	 *
+	 * Requirements:
+	 *
+	 * - Subtraction cannot overflow.
+	 */
+	function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+		return a - b;
+	}
+	/**
+	 * @dev Returns the multiplication of two unsigned integers, reverting on
+	 * overflow.
+	 *
+	 * Counterpart to Solidity's `*` operator.
+	 *
+	 * Requirements:
+	 *
+	 * - Multiplication cannot overflow.
+	 */
+	function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+		return a * b;
+	}
+	/**
+	 * @dev Returns the integer division of two unsigned integers, reverting on
+	 * division by zero. The result is rounded towards zero.
+	 *
+	 * Counterpart to Solidity's `/` operator.
+	 *
+	 * Requirements:
+	 *
+	 * - The divisor cannot be zero.
+	 */
+	function div(uint256 a, uint256 b) internal pure returns (uint256) {
+		return a / b;
+	}
+	/**
+	 * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+	 * reverting when dividing by zero.
+	 *
+	 * Counterpart to Solidity's `%` operator. This function uses a `revert`
+	 * opcode (which leaves remaining gas untouched) while Solidity uses an
+	 * invalid opcode to revert (consuming all remaining gas).
+	 *
+	 * Requirements:
+	 *
+	 * - The divisor cannot be zero.
+	 */
+	function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+		return a % b;
+	}
+	/**
+	 * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+	 * overflow (when the result is negative).
+	 *
+	 * CAUTION: This function is deprecated because it requires allocating memory for the error
+	 * message unnecessarily. For custom revert reasons use {trySub}.
+	 *
+	 * Counterpart to Solidity's `-` operator.
+	 *
+	 * Requirements:
+	 *
+	 * - Subtraction cannot overflow.
+	 */
+	function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+		unchecked {
+			require(b <= a, errorMessage);
+			return a - b;
+		}
+	}
+	/**
+	 * @dev Returns the integer division of two unsigned integers, reverting with custom message on
+	 * division by zero. The result is rounded towards zero.
+	 *
+	 * Counterpart to Solidity's `%` operator. This function uses a `revert`
+	 * opcode (which leaves remaining gas untouched) while Solidity uses an
+	 * invalid opcode to revert (consuming all remaining gas).
+	 *
+	 * Counterpart to Solidity's `/` operator. Note: this function uses a
+	 * `revert` opcode (which leaves remaining gas untouched) while Solidity
+	 * uses an invalid opcode to revert (consuming all remaining gas).
+	 *
+	 * Requirements:
+	 *
+	 * - The divisor cannot be zero.
+	 */
+	function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+		unchecked {
+			require(b > 0, errorMessage);
+			return a / b;
+		}
+	}
+	/**
+	 * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+	 * reverting with custom message when dividing by zero.
+	 *
+	 * CAUTION: This function is deprecated because it requires allocating memory for the error
+	 * message unnecessarily. For custom revert reasons use {tryMod}.
+	 *
+	 * Counterpart to Solidity's `%` operator. This function uses a `revert`
+	 * opcode (which leaves remaining gas untouched) while Solidity uses an
+	 * invalid opcode to revert (consuming all remaining gas).
+	 *
+	 * Requirements:
+	 *
+	 * - The divisor cannot be zero.
+	 */
+	function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+		unchecked {
+			require(b > 0, errorMessage);
+			return a % b;
+		}
+	}
+}
+
+// File: AdoAffiliates.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+import "./abstracts/Context.sol";
+import "./libraries/SafeMath.sol";
+import "./AdoToken.sol";
+import "./interfaces/IBEP20.sol";
+
+contract AdoAffiliates is Context {
+	using SafeMath for uint256;
+
+	address private _owner;
+	struct ReferrerDetails { uint256 transactions; uint256 bonus; uint256 totalValue; uint256 commissions; }
+	mapping(address => ReferrerDetails) private _referrers;
+	uint256 private _minTxValue;
+	uint256 private _referredSwaps;
+	mapping(uint256 => uint256) private _bonusStructure;
+	AdoToken public tokenContract;
+
+	modifier onlyTokenContract() {
+		require(_msgSender() == address(tokenContract), "AdoAffiliates: Only the token contract can call this function");
+		_;
+	}
+
+	modifier onlyOwner() {
+		require(_owner == _msgSender(), "AdoAffiliates: caller is not the owner");
+		_;
+	}
+
+	constructor(AdoToken _tokenContract) {
+		_owner = _msgSender();
+		tokenContract = _tokenContract;
+		_minTxValue = tokenContract.totalSupply().div(100000);
+		_bonusStructure[5] = 1;
+		_bonusStructure[20] = 2;
+		_bonusStructure[50] = 4;
+		_bonusStructure[100] = 6;
+		_bonusStructure[250] = 9;
+	}
+
+	function owner() external view returns (address) {
+		return _owner;
+	}
+
+	function referredSwaps() external view returns(uint256) {
+		return _referredSwaps;
+	}
+
+	function minTxValue() external view returns(uint256) {
+		return _minTxValue;
+	}
+
+	function referrerStats(address account) external view returns (uint256 transactions, uint256 bonus, uint256 totalValue, uint256 commissions) {
+		transactions = _referrers[account].transactions;
+		bonus = _referrers[account].bonus;
+		totalValue = _referrers[account].totalValue;
+		commissions = _referrers[account].commissions;
+	}
+
+	function payCommission(address referrer, uint256 amount, uint256 divider) external onlyTokenContract {
+		if (amount >= _minTxValue) {
+			_referrers[referrer].transactions++;
+			uint256 commission = 1;
+			if (_bonusStructure[_referrers[referrer].transactions] > _referrers[referrer].bonus) {
+				_referrers[referrer].bonus = _bonusStructure[_referrers[referrer].transactions];
+			}
+			_referrers[referrer].totalValue = _referrers[referrer].totalValue.add(amount);
+			commission = commission.add(_referrers[referrer].bonus);
+			uint256 commissionValue = amount.div(100)
+				.mul(commission)
+				.div(divider);
+			_referrers[referrer].commissions = _referrers[referrer].commissions.add(commissionValue);
+			tokenContract.transfer(referrer, commissionValue);
+			_referredSwaps++;
+		}
+	}
+
+	function updateMinTxValue(uint256 newValue) external onlyTokenContract {
+		_minTxValue = newValue;
+	}
+
+	function burnTheHouseDown() external onlyTokenContract returns (uint256) {
+		uint256 balance = tokenContract.balanceOf(address(this));
+		tokenContract.transfer(0x000000000000000000000000000000000000dEaD, balance);
+		return balance;
+	}
+
+	function addV2Comissions(address referrer, uint256 transactions, uint256 totalValue, uint256 commissions) external onlyOwner {
+		require(!tokenContract.swapEnabled(), "AdoAffiliates: V3 is public");
+		_referrers[referrer].transactions = transactions;
+		_referrers[referrer].totalValue = totalValue;
+		_referrers[referrer].commissions = commissions;
+		if (transactions >= 250) _referrers[referrer].bonus = _bonusStructure[250];
+		if (_referrers[referrer].bonus == 0 && transactions >= 100) _referrers[referrer].bonus = _bonusStructure[100];
+		if (_referrers[referrer].bonus == 0 && transactions >= 50) _referrers[referrer].bonus = _bonusStructure[50];
+		if (_referrers[referrer].bonus == 0 && transactions >= 20) _referrers[referrer].bonus = _bonusStructure[20];
+		if (_referrers[referrer].bonus == 0 && transactions >= 5) _referrers[referrer].bonus = _bonusStructure[5];
+		_referredSwaps = _referredSwaps.add(transactions);
+	}
+}
+
+// File: interfaces/IPancakeSwapV2Router01.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+interface IPancakeSwapV2Router01 {
+	function factory() external view returns (address);
+	function WETH() external view returns (address);
+	function addLiquidity(address tokenA, address tokenB, uint amountADesired, uint amountBDesired, uint amountAMin, uint amountBMin, address to, uint deadline) external returns (uint amountA, uint amountB, uint liquidity);
+	function addLiquidityETH(address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+	function removeLiquidity(address tokenA, address tokenB, uint liquidity, uint amountAMin, uint amountBMin, address to, uint deadline) external returns (uint amountA, uint amountB);
+	function removeLiquidityETH(address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external returns (uint amountToken, uint amountETH);
+	function removeLiquidityWithPermit(address tokenA, address tokenB, uint liquidity, uint amountAMin, uint amountBMin, address to, uint deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s) external returns (uint amountA, uint amountB);
+	function removeLiquidityETHWithPermit(address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s) external returns (uint amountToken, uint amountETH);
+	function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+	function swapTokensForExactTokens(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+	function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts);
+	function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+	function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+	function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts);
+	function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+	function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+	function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+	function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+	function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+// File: abstracts/Context.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+/*
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+	function _msgSender() internal view virtual returns (address) {
+		return msg.sender;
+	}
+
+	function _msgData() internal view virtual returns (bytes calldata) {
+		this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+		return msg.data;
+	}
+}
