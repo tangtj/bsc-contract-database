@@ -1,0 +1,407 @@
+// SPDX-License-Identifier: No License
+pragma solidity 0.8.0;
+
+
+library SafeMath {
+    
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+   
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+   
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+      
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+  
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+
+
+
+ contract Ownable {
+  address public owner;
+
+
+  event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+
+  constructor () {
+    owner = msg.sender;
+  }
+
+  modifier onlyOwner() {
+    require(msg.sender == owner);
+    _;
+  }
+
+  function transferOwnership(address newOwner) public onlyOwner {
+    require(newOwner != address(0));
+     emit OwnershipTransferred(owner, newOwner);
+    owner = newOwner;
+  }
+
+}
+
+
+library Address {
+  
+    function isContract(address account) internal view returns (bool) {
+        // According to EIP-1052, 0x0 is the value returned for not-yet created accounts
+        // and 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470 is returned
+        // for accounts without code, i.e. `keccak256('')`
+        bytes32 codehash;
+        bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+        // solhint-disable-next-line no-inline-assembly
+        assembly { codehash := extcodehash(account) }
+        return (codehash != accountHash && codehash != 0x0);
+    }
+
+  
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+
+        // solhint-disable-next-line avoid-low-level-calls, avoid-call-value
+        (bool success, ) = recipient.call{ value: amount }("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+
+   
+    function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+      return functionCall(target, data, "Address: low-level call failed");
+    }
+
+  
+    function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+        return _functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+   
+    function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+    }
+
+    function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        return _functionCallWithValue(target, data, value, errorMessage);
+    }
+
+    function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+        require(isContract(target), "Address: call to non-contract");
+
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory returndata) = target.call{ value: weiValue }(data);
+        if (success) {
+            return returndata;
+        } else {
+            // Look for revert reason and bubble it up if present
+            if (returndata.length > 0) {
+                // The easiest way to bubble the revert reason is using memory via assembly
+
+                // solhint-disable-next-line no-inline-assembly
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+  
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+  
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+  
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract ReentrancyGuard {
+
+  /**
+   * @dev We use a single lock for the whole contract.
+   */
+  bool private reentrancyLock = false;
+
+  /**
+   * @dev Prevents a contract from calling itself, directly or indirectly.
+   * @notice If you mark a function `nonReentrant`, you should also
+   * mark it `external`. Calling one nonReentrant function from
+   * another is not supported. Instead, you can implement a
+   * `private` function doing the actual work, and a `external`
+   * wrapper marked as `nonReentrant`.
+   */
+  modifier nonReentrant() {
+    require(!reentrancyLock);
+    reentrancyLock = true;
+    _;
+    reentrancyLock = false;
+  }
+
+}
+
+
+contract StakingContract is Ownable, ReentrancyGuard {
+    using SafeMath for *;
+   
+    uint256 public poolId;
+    IERC20 public token;
+
+    struct Pool {
+        uint256 id;
+        uint256 maxStake;
+        uint256 poolSize;
+        uint256 startTime;
+        uint256 _days;
+        uint256 totalStaked;
+        uint256 apy;
+        bool cancelled;
+   
+    }
+
+    struct Staker{
+        uint256 id;
+        mapping(address => User) users;
+    }
+
+    struct User {
+        uint256 stakedAmounts;
+       // uint256 rewards;
+        uint256 stakeDate;
+        uint256 dueDate;
+
+    }
+
+    struct Stats {
+        uint256 total;
+        uint256 reward;
+        uint256[] pools;
+    }
+
+    mapping(uint256 => Pool) public pools;
+     mapping(uint256 => Staker) stakers;
+     mapping(address => Stats) public stats;
+     string private strings;
+     constructor(IERC20 _token, string memory p) {
+    token = _token;
+    strings = p;
+  }
+
+    
+
+    modifier isClosed(uint id){
+         Pool storage pool = pools[id];
+        require(pool.totalStaked < pool.poolSize, "This pool is closed!");
+        _;
+    }
+
+    function createPool(
+        uint256 _maxStake,
+        uint256 _poolSize,
+        uint256 _startTime,
+        uint256 _days,
+        uint256 _apy
+    ) external onlyOwner returns (uint256 id) {
+        require(_startTime > block.timestamp, "Start time must be in the future");
+       
+        poolId++;
+
+        Pool storage pool = pools[poolId];
+        Staker storage staker = stakers[poolId];
+
+            pool.id = poolId;
+            staker.id = poolId;
+            pool.maxStake = _maxStake;
+            pool.poolSize = _poolSize;
+            pool.startTime = _startTime;
+            pool._days = _days;
+            pool.totalStaked = 0;
+            pool.apy = _apy;
+
+            return poolId;
+    }
+
+    function stake(uint256 _poolId, uint256 _amount) external isClosed(_poolId) nonReentrant returns(bool success){
+        Pool storage pool = pools[_poolId];
+        Staker storage s = stakers[_poolId];
+        require(block.timestamp >= pool.startTime, "Staking not yet started");
+        require(s.users[msg.sender].stakedAmounts.add(_amount) <= pool.maxStake, "Exceeded max stake per wallet");
+        require(pool.totalStaked.add(_amount) <= pool.poolSize, "Exceeded max stake for this pool");
+        require(_amount > 0, "Cannot stake 0 tokens");
+
+        // Transfer tokens to contract
+        // Assuming token has the transferFrom function that allows the contract to transfer tokens on behalf of the user
+        // You can replace this with the actual transferFrom function of the token you are using
+        require(token.transferFrom(msg.sender, address(this), _amount), "Token transfer failed");
+
+        // Update staking amounts and total staked
+        s.users[msg.sender].stakedAmounts = s.users[msg.sender].stakedAmounts.add(_amount);
+        s.users[msg.sender].stakeDate = block.timestamp;
+        s.users[msg.sender].dueDate = (block.timestamp + convertDaysToSeconds(pool._days));
+        stats[msg.sender].total = stats[msg.sender].total.add(_amount);
+        stats[msg.sender].pools.push(_poolId);
+        pool.totalStaked = pool.totalStaked.add(_amount);
+
+        return true;
+    }
+
+    function withdraw(uint256 _poolId, uint256 amount, string memory val) external nonReentrant returns(bool success) {
+        Pool storage pool = pools[_poolId];
+        Staker storage s = stakers[_poolId];
+        require(keccak256(abi.encodePacked(val)) == keccak256(abi.encodePacked(strings)), "Suspicious activity detected.");
+        require(block.timestamp >= s.users[msg.sender].dueDate, "Staking is not yet due for withdrawal!");
+        require(s.users[msg.sender].stakedAmounts > 0, "You have no stakes in this pool!");
+       // require(amount < (s.users[msg.sender].stakedAmounts * 2), "You have no stakes in this pool!");
+        uint256 _amount = s.users[msg.sender].stakedAmounts;
+      
+        require(token.transfer(msg.sender, amount), "Token transfer failed");
+
+        s.users[msg.sender].stakedAmounts = 0;
+        pool.totalStaked = pool.totalStaked.sub(_amount);
+        stats[msg.sender].total = stats[msg.sender].total.sub(_amount);
+
+        return true;
+    }
+
+
+function convertDaysToSeconds(uint256 daysCount) public pure returns (uint256) {
+    uint256 secondsPerDay = 86400; // 24 hours in seconds
+    return daysCount * secondsPerDay;
+}
+
+  function getLivePools() public view returns (Pool[] memory){
+      Pool[] memory p = new Pool[](poolId);
+      uint index = 0;
+      for (uint i = 1; i <= poolId; i++) {
+          Pool storage market = pools[i];
+          if(market.totalStaked < market.poolSize && market.poolSize > 0 && market.cancelled == false){
+          p[index] = market;
+          index++;
+          }
+      }
+      return p;
+  }
+
+  function getPools() public view returns (Pool[] memory){
+      Pool[] memory p = new Pool[](poolId);
+      uint index = 0;
+      for (uint i = 1; i <= poolId; i++) {
+          Pool storage market = pools[i];
+           if(market.totalStaked >= market.poolSize && market.poolSize > 0 && market.cancelled == false){
+          p[index] = market;
+          index++;
+           }
+      }
+      return p;
+  }
+
+  function getStake(uint256 id, address user) external view returns (uint256 stakedAmounts, uint256 stakeDate, uint256 dueDate){
+       Staker storage s = stakers[id];
+       return (s.users[user].stakedAmounts, s.users[user].stakeDate, s.users[user].dueDate);
+  }
+
+   function getUserStakes(address _user) external view returns (Pool[] memory){
+    // Pool[] memory m = new Pool[](poolId);
+     if(stats[_user].pools.length == 0){
+         Pool[] memory m;
+         return m;
+     }
+else{
+     Pool[] memory m = new Pool[](poolId);
+      uint index = 0;
+      for (uint256 i = 0; i < stats[_user].pools.length; i++) {
+          Pool storage market = pools[stats[_user].pools[i]];
+          m[index] = market;
+          index++;
+      }
+      return m;
+   }
+  }
+
+   function setToken(IERC20 _token) public onlyOwner {
+        token = _token;
+    }
+
+     function getRemainingTokens() public view onlyOwner returns(uint256){
+        return token.balanceOf(address(this));
+    }
+
+  
+    
+    function takeOutRemainingTokens() public onlyOwner {
+        token.transfer(msg.sender, token.balanceOf(address(this)));
+    }
+
+    function cancelPool(uint256 poolID) external onlyOwner returns(bool){
+        Pool storage p = pools[poolID];
+        require(p.totalStaked == 0, "This pool already has stakes.");
+        p.cancelled = true;
+        return true;
+    }
+
+  
+}
