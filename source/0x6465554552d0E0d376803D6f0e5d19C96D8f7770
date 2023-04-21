@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: UNLICENSED
+
+pragma solidity ^0.8.0;
+
+// Dividend distributor contract
+contract DividendDistributor {
+    address public contractAddress;
+    address public owner;
+    uint256 public balance;
+    
+    event DividendDistributed(uint256 amount);
+    event DistributedTo(address indexed to, uint256 amount);
+    event Withdrawn(address indexed to, uint256 amount);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    
+    modifier onlyOwner {
+        require(msg.sender == owner, "Only the owner can call this function");
+        _;
+    }
+    
+    constructor() {
+        owner = msg.sender;
+    }
+    
+    function setContractAddress(address _contractAddress) external onlyOwner {
+        contractAddress = _contractAddress;
+    }
+    
+    function distributeDividends(uint256 criteria) external payable onlyOwner {
+        // Get the total balance of the contract
+        balance = address(this).balance;
+        
+        // Get the total supply of tokens
+        uint256 totalSupply = CustomInterface(contractAddress).gettotalSupply();
+        
+        // Distribute dividends to token holders
+        uint256 j = 0;
+        for (uint256 i = 0; i < totalSupply; i++) {
+            address tokenHolder = CustomInterface(contractAddress).getTokenHolderAt(i);
+            uint256 tokenBalance = CustomInterface(contractAddress).getbalanceof(tokenHolder);
+            if (criteria == 0 || (j % criteria == 0 && tokenBalance > 0)) {
+                uint256 dividendAmount = balance / (totalSupply / criteria);
+                payable(tokenHolder).transfer(dividendAmount);
+                emit DistributedTo(tokenHolder, dividendAmount);
+            }
+            j++;
+        }
+        
+        // Emit the event
+        emit DividendDistributed(balance);
+    }
+    
+    function distributeTo(uint256 startIndex, uint256 endIndex, uint256 criteria) external onlyOwner {
+        // Distribute the entire balance of the contract to holders within the specified range and criteria
+        require(startIndex <= endIndex, "Invalid range");
+        require(endIndex < CustomInterface(contractAddress).gettotalSupply(), "End index out of range");
+        balance = address(this).balance;
+        uint256 totalSupply = endIndex - startIndex + 1;
+        uint256 numHolders = totalSupply / criteria;
+        uint256 j = 0;
+        for (uint256 i = startIndex; i <= endIndex; i++) {
+            address recipient = CustomInterface(contractAddress).getTokenHolderAt(i);
+            require(CustomInterface(contractAddress).getbalanceof(recipient) > 0, "Recipient has no balance");
+            if (criteria == 0 || j % criteria == 0) {
+                uint256 dividendAmount = balance / numHolders;
+                payable(recipient).transfer(dividendAmount);
+                emit DistributedTo(recipient, dividendAmount);
+            }
+            j++;
+        }
+    }
+    
+    function withdraw(uint256 amount) external onlyOwner {
+        require(amount <= address(this).balance, "Insufficient balance");
+        payable(owner).transfer(amount);
+        emit Withdrawn(owner, amount);
+    }
+    
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "New owner cannot be zero address");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+    
+    function getHoldersIndexes() external view returns (uint256[] memory) {
+        // Get the total supply of tokens
+        uint256 totalSupply = CustomInterface(contractAddress).gettotalSupply();
+    
+        // Create an array to store the indexes
+        uint256[] memory indexes = new uint256[](totalSupply);
+    
+        // Fill the array with the indexes
+        for (uint256 i = 0; i < totalSupply; i++) {
+            indexes[i] = i;
+        }
+    
+        return indexes;
+    }
+}
+// Interface for the deployed contract
+interface CustomInterface {
+    function gettotalSupply() external view returns (uint256);
+    function getTokenHolderAt(uint256 index) external view returns (address);
+    function getbalanceof(address account) external view returns (uint256);
+    function getAllTokenHolderIndexes() external view returns (uint256[] memory);
+}
