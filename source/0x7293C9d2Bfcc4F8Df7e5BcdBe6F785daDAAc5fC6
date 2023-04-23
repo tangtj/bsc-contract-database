@@ -1,0 +1,152 @@
+//SPDX-License-Identifier: MIT
+pragma solidity 0.8.0;
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b != 0);
+        return a % b;
+    }
+}
+
+
+pragma solidity ^0.8.0;
+
+contract MexaiROI {
+    address private owner;
+    IERC20 private busd; // The BEP20 token instance
+    mapping(address => uint256) private balances;
+    mapping(address => uint256) private lockTimestamps; // Lock timestamps for withdrawal
+
+    uint256 private constant ROI_PERCENTAGE_3DAYS = 110;
+    uint256 private constant ROI_PERCENTAGE_7DAYS = 125;
+    uint256 private constant DEPOSIT_FEE_PERCENTAGE = 3;
+    uint256 private constant WITHDRAWAL_FEE_PERCENTAGE = 3;
+    uint256 private constant MINIMUM_INVESTMENT = 100000000000;
+    uint256 private constant MAXIMUM_INVESTMENT = 2500000000000;
+
+    event Deposit(address indexed account, uint256 amount);
+    event Withdrawal(address indexed account, uint256 amount);
+
+    constructor(address _busdAddress) {
+        owner = msg.sender;
+        busd = IERC20(_busdAddress); // Initialize the BEP20 token instance
+    }
+
+    function deposit(uint256 amount, uint256 lockDuration) external {
+        require(amount >= MINIMUM_INVESTMENT, "Deposit amount is below minimum investment limit");
+        require(amount <= MAXIMUM_INVESTMENT, "Deposit amount exceeds maximum investment limit");
+        require(lockDuration == 3 || lockDuration == 7, "Invalid lock duration");
+
+        uint256 depositFee = (amount * DEPOSIT_FEE_PERCENTAGE) / 100;
+        uint256 depositAmount = amount - depositFee;
+
+        require(busd.transferFrom(msg.sender, address(this), amount), "Failed to transfer BUSD");
+
+        balances[msg.sender] += depositAmount;
+        lockTimestamps[msg.sender] = block.timestamp + (lockDuration * 1 days); // Set withdrawal lock timestamp
+
+        emit Deposit(msg.sender, depositAmount);
+    }
+
+    function withdraw() external {
+        require(balances[msg.sender] > 0, "No balance available for withdrawal");
+        require(block.timestamp >= lockTimestamps[msg.sender], "Withdrawal is locked");
+
+        uint256 withdrawalAmount = balances[msg.sender];
+        uint256 withdrawalFee = (withdrawalAmount * WITHDRAWAL_FEE_PERCENTAGE) / 100;
+        uint256 netWithdrawal = withdrawalAmount - withdrawalFee;
+
+        balances[msg.sender] = 0;
+        lockTimestamps[msg.sender] = 0; // Reset withdrawal lock timestamp
+
+        require(busd.transfer(msg.sender, netWithdrawal), "Failed to transfer BUSD");
+
+        emit Withdrawal(msg.sender, netWithdrawal);
+    }
+
+    function getBalance(address account) external view returns (uint256) {
+        return balances[account];
+    }
+
+    function getContractBalance() external view returns (uint256) {
+        return busd.balanceOf(address(this));
+    }
+
+    function getInvestment(address account) external view returns (uint256) {
+        return balances[account];
+    }
+
+    function getCurrentPlan(address account) external view returns (uint256, uint256) {
+        require(balances[account] > 0, "No investment found for the account");
+
+        uint256 currentPlan;
+        uint256 currentROI;
+        uint256 withdrawalLockTime = lockTimestamps[account];
+
+        if (block.timestamp >= withdrawalLockTime + (3 * 1 days)) {
+            currentPlan = 3;
+            currentROI = ROI_PERCENTAGE_3DAYS;
+        } else if (block.timestamp >= withdrawalLockTime + (7 * 1 days)) {
+            currentPlan = 7;
+            currentROI = ROI_PERCENTAGE_7DAYS;
+        }
+
+        return (currentPlan, currentROI);
+    }    
+
+    function calculateROI(address account) external view returns (uint256) {
+        uint256 balance = balances[account];
+        uint256 roi = 0;
+
+        if (balance > 0) {
+            if (block.timestamp >= lockTimestamps[msg.sender] + 3 days) {
+                roi = (balance * ROI_PERCENTAGE_3DAYS) / 100;
+            } else if (block.timestamp >= lockTimestamps[msg.sender] + 7 days) {
+                roi = (balance * ROI_PERCENTAGE_7DAYS) / 100;
+            }
+        }
+
+        return roi;
+    }
+}

@@ -1,0 +1,464 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.19;
+
+interface IERC20 {
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface ISwapRouter {
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+abstract contract Ownable {
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "!o");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "n0");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+interface IInvitorInfo {
+    function _invitor(address account) external view returns (address invitor);
+
+    function bindInvitor(address account, address invitor) external;
+}
+
+interface INFT {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256 balance);
+
+    function mint(address to, uint256 num) external;
+}
+
+abstract contract AbsPreSale is Ownable {
+    struct UserInfo {
+        uint256 buyAmount;
+        uint256 buyNum;
+        uint256 buyIndex;
+        uint256 inviteBuyNum;
+        uint256 inviteBuyIndex;
+        uint256 rewardNum;
+    }
+
+    struct NFTRecord {
+        address buyer;
+        uint256 time;
+        uint256 status;
+    }
+
+    uint256 public _initPrice;
+    uint256 private _qty = 30000;
+    uint256 private _totalSaleNum;
+
+    INFT public _nft;
+    INFT public _studioNFT;
+    address private _usdtAddress;
+    address public _buybackToken;
+
+    uint256 public _buybackRate = 5000;
+    uint256 public _lpRate = 3000;
+    uint256 public _marketRate = 2000;
+    address public _buybackRateReceiver;
+    address public _lpRateReceiver;
+    address public _marketRateReceiver;
+
+    uint256 public _priceDailyUpAmount;
+    uint256 public _priceDailyDuration = 1 days;
+    uint256 public _startTime;
+    bool private _pauseBuy = true;
+    uint256 private _totalAmount;
+
+    mapping(address => UserInfo) private _userInfo;
+
+    ISwapRouter public _swapRouter;
+    IInvitorInfo public _invitorInfo;
+    uint256 public _rewardBuyLen = 5;
+    uint256 public _rewardInviteLen = 5;
+    uint256 public _rewardStudioInviteLen = 30;
+    uint256 private _totalRewardNum;
+
+    mapping(address => NFTRecord[]) private _nftRecord;
+    mapping(address => uint256) public _inviteRewardStudioBuyIndex;
+
+    constructor(
+        address RouteAddress, address USDTAddress, address BuybackToken,
+        address BuybackRateReceiver, address LPRateReceiver, address MarketRateReceiver,
+        address NFTAddress, address StudioNFTAddress, address InvitorInfo
+    ){
+        _swapRouter = ISwapRouter(RouteAddress);
+        _usdtAddress = USDTAddress;
+        _buybackToken = BuybackToken;
+        IERC20(USDTAddress).approve(RouteAddress, ~uint256(0));
+
+        _buybackRateReceiver = BuybackRateReceiver;
+        _lpRateReceiver = LPRateReceiver;
+        _marketRateReceiver = MarketRateReceiver;
+
+        _nft = INFT(NFTAddress);
+        _studioNFT = INFT(StudioNFTAddress);
+        _invitorInfo = IInvitorInfo(InvitorInfo);
+
+        uint256 usdtUnit = 10 ** IERC20(USDTAddress).decimals();
+        _initPrice = 100 * usdtUnit;
+        _priceDailyUpAmount = 5 * usdtUnit / 10;
+    }
+
+    function buy(address invitor) external {
+        require(!_pauseBuy, "pauseBuy");
+        address account = msg.sender;
+        require(tx.origin == account, "origin");
+
+        require(_qty > _totalSaleNum + _totalRewardNum, "!qty");
+        _totalSaleNum += 1;
+
+        UserInfo storage userInfo = _userInfo[account];
+        if (userInfo.buyNum == 0) {
+            _invitorInfo.bindInvitor(account, invitor);
+        }
+        invitor = _invitorInfo._invitor(account);
+
+        uint256 usdtAmount = getCurrentPrice();
+        userInfo.buyAmount += usdtAmount;
+        _totalAmount += usdtAmount;
+
+        address usdtAddress = _usdtAddress;
+        _takeToken(usdtAddress, account, address(this), usdtAmount);
+
+        uint256 buybackAmount = usdtAmount * _buybackRate / 10000;
+        if (buybackAmount > 0) {
+            address[] memory path = new address[](2);
+            path[0] = usdtAddress;
+            path[1] = _buybackToken;
+            _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                buybackAmount, 0, path, _buybackRateReceiver, block.timestamp
+            );
+        }
+
+        _giveToken(usdtAddress, _lpRateReceiver, usdtAmount * _lpRate / 10000);
+        _giveToken(usdtAddress, _marketRateReceiver, usdtAmount * _marketRate / 10000);
+
+        INFT nft = _nft;
+        nft.mint(account, 1);
+        userInfo.buyNum++;
+        userInfo.buyIndex++;
+        uint256 blockTime = block.timestamp;
+        _nftRecord[account].push(NFTRecord(account, blockTime, 0));
+
+        if (userInfo.buyIndex >= _rewardBuyLen && _qty > _totalSaleNum + _totalRewardNum) {
+            userInfo.buyIndex = 0;
+            _totalRewardNum++;
+            userInfo.rewardNum++;
+            nft.mint(account, 1);
+            _nftRecord[account].push(NFTRecord(account, blockTime, 1));
+        }
+
+        if (address(0) != invitor) {
+            UserInfo  storage invitorInfo = _userInfo[invitor];
+            invitorInfo.inviteBuyIndex++;
+            invitorInfo.inviteBuyNum++;
+            if (invitorInfo.inviteBuyIndex >= _rewardInviteLen && _qty > _totalSaleNum + _totalRewardNum) {
+                invitorInfo.inviteBuyIndex = 0;
+                _totalRewardNum++;
+                invitorInfo.rewardNum++;
+                nft.mint(invitor, 1);
+                _nftRecord[invitor].push(NFTRecord(account, blockTime, 2));
+            }
+
+            _inviteRewardStudioBuyIndex[invitor]++;
+            if (_inviteRewardStudioBuyIndex[invitor] >= _rewardStudioInviteLen) {
+                _inviteRewardStudioBuyIndex[invitor] = 0;
+                _studioNFT.mint(invitor, 1);
+            }
+        }
+    }
+
+    function getCurrentPrice() public view returns (uint256 price){
+        price = _initPrice;
+        uint256 startTime = _startTime;
+        uint256 blockTime = block.timestamp;
+        if (blockTime > startTime && startTime > 0) {
+            uint256 times = (blockTime - startTime) / _priceDailyDuration;
+            price += _priceDailyUpAmount * times;
+        }
+    }
+
+    function _giveToken(address tokenAddress, address account, uint256 tokenNum) private {
+        if (tokenNum > 0) {
+            IERC20 token = IERC20(tokenAddress);
+            token.transfer(account, tokenNum);
+        }
+    }
+
+    function _takeToken(address tokenAddress, address sender, address receiver, uint256 tokenNum) private {
+        if (tokenNum > 0) {
+            IERC20 token = IERC20(tokenAddress);
+            require(token.balanceOf(address(sender)) >= tokenNum, "token n enough");
+            token.transferFrom(sender, receiver, tokenNum);
+        }
+    }
+
+    function BaseInfo() external view returns (
+        address usdtAddress, uint256 usdtDecimals, string memory usdtSymbol,
+        bool pauseBuy, uint256 price, uint256 totalAmount,
+        uint256 qty, uint256 totalSaleNum, uint256 totalRewardNum
+    ){
+        usdtAddress = _usdtAddress;
+        usdtDecimals = IERC20(usdtAddress).decimals();
+        usdtSymbol = IERC20(usdtAddress).symbol();
+        pauseBuy = _pauseBuy;
+        price = getCurrentPrice();
+        totalAmount = _totalAmount;
+        qty = _qty;
+        totalSaleNum = _totalSaleNum;
+        totalRewardNum = _totalRewardNum;
+    }
+
+    function getUserInfo(address account) external view returns (
+        uint256 buyAmount,
+        uint256 buyNum,
+        uint256 buyIndex,
+        uint256 inviteBuyNum,
+        uint256 inviteBuyIndex,
+        uint256 rewardNum,
+        uint256 usdtBalance,
+        uint256 usdtAllowance
+    ){
+        UserInfo storage userInfo = _userInfo[account];
+        buyAmount = userInfo.buyAmount;
+        buyNum = userInfo.buyNum;
+        buyIndex = userInfo.buyIndex;
+        inviteBuyNum = userInfo.inviteBuyNum;
+        inviteBuyIndex = userInfo.inviteBuyIndex;
+        rewardNum = userInfo.rewardNum;
+        usdtBalance = IERC20(_usdtAddress).balanceOf(account);
+        usdtAllowance = IERC20(_usdtAddress).allowance(account, address(this));
+    }
+
+    function getUserNFTInfo(address account) external view returns (
+        uint256 nftNum,
+        uint256 inviteBuyNum
+    ){
+        nftNum = _nft.balanceOf(account);
+        inviteBuyNum = _userInfo[account].inviteBuyNum;
+    }
+
+    function getRecords(
+        address account,
+        uint256 start,
+        uint256 length
+    ) external view returns (
+        uint256 returnCount,
+        address[] memory buyer,
+        uint256[] memory time,
+        uint256[] memory status
+    ){
+        uint256 recordLen = _nftRecord[account].length;
+        if (0 == length) {
+            length = recordLen;
+        }
+        returnCount = length;
+
+        buyer = new address[](length);
+        time = new uint256[](length);
+        status = new uint256[](length);
+        uint256 index = 0;
+        for (uint256 i = start; i < start + length; ++i) {
+            if (i >= recordLen) {
+                return (index, buyer, time, status);
+            }
+            (buyer[index], time[index], status[index]) = getRecord(account, i);
+            index++;
+        }
+    }
+
+    function getRecord(address account, uint256 i) public view returns (
+        address buyer,
+        uint256 time,
+        uint256 status
+    ){
+        NFTRecord storage record = _nftRecord[account][i];
+        buyer = record.buyer;
+        time = record.time;
+        status = record.status;
+    }
+
+    receive() external payable {}
+
+    function setBuybackToken(address adr) external onlyOwner {
+        _buybackToken = adr;
+    }
+
+    function setUsdtAddress(address adr) external onlyOwner {
+        _usdtAddress = adr;
+        IERC20(_usdtAddress).approve(address(_swapRouter), ~uint256(0));
+    }
+
+    function setInvitorInfo(address adr) external onlyOwner {
+        _invitorInfo = IInvitorInfo(adr);
+    }
+
+    function setPauseBuy(bool pause) external onlyOwner {
+        _pauseBuy = pause;
+        if (!pause) {
+            if (0 == _startTime) {
+                _startTime = block.timestamp;
+            }
+        }
+    }
+
+    function setStartTime(uint256 t) external onlyOwner {
+        require(t > 0, "t>0");
+        _startTime = t;
+    }
+
+    function setQty(uint256 q) external onlyOwner {
+        _qty = q;
+    }
+
+    function setInitPrice(uint256 p) external onlyOwner {
+        _initPrice = p;
+    }
+
+    function setNFT(address nft) external onlyOwner {
+        _nft = INFT(nft);
+    }
+
+    function setStudioNFT(address nft) external onlyOwner {
+        _studioNFT = INFT(nft);
+    }
+
+    function setBuybackRate(uint256 r) external onlyOwner {
+        _buybackRate = r;
+    }
+
+    function setLPRate(uint256 r) external onlyOwner {
+        _lpRate = r;
+    }
+
+    function setMarketRate(uint256 r) external onlyOwner {
+        _marketRate = r;
+    }
+
+    function setPriceDailyDuration(uint256 d) external onlyOwner {
+        _priceDailyDuration = d;
+    }
+
+    function setPriceDailyUpAmount(uint256 a) external onlyOwner {
+        _priceDailyUpAmount = a;
+    }
+
+    function setRewardBuyLen(uint256 l) external onlyOwner {
+        _rewardBuyLen = l;
+    }
+
+    function setRewardInviteLen(uint256 l) external onlyOwner {
+        _rewardInviteLen = l;
+    }
+
+    function setRewardStudioInviteLen(uint256 l) external onlyOwner {
+        _rewardStudioInviteLen = l;
+    }
+
+    function setBuybackRateReceiver(address r) external onlyOwner {
+        _buybackRateReceiver = r;
+    }
+
+    function setLPRateReceiver(address r) external onlyOwner {
+        _lpRateReceiver = r;
+    }
+
+    function setMarketRateReceiver(address r) external onlyOwner {
+        _marketRateReceiver = r;
+    }
+
+    function setSwapRouter(address s) external onlyOwner {
+        _swapRouter = ISwapRouter(s);
+        IERC20(_usdtAddress).approve(address(_swapRouter), ~uint256(0));
+    }
+
+    function claimBalance(address to, uint256 amount) external onlyOwner {
+        address payable addr = payable(to);
+        addr.transfer(amount);
+    }
+
+    function claimToken(address erc20Address, address to, uint256 amount) external onlyOwner {
+        IERC20 erc20 = IERC20(erc20Address);
+        erc20.transfer(to, amount);
+    }
+}
+
+contract NFTSale is AbsPreSale {
+    constructor() AbsPreSale(
+    //SwapRouter
+        address(0x10ED43C718714eb63d5aA57B78B54704E256024E),
+    //USDT
+        address(0x55d398326f99059fF775485246999027B3197955),
+    //BuyBackToken(LMO)
+        address(0x7B44355556e73A40Ea11D4310d15D54d7651476b),
+    //BuyBackReceiver
+        address(0x252113727b0c8E676C439344914f8C7399ed2738),
+    //LPReceiver
+        address(0x19B2A899Cb5A246A6B2a82136199f74B101b0E27),
+    //MarketReceiver
+        address(0x14267A4Fbe3E36c69040Df37AfDA0830a9586bFa),
+    //EcologyNFT
+        address(0xDc8dC594Af90E4063ea826A5427981A0A64d013e),
+    //StudioNFT
+        address(0x17a0396dF3A2b7a8882D8AF477a5E80b7f4d92Fe),
+    //InvitorInfo(LPDividendPool)
+        address(0x45035b2fBdBeD0916eE45603654081686C2D3202)
+    ){
+
+    }
+}

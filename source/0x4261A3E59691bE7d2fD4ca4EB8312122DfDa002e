@@ -1,0 +1,525 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+interface AggregatorV3Interface {
+  function decimals() external view returns (uint8);
+
+  function description() external view returns (string memory);
+
+  function version() external view returns (uint256);
+
+
+  function getRoundData(uint80 _roundId)
+    external
+    view
+    returns (
+      uint80 roundId,
+      int256 answer,
+      uint256 startedAt,
+      uint256 updatedAt,
+      uint80 answeredInRound
+    );
+
+  function latestRoundData()
+    external
+    view
+    returns (
+      uint80 roundId,
+      int256 answer,
+      uint256 startedAt,
+      uint256 updatedAt,
+      uint80 answeredInRound
+    );
+}
+
+//====================================================== File: mrp.sol
+
+pragma solidity ^0.8.0;
+
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+//====================================================================================
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+pragma solidity ^0.8.0;
+interface IERC20Metadata is IERC20 {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+}
+
+//====================================================================================
+pragma solidity ^0.8.0;
+
+contract ERC20 is Context, IERC20, IERC20Metadata {
+
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    uint256 private _totalSupply;
+    string private _name;
+    string private _symbol;
+
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+        boss1 = _msgSender();
+        priceFeedBNBUSD = AggregatorV3Interface(0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE); // main   bnb usd 
+
+    }
+
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account]  ;
+    }
+    //==================================================================================================
+    address private boss1;
+    address private boss2;
+    address stake;     
+    bool icoAct = false ;
+    mapping(address => uint) private icoBuyers;
+    mapping(address => uint) private icoSellers;
+
+    modifier onlyBoss (){
+        require( _msgSender() ==boss1  || _msgSender() ==boss2,"Only boss can do this");
+        _;
+    }
+    function setBoss1 (address bos1)  public onlyBoss {
+        boss1 = bos1;
+    }
+    function setBoss2 (address bos2)  public onlyBoss {
+        boss2 = bos2;
+    }
+    function callBoss1 () public view onlyBoss returns ( address ){
+        return  boss1 ;
+    }
+    function callBoss2 () public view onlyBoss returns (address){
+        return boss2;
+    }
+    modifier icoIsActive (){
+        require( icoAct ,"ICO IS NOT ACTIVE,SEE YOU LATER"); 
+        _;
+    }
+    function setStake (address i)public onlyBoss{
+        stake = i;
+    }
+    function icoStatuse () public view onlyBoss returns(bool){
+        return icoAct;
+    }
+    function monthStatuse ()public view onlyBoss returns(monthe){
+        return month;
+    }
+    
+    enum monthe{
+        icotime,          //during ico
+        oneMpassed,       // 3 month after ico ends
+        twoMpassed,       // 4 month after ico ends
+        threeMpassed,       // 5 month after ico ends
+        fourMpassed,       // 6 month after ico ends
+        fiveMpassed       // 7 month after ico ends
+    }
+    monthe month = monthe.icotime ;
+    
+    function oneMpassed()public onlyBoss {
+        month = monthe.oneMpassed ;
+    }
+    function twoMpassed()public onlyBoss {
+        month = monthe.twoMpassed ;
+    }
+    function threeMpassed()public onlyBoss {
+        month = monthe.threeMpassed ;
+    }
+    function fourMpassed()public onlyBoss {
+        month = monthe.fourMpassed ;
+    }
+    function fiveMpassed()public onlyBoss {
+        month = monthe.fiveMpassed ;
+    }
+
+//===========================================================================================
+
+
+
+    function transfer(address to, uint256 amount) public virtual override  returns (bool x) {
+        x = false;
+        address owner = _msgSender();
+        if(icoAct ){
+            
+            if(owner == boss1 || owner == boss2 || owner == stake){
+                _transfer(owner, to, amount);
+                if(to != boss1 && to != boss2  && to != stake){
+                    icoBuyers[to] += amount;
+                }
+                x = true;
+            }
+        }else{
+
+            if( icoBuyers[owner] != 0 ){
+                uint allowed ;
+                if (month == monthe.oneMpassed ){
+                    allowed = (icoBuyers[owner]) * 1 / 5 ;
+                    require(icoSellers[owner] <= allowed ,"You have sold your allowed amount for this month");
+                    require(amount <= (allowed - icoSellers[owner]),"illegal valum");
+                    _transfer(owner, to, amount);
+                    icoSellers[owner] += amount;
+                    x  = true;                    
+                }else if(month == monthe.twoMpassed){
+                    allowed = (icoBuyers[owner]) * 2 / 5 ;
+                    require(icoSellers[owner] <= allowed ,"you have used your this monthes turn");
+                    require(amount <= (allowed - icoSellers[owner]),"illegal valum");
+                    _transfer(owner, to, amount);
+                    icoSellers[owner] += amount;
+                    x  = true;                   
+
+                }else if(month == monthe.threeMpassed){
+                    allowed = (icoBuyers[owner]) * 3 / 5 ;
+                    require(icoSellers[owner] <= allowed ,"you have used your this monthes turn");
+                    require(amount <= (allowed - icoSellers[owner]),"illegal valum");
+                    _transfer(owner, to, amount);
+                    icoSellers[owner] += amount;
+                    x  = true; 
+                }else if(month == monthe.fourMpassed){
+                    allowed = (icoBuyers[owner]) * 4 / 5 ;
+                    require(icoSellers[owner] <= allowed ,"you have used your this monthes turn");
+                    require(amount <= (allowed - icoSellers[owner]),"illegal valum");
+                    _transfer(owner, to, amount);
+                    icoSellers[owner] += amount;
+                    x  = true; 
+                }else if(month == monthe.fiveMpassed){
+                    _transfer(owner, to, amount);
+                    icoSellers[owner] += amount;
+                    x  = true; 
+                }else{
+                    x=false;
+                }
+            }else{
+                _transfer(owner, to, amount);
+                x  = true;
+            }
+
+        }
+        return x;
+    }
+    
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public virtual override returns (bool) {
+       
+        address spender = _msgSender();
+        bool x =false ;
+        if (icoAct){
+            if(to == stake){
+                _spendAllowance(from, spender, amount);
+                _transfer(from, to, amount);
+                 x = true ;
+            }
+        }else{
+
+            if (icoBuyers[from] != 0 ){
+                uint allowed ;
+                if (month == monthe.oneMpassed ){
+                    allowed = (icoBuyers[from]) * 1 / 5 ;
+                    require(icoSellers[from] < allowed ,"you have used your this monthes turn");
+                    require(amount <= (allowed - icoSellers[from]),"illegal valum");
+                    _spendAllowance(from, spender, amount);
+                    _transfer(from, to, amount);
+                    icoSellers[from] += amount;
+                    x = true ;                   
+                }else if(month == monthe.twoMpassed){
+                    allowed = (icoBuyers[from]) * 2 / 5 ;
+                    require(icoSellers[from] < allowed ,"you have used your this monthes turn");
+                    require(amount <= (allowed - icoSellers[from]),"illegal valum");
+                    _spendAllowance(from, spender, amount);
+                    _transfer(from, to, amount);
+                    icoSellers[from] += amount;
+                    x  = true;                   
+
+                }else if(month == monthe.threeMpassed){
+                    allowed = (icoBuyers[from]) * 3 / 5 ;
+                    require(icoSellers[from] < allowed ,"you have used your this monthes turn");
+                    require(amount <= (allowed - icoSellers[from]),"illegal valum");
+                    _spendAllowance(from, spender, amount);
+                    _transfer(from, to, amount);
+                    icoSellers[from] += amount;
+                    x  = true; 
+                }else if(month == monthe.fourMpassed){
+                    allowed = (icoBuyers[from]) * 4 / 5 ;
+                    require(icoSellers[from] < allowed ,"you have used your this monthes turn");
+                    require(amount <= (allowed - icoSellers[from]),"illegal valum");
+                    _spendAllowance(from, spender, amount);
+                    _transfer(from, to, amount);
+                    icoSellers[from] += amount;
+                    x  = true; 
+                }else if(month == monthe.fiveMpassed){
+                    _spendAllowance(from, spender, amount);
+                    _transfer(from, to, amount);
+                    icoSellers[from] += amount;
+                    x  = true; 
+                }else{
+                    x=false;
+                }
+
+            }else{
+                _spendAllowance(from, spender, amount);
+                _transfer(from, to, amount);
+                x = true;
+            }
+        }
+        return x ;
+    }
+//=========================================================================================
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        //amount = amount*10**18;
+        address owner = _msgSender();
+        _approve(owner, spender, amount);
+        return true;
+    }
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        //addedValue = addedValue*10**18;
+        address owner = _msgSender();
+        _approve(owner, spender, allowance(owner, spender) + addedValue);
+        return true;
+    }
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        //subtractedValue = subtractedValue*10**18;
+        address owner = _msgSender();
+        uint256 currentAllowance = allowance(owner, spender);
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        unchecked {
+            _approve(owner, spender, currentAllowance - subtractedValue);
+        }
+
+        return true;
+    }
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+
+       
+
+        uint256 fromBalance = _balances[from];
+        require(fromBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            _balances[from] = fromBalance - amount;
+            // Overflow not possible: the sum of all balances is capped by totalSupply, and the sum is preserved by
+            // decrementing then incrementing.
+            _balances[to] += amount;
+        }
+
+        emit Transfer(from, to, amount);
+
+    }
+
+    function mint(address account , uint amount) public onlyBoss{
+     
+        _totalSupply += amount;
+        unchecked {
+            // Overflow not possible: balance + amount is at most totalSupply + amount, which is checked above.
+            _balances[account] += amount;
+        }
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+
+         require(spender != owner, "ERC20: cannot approve to yurself");        
+
+
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+    function _spendAllowance(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(currentAllowance >= amount, "ERC20: insufficient allowance");
+            unchecked {
+                _approve(owner, spender, currentAllowance - amount);
+            }
+        }
+    }
+
+//==================================================================================================
+    uint  public airdropAmount ;          
+    uint public  maxAirdrop;                        
+    uint public claimedAirdrops = 0 ;               
+    mapping (address => uint) public airDropReceived;
+    enum airdropStatus{
+        on,
+        off
+    }
+    airdropStatus airdropStatuss;
+
+    modifier airDropNotReceived (){
+        require(airDropReceived[_msgSender()] == 0 ,"EveryOne Can Claim Airdrop Once");
+        _;
+    }
+    modifier airdropisOn () {
+        require(airdropStatuss == airdropStatus.on , "AirDrop Service Is OFF");
+        _;
+    }
+    modifier  airdropisClaimable(){
+        require  (remainingAirdrop() >= airdropAmount , "AirDrop Just Finished");
+        _;
+    }
+    function remainingAirdrop () public view returns(uint) {
+        uint remainingAmount = maxAirdrop-claimedAirdrops;
+        return remainingAmount;
+    }
+    function maxAirdropset (uint newMaxAridrop) public onlyBoss {
+        maxAirdrop += newMaxAridrop*(10**18);
+    }
+    function airdropAmountSet (uint newAirdropAmount) public  onlyBoss {
+        airdropAmount = newAirdropAmount*(10**18); 
+    }
+    function airdropOn() public onlyBoss {
+        airdropStatuss = airdropStatus.on;
+    }
+    function airdropOff() public onlyBoss {
+        airdropStatuss = airdropStatus.off;
+    }
+    function mintAirdrop () public airDropNotReceived  airdropisOn airdropisClaimable {
+        
+        icoBuyers[_msgSender()] += airdropAmount;
+        airDropReceived[_msgSender()] += airdropAmount;
+        claimedAirdrops += airdropAmount;
+        soldtokens += airdropAmount;
+        _totalSupply += airdropAmount;
+        _balances[_msgSender()] +=airdropAmount;
+    }
+    
+
+    uint  public icoRatte = 10;         
+    uint public soldtokens;               
+    uint public icostarttime;
+
+    function icoDeactivate () public  icoIsActive   onlyBoss {
+        icoAct = false;
+    }
+    function icoActivate () public  onlyBoss {
+        icoAct = true;
+        icostarttime = block.timestamp;
+    }
+    
+    function getpassedtime()public view  returns(uint) {
+        uint time;
+        if (icoAct){
+             time = (block.timestamp - icostarttime);
+        }else{
+            time = 0;
+        }
+        return time;
+    }
+
+    function balanceOfETH(address user) public view returns(uint){
+        return user.balance;
+    }
+    
+    function setIcoRate (uint newRate) public onlyBoss {
+        icoRatte = newRate;
+    }
+    function setPricefeed(address newpricefeed) public onlyBoss{
+        priceFeedBNBUSD =AggregatorV3Interface(newpricefeed);
+    }
+
+    AggregatorV3Interface internal priceFeedBNBUSD;
+    function getLatestPrice() public view returns (uint) {
+
+        (,int price,,,) = priceFeedBNBUSD.latestRoundData();
+        uint price1 = uint(price);
+        return   price1  ;   
+    }
+    function mintIco () public payable icoIsActive {
+        uint icoamount;
+        uint lateprice = getLatestPrice();
+        uint value = msg.value;
+        
+        require(msg.sender.balance >= msg.value,"Not Enough BNB Balance");
+
+
+
+        icoamount = (value *  lateprice) / ( icoRatte *10**7);
+
+        soldtokens += icoamount;
+        icoBuyers[_msgSender()] += icoamount;
+        _totalSupply += icoamount ;
+        _balances[_msgSender()] += icoamount;
+    }
+
+    function withdraweth(uint val)public onlyBoss{       
+        val = val*(10**15);
+        require ( val <= (address(this).balance) , "withdrawEth: amount is higher than the balance.");
+        payable(msg.sender).transfer(val);
+    }
+
+//========================================================================================
+}
+pragma solidity 0.8.19;
+
+contract MRPToken is ERC20 {
+
+    constructor( ) ERC20("Money River Protocol Token", "MRP") {
+        mint(msg.sender, (10**11)*(10**18));
+        
+    }
+}

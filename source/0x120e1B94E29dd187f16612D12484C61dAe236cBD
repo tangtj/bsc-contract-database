@@ -1,0 +1,339 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() private {
+        // On the first call to nonReentrant, _status will be _NOT_ENTERED
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+    }
+
+    function _nonReentrantAfter() private {
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Returns true if the reentrancy guard is currently set to "entered", which indicates there is a
+     * `nonReentrant` function in the call stack.
+     */
+    function _reentrancyGuardEntered() internal view returns (bool) {
+        return _status == _ENTERED;
+    }
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+
+        return c;
+    }
+}
+
+interface IERC20 {
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract StakingContract is ReentrancyGuard {
+	using SafeMath for uint256;
+
+    enum Status{
+        PENDING,
+        FINISHED
+    }
+    struct Plan {
+        uint256 duration;
+        uint256 dailyInterestRate;
+    }
+    struct StakeInfo {
+        uint256 amount;
+        uint256 planId;
+        uint256 lastClaimTimestamp;
+        uint256 endTime;
+        address tokenAddress;
+        Status status;
+    }
+
+    address public owner;
+    uint256 public REFERRAL_REWARD = 500; //5%
+    uint256 public WITHDRAW_COMMISSION = 500; //5%
+
+    mapping(uint256 => Plan) public plans;
+    mapping(address => StakeInfo[]) public stakes;
+    mapping(address => address) public referrers;
+    mapping(address => address[]) public referralsList;
+    mapping(address => uint256) public totalStakedAmount;
+    mapping(address => uint256) public totalReferralsAmount;
+    mapping(address => mapping(address => uint256)) public referralRewards;
+
+    event Staked(address indexed user, uint256 amount, uint256 planId, address referrer);
+    event Claimed(address indexed user, uint256 amount, uint256 stakeIndex);
+    event Withdrawn(address indexed user, uint256 amount, uint256 stakeIndex);
+    event Referral(address indexed user, address indexed referrer, uint256 amount);
+    event ReferralBonusClaimed(address indexed user,uint256 bonunAmount);
+
+    constructor(address _owner) {
+        plans[1] = Plan(30 days, 100);
+        plans[2] = Plan(60 days, 100);
+        plans[3] = Plan(90 days, 100);
+        plans[4] = Plan(120 days, 100);
+        owner = _owner;
+    }
+
+    modifier onlyOwner{
+        require(msg.sender == owner,"You are not the owner");
+        _;
+    }
+
+    function stake(uint256 planId, uint256 amount, address token, address referrer) external nonReentrant {
+        require(amount >= 20 ether, "Minimum stake amount is 20 tokens");
+        require(planId >= 1 && planId <= 4, "Invalid plan");
+        require(IERC20(token).balanceOf(msg.sender) >= amount, "Insufficient balance");
+        require(referrer == address(0) || stakes[referrer].length > 0, "Invalid referrer");
+
+        if (stakes[msg.sender].length == 0) {
+            uint256 ownerFee = 10 ether; // 10 tokens
+            require(amount >= ownerFee, "Insufficient amount to cover owner fee");
+            IERC20(token).transferFrom(msg.sender, owner, ownerFee);
+            amount -= ownerFee;
+        }
+
+        Plan memory plan = plans[planId];
+
+        uint256 expirationTime = block.timestamp +  plan.duration; 
+
+        IERC20(token).transferFrom(msg.sender, address(this), amount);
+        stakes[msg.sender].push(
+            StakeInfo(
+                amount, 
+                planId, 
+                block.timestamp, 
+                expirationTime, 
+                token, 
+                Status.PENDING
+            )
+        );
+        totalStakedAmount[token] += amount;
+
+        if (referrer != address(0)) {
+            address referrerLevel1 = referrers[msg.sender];
+            if (referrerLevel1 == address(0) && referrer != msg.sender) {
+                referrers[msg.sender] = referrer;
+                referralsList[referrer].push(msg.sender);
+            }
+            uint256 referrerReward = amount * REFERRAL_REWARD / 10000;
+            referralRewards[referrer][token] += referrerReward;
+            totalReferralsAmount[token] += referrerReward;
+            emit Referral(msg.sender, referrer, referrerReward);
+        }
+
+        emit Staked(msg.sender, amount, planId, referrer);
+    }
+
+    function claim(uint256 stakeIndex) external nonReentrant {
+        require(stakeIndex < stakes[msg.sender].length, "Invalid stake index");
+        StakeInfo storage info = stakes[msg.sender][stakeIndex];
+        require(info.status == Status.PENDING, "Already claimed");
+
+        uint256 reward = calculateEarnings(msg.sender,stakeIndex);
+
+        info.lastClaimTimestamp = block.timestamp;
+
+        IERC20(info.tokenAddress).transfer(msg.sender, reward);
+
+        emit Claimed(msg.sender, reward, stakeIndex);
+    }
+
+    function withdraw(uint256 stakeIndex) external nonReentrant {
+        require(stakeIndex < stakes[msg.sender].length, "Invalid stake index");
+        StakeInfo storage info = stakes[msg.sender][stakeIndex];
+        require(info.status == Status.PENDING, "Already withdrawn");
+
+        uint256 totalAmount = info.amount;
+        uint256 withdrawFee = totalAmount * WITHDRAW_COMMISSION / 10000;
+        uint256 reward = calculateEarnings(msg.sender,stakeIndex);
+        
+        info.lastClaimTimestamp = block.timestamp;
+        info.status = Status.FINISHED;
+        totalAmount += reward;
+
+        IERC20(info.tokenAddress).transfer(msg.sender, totalAmount.sub(withdrawFee));
+        IERC20(info.tokenAddress).transfer(owner, withdrawFee);
+
+        emit Withdrawn(msg.sender, totalAmount, stakeIndex);
+    }
+
+    function calculateEarnings(address user,uint256 stakeIndex) public view returns (uint256) {
+        StakeInfo memory info = stakes[user][stakeIndex];
+        Plan memory planInfo = plans[info.planId];
+
+        uint256 endTime = block.timestamp;
+
+        if(block.timestamp > info.endTime){
+            endTime = info.endTime;
+        }
+
+        uint256 duration = endTime - info.lastClaimTimestamp;
+        uint256 dailyRate = 50;
+        if (info.amount >= 100001 ether) {
+            dailyRate = 300;
+        } else if (info.amount >= 50001 ether) {
+            dailyRate = 200;
+        } else if (info.amount >= 10001 ether) {
+            dailyRate = 150;
+        } else if (info.amount >= 1001 ether) {
+            dailyRate = 100;
+        }
+
+        uint256 reward = (info.amount * dailyRate / 10000) * duration / planInfo.duration;
+
+        return reward;
+    }
+
+    function claimReferralBonus(address _token) public nonReentrant {
+        uint256 bonusAmount = referralRewards[msg.sender][_token];
+
+        require(bonusAmount > 0, "Referral bonus is not available");
+    
+        referralRewards[msg.sender][_token] = 0;
+        IERC20(_token).transfer(msg.sender, bonusAmount);
+        emit ReferralBonusClaimed(msg.sender, bonusAmount);
+    }   
+
+    function changeOwner(address _newOwner) public nonReentrant onlyOwner {
+        owner = _newOwner;
+    } 
+
+    function updateReferralReward(uint256 _newReferralReward) external nonReentrant onlyOwner {
+        REFERRAL_REWARD = _newReferralReward;
+    }  
+
+    function updateWithdrawCommission(uint256 _newWithdrawCommission) external nonReentrant onlyOwner {
+        WITHDRAW_COMMISSION = _newWithdrawCommission;
+    }  
+
+    function withdrawFunds(address _token,uint256 _amount) public nonReentrant onlyOwner {
+        require(IERC20(_token).balanceOf(address(this)) >= _amount, "Insufficient balance");
+        require(IERC20(_token).transfer(owner, _amount),"Token transfer failed");
+    }  
+
+    function updatePlan(uint256 planId, uint256 duration, uint256 dailyInterestRate) public nonReentrant onlyOwner {
+        Plan storage plan = plans[planId];
+        plan.duration = duration * 1 days;
+        plan.dailyInterestRate = dailyInterestRate;
+    } 
+
+    function getOwner() external view returns (address) {
+        return owner;
+    }
+
+    function getUserStakes(address user) external view returns (StakeInfo[] memory) {
+        return stakes[user];
+    }
+
+    function getReferrerAddress(address user) external view returns (address) {
+        return referrers[user];
+    }
+
+    function getUserReferralRewards(address user,address token) external view returns (uint256) {
+        return referralRewards[user][token];
+    }
+
+    function getUserReferralList(address user) external view returns (address[] memory) {
+        return referralsList[user];
+    }
+
+    function getPlans() external view returns (Plan[] memory) {
+        Plan[] memory plansData = new Plan[](4);
+        plansData[0] = plans[1];
+        plansData[1] = plans[2];
+        plansData[2] = plans[3];
+        plansData[3] = plans[4];
+        return plansData;
+    }
+
+    function getStatsOfToken(address _token) public view returns (uint256, uint256) {
+        return (totalStakedAmount[_token], totalReferralsAmount[_token]);
+    }  
+}

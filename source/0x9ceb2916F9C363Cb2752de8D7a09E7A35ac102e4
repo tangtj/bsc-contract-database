@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: None
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b != 0);
+        return a % b;
+    }
+}
+
+
+pragma solidity ^0.8.0;
+
+contract MexaiStaking {
+    // Define the staking structure
+    struct Stake {
+        uint256 amount;     // Amount of BUSD staked
+        uint256 startTime;  // Start time of the stake
+    }
+
+    // BUSD token address
+    address private busdTokenAddress;
+
+    // Staking parameters
+    uint256 private constant stakingFeePercentage = 10; // 10% fee
+    uint256 private constant APR = 1825; // 1825% APR
+    uint256 private constant secondsPerDay = 86400; // Number of seconds in a day
+    uint256 private constant daysInMonth = 30; // Number of days in a month
+
+    // Mapping of stakers to their stakes
+    mapping(address => Stake) private stakes;
+
+    // Events
+    event Staked(address indexed staker, uint256 amount, uint256 startTime);
+    event Unstaked(address indexed staker, uint256 amount, uint256 endTime, uint256 interest, uint256 fee);
+
+    // Constructor
+    constructor(address _busdTokenAddress) {
+        busdTokenAddress = _busdTokenAddress;
+    }
+
+    // Staking function
+    function stake(uint256 _amount) external {
+        // Transfer BUSD from staker to the contract
+        // NOTE: Make sure to approve this contract to spend BUSD on behalf of the staker beforehand
+        require(IERC20(busdTokenAddress).transferFrom(msg.sender, address(this), _amount), "BUSD transfer failed");
+
+        // Store the stake information
+        stakes[msg.sender] = Stake(_amount, block.timestamp);
+
+        // Emit the staked event
+        emit Staked(msg.sender, _amount, block.timestamp);
+    }
+
+    // Unstaking function
+    function unstake() external {
+        // Retrieve the stake information
+        Stake storage stakerStake = stakes[msg.sender];
+
+        // Make sure the stake exists and the locking period has passed
+        require(stakerStake.amount > 0, "No stake found");
+        require(block.timestamp >= stakerStake.startTime + (daysInMonth * secondsPerDay), "Locking period not passed");
+
+        // Calculate the interest and the fee
+        uint256 interest = ((stakerStake.amount * APR * daysInMonth) / 36500); // APR is divided by 100 to convert to percentage and divided by 365 to convert to daily rate
+        uint256 fee = (interest * stakingFeePercentage) / 100;
+
+        // Calculate the total unstaked amount (original amount + interest - fee)
+        uint256 totalUnstaked = stakerStake.amount + interest - fee;
+
+        // Transfer the total unstaked amount to the staker
+        require(IERC20(busdTokenAddress).transfer(msg.sender, totalUnstaked), "BUSD transfer failed");
+
+        // Reset the stake information
+        delete stakes[msg.sender];
+
+        // Emit the unstaked event
+        emit Unstaked(msg.sender, stakerStake.amount, block.timestamp, interest, fee);
+    }
+
+    // Get the staker's current stake amount
+    function getStakerStakeAmount(address _staker) external view returns (uint256) {
+        return stakes[_staker].amount;
+    }
+
+    // Get the staker's current stake start time
+    function getStakerStakeStartTime(address _staker) external view returns (uint256) {
+    return stakes[_staker].startTime;
+    }
+
+    // Get the current APR
+    function getAPR() external pure returns (uint256) {
+        return APR;
+    }
+
+    // Get the current staking fee percentage
+    function getStakingFeePercentage() external pure returns (uint256) {
+        return stakingFeePercentage;
+    }
+
+    // Get the current BUSD token address
+    function getBUSDTokenAddress() external view returns (address) {
+        return busdTokenAddress;
+    }
+
+    function getContractBalance() external view returns (uint256) {
+        return IERC20(busdTokenAddress).balanceOf(address(this));
+    }
+
+}

