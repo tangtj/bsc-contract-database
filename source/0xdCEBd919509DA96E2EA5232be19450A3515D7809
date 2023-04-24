@@ -1,0 +1,237 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.14;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract owned {
+    address public owner;
+    constructor() {
+        owner = msg.sender;
+    }
+    modifier onlyOwner {
+        require(msg.sender == owner);
+        _;
+    }
+    function transferOwnership(address newOwner) onlyOwner public {
+        owner = newOwner;
+    }
+}
+
+
+contract Token is IERC20,owned {
+    string public name;
+    string public symbol;
+    uint8 public decimals = 8;
+
+    uint256 public totalSupply;
+
+    mapping (address => address) public inviteMap;
+    mapping (address => bool) public userValid;
+    mapping (address => uint) public inviteCount;
+
+    mapping (address => uint256) public userThisAward;
+    mapping (address => uint256) public userInput;
+
+    address public defaultAddress;
+    address public burnAddress;
+    address public feeAddress;
+
+    uint256[10] public awardConfig;
+    uint256[10] public levelConfig;
+
+    event addFeeAward(address indexed user,uint256 feeAmount);
+    event addBurnAward(address indexed user,uint256 burnAmount);
+    event addLevelAward(address indexed user,uint256 amount,uint level);
+
+    receive() external payable {
+        uint256 baseAmount = 1*10**18;
+        if (msg.value<baseAmount||inviteMap[msg.sender]==address(0)){
+            emit addBurnAward(burnAddress,msg.value);
+            payable(burnAddress).transfer(msg.value);
+            return;
+        }
+
+        userInput[msg.sender]+=baseAmount;
+     
+        if(!userValid[msg.sender]){
+            userValid[msg.sender]=true;
+            inviteCount[inviteMap[msg.sender]]++;
+        }
+
+        address checkAddress = msg.sender;
+        emit addFeeAward(feeAddress,1*10**17);
+        payable(feeAddress).transfer(1*10**17);
+        uint256 giveOther = msg.value - baseAmount;
+        for(uint i = 0; i < 10; i++){
+            address parent = inviteMap[checkAddress];
+            if (parent==address(0)||isContract(parent)){
+                giveOther+=awardConfig[i];
+                continue;
+            }
+
+            //check buy
+            if(!userValid[parent]){
+                checkAddress=parent;
+                giveOther+=awardConfig[i];
+                continue;
+            }
+            uint256 totalAwardLimit ;
+            if (inviteCount[parent]>=5){
+                totalAwardLimit=userInput[parent]*9;
+            }else if (inviteCount[parent]>=4){
+                totalAwardLimit=userInput[parent]*7;
+            }else if (inviteCount[parent]>=3){
+                totalAwardLimit=userInput[parent]*5;
+            }else if (inviteCount[parent]>=1){
+                totalAwardLimit=userInput[parent]*3;
+            }
+
+            if (userThisAward[parent]>totalAwardLimit){
+                checkAddress=parent;
+                giveOther+=awardConfig[i];
+                continue;
+            }
+
+            uint256 thisMaxAward = totalAwardLimit - userThisAward[parent];
+
+            //check level
+            if (inviteCount[parent]<levelConfig[i]){
+                checkAddress=parent;
+                giveOther+=awardConfig[i];
+                continue;
+            }
+
+            uint256 thisAward=thisMaxAward>awardConfig[i]?awardConfig[i]:thisMaxAward;
+
+            uint256 thisBurn = awardConfig[i]>thisAward?(awardConfig[i]-thisAward):0;
+            giveOther+=thisBurn;
+            emit addLevelAward(parent,thisAward,i);
+            userThisAward[parent]+=thisAward;
+            payable(parent).transfer(thisAward);
+            checkAddress=parent;
+        }
+        payable(burnAddress).transfer(giveOther);
+        emit addBurnAward(burnAddress,giveOther);
+    }
+
+    constructor(
+        string memory tokenName,
+        string memory tokenSymbol
+    ) {
+        name = tokenName;
+        symbol = tokenSymbol;
+        uint256 initialSupply=100000000;
+        totalSupply = initialSupply * 10 ** uint256(decimals);
+        balanceOf[msg.sender] = totalSupply;
+
+        defaultAddress=msg.sender;
+        burnAddress=msg.sender;
+        feeAddress=msg.sender;
+
+        emit Transfer(address(0),msg.sender,  totalSupply);
+
+        awardConfig[0]=3*10**17;
+        awardConfig[1]=1*10**17;
+        awardConfig[2]=8*10**16;
+        awardConfig[3]=6*10**16;
+        awardConfig[4]=6*10**16;
+        awardConfig[5]=6*10**16;
+        awardConfig[6]=6*10**16;
+        awardConfig[7]=6*10**16;
+        awardConfig[8]=6*10**16;
+        awardConfig[9]=6*10**16;
+
+        levelConfig[0]=1;
+        levelConfig[1]=1;
+        levelConfig[2]=1;
+        levelConfig[3]=3;
+        levelConfig[4]=3;
+        levelConfig[5]=4;
+        levelConfig[6]=4;
+        levelConfig[7]=5;
+        levelConfig[8]=5;
+        levelConfig[9]=5;
+    }
+
+    mapping (address => uint256) public balanceOf;
+    mapping (address => mapping (address => uint256)) public allowance;
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        bindInvite(sender,recipient);
+        balanceOf[sender]=balanceOf[sender]-amount;
+        balanceOf[recipient]=balanceOf[recipient]+amount;
+        emit Transfer(sender, recipient, amount);
+    }
+
+
+    function transfer(address recipient, uint256 amount) public returns(bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public returns(bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, allowance[sender][msg.sender]-amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public returns(bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "TRC20: approve from the zero address");
+        require(spender != address(0), "TRC20: approve to the zero address");
+        allowance[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+
+    function withdrawEth(address payable addr, uint256 amount) onlyOwner public{
+        addr.transfer(amount);
+    }
+
+    function withdrawToken(IERC20 token, uint256 amount)onlyOwner public returns (bool){
+        token.transfer(msg.sender, amount);
+        return true;
+    }
+
+    function isContract(address addr)public view returns (bool) {
+        uint size;
+        assembly { size := extcodesize(addr) }
+        return size > 0;
+    }
+
+    function setAddress(address _defaultAddress,address _feeAddress,address _burnAddress)public onlyOwner{
+        defaultAddress=_defaultAddress;
+        feeAddress=_feeAddress;
+        burnAddress=_burnAddress;
+    }
+
+    function bindInvite(address from,address to)private {
+
+
+        if (inviteMap[to]!=address(0)){
+            return;
+        }
+        if ( from==to||isContract(to) || to==defaultAddress || to==feeAddress || to==burnAddress ||to==owner||from==address(0)){
+            return;
+        }
+        if(isContract(from)){
+            inviteMap[to]=defaultAddress;
+            return;
+        }
+        inviteMap[to]=from;
+    }
+
+}

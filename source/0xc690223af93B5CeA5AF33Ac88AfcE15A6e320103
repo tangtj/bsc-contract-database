@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.19;
+
+interface IERC20 {
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface ISwapRouter {
+    function factory() external pure returns (address);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+abstract contract Ownable {
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "!o");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "n0");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract BuyRobot is Ownable {
+    address public _swapRouter;
+    address public _payToken;
+
+    function batchBuy(uint256 payAmount, address receiveToken, address[] memory tos) public onlyOwner {
+        address[] memory path = new address[](2);
+        path[0] = _payToken;
+        path[1] = receiveToken;
+        uint256 len = tos.length;
+        ISwapRouter swapRouter = ISwapRouter(_swapRouter);
+        for (uint256 i; i < len;) {
+            swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                payAmount,
+                0,
+                path,
+                tos[i],
+                block.timestamp
+            );
+        unchecked{
+            ++i;
+        }
+        }
+    }
+
+    function setSwapRouter(address router) public onlyOwner {
+        _swapRouter = router;
+        IERC20(_payToken).approve(_swapRouter, ~uint256(0));
+    }
+
+    function setPayToken(address payToken) public onlyOwner {
+        _payToken = payToken;
+        IERC20(_payToken).approve(_swapRouter, ~uint256(0));
+    }
+
+    constructor(){
+        //SwapRouter
+        _swapRouter = address(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        //USDT
+        _payToken = address(0x55d398326f99059fF775485246999027B3197955);
+        IERC20(_payToken).approve(_swapRouter, ~uint256(0));
+    }
+}

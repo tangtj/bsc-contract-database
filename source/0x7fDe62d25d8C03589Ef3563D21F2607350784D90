@@ -1,0 +1,719 @@
+
+// File: contracts/AFI.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.17;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+contract AFI {
+    using SafeMath for uint256;
+
+    constructor() {
+        OWNER_ADDRESS = payable(msg.sender);
+    }
+
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+        _;
+        _status = _NOT_ENTERED;
+    }
+
+    modifier onlyProjectOwner() {
+        require(msg.sender == PROJECT_OWNER_ADDRESS);
+        _;
+    }
+
+    address payable public OWNER_ADDRESS;
+    uint256 public CONTRACT_INITIATED_AT;
+    bool public CONTRACT_LIVE;
+    bool public DEPOSITS_DISABLED;
+    bool public UNSTAKING_DISABLED;
+    uint256 public UNSTAKING_DISABLED_AT;
+
+    uint256 private constant SECONDS_PER_DAY = 86400;
+    address private constant PROJECT_OWNER_ADDRESS = 0x3458699B3A27C5c0662DfD405BeFdCd6a191c661;
+    address private constant CONTRACT_DEV_ADDRESS = 0xbab5B268bBa1E1ED488e5C91b6df3966bC8d8EeE;
+    address private constant REVENUE_ADDRESS = 0x0C6d20b8358d0Cc52d94E7B64c49881C3cBf5CBB;
+    address private constant TOKEN_ADDRESS = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+    address payable constant internal _projectOwner = payable(PROJECT_OWNER_ADDRESS);
+    address payable constant internal _contractDev = payable(CONTRACT_DEV_ADDRESS);
+    address payable constant internal _revenue = payable(REVENUE_ADDRESS);
+    IERC20 public constant _token = IERC20(TOKEN_ADDRESS);
+    
+    uint8 private DEPOSIT_FEE = 1;
+    uint8 private CLAIMREWARDS_FEE = 1;
+    uint8 private UNSTAKING_FEE = 1;
+    uint8 private REF_BONUS = 2;
+    uint256 private MIN_DEPOSIT = 1000000000000000000;
+    uint256 private MAX_DEPOSIT = 15000000000000000000000;
+
+    uint256 public totalUsers;
+    uint256 public totalCurrentInvested;
+    uint256 public totalRewardPayouts;
+
+    uint256 private _NOT_ENTERED = 1;
+    uint256 private _ENTERED = 2;
+    uint256 private _status = _NOT_ENTERED;
+
+    struct Deposit {
+        uint256 amount;
+        uint256 start;
+    }
+
+    struct User {
+        uint256 lastClaimAt;
+        Deposit[] deposits;
+        uint256 firstDeposit;
+        uint256 totalDeposit;
+        uint256 totalPayout;
+        uint256 pendingRefRewards;
+        address upline;
+        address[] referrals;
+        uint256 totalRefRewardsReceived;
+    }
+
+    mapping(address => User) internal users;
+
+    event EmitDeposited(
+        address indexed adr,
+        address indexed ref,
+        uint256 tokenAmount,
+        uint256 tokensFrom,
+        uint256 tokensTo
+    );
+    event EmitUnstaked(
+        uint8 index,
+        address indexed adr,
+        uint256 tokensToClaim,
+        uint256 tokensBeforeFee,
+        uint256 pendingRewardsBeforeFee
+    );
+
+    event EmitClaimedRewards(
+        address indexed adr,
+        uint256 tokensToClaim,
+        uint256 tokensBeforeFee
+    );
+    event EmitInjection(uint256 injected);
+
+    function intitate() public onlyProjectOwner {
+        CONTRACT_INITIATED_AT = block.timestamp;
+        CONTRACT_LIVE = true;
+    }
+
+    function disableUnstaking(bool disable) public onlyProjectOwner {
+        UNSTAKING_DISABLED = disable;
+        if (disable == true) {
+            UNSTAKING_DISABLED_AT = block.timestamp;
+        }
+    }
+
+    function disableDeposits(bool disable) public onlyProjectOwner {
+        DEPOSITS_DISABLED = disable;
+    }
+
+    function toggleContract(bool live) public onlyProjectOwner {
+        CONTRACT_LIVE = live;
+    }
+
+    function user(address adr) public view returns (User memory) {
+        return users[adr];
+    }
+
+    function inject(uint256 tokens) public onlyProjectOwner {
+        bool success = _token.transferFrom(
+            address(msg.sender),
+            address(this),
+            tokens
+        );
+        if (success == false) {
+            revert("Contract token transfer failed");
+        }
+        emit EmitInjection(tokens);
+    }
+
+    function deposit(uint256 tokens, address ref) public nonReentrant {
+        require(CONTRACT_LIVE == true, "Contract not live");
+        require(DEPOSITS_DISABLED == false, "Deposits have been disabled");
+        require(
+            tokens >= MIN_DEPOSIT,
+            "Deposit doesn't meet the minimum requirements"
+        );
+        require(
+            tokens.add(users[msg.sender].totalDeposit) <=
+                MAX_DEPOSIT,
+            "Max deposit reached"
+        );
+        require(users[msg.sender].deposits.length < 10, "Max deposits made");
+
+        uint256 totalFee = percentFromAmount(tokens, DEPOSIT_FEE);
+        uint256 tokensAfterFee = SafeMath.sub(tokens, totalFee);
+
+        bool success = _token.transferFrom(
+            address(msg.sender),
+            address(this),
+            tokens
+        );
+        if (success == false) {
+            revert("Contract token transfer failed");
+        }
+
+        uint256 revenueDeposit = percentFromAmount(tokens, 55);
+        bool revSuccess = _token.transfer(_revenue, revenueDeposit);
+        if (revSuccess == false) {
+            revert("Revenue token transfer failed");
+        }
+
+        if (
+            ref != msg.sender &&
+            ref != address(0) &&
+            users[msg.sender].upline == address(0)
+        ) {
+            users[msg.sender].upline = ref;
+            users[ref].referrals.push(msg.sender);
+
+            uint256 refBonus = percentFromAmount(tokens, REF_BONUS);
+            users[ref].pendingRefRewards = users[ref].pendingRefRewards.add(
+                refBonus
+            );
+            users[ref].totalRefRewardsReceived = users[ref].totalRefRewardsReceived.add(refBonus);
+        }
+
+        if (hasInvested(msg.sender) == false) {
+            users[msg.sender].firstDeposit = block.timestamp;
+            totalUsers++;
+        }
+
+        users[msg.sender].deposits.push(Deposit(tokens, block.timestamp));
+        users[msg.sender].totalDeposit = SafeMath.add(users[msg.sender].totalDeposit, tokens);
+
+        totalCurrentInvested = totalCurrentInvested.add(tokens);
+
+        sendFees(totalFee);
+
+        emit EmitDeposited(msg.sender, ref, tokens, users[msg.sender].totalDeposit, tokensAfterFee);
+    }
+
+    function sendFees(uint256 totalFee) private {
+        uint256 projectOwner = percentFromAmount(totalFee, 50);
+        uint256 contractDev = percentFromAmount(totalFee, 50);
+
+        _token.transfer(_projectOwner, projectOwner);
+        _token.transfer(_contractDev, contractDev);
+    }
+
+    function claimRewards() public nonReentrant {
+        require(CONTRACT_LIVE == true, "Contract not live");
+        require(
+            hasInvested(msg.sender) || users[msg.sender].pendingRefRewards > 0,
+            "Must be invested or have pending ref rewards to claim"
+        );
+        require(
+            daysSinceLastClaim(msg.sender) >= 10,
+            "Must wait 10 days between each claim"
+        );
+
+        uint256 tokensBeforeFee = allPendingRewards(msg.sender);
+        uint256 totalFee = 0;
+        uint256 tokensAfterFee = tokensBeforeFee;
+
+        if (CLAIMREWARDS_FEE > 0) {
+            totalFee = percentFromAmount(tokensBeforeFee, CLAIMREWARDS_FEE);
+            tokensAfterFee = SafeMath.sub(tokensAfterFee, totalFee);
+        }
+
+        users[msg.sender].totalPayout = SafeMath.add(users[msg.sender].totalPayout, tokensBeforeFee);
+
+        users[msg.sender].lastClaimAt = block.timestamp;
+        users[msg.sender].pendingRefRewards = 0;
+
+        totalRewardPayouts = totalRewardPayouts.add(tokensBeforeFee);
+
+        _token.transfer(msg.sender, tokensAfterFee);
+
+        emit EmitClaimedRewards(msg.sender, tokensAfterFee, tokensBeforeFee);
+    }
+
+    function unstake(uint8 index) public nonReentrant {
+        require(CONTRACT_LIVE == true, "Contract not live");
+        require(UNSTAKING_DISABLED == false, "Unstaking disabled");
+        require(hasInvested(msg.sender), "Must be invested to claim");
+        require(index < users[msg.sender].deposits.length, "Index must be in range of active deposits");
+
+        require(
+            block.timestamp.sub(users[msg.sender].deposits[index].start) >= 60 days,
+            "You can't unstake until after 60 days"
+        );
+
+        uint256 totalFee = percentFromAmount(
+            users[msg.sender].deposits[index].amount,
+            UNSTAKING_FEE
+        );
+        uint256 tokensAfterFee = SafeMath.sub(users[msg.sender].deposits[index].amount, totalFee);
+        uint256 pendingRewards = rewardedTokens(msg.sender, index);
+        tokensAfterFee = tokensAfterFee.add(pendingRewards);
+
+        users[msg.sender].totalDeposit = SafeMath.sub(
+            users[msg.sender].totalDeposit,
+            users[msg.sender].deposits[index].amount
+        );
+
+        totalCurrentInvested = totalCurrentInvested.sub(users[msg.sender].deposits[index].amount);
+        uint256 unstakedAmount = users[msg.sender].deposits[index].amount;
+
+        removeDeposit(msg.sender, index);
+
+        _token.transfer(msg.sender, tokensAfterFee);
+
+        emit EmitUnstaked(
+            index,
+            msg.sender,
+            tokensAfterFee,
+            unstakedAmount,
+            pendingRewards
+        );
+    }
+
+    function removeDeposit(address adr, uint index) private {
+        if (index >= users[adr].deposits.length) return;
+
+        for (uint i = index; i < users[adr].deposits.length - 1; i++) {
+            users[adr].deposits[i] = users[adr].deposits[i + 1];
+        }
+
+        users[adr].deposits.pop();
+    }
+
+    function contractBalance() public view returns (uint256) {
+        return _token.balanceOf(address(this));
+    }
+
+    function secondsSinceLastClaim(address adr) public view returns (uint256) {
+        uint256 lastClaimOrFirstDeposit = users[adr].lastClaimAt;
+        if (users[adr].lastClaimAt == 0) {
+            lastClaimOrFirstDeposit = users[adr].firstDeposit;
+        }
+        if (lastClaimOrFirstDeposit == 0) {
+            lastClaimOrFirstDeposit = CONTRACT_INITIATED_AT;
+        }
+        uint256 secondsPassed = SafeMath.sub(
+            block.timestamp,
+            lastClaimOrFirstDeposit
+        );
+        return secondsPassed;
+    }
+
+    function setMaxDeposit(uint256 newMaxDeposit) public onlyProjectOwner {
+        MAX_DEPOSIT = newMaxDeposit;
+    }
+
+    function setClaimRewardsFee(uint8 newFee) public onlyProjectOwner {
+        CLAIMREWARDS_FEE = newFee;
+    }
+
+    function daysSinceLastClaim(address adr) private view returns (uint256) {
+        uint256 secondsPassed = secondsSinceLastClaim(adr);
+        return SafeMath.div(secondsPassed, SECONDS_PER_DAY);
+    }
+
+    function hasInvested(address adr) public view returns (bool) {
+        return users[adr].firstDeposit != 0;
+    }
+
+    function percentFromAmount(
+        uint256 amount,
+        uint256 fee
+    ) private pure returns (uint256) {
+        return SafeMath.div(SafeMath.mul(amount, fee), 100);
+    }
+
+    function allPendingRewards(address adr) public view returns (uint256) {
+        uint256 tokensBeforeFee = 0;
+        for (uint8 i = 0; i < users[adr].deposits.length; i++) {
+            uint256 depositRewards = rewardedTokens(adr, i);
+            tokensBeforeFee = tokensBeforeFee.add(depositRewards);
+        }
+        tokensBeforeFee = tokensBeforeFee.add(users[adr].pendingRefRewards);
+        return tokensBeforeFee;
+    }
+
+    function rewardedTokens(
+        address adr,
+        uint8 index
+    ) public view returns (uint256) {
+        if (index >= users[msg.sender].deposits.length) {
+            return 0;
+        }
+        uint256 lastClaimOrStart = users[adr].deposits[index].start;
+        if (users[adr].lastClaimAt > lastClaimOrStart) {
+            lastClaimOrStart = users[adr].lastClaimAt;
+        }
+
+        uint256 stakeEndingAt = users[adr].deposits[index].start.add(SECONDS_PER_DAY.mul(60));
+        bool continueAfterStakeEnded = false;
+        if (
+            UNSTAKING_DISABLED_AT > 0 &&
+            UNSTAKING_DISABLED_AT < stakeEndingAt
+        ) {
+            continueAfterStakeEnded = true;
+        }
+
+        uint256 secondsPassed = block.timestamp.sub(lastClaimOrStart);
+        if (lastClaimOrStart > stakeEndingAt) {
+            return 0;
+        }
+        if (block.timestamp > stakeEndingAt && stakeEndingAt > lastClaimOrStart) {
+            secondsPassed = stakeEndingAt.sub(lastClaimOrStart);
+        }
+
+        if (continueAfterStakeEnded) {
+            secondsPassed = block.timestamp.sub(lastClaimOrStart);
+        }
+
+        secondsPassed = min(SECONDS_PER_DAY.mul(12), secondsPassed);
+        if (secondsPassed == 0) {
+            return 0;
+        }
+
+        uint256 rewards = calcReward(secondsPassed, adr, index);
+
+        return rewards;
+    }
+
+    function calcReward(
+        uint256 secondsPassed,
+        address adr,
+        uint8 index
+    ) private view returns (uint256) {
+        uint256 rewardsPerDay = percentFromAmount(
+            SafeMath.mul(users[adr].deposits[index].amount, 10000000000),
+            500000
+        );
+        uint256 rewardsPerSecond = SafeMath.div(rewardsPerDay, SECONDS_PER_DAY);
+        uint256 rewards = SafeMath.mul(rewardsPerSecond, secondsPassed);
+        rewards = SafeMath.div(rewards, 10000000000000000);
+        return rewards;
+    }
+
+    function min(uint256 a, uint256 b) private pure returns (uint256) {
+        return a < b ? a : b;
+    }
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+
+// File: @openzeppelin/contracts/utils/math/SafeMath.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.6.0) (utils/math/SafeMath.sol)
+
+pragma solidity ^0.8.0;
+
+// CAUTION
+// This version of SafeMath should only be used with Solidity 0.8 or later,
+// because it relies on the compiler's built in overflow checks.
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations.
+ *
+ * NOTE: `SafeMath` is generally not needed starting with Solidity 0.8, since the compiler
+ * now has built in overflow checking.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the division of two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator.
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {trySub}.
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b <= a, errorMessage);
+            return a - b;
+        }
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a / b;
+        }
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting with custom message when dividing by zero.
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {tryMod}.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a % b;
+        }
+    }
+}
+
