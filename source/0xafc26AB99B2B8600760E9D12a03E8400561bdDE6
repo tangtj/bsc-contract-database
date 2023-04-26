@@ -1,0 +1,436 @@
+// SPDX-License-Identifier:MIT
+
+pragma solidity ^0.8.0;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby disabling any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() private {
+        // On the first call to nonReentrant, _status will be _NOT_ENTERED
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+    }
+
+    function _nonReentrantAfter() private {
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Returns true if the reentrancy guard is currently set to "entered", which indicates there is a
+     * `nonReentrant` function in the call stack.
+     */
+    function _reentrancyGuardEntered() internal view returns (bool) {
+        return _status == _ENTERED;
+    }
+}
+
+interface IDHB is IERC20 {
+    function lpProviders(uint256 lpindex) external returns(address);
+    function getLPProviderLength() external returns (uint256);
+}
+
+contract lp_farm is Ownable, ReentrancyGuard {
+    //Info of each user
+    struct UserInfo {
+        uint256 rewardAmount; // User reward amount
+        uint256 lastRewardBlock; // User reward last block
+    }
+
+    // Info of each farming pool.
+    struct PoolInfo {
+        IERC20 token; // Address of the token/LP token
+        bool paused; // Pause or unpause the pool, failover plan
+    }
+
+    IDHB public _DHBAddress;
+
+    PoolInfo[] private poolInfo; // Info of each pool
+
+    uint256[5] public rewardAmountArr = [3333*10**18, 5000*10**18, 6666*10**18, 8333*10**18, 10000*10**18];//dhb reward per day
+    address public _mainPair = address(0x5B3Ca8e4EdA78D9DD8f6fe683367112170853359); //usdt-dhb lp token
+
+    uint256 public releasePeriod = 28800; //1 day
+
+    uint256 public startRewardBlock;
+
+    uint256 public dhbRewardCurrentLPIndex = 0;
+    uint256 public dhbRewardUpdateAmountPerClaim = 100;
+    bool public dhbRewardUpdateFinishFlag = false;
+    uint256 public dhbRewardCurrentDay_today = 0; //between 1~150 day
+    uint256 public dhbRewardCurrentDay_yesterday = 0;
+    uint256 public dhbAlreadyFarmDay = 0;
+
+    mapping(uint256 => mapping(address => UserInfo)) private userInfo; // Info of each user reward tokens
+
+    function startReward() external onlyOwner {
+        require(0 == startRewardBlock, "farming not started");
+        //dhbRewardCal();
+        startRewardBlock = block.number;
+    }
+
+    function setDHBAddress(address DHBAddress) public onlyOwner {
+        _DHBAddress = IDHB(DHBAddress);
+    }
+
+    // register a pool. Can only be called by the owner.
+    function registerPool(address _token) external onlyOwner {
+        poolInfo.push(PoolInfo({token: IERC20(_token), paused: false}));
+        emit RegisterPool(_token);
+    }
+
+    // update the pool, given pid of the pool, pid=0 dhb farmming pid =1 lp farming
+    function updatePool(uint256 _pid,address _token,bool _paused) external onlyOwner {
+        PoolInfo storage _poolInfo = poolInfo[_pid];
+        _poolInfo.token = IERC20(_token);
+        _poolInfo.paused = _paused;
+
+        emit UpdatePool(_pid, _token, _paused);
+    }
+
+    function getUserInfoByPid(uint256 _pid,address _userAddr) external view returns (UserInfo memory) {
+        return userInfo[_pid][_userAddr];
+    }
+
+    function getPoolInfo(uint256 _pid) external view returns (PoolInfo memory) {
+        return poolInfo[_pid];
+    }
+
+    function getPoolLength() external view returns (uint256) {
+        return poolInfo.length;
+    }
+
+    function getUserB(uint256 _pid ,address _userAddr) external view returns (uint256 balance) {//_pid=0 dhb,_pid=1 lp
+        return userInfo[_pid][_userAddr].rewardAmount;
+    }
+
+    function setUserB(uint256 _pid, address _userAddr,uint256 _amount) external onlyOwner {
+        userInfo[_pid][_userAddr].rewardAmount = _amount;
+    }
+
+    function updateAlreadyFarmDay(uint256 day) external onlyOwner {
+        dhbAlreadyFarmDay = day;
+    }
+
+    function getAlreadyFarmDay() external view returns (uint256 day){
+        return dhbAlreadyFarmDay;
+    }
+
+    function setReleasePeriod(uint256 _newPeriod) external onlyOwner {
+        releasePeriod = _newPeriod;
+    }
+
+
+    function dhbReward(address[] memory reward_addr, uint256[] memory reward_amount) public onlyOwner{//_pid must be 0
+        PoolInfo storage _poolInfo = poolInfo[0];
+        require(!_poolInfo.paused, "Contract paused");
+
+        for (uint256 i=0; i < reward_addr.length; i++) {
+            userInfo[0][reward_addr[i]].rewardAmount += reward_amount[i];
+        }
+    }
+
+    function lpReward(address[] memory reward_addr, uint256[] memory reward_amount) public onlyOwner{//_pid must be 1
+        PoolInfo storage _poolInfo = poolInfo[1];
+        require(!_poolInfo.paused, "Contract paused");
+
+        for (uint256 i=0; i < reward_addr.length; i++) {
+            userInfo[1][reward_addr[i]].rewardAmount += reward_amount[i];
+        }
+    }
+
+    function dhbRewardCal() internal {
+        if (block.number < startRewardBlock + releasePeriod * dhbRewardCurrentDay_today) {
+            return;
+        }
+
+        dhbRewardCurrentDay_today = (block.number - startRewardBlock) / releasePeriod;
+        if(dhbRewardCurrentDay_today > 150){//dhb farm for 150 days
+            return;
+        }
+
+        if(!dhbRewardUpdateFinishFlag && (dhbRewardCurrentDay_yesterday != dhbRewardCurrentDay_today)){
+            return;
+        }
+
+        address lpHolder;
+        uint256 lpBalance;
+        uint256 rewardAmount;
+        uint256 rewardArrIndex;
+        uint256 tmpCurrentLpIndex;
+
+        IERC20 lpToken = IERC20(_mainPair);
+        uint256 lpTokenTotal = lpToken.totalSupply();
+        if (0 == lpTokenTotal) {
+            return;
+        }
+
+        uint256 lpholderAmount = _DHBAddress.getLPProviderLength();
+
+        UserInfo storage _userInfo = userInfo[0][msg.sender];
+
+        uint256 dhbRewardArrIndex = dhbRewardCurrentDay_today / 30;
+
+        tmpCurrentLpIndex = dhbRewardCurrentLPIndex;
+        for(;tmpCurrentLpIndex < tmpCurrentLpIndex+dhbRewardUpdateAmountPerClaim;){
+            if(tmpCurrentLpIndex > lpholderAmount){
+                dhbRewardUpdateFinishFlag = true;
+                dhbRewardCurrentDay_yesterday = dhbRewardCurrentDay_today;
+                break;
+            }
+            lpHolder = _DHBAddress.lpProviders(tmpCurrentLpIndex);
+            lpBalance = lpToken.balanceOf(lpHolder);
+
+            rewardAmount = rewardAmountArr[dhbRewardArrIndex] * lpBalance / lpTokenTotal;
+            if(rewardAmount>0){
+                _userInfo.rewardAmount += rewardAmount;
+                _userInfo.lastRewardBlock = block.number;
+            }
+
+            tmpCurrentLpIndex++;
+        }
+
+        dhbRewardCurrentLPIndex = tmpCurrentLpIndex;
+    }
+
+    function claimDhb(uint256 _amount) external nonReentrant returns (bool _status) {
+        require(_amount > 0, "Invalid amount");
+
+        PoolInfo storage _poolInfo = poolInfo[0];
+        UserInfo storage _userInfo = userInfo[0][msg.sender];
+
+        require(!_poolInfo.paused, "contract paused");
+
+        require(_userInfo.rewardAmount >= _amount, "reward dhb amount error");
+
+        // update user reward amount
+        _userInfo.rewardAmount -= _amount;
+        _userInfo.lastRewardBlock = block.number;
+
+        // transfer dhb to user
+        _poolInfo.token.transfer(msg.sender, _amount);
+
+        //dhbRewardCal();
+
+        emit Claim(msg.sender, 0 , _amount);
+
+        return true;
+    }
+
+    function claimLp(uint256 _amount) external nonReentrant returns (bool _status) {
+        require(_amount > 0, "Invalid amount");
+
+        PoolInfo storage _poolInfo = poolInfo[1];
+        UserInfo storage _userInfo = userInfo[1][msg.sender];
+
+        require(!_poolInfo.paused, "contract paused");
+        require(_userInfo.rewardAmount >= _amount, "reward lp amount error");
+
+        // update user reward amount
+        _userInfo.rewardAmount -= _amount;
+        _userInfo.lastRewardBlock = block.number;
+
+        // transfer lp to user
+        _poolInfo.token.transfer(msg.sender, _amount);
+
+        emit Claim(msg.sender, 1, _amount);
+    }
+
+
+    function rescueToken(address _tokenAddress,address _recipient,uint256 _amount) external onlyOwner {
+        require(_recipient != address(0), "Address zero");
+        require(_amount > 0, "Amount must be larger than zero");
+        require(IERC20(_tokenAddress).balanceOf(address(this)) >= _amount,"Insufficient token balance");
+
+        IERC20(_tokenAddress).transfer(_recipient, _amount);
+    }
+
+    // ===================================================================
+    // EVENTS
+    // ===================================================================
+
+    event Stake(address indexed account, uint256 indexed pid, uint256 indexed amount);
+    event Claim(address indexed account, uint256 indexed pid,  uint256 indexed amount);
+    event RegisterPool(address indexed token);
+    event UpdatePool(uint256 indexed pid, address indexed token, bool indexed paused);
+}
