@@ -1,0 +1,123 @@
+/**
+ *Submitted for verification at BscScan.com on 2021-10-14
+*/
+
+pragma solidity ^0.5.10;
+
+interface ERC20Interface {
+  function transferFrom(address _from, address _to, uint256 _value) external returns (bool);
+  function transfer(address _to, uint256 _value) external;
+  function approve(address _spender, uint256 _value) external returns (bool);
+  function symbol() external view returns (string memory);
+}
+
+interface ERC721Interface {
+  function transferFrom(address _from, address _to, uint256 _tokenId) external ;
+  function ownerOf(uint256 _tokenId) external view returns (address);
+  function approve(address _to, uint256 _tokenId) external;
+  function mint(address player,uint256 tokenId) external returns (uint256);
+}
+
+contract Ownable {
+  address payable public owner;
+
+  constructor () public{
+    owner = msg.sender;
+  }
+
+  modifier onlyOwner()  {
+    require(msg.sender == owner);
+    _;
+  }
+
+  function transferOwnership(address payable newOwner) public onlyOwner {
+
+    if (newOwner != address(0)) {
+      owner = newOwner;
+    }
+  }
+}
+
+contract BianceNFTConvertPool is Ownable {
+    
+    uint public nftAmount;
+    
+    // dee nft contract
+    address public nftContract;
+
+    //binance nft contract
+    address public binanceNftContract;
+
+    //This pool stores the amount of NFTs generated for each role and level
+    mapping (uint => uint) public pool;
+
+    mapping (uint256=>address) public tokenIdHolders;
+
+    mapping (uint256=>uint256) public convertMapping;
+
+    uint256 public convertFee = 3 * 10 ** 15;
+
+    event RecordNFT(
+        address indexed _holder,
+        uint256 indexed _tokenId
+    );
+
+    event ConvertNFT(
+        uint256 indexed _oldTokenId,
+        uint256 indexed _newToken
+    );
+
+    constructor(address _nftContract,address _binanceNftContract) public{
+
+        nftContract = _nftContract;
+        binanceNftContract = _binanceNftContract;
+    }
+
+    /**
+    * withdraw contract balance to owner
+    */
+    function withdraw() public onlyOwner {
+        uint256 balance = address(this).balance;
+        owner.transfer(balance);
+    }
+
+    function recordNFT(uint256[] memory tokenIds) payable public returns(bool){
+
+        //pay fee for nft convert
+        require(msg.value == convertFee * tokenIds.length);
+
+        for(uint i=0;i<tokenIds.length;i++){
+
+            uint256 tokenId = tokenIds[i];
+            //transfer from user
+            ERC721Interface(binanceNftContract).transferFrom(msg.sender,address(this),tokenId);
+            tokenIdHolders[tokenId] = msg.sender;
+
+            emit RecordNFT(msg.sender,tokenId);
+        }
+        return true;
+    }
+
+    function convertNFT(uint256[] memory oldTokenIds,uint[] memory levels,uint[] memory characters) public onlyOwner {
+
+        for(uint i=0;i<oldTokenIds.length;i++){
+            uint256 oldTokenId = oldTokenIds[i];
+            uint level = levels[i];
+            uint character = characters[i];
+            
+            uint key = 10000 + character * 100 + level;
+            uint amountIdx = pool[key];
+            
+            // 20102090100000004 
+            uint256 nftId = 20100000000000000 + 1000000000000 * character + 10000000000 * level + amountIdx;
+            address holder = tokenIdHolders[oldTokenId];
+            ERC721Interface(nftContract).mint(holder,nftId);
+
+            //modify storage
+            pool[key] = amountIdx + 1;
+            convertMapping[oldTokenId] = nftId;
+
+            emit ConvertNFT(oldTokenId,nftId);
+        }
+    }
+}

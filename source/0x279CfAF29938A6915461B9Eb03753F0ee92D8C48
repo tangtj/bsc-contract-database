@@ -1,0 +1,508 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.7;
+
+
+contract Callable {
+
+    address payable private _context;
+    address private _creator;
+
+    constructor() { 
+        _context = payable(address(this));
+        _creator = msg.sender;
+        emit CreateContext(_context, _creator);
+    }
+
+    function _contextAddress() internal view returns (address payable) {
+        return _context;
+    }
+
+    function _contextCreator() internal view returns (address) {
+        return _creator;
+    }
+
+    function _msgSender() internal view returns (address payable) {
+        return payable(msg.sender);
+    }
+
+    function _msgData() internal view returns (bytes memory) {
+        this;
+        return msg.data;
+    }
+
+    function _msgTimestamp() internal view returns (uint256) {
+        this;
+        return block.timestamp;
+    }
+
+    receive() external payable { }
+
+    event CreateContext(address contextAddress, address contextCreator);
+}
+
+contract Manageable is Callable {
+    address private _executiveManager;
+    mapping(address => bool) private _isManager;
+    address[] private _managers;
+
+    bool private _managementIsLocked = false;
+    uint256 private _managementUnlockTime = 0;
+    uint256 private _maxNumberOfManagers = 10;
+
+    constructor () {
+        _executiveManager = _contextCreator();
+        _isManager[_executiveManager] = true;
+        _managers.push(_executiveManager);
+
+        emit ManagerAdded(_executiveManager);
+        emit ExecutiveManagerChanged(address(0), _executiveManager);
+    }
+
+    function executiveManager() public view returns (address) {
+        return _executiveManager;
+    }
+
+    function isManager(address account) public view returns (bool) {
+        return _isManager[account];
+    }
+
+    function managementIsLocked() public view returns (bool) {
+        return _managementIsLocked;
+    }
+
+    function timeToManagementUnlock() public view returns (uint256) {
+        return block.timestamp >= _managementUnlockTime ? 0 : _managementUnlockTime - block.timestamp;
+    }
+    
+    function addManager(address newManager) public onlyExecutive() returns (bool) {
+        require(!_isManager[newManager], "Account is already a manager");
+        require(newManager != address(0), "0 address cannot be made manager");
+        require(_managers.length <= _maxNumberOfManagers, "max number of managers reached");
+
+        _isManager[newManager] = true;
+        _managers.push(newManager);
+
+        emit ManagerAdded(newManager);
+
+        return true;
+    }
+
+    function removeManager(address managerToRemove) public onlyExecutive() returns (bool) {
+        require(_isManager[managerToRemove], "Account is already not a manager");
+        require(managerToRemove != _executiveManager, "Executive manager cannot be removed");
+
+        _isManager[managerToRemove] = false;
+        for(uint256 i = 0; i < _managers.length; i++) {
+            if(_managers[i] == managerToRemove){
+                _managers[i] = _managers[_managers.length - 1];
+                _managers.pop();
+                break;
+            }
+        }
+
+        emit ManagerRemoved(managerToRemove);
+
+        return true;
+    }
+
+    function changeExecutiveManager(address newExecutiveManager) public onlyExecutive() returns (bool) {
+        require(newExecutiveManager != _executiveManager, "Manager is already the executive");
+
+        if(!_isManager[newExecutiveManager]){
+            _isManager[newExecutiveManager] = true;
+            emit ManagerAdded(newExecutiveManager);
+        }
+        _executiveManager = newExecutiveManager;
+
+        emit ExecutiveManagerChanged(_executiveManager, newExecutiveManager);
+
+        return true;
+    }
+
+    function lockManagement(uint256 lockDuration) public onlyExecutive() returns (bool) {
+        _managementIsLocked = true;
+        _managementUnlockTime = block.timestamp + lockDuration;
+
+        emit ManagementLocked(lockDuration);
+
+        return true;
+    }
+
+    function unlockManagement() public onlyExecutive() returns (bool) {
+        _managementIsLocked = false;
+        _managementUnlockTime = 0;
+
+        emit ManagementUnlocked();
+
+        return true;
+    }
+
+    function renounceManagement() public onlyExecutive() returns (bool) {
+        while(_managers.length > 0) {
+            _isManager[_managers[_managers.length - 1]] = false;
+
+            emit ManagerRemoved(_managers[_managers.length - 1]);
+
+            if(_managers[_managers.length - 1] == _executiveManager){
+                emit ExecutiveManagerChanged(_executiveManager, address(0));
+                _executiveManager = address(0);
+            }
+
+            _managers.pop();
+        }
+
+        emit ManagementRenounced();
+
+        return true;
+    }
+
+    event ManagerAdded(address addedManager);
+    event ManagerRemoved(address removedManager);
+    event ExecutiveManagerChanged(address indexed previousExecutiveManager, address indexed newExecutiveManager);
+    event ManagementLocked(uint256 lockDuration);
+    event ManagementUnlocked();
+    event ManagementRenounced();
+
+    modifier onlyExecutive() {
+        require(_msgSender() == _executiveManager, "Caller is not the executive manager");
+        require(!_managementIsLocked || block.timestamp >= _managementUnlockTime, "Management is locked");
+        _;
+    }
+
+    modifier onlyManagement() {
+        require(_isManager[_msgSender()], "Caller is not a manager");
+        require(!_managementIsLocked, "Management is locked");
+        _;
+    }
+}
+
+interface IBEP20 {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+    function approve(address spender, uint value) external returns (bool);
+    function transfer(address to, uint value) external returns (bool);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+    function burn(uint256 amount) external;
+
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "addition overflow");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        if(b >= a){
+            return 0;
+        }
+        uint256 c = a - b;
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0 || b == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "multiplication overflow");
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "division by zero");
+        uint256 c = a / b;
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b != 0, "modulo by zero");
+        return a % b;
+    }
+
+    function log10(uint256 value) internal pure returns (uint256) {
+        uint256 result = 0;
+        unchecked {
+            if (value >= 10 ** 64) {
+                value /= 10 ** 64;
+                result += 64;
+            }
+            if (value >= 10 ** 32) {
+                value /= 10 ** 32;
+                result += 32;
+            }
+            if (value >= 10 ** 16) {
+                value /= 10 ** 16;
+                result += 16;
+            }
+            if (value >= 10 ** 8) {
+                value /= 10 ** 8;
+                result += 8;
+            }
+            if (value >= 10 ** 4) {
+                value /= 10 ** 4;
+                result += 4;
+            }
+            if (value >= 10 ** 2) {
+                value /= 10 ** 2;
+                result += 2;
+            }
+            if (value >= 10 ** 1) {
+                result += 1;
+            }
+        }
+        return result;
+    }
+
+}
+
+contract AjaxLottery is Manageable {
+    using SafeMath for uint256;
+
+    uint256 private constant MAX = ~uint256(0);
+    address public _deadAddress = 0x000000000000000000000000000000000000dEaD;
+
+    address private bigPrizeWinner;
+    address private prevBigPrizeWinner;
+
+    address[] private firstPrizeWinners;
+    address[] private prevFirstPrizeWinners;
+
+    address[] private secondPrizeWinners;
+    address[] private prevSecondPrizeWinners;
+
+    uint256 private currWinnerTicket;
+
+    uint256[] private prevTickets;
+    uint256 private maxNumberOfPrevTicketSave;
+
+    mapping (uint256 => mapping(uint256 => bool)) private usedTicketNumbers;
+    uint256 private numOfPastBigPrizeWinners;
+
+    uint256 public totalCurrentPrize;
+
+    uint256 public bigWinnerRemnantPrize;
+    uint256 public firstWinnersRemnantPrize;
+    uint256 public secondWinnersRemnantPrize;
+
+    uint256 private numberOfPrevParticipants;
+
+    address private AJAXContractAddress = 0xB910d0cCeB25DE3d359cEDD02E30b1Ca2A9238d7;
+
+    address private ownerAddress;
+
+    bool public isLotteryUnderway;
+
+    constructor() {
+        ownerAddress = _msgSender();
+        totalCurrentPrize = 0;
+        bigWinnerRemnantPrize = 0;
+        firstWinnersRemnantPrize = 0;
+        secondWinnersRemnantPrize = 0;
+        bigPrizeWinner = _deadAddress;
+        numberOfPrevParticipants = 0;
+        maxNumberOfPrevTicketSave = 20;
+        numOfPastBigPrizeWinners = 0;
+        isLotteryUnderway = false;
+    }
+
+    function insertInPrevTickets(uint256 ticketNumber) internal {
+        if (prevTickets.length == maxNumberOfPrevTicketSave) 
+            for (uint8 i = 1; i < 10; i++)
+                prevTickets[i - 1] = prevTickets[i];
+        
+        prevTickets.push(ticketNumber);
+
+    }
+
+    function random() private view returns (uint) {
+        uint256 randNum = uint(keccak256(abi.encodePacked(block.prevrandao, block.timestamp, firstPrizeWinners, secondPrizeWinners, numberOfPrevParticipants))) % 10**7;
+        while (randNum < 10**6)
+            randNum *= 10;
+        
+        uint8 salt = 0;
+        while (usedTicketNumbers[numOfPastBigPrizeWinners][randNum]) {
+            randNum = uint(keccak256(abi.encodePacked(block.prevrandao, block.timestamp, firstPrizeWinners, secondPrizeWinners, numberOfPrevParticipants, salt))) % 10**7;
+            while (randNum < 10**6)
+                randNum *= 10;
+            salt += 1;
+        }
+        return randNum;
+    }
+
+    function createNewLottery() public onlyManagement() {
+        require(!isLotteryUnderway, 'There is an active lottery.');
+
+        uint256 newRand = random();
+
+        totalCurrentPrize = 0;
+        bigPrizeWinner = _deadAddress;
+
+        delete firstPrizeWinners;
+
+        delete secondPrizeWinners;
+
+        currWinnerTicket = newRand;
+        isLotteryUnderway = true;
+
+        emit LotteryStarted();
+    }
+
+    function toString(uint256 value) internal pure returns (string memory) {
+        unchecked {
+            uint256 length = SafeMath.log10(value) + 1;
+            string memory buffer = new string(length);
+            uint256 ptr;
+            /// @solidity memory-safe-assembly
+            assembly {
+                ptr := add(buffer, add(32, length))
+            }
+            while (true) {
+                ptr--;
+                /// @solidity memory-safe-assembly
+                assembly {
+                    mstore8(ptr, byte(mod(value, 10), "0123456789abcdef"))
+                }
+                value /= 10;
+                if (value == 0) break;
+            }
+            return buffer;
+        }
+    }
+
+    function getNumberOfSimilarities(uint256 num1, uint256 num2) internal pure returns(uint8) {
+        bytes memory num1Str = bytes(toString(num1));
+        bytes memory num2Str = bytes(toString(num2));
+
+        uint8 totalSim = 0;
+        for (uint8 i = 0; i < 7; i++) {
+            if (num1Str[i] == num2Str[i])
+                totalSim += 1;
+        }
+
+        return totalSim;
+    }
+
+    function addParticipant(address participant, uint256 amount, uint256 ticketNumber) public onlyManagement() {
+        require(isLotteryUnderway, 'No active lottery.');
+        require(ticketNumber >= 1000000, 'Number must contain only 7 digits.');
+        require(ticketNumber <= 9999999, 'Number must contain only 7 digits.');
+
+        uint8 simsWithWinTicket = getNumberOfSimilarities(currWinnerTicket, ticketNumber);
+
+        if (simsWithWinTicket == 7)
+            bigPrizeWinner = participant;
+
+        else if (simsWithWinTicket == 6)
+            firstPrizeWinners.push(participant);
+
+        else if (simsWithWinTicket == 5)
+            secondPrizeWinners.push(participant);
+
+        totalCurrentPrize += amount;
+        numberOfPrevParticipants += 1;
+
+        emit ParticipantAdded(participant, amount, ticketNumber);
+    }
+
+    function endLottery() public onlyManagement() {
+        require(isLotteryUnderway, 'No active lottery');
+
+        IBEP20 AjaxInterface = IBEP20(AJAXContractAddress);
+
+        uint256 bigWinnerShare = uint256(totalCurrentPrize.mul(40).div(100));
+        uint256 firstWinnersShare = uint256(totalCurrentPrize.mul(20).div(100));
+        uint256 secondWinnersShare = uint256(totalCurrentPrize.mul(10).div(100));
+        uint256 referallsShare = uint256(totalCurrentPrize.mul(10).div(100));
+        uint256 burnShare = totalCurrentPrize.sub(bigWinnerShare).sub(firstWinnersShare).sub(secondWinnersShare).sub(referallsShare);
+        
+        if (bigPrizeWinner != _deadAddress) {
+            uint256 totalbigWinnerPrize = bigWinnerShare.add(bigWinnerRemnantPrize);
+
+            AjaxInterface.transfer(bigPrizeWinner, totalbigWinnerPrize);
+
+            bigWinnerRemnantPrize = 0;
+
+            numOfPastBigPrizeWinners += 1;
+        }
+        else {
+            bigWinnerRemnantPrize += bigWinnerShare;
+        }
+
+        if (firstPrizeWinners.length != 0) {
+            uint256 totalFirstWinnersPrize = firstWinnersShare.add(firstWinnersRemnantPrize);
+            uint256 firstWinnersParticipantBite = uint256(totalFirstWinnersPrize.div(firstPrizeWinners.length));
+
+            for (uint8 i; i < firstPrizeWinners.length; i++) {
+                AjaxInterface.transfer(firstPrizeWinners[i], firstWinnersParticipantBite);
+            }
+
+            firstWinnersRemnantPrize = 0;
+        }
+        else {
+            firstWinnersRemnantPrize += firstWinnersShare;
+        }
+
+        if (secondPrizeWinners.length != 0) {
+            uint256 totalSecondWinnersPrize = secondWinnersShare.add(secondWinnersRemnantPrize);
+            uint256 secondWinnersParticipantBite = uint256(totalSecondWinnersPrize.div(secondPrizeWinners.length));
+
+            for (uint8 i; i < secondPrizeWinners.length; i++) {
+                AjaxInterface.transfer(secondPrizeWinners[i], secondWinnersParticipantBite);
+            }
+
+            secondWinnersRemnantPrize = 0;
+        }
+        else {
+            secondWinnersRemnantPrize += secondWinnersShare;
+        }
+
+        prevBigPrizeWinner = bigPrizeWinner;
+        prevFirstPrizeWinners = firstPrizeWinners;
+        prevSecondPrizeWinners = secondPrizeWinners;
+
+        insertInPrevTickets(currWinnerTicket);
+
+        AjaxInterface.transfer(ownerAddress, referallsShare);
+
+        AjaxInterface.burn(burnShare);
+        isLotteryUnderway = false;
+
+        emit LotteryEnded(currWinnerTicket);
+    }
+
+    function getPrevWinnerTickets() public view returns(uint256[] memory){
+        return prevTickets;
+    }
+
+    function getPrevBigPrizeWinners() public view returns(address){
+        return prevBigPrizeWinner;
+    }
+
+    function getPrevFirstPrizeWinners() public view returns(address[] memory){
+        return prevFirstPrizeWinners;
+    }
+
+    function getPrevSecondPrizeWinners() public view returns(address[] memory){
+        return prevSecondPrizeWinners;
+    }
+
+    event LotteryStarted();
+    event LotteryEnded(uint256 winningNumber);
+    event ParticipantAdded(address participant, uint256 amount, uint256 ticketNumber);
+
+}

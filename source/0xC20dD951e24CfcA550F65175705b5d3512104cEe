@@ -1,0 +1,364 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+interface IEnergen {
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function transferInBehalf(
+        address from,
+        address to,
+        uint256 amount
+    ) external;
+
+    function lockTokenInVault(
+        address account,
+        uint256 amount,
+        uint256 duration
+    ) external;
+}
+
+contract EnergenAirdrop {
+    IEnergen public token;
+    uint256 public lockDuration;
+    uint256 public airdropAmount;
+    uint256 public firstLevelReward;
+    uint256 public referralLevels;
+    uint256 public referralPercentDiff;
+    address public admin;
+    uint256 public maxParticipants;
+
+    bool public airdropOpen;
+
+    mapping(address => bool) public registeredUsers;
+    mapping(address => uint256[]) public referrals;
+    mapping(address => address) public referrers;
+
+    address[] public registeredUserList;
+
+    uint256 public totalAirdropTokensDistributed;
+    uint256 public totalReferralRewardsDistributed;
+
+    mapping(address => uint) public lastCall;
+
+    event AirdropClaimed(address indexed user, uint256 amount);
+    event UserRegistered(address indexed user, address indexed referrer);
+    event RewardReferral(address indexed referrer, uint256 amount);
+    event AirdropOpen();
+    event AirdropClose();
+    event BurntRestAirdropTokens(uint256 indexed amount);
+
+    modifier onlyEOA() {
+        require(msg.sender == tx.origin, "Must be called by an EOA");
+        _;
+    }
+
+    modifier pureAddress() {
+        require(!isContract(msg.sender), "Contract call not allowed");
+        _;
+    }
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "Only admin can call this function");
+        _;
+    }
+
+    modifier onlyAirdropOpen() {
+        require(airdropOpen, "Airdrop is not open");
+        _;
+    }
+
+    modifier onlyAirdropCapNotReached() {
+        require(
+            registeredUserList.length < maxParticipants,
+            "Airdrop cap reached"
+        );
+        _;
+    }
+
+    constructor(
+        address _tokenContractAddress,
+        uint256 _lockDuration,
+        uint256 _airdropAmount,
+        uint256 _firstLevelReward,
+        uint256 _referralLevels,
+        uint256 _referralPercentDiff,
+        uint256 _maxParticipants
+    ) {
+        admin = getSender();
+        _initialize(
+            _tokenContractAddress,
+            _lockDuration,
+            _airdropAmount,
+            _firstLevelReward,
+            _referralLevels,
+            _referralPercentDiff,
+            _maxParticipants
+        );
+    }
+
+    function _initialize(
+        address _tokenContractAddress,
+        uint256 _lockDuration,
+        uint256 _airdropAmount,
+        uint256 _firstLevelReward,
+        uint256 _referralLevels,
+        uint256 _referralPercentDiff,
+        uint256 _maxParticipants
+    ) private {
+        require(
+            _tokenContractAddress != address(0) &&
+                IEnergen(_tokenContractAddress) != IEnergen(address(0)),
+            "Invalid token contract address"
+        );
+        require(_lockDuration > 0, "Lock duration must be greater than zero");
+        require(_airdropAmount > 0, "Airdrop amount must be greater than zero");
+        require(
+            _firstLevelReward > 0,
+            "First level reward must be greater than zero"
+        );
+        require(
+            _referralLevels > 0,
+            "Referral levels must be greater than zero"
+        );
+        require(
+            _referralPercentDiff > 0,
+            "Referral percent difference must be greater than zero"
+        );
+        require(
+            _maxParticipants > 0,
+            "Max participants must be greater than zero"
+        );
+
+        require(
+            _referralLevels <= 10,
+            "Referral levels must be less than or equal to 10"
+        );
+        require(
+            _referralPercentDiff <= 100,
+            "Referral percent difference must be less than or equal to 100"
+        );
+
+        setAirdropAmount(_airdropAmount);
+        setFirstLevelReward(_firstLevelReward);
+        setMaxParticipants(_maxParticipants);
+        setReferralPercentDiff(_referralPercentDiff);
+        updateTokenContractAddress(_tokenContractAddress);
+        setLockDuration(_lockDuration);
+        setReferralLevels(_referralLevels);
+    }
+
+    function isContract(address _address) public view returns (bool) {
+        uint256 size;
+        assembly {
+            size := extcodesize(_address)
+        }
+        return size > 0;
+    }
+
+    function getSender() public view returns (address) {
+        return msg.sender;
+    }
+
+    function getUserJoinStatus(address _address) public view returns (bool) {
+        return registeredUsers[_address];
+    }
+
+    function _updateReferralReward(address _referral) private {
+        // update and reward referral for X level deep
+        uint reward;
+        for (
+            uint256 i = 0;
+            i < referralLevels &&
+                _referral != address(0) &&
+                getUserJoinStatus(_referral) &&
+                !isContract(_referral);
+            i++
+        ) {
+            reward = (firstLevelReward * (100 - referralPercentDiff * i)) / 100;
+            token.transferInBehalf(address(this), _referral, reward);
+            token.lockTokenInVault(_referral, reward, lockDuration);
+            emit RewardReferral(_referral, reward);
+            totalReferralRewardsDistributed += reward;
+            _referral = referrers[_referral];
+        }
+    }
+
+    function claimAirdrop(
+        address _referrer
+    ) public onlyEOA pureAddress onlyAirdropOpen onlyAirdropCapNotReached {
+        // send the sender of the transaction
+        address sender = getSender();
+        uint256 currentTimestamp = block.timestamp;
+        // check if user last call to this function is less than 1 minutes
+        if (currentTimestamp - lastCall[sender] < 5 minutes) {
+            revert("too many request, try again later");
+        }
+        // set the user last call timestamp
+        lastCall[sender] = currentTimestamp;
+
+        // check that the users is not already registered
+        require(!getUserJoinStatus(sender), "User already registered");
+        // register the user and update the list of registered users
+        registeredUsers[sender] = true;
+        registeredUserList.push(sender);
+
+        // reward the registered user and emit the event
+        token.transferInBehalf(address(this), sender, airdropAmount);
+        token.lockTokenInVault(sender, airdropAmount, lockDuration);
+        totalAirdropTokensDistributed += airdropAmount;
+
+        emit UserRegistered(sender, _referrer);
+        emit AirdropClaimed(sender, airdropAmount);
+
+        // if the user provides a valid referrer, update the referral reward
+        if (_referrer != address(0) && _referrer != sender) {
+            referrers[sender] = _referrer;
+            _updateReferralReward(sender);
+        }
+    }
+
+    function getAllRegisteredUsers() public view returns (address[] memory) {
+        // get all the registered users
+        return registeredUserList;
+    }
+
+    function getTotalRegisteredUsers() public view returns (uint256) {
+        // get the total number of registered users
+        return registeredUserList.length;
+    }
+
+    function getUsers(
+        uint256 _from,
+        uint256 _to
+    ) public view returns (address[] memory users) {
+        // get registered users within a range
+        require(_from < _to, "Invalid range");
+        require(_to <= registeredUserList.length, "Invalid range");
+        users = new address[](_to - _from);
+        for (uint256 i = _from; i < _to; i++) {
+            users[i - _from] = registeredUserList[i];
+        }
+    }
+
+    function getTotalAirdropTokensDistributed() public view returns (uint256) {
+        // get the total number of tokens distributed
+        return totalAirdropTokensDistributed;
+    }
+
+    function getTotalReferralRewardsDistributed()
+        public
+        view
+        returns (uint256)
+    {
+        // get the total number of referral rewards distributed
+        return totalReferralRewardsDistributed;
+    }
+
+    function getTotalAirdropedTokens() public view returns (uint256) {
+        // get the total number of tokens airdropped, including referral rewards
+        return totalAirdropTokensDistributed + totalReferralRewardsDistributed;
+    }
+
+    function openAirdrop() public onlyAdmin {
+        // open the airdrop event to allow users to claim
+        airdropOpen = true;
+        emit AirdropOpen();
+    }
+
+    function closeAirdrop() public onlyAdmin {
+        // close the airdrop event to prevent users from claiming
+        airdropOpen = false;
+        emit AirdropClose();
+    }
+
+    function setLockDuration(uint256 _lockDuration) public onlyAdmin {
+        // update or set the lock duration before users claim token can be released fully
+        // note: small % amount will be released to the users daily, and the whole 100%
+        // will be released after the lock duration, user will still be able to use the
+        // daily released token normally without any restrictions
+        lockDuration = _lockDuration;
+        // this is to prevent users from dumping the token immediately after claiming.
+    }
+
+    function setAirdropAmount(uint256 _airdropAmount) public onlyAdmin {
+        // update or set the airdrop amount
+        airdropAmount = _airdropAmount;
+    }
+
+    function setFirstLevelReward(uint256 _firstLevelReward) public onlyAdmin {
+        // update or set the first level referral reward
+        firstLevelReward = _firstLevelReward;
+    }
+
+    function setReferralLevels(uint256 _referralLevels) public onlyAdmin {
+        referralLevels = _referralLevels;
+    }
+
+    function setReferralPercentDiff(
+        uint256 _referralPercentDiff
+    ) public onlyAdmin {
+        // update or set the referral percent difference
+        referralPercentDiff = _referralPercentDiff;
+    }
+
+    function setMaxParticipants(uint256 _maxParticipants) public onlyAdmin {
+        // set the maximum number of participants
+        maxParticipants = _maxParticipants;
+    }
+
+    function updateTokenContractAddress(
+        address _tokenContractAddress
+    ) public onlyAdmin {
+        // update the token contract address in case of migration or upgrade
+        require(
+            _tokenContractAddress != address(0) &&
+                IEnergen(_tokenContractAddress) != IEnergen(address(0)),
+            "Invalid token contract address"
+        );
+        token = IEnergen(_tokenContractAddress);
+    }
+
+    function updateAirdrop(
+        address _tokenContractAddress,
+        uint256 _lockDuration,
+        uint256 _airdropAmount,
+        uint256 _firstLevelReward,
+        uint256 _referralLevels,
+        uint256 _referralPercentDiff,
+        uint256 _maxParticipants
+    ) public onlyAdmin {
+        // full reset of airdrop contract
+        _initialize(
+            _tokenContractAddress,
+            _lockDuration,
+            _airdropAmount,
+            _firstLevelReward,
+            _referralLevels,
+            _referralPercentDiff,
+            _maxParticipants
+        );
+    }
+
+    function _transfer(address _to, uint256 _amount) private {
+        token.transfer(_to, _amount);
+    }
+
+    function withdrawRemainingToken() public onlyAdmin {
+        // withdraw left token to owner address
+        uint256 balance = token.balanceOf(address(this));
+        _transfer(admin, balance);
+    }
+
+    function burnRemainingToken() public onlyAdmin {
+        // burn the rest token that is left for airdrop
+        uint256 balance = token.balanceOf(address(this));
+        _transfer(address(0), balance);
+        emit BurntRestAirdropTokens(balance);
+    }
+}

