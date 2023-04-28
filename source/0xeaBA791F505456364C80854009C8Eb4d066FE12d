@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.19;
+
+contract permission {
+    mapping(address => mapping(string => bytes32)) private permit;
+
+    function newpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode(adr,str))); }
+
+    function clearpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode("null"))); }
+
+    function checkpermit(address adr,string memory str) public view returns (bool) {
+        if(permit[adr][str]==bytes32(keccak256(abi.encode(adr,str)))){ return true; }else{ return false; }
+    }
+}
+
+contract ERC20REBASE is permission {
+
+    event Rebase(address indexed from,address indexed to,uint256 oldSupply,uint256 newSupply);
+    event Transfer(address indexed from,address indexed to,uint256 amount);
+    event Approval(address indexed from,address indexed to,uint256 amount);
+
+    string public name = "Tester Rebase";
+    string public symbol = "RBASE";
+    uint256 public decimals = 9;
+    uint256 public initialSupply = 1_000_000 * (10**decimals);
+    uint256 public currentSupply = 1_000_000 * (10**decimals);
+    address public owner;
+
+    mapping(address => uint256) public balances;
+    mapping(address => uint256) public freeze;
+    mapping(address => mapping(address => uint256)) public allowance;
+    
+    constructor() {
+        owner = msg.sender;
+        balances[owner] = initialSupply;
+        newpermit(owner,"owner");
+        emit Transfer(address(0), owner, initialSupply);
+    }
+    
+    function totalSupply() public view returns(uint256) {
+        return currentSupply;
+    }
+
+    function balanceOf(address adr) public view returns(uint256) {
+        return toFlagment(balances[adr]);
+    }
+    
+    function balanceOfUnderlying(address adr) public view returns(uint256) {
+        return balances[adr];
+    }
+
+    function approve(address to, uint256 amount) public returns (bool) {
+        uint256 amountUnderlying = toUnderlying(amount);
+        allowance[msg.sender][to] = amountUnderlying;
+        emit Approval(msg.sender, to, amountUnderlying);
+        return true;
+    }
+
+    function approveUnderlying(address to, uint256 amount) public returns (bool) {
+        allowance[msg.sender][to] = amount;
+        emit Approval(msg.sender, to, amount);
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) public returns (bool) {
+        uint256 amountUnderlying = toUnderlying(amount);
+        _transfer(msg.sender,to,amountUnderlying);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) public returns(bool) {
+        uint256 amountUnderlying = toUnderlying(amount);
+        allowance[from][msg.sender] -= amountUnderlying;
+        _transfer(from,to,amountUnderlying);
+        return true;
+    }
+
+    function _transferFrom(address from,address to, uint256 amount) internal {
+        _transfer(from,to,amount);
+    }
+
+    function transferUnderlying(address to, uint256 amount) public returns (bool) {
+        _transfer(msg.sender,to,amount);
+        return true;
+    }
+
+    function transferFromUnderlying(address from, address to, uint256 amount) public returns(bool) {
+        allowance[from][msg.sender] -= amount;
+        _transfer(from,to,amount);
+        return true;
+    }
+
+    function _transfer(address from,address to, uint256 amount) internal {
+        balances[from] -= amount;
+        balances[to] += amount;
+        emit Transfer(from, to, amount);
+    }
+
+    function rebase(uint256 newSupply,address from,address to) public returns (bool) {
+        require(checkpermit(msg.sender,"rebaserole"));
+        emit Rebase(from,to,currentSupply,newSupply);
+        currentSupply = newSupply;
+        return true;
+    }
+
+    function toFlagment(uint256 value) internal view returns (uint256) {
+        return value * currentSupply / initialSupply;
+    }
+
+    function toUnderlying(uint256 value) internal view returns (uint256) {
+        return value * initialSupply / currentSupply;
+    }
+
+    function grantRole(address adr,string memory role) public returns (bool) {
+        require(checkpermit(msg.sender,"owner"));
+        newpermit(adr,role);
+        return true;
+    }
+
+    function revokeRole(address adr,string memory role) public returns (bool) {
+        require(checkpermit(msg.sender,"owner"));
+        clearpermit(adr,role);
+        return true;
+    }
+
+    function transferOwnership(address adr) public returns (bool) {
+        require(checkpermit(msg.sender,"owner"));
+        newpermit(adr,"owner");
+        clearpermit(msg.sender,"owner");
+        owner = adr;
+        return true;
+    }
+
+    receive() external payable {}
+}

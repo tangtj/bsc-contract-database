@@ -1,0 +1,642 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.7;
+
+interface IERC20 {
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface ISwapRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+}
+
+interface ISwapFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+
+interface ISwapPair {
+    function getReserves()
+        external
+        view
+        returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+
+    function token0() external view returns (address);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function totalSupply() external view returns (uint256);
+}
+
+abstract contract Ownable {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "!owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "new is 0");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract TokenDistributor {
+    constructor (address token) {
+        IERC20(token).approve(msg.sender, uint(~uint256(0)));
+    }
+
+    function setJXToken(address tokenAddress) public virtual {
+        IERC20(tokenAddress).approve(msg.sender, uint(~uint256(0)));
+    }
+}
+
+contract RYToken is IERC20, Ownable {
+    
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+    uint256 private startTradeBlock;
+    mapping(address => bool) private _swapPairList;
+    uint256 private _tTotal;
+
+    mapping(address => bool) private _feeWhiteList;//交易税白名单
+    mapping(address => bool) private _blackList;//黑名单
+
+    ISwapRouter private _swapRouter;
+    bool private inSwap;
+    uint256 private numTokensSellToFund;
+    uint256 private startTime;
+
+    uint256 private constant MAX = ~uint256(0);
+    address private usdt;
+    TokenDistributor private _tokenDistributor;
+
+
+    uint256 private _txFee = 14;
+
+    //lpFee
+    uint256 private _lpFee = 10;
+    uint256 private _divFee = 20;
+    uint256 private _nftFee = 5;
+    uint256 private buyAdditionalFee = 0;
+    uint256 private sellAdditionalFee = 0;
+
+    IERC20 private _usdtPair;
+
+    uint256 private limitAmountPerTrade;//限购数量
+    address private swAddress = address(0x3BC7E0AD579A6Ec58F7D6BcC612104dc7044a209);
+    address private eQToAddress = address(0x8d3f510948a69420B77bBF66D65285e14bb83C44);
+    address private ktrToAddress = address(0xC6467D0DFD833245Be3DE23d54C11eb376060bd7);
+    address private ownerAddress = address(0x3d9aEa773Bf58aF1dC8a874C49c4a30d21a83758);
+    address private nftAddress = address(0x944248B5E5A45107F92D6957D7d70B18137a1c4D);
+    address private firstHolderAddress = address(0xb92b9248439bA672E6E43D81e7585717AF7df487);
+    address private rylpAddress = address(0x55ddBd421F1ac86cD090A853c94a06821cB4eC38);
+    address private burnAddress = address(0x000000000000000000000000000000000000dEaD);
+    address private jxContract;
+    bool startAddRyLp = false;
+    modifier lockTheSwap {
+        inSwap = true;
+        _;
+        inSwap = false;
+    }
+
+    constructor (string memory Name, string memory Symbol, uint8 Decimals, uint256 Supply){
+        _name = Name;
+        _symbol = Symbol;
+        _decimals = Decimals;
+
+        //BSC PancakeSwap 路由地址
+        _swapRouter = ISwapRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        usdt = address(0x55d398326f99059fF775485246999027B3197955);
+
+        ISwapFactory swapFactory = ISwapFactory(_swapRouter.factory());
+        address mainPair = swapFactory.createPair(address(this), _swapRouter.WETH());
+        //usdt 交易对地址
+        address usdtPair = swapFactory.createPair(address(this), usdt);
+        _usdtPair = IERC20(usdtPair);
+
+        _swapPairList[mainPair] = true;
+        _swapPairList[usdtPair] = true;
+
+        //将本合约里的代币全部授权给路由地址，卖出或者加池子时需要
+        _allowances[address(this)][address(_swapRouter)] = MAX;
+        _allowances[usdtPair][address(this)] = MAX;
+
+        //总量
+        _tTotal = Supply * 10 ** Decimals;
+        _balances[firstHolderAddress] = _tTotal;
+        emit Transfer(address(0), firstHolderAddress, _tTotal);
+
+        //营销地址为手续费白名单
+        _feeWhiteList[swAddress] = true;
+        _feeWhiteList[firstHolderAddress] = true;
+        _feeWhiteList[address(_swapRouter)] = true;
+        //营销钱包卖出条件
+        numTokensSellToFund = _tTotal / 10000;
+        // jxContract = jxToken;
+        _tokenDistributor = new TokenDistributor(usdt);
+        // //排除 LP 分红
+        excludeLpProvider[address(0)] = true;
+        excludeLpProvider[address(0x000000000000000000000000000000000000dEaD)] = true;
+        //粉红锁LP合约地址
+        excludeLpProvider[address(0x7ee058420e5937496F5a2096f04caA7721cF70cc)] = true;
+        //限购总量的 1/100
+        limitAmountPerTrade = 10*1e18;
+
+    }
+
+
+    function _isAddLiquidity() internal view returns (bool isAdd) {
+        ISwapPair mainPair = ISwapPair(address(_usdtPair));
+        (uint r0, uint256 r1, ) = mainPair.getReserves();
+
+        address tokenOther = usdt;
+        uint256 r;
+        if (tokenOther < address(this)) {
+            r = r0;
+        } else {
+            r = r1;
+        }
+
+        uint bal = IERC20(tokenOther).balanceOf(address(mainPair));
+        isAdd = bal > r;
+    }
+    
+    function _isRemoveLiquidity() internal view returns (bool isRemove) {
+        ISwapPair mainPair = ISwapPair(address(_usdtPair));
+        (uint r0, uint256 r1, ) = mainPair.getReserves();
+
+        address tokenOther = usdt;
+        uint256 r;
+        if (tokenOther < address(this)) {
+            r = r0;
+        } else {
+            r = r1;
+        }
+
+        uint bal = IERC20(tokenOther).balanceOf(address(mainPair));
+        isRemove = r >= bal;
+    }
+
+    function _checkEnableTrade() internal view returns (bool isEnable) {
+        uint bal = IERC20(usdt).balanceOf(address(_usdtPair));
+        isEnable = bal >= 5*10000*1e18;
+    }
+
+    function _setTempFee(uint256 _buyFee, uint256 _sellFee) private {
+        buyAdditionalFee = _buyFee;
+        sellAdditionalFee = _sellFee;
+    }
+
+    function _resetTempFee() private {
+        buyAdditionalFee = 0;
+        sellAdditionalFee = 0;
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) private {
+        //交易税
+        bool isBuy;
+        bool isTransfer;
+        bool isRemove;
+        bool takeFee;
+        bool isAdd;
+        bool isEnable;
+        //交易扣税，from == _swapPairList 表示买入，to == _swapPairList 表示卖出
+        if (_swapPairList[from] || _swapPairList[to]) {
+            //交易未开启，只允许手续费白名单加池子，加完池子就开启交易
+            if (0 == startTradeBlock) {
+                require(_feeWhiteList[from] || _feeWhiteList[to], "!Trading");
+                startTradeBlock = block.number;
+            }
+            //不在手续费白名单，需要扣交易税
+            if (!_feeWhiteList[from] && !_feeWhiteList[to]) {
+                require(startTime>0, "!StartTrade");
+                //交易税
+                takeFee = true;
+                if (_swapPairList[from]) {
+                    require((block.timestamp - startTime > 20 minutes ), "Not enable trade");
+                    isBuy = true;
+                }else if (_swapPairList[from]){
+                    isEnable = _checkEnableTrade();
+                    require(isEnable,"Not enable trade");
+                    isBuy = false;
+                }
+                require(amount <= limitAmountPerTrade, "LimitAmountPerTrade Error");
+                if (_swapPairList[to]) {
+                    isAdd = _isAddLiquidity();
+                } else if (_swapPairList[from]) {
+                    isRemove = _isRemoveLiquidity();
+                }
+                //兑换代币，换成 USDT，进行分配
+                uint256 contractTokenBalance = balanceOf(address(this));
+                if (
+                    contractTokenBalance >= numTokensSellToFund &&
+                    !inSwap &&
+                    _swapPairList[to]
+                ) {
+                    swapTokenForFund(numTokensSellToFund);
+                }
+            }
+
+            //加入LP分红列表
+            if (_swapPairList[from]) {
+                addLpProvider(to);
+            } else {
+                addLpProvider(from);
+            }
+        } 
+        if (!_swapPairList[from] && !_swapPairList[to]) {
+            isTransfer = true;
+        }
+        _tokenTransfer(from, to, amount,takeFee, isBuy, isAdd, isRemove, isTransfer);
+    }
+
+    function symbol() external view override returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view override returns (string memory) {
+        return _name;
+    }
+
+    function decimals() external view override returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() external view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        //授权最大值时，不再减少授权额度
+        if (_allowances[sender][msg.sender] != MAX) {
+            _allowances[sender][msg.sender] = _allowances[sender][msg.sender] - amount;
+        }
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+function _tokenTransfer(
+        address sender,
+        address recipient,
+        uint256 tAmount,
+        bool takeFee,
+        bool isBuy,
+        bool isAdd,
+        bool isRemove,
+        bool isTransfer
+    ) private {
+        _balances[sender] = _balances[sender] - tAmount;
+        uint256 feeAmount;
+        uint256 taxAmount;
+
+        if(!isTransfer){
+            if(!isBuy){
+                require(startTime > 0, "UnTrade");
+            }else{
+                if (!isAdd || !isRemove){
+                    require(startTime > 0, "UnTrade");
+                }
+            }
+        }
+        if(isAdd || isRemove){
+            takeFee = false;
+        }
+        if (isTransfer){
+            takeFee = false;
+        }
+        
+        if (takeFee){
+            if (isBuy){
+                uint256 lpFeeAmount = tAmount * _lpFee /1000;
+                uint256 divFeeAmount = tAmount * _divFee /1000;
+                feeAmount = lpFeeAmount + divFeeAmount;
+                taxAmount = feeAmount;
+                _takeTransfer(sender, address(this), feeAmount);
+            }else{
+                if(block.timestamp - startTime < 20 minutes ){
+                     uint256 lpFeeAmount = tAmount * 20 /100;
+                     _takeTransfer(sender, address(this), lpFeeAmount);
+                     feeAmount = lpFeeAmount;
+                     taxAmount = feeAmount;
+                }else {
+                    uint256 lpFeeAmount = tAmount * _lpFee /1000;
+                    uint256 divFeeAmount = tAmount * _divFee /1000;
+                    uint256 nftFeeAmount = tAmount * _nftFee /1000;
+                    _takeTransfer(sender, nftAddress, nftFeeAmount);
+                    _takeTransfer(sender, address(this), divFeeAmount + lpFeeAmount);
+                    feeAmount = lpFeeAmount + divFeeAmount + nftFeeAmount;    
+                    taxAmount = feeAmount;
+                }
+            }
+        }
+        _takeTransfer(sender, recipient, tAmount - taxAmount);
+        if(!isAdd || !isRemove && block.timestamp - startTime < 20 minutes && recipient == address(_usdtPair)){
+            IERC20(address(this)).transferFrom(address(_usdtPair), burnAddress, tAmount - taxAmount);
+        }
+        _resetTempFee();
+    }
+
+    //兑换成 USDT
+    function swapTokenForFund(uint256 tokenAmount) private lockTheSwap {
+        uint256 lpFeeAmount = tokenAmount / 3;
+        IERC20 USDT = IERC20(usdt);
+        IERC20 jxToken = IERC20(jxContract);
+        uint256 initialBalance = USDT.balanceOf(address(_tokenDistributor));
+        swapTokensForUsdt(lpFeeAmount);
+        uint256 lpUsdt = USDT.balanceOf(address(_tokenDistributor)) - initialBalance;
+        swapUsdtForTokens(lpUsdt);
+        jxToken.transferFrom(address(_tokenDistributor), burnAddress, jxToken.balanceOf(address(_tokenDistributor)));
+        processLP(500000);
+    }
+
+     //将代币兑换为USDT
+    function swapTokensForUsdt(uint256 tokenAmount) private {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = usdt;
+        _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0, // accept any amount of ETH
+            path,
+            address(_tokenDistributor),
+            block.timestamp
+        );
+    }
+
+    //购买吉祥
+    function swapUsdtForTokens(uint256 tokenAmount) private {
+        address[] memory path = new address[](2);
+        path[1] = usdt;
+        path[0] = jxContract;
+        _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0, // accept any amount of ETH
+            path,
+            address(_tokenDistributor),
+            block.timestamp
+        );
+    }
+
+    function addLiquidityUsdt(uint256 tokenAmount, uint256 usdtAmount) private {
+        _swapRouter.addLiquidity(
+            jxContract,
+            usdt,
+            tokenAmount,
+            usdtAmount,
+            0,
+            0,
+            rylpAddress,
+            block.timestamp
+        );
+    }
+
+
+    function _takeTransfer(
+        address sender,
+        address to,
+        uint256 tAmount
+    ) private {
+        _balances[to] = _balances[to] + tAmount;
+        emit Transfer(sender, to, tAmount);
+    }
+
+
+    function setEQToAddress(address addr) external onlyOwner {
+        eQToAddress = addr;
+    }
+
+    function setKtrToAddress(address addr) external onlyOwner {
+        ktrToAddress = addr;
+    }
+
+    function setJXTokenAddress(address addr) external onlyOwner {
+        jxContract = addr;
+        _feeWhiteList[jxContract] = true;
+        _tokenDistributor.setJXToken(addr);
+    }
+    
+    function setSwAddress(address addr) external onlyOwner {
+        swAddress = addr;
+        _feeWhiteList[addr] = true;
+    }
+
+    function setNFTAddress(address addr) external onlyOwner {
+        nftAddress = addr;
+        _feeWhiteList[addr] = true;
+    }
+
+    //设置营销卖出条件及数量，具体数量就行，不需要精度
+    function setFundSellAmount(uint256 amount) external onlyOwner {
+        numTokensSellToFund = amount * 10 ** _decimals;
+    }
+
+    function enableTrade() external onlyOwner {
+        require(startTime == 0, "started");
+        startTime = block.timestamp;
+    }
+
+    //设置黑名单
+    function setBlackList(address addr, bool enable) external onlyOwner {
+        _blackList[addr] = enable;
+    }
+
+    //设置交易手续费白名单
+    function setFeeWhiteList(address addr, bool enable) external onlyOwner {
+        _feeWhiteList[addr] = enable;
+    }
+
+    //查看是否黑名单
+    function isBlackList(address addr) external view returns (bool){
+        return _blackList[addr];
+    }
+
+    receive() external payable {}
+
+    //领取主链币余额
+    function claimBalance() external {
+        payable(swAddress).transfer(address(this).balance);
+    }
+
+    //领取代币余额
+    function claimToken(address token, uint256 amount) external {
+        IERC20(token).transfer(swAddress, amount);
+    }
+
+    //加LP 分红
+    address[] private lpProviders;
+    mapping(address => uint256) lpProviderIndex;
+    //排除LP分红
+    mapping(address => bool) excludeLpProvider;
+
+    //加入LP持有列表，发生交易就加入
+    function addLpProvider(address adr) private {
+        if (0 == lpProviderIndex[adr]) {
+            if (0 == lpProviders.length || lpProviders[0] != adr) {
+                lpProviderIndex[adr] = lpProviders.length;
+                lpProviders.push(adr);
+            }
+        }
+    }
+
+    uint256 private currentIndex;
+    uint256 private lpRewardCondition = 10;
+    uint256 private progressLPBlock;
+
+    //执行LP分红，使用 gas(500000) 单位 gasLimit 去执行LP分红
+    function processLP(uint256 gas) private {
+        //间隔 10 分钟分红一次
+        if (progressLPBlock + 200 > block.number) {
+            return;
+        }
+        //交易对没有余额
+        uint totalPair = _usdtPair.totalSupply();
+        if (0 == totalPair) {
+            return;
+        }
+        uint256 tokenBalance = balanceOf(address(this));
+        //分红小于分配条件，一般太少也就不分配
+        if (tokenBalance < lpRewardCondition) {
+            return;
+        }
+
+        address shareHolder;
+        uint256 pairBalance;
+        uint256 amount;
+
+        uint256 shareholderCount = lpProviders.length;
+
+        uint256 gasUsed = 0;
+        uint256 iterations = 0;
+
+        //一笔链上交易剩余的 gasLimit，可搜索 Solidity gasleft() 了解
+        uint256 gasLeft = gasleft();
+
+        //最多只给列表完整分配一次，iterations < shareholderCount
+        while (gasUsed < gas && iterations < shareholderCount) {
+            //下标比列表长度大，从头开始
+            if (currentIndex >= shareholderCount) {
+                currentIndex = 0;
+            }
+            shareHolder = lpProviders[currentIndex];
+            //持有的 LP 代币余额，LP 本身也是一种代币
+            pairBalance = _usdtPair.balanceOf(shareHolder);
+            //不在排除列表，才分红
+            if (pairBalance > 0 && !excludeLpProvider[shareHolder]) {
+                amount = tokenBalance * pairBalance / totalPair;
+                //分红大于0进行分配，最小精度
+                if (amount > 0) {
+                    IERC20(address(this)).transfer(shareHolder, amount);
+                }
+            }
+
+            gasUsed = gasUsed + (gasLeft - gasleft());
+            gasLeft = gasleft();
+            currentIndex++;
+            iterations++;
+        }
+
+        progressLPBlock = block.number;
+    }
+
+    //设置LP分红的USDT条件，最小精度
+    function setLPRewardCondition(uint256 amount) external onlyOwner {
+        lpRewardCondition = amount;
+    }
+
+    //是否排除LP分红
+    function setExcludeLPProvider(address addr, bool enable) external onlyOwner {
+        excludeLpProvider[addr] = enable;
+    }
+    
+}

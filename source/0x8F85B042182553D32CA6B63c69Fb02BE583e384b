@@ -1,0 +1,181 @@
+/**
+ *Submitted for verification at BscScan.com on 2023-04-27
+*/
+
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+interface AggregatorV3Interface {
+    function decimals() external view returns (uint8);
+
+    function description() external view returns (string memory);
+
+    function version() external view returns (uint256);
+
+    function getRoundData(uint80 _roundId)
+    external
+    view
+    returns (
+        uint80 roundId,
+        int256 answer,
+        uint256 startedAt,
+        uint256 updatedAt,
+        uint80 answeredInRound
+    );
+
+    function latestRoundData()
+    external
+    view
+    returns (
+        uint80 roundId,
+        int256 answer,
+        uint256 startedAt,
+        uint256 updatedAt,
+        uint80 answeredInRound
+    );
+}
+
+contract CryptoValueCalculator {
+    AggregatorV3Interface internal priceUSDTUSDFeed;
+
+    constructor() {
+        priceUSDTUSDFeed = AggregatorV3Interface(address(0xB97Ad0E74fa7d920791E90258A6E2085088b4320));
+    }
+
+    function getTotalValue() public view returns (uint256) {
+        (, int256 usdtusdPrice, , ,) = priceUSDTUSDFeed.latestRoundData();
+
+        uint256 usdtusdActualPrice = uint256(usdtusdPrice) * 10 ** 10;
+
+        uint256 sum = usdtusdActualPrice * 25e5;
+        uint256 PercentOfSum = sum;
+
+        return PercentOfSum / 1e4;
+    }
+
+    function getTokensUsed() public pure returns (string[] memory) {
+        string[] memory tokensUsed = new string[](1);
+        tokensUsed[0] = "USDTUSD";
+
+        return tokensUsed;
+    }
+}
+
+interface ERC20 {
+    function balanceOf(address _owner) external view returns (uint256);
+
+    function transfer(address _to, uint256 _value) external returns (bool);
+
+    function transferFrom(address _from, address _to, uint256 _value) external returns (bool);
+
+    function approve(address _spender, uint256 _value) external returns (bool);
+
+    function allowance(address _owner, address _spender) external view returns (uint256);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract OliveResort is CryptoValueCalculator {
+    string public constant name = "Olive Gardens Resort";
+    string public constant symbol = "OGRT";
+    uint8 public constant decimals = 18;
+    uint256 public totalSupply = 10000 * 10 ** uint256(decimals);
+
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) private allowed;
+
+    address public constant USDT_ADDRESS = 0x11D17CBBAaFf57E8dfA80c7E6458AADB8a4a7E71; // insert the Voucher Points address here
+    uint256 public constant DEPOSIT_RATE = 10 ** 18; // deposit rate is 1 per token, which is equal to 10**18 in wei
+
+    mapping(address => uint256) public usdtDeposits;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    address public owner;
+
+    constructor() {
+        owner = msg.sender;
+        balances[msg.sender] = totalSupply;
+    }
+
+    address payable public feeReceiver = payable(0x432Ab1D67b473B1B14e173EA13E238E4522B2400);
+    uint256 public redeemFee = 0; // Set the redeem fee per token redeemed.
+
+    mapping(address => uint256) private tokenAcquisitionTimestamps;
+
+    function balanceOf(address _owner) public view returns (uint256) {
+        return balances[_owner];
+    }
+
+function transfer(address _to, uint256 _value) public returns (bool) {
+    require(_to != address(0), "ERC20: transfer to the zero address");
+    require(_value <= balances[msg.sender], "ERC20: insufficient balance");
+
+    balances[msg.sender] -= _value;
+    balances[_to] += _value;
+    tokenAcquisitionTimestamps[_to] = block.timestamp; // Only update the timestamp for the new receiver
+    emit Transfer(msg.sender, _to, _value);
+
+    return true;
+}
+
+function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+    require(_to != address(0), "ERC20: transfer to the zero address");
+    require(_value <= balances[_from], "ERC20: insufficient balance");
+    require(_value <= allowed[_from][msg.sender], "ERC20: insufficient allowance");
+
+    balances[_from] -= _value;
+    balances[_to] += _value;
+    allowed[_from][msg.sender] -= _value;
+    tokenAcquisitionTimestamps[_to] = block.timestamp; // Only update the timestamp for the new receiver
+    emit Transfer(_from, _to, _value);
+
+    return true;
+}
+
+    function approve(address _spender, uint256 _value) public returns (bool) {
+        allowed[msg.sender][_spender] = _value;
+        emit Approval(msg.sender, _spender, _value);
+
+        return true;
+    }
+
+    function allowance(address _owner, address _spender) public view returns (uint256) {
+        return allowed[_owner][_spender];
+    }
+
+    function setRedeemFee(uint256 _newRedeemFee) public {
+        require(msg.sender == owner, "Only contract owner can set redeem fee");
+        redeemFee = _newRedeemFee;
+    }
+
+    function getUSDTBalance(address _owner) public view returns (uint256) {
+        return ERC20(USDT_ADDRESS).balanceOf(_owner);
+    }
+
+    function redeem(uint256 _value) public payable {
+        // Check if the lock period of 1 year has passed
+        require(block.timestamp >= tokenAcquisitionTimestamps[msg.sender] + 365 days, "OGRTokens must be held for at least 1 year before redeeming");
+
+        uint256 tokensToRedeem = _value / (10 ** 18);
+        uint256 totalFee = redeemFee * tokensToRedeem;
+
+        require(msg.value == totalFee, "OGRToken: incorrect redeem fee provided");
+        feeReceiver.transfer(msg.value);
+
+        require(_value > 0, "OGRToken: value must be greater than zero");
+        require(_value <= balances[msg.sender], "OGRToken: insufficient balance");
+
+        uint256 usdtAmount = ERC20(USDT_ADDRESS).balanceOf(address(this)) * _value / totalSupply;
+
+        balances[msg.sender] -= _value;
+        totalSupply -= _value;
+
+        require(ERC20(USDT_ADDRESS).transfer(msg.sender, usdtAmount), "OGRToken: failed to transfer USDT");
+
+        emit Transfer(msg.sender, address(0), _value);
+    }
+}

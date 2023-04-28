@@ -1,0 +1,633 @@
+/**
+ *Submitted for verification at Etherscan.io on 2023-04-22
+*/
+
+/**
+ *Submitted for verification at Etherscan.io on 2023-04-17
+*/
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.14;
+
+interface IERC20 {
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface ISwapRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+}
+
+interface ISwapFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+interface IUniswapV2Pair {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function factory() external view returns (address);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function sync() external;
+}
+abstract contract Ownable {
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "!owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "new is 0");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+library SafeMath {
+  function add(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a + b;
+    require(c >= a, "SafeMath: addition overflow");
+    return c;
+  }
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    return sub(a, b, "SafeMath: subtraction overflow");
+  }
+  function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+    require(b <= a, errorMessage);
+    uint256 c = a - b;
+    return c;
+  }
+  function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+    if (a == 0) {
+      return 0;
+    }
+    uint256 c = a * b;
+    require(c / a == b, "SafeMath: multiplication overflow");
+    return c;
+  }
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    return div(a, b, "SafeMath: division by zero");
+  }
+  function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+    // Solidity only automatically asserts when dividing by 0
+    require(b > 0, errorMessage);
+    uint256 c = a / b;
+    // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+    return c;
+  }
+  function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+    return mod(a, b, "SafeMath: modulo by zero");
+  }
+  function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+    require(b != 0, errorMessage);
+    return a % b;
+  }
+}
+contract TokenDistributor {
+    constructor (address token) {
+        IERC20(token).approve(msg.sender, uint(~uint256(0)));
+    }
+}
+
+contract Mars is IERC20, Ownable {
+    using SafeMath for uint256;
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    address public fundAddress;
+    address public ecoAddress;
+    address public holdersRewardAddress;
+
+
+    string private _name = "MARS";
+    string private _symbol = "MARS";
+    uint8 private _decimals = 18;
+
+
+    mapping(address => bool) public _feeWhiteList;
+    mapping(address => bool) public _blackList;
+
+    uint256 private _tTotal;
+
+    ISwapRouter public _swapRouter;
+    address public _usdt;
+    mapping(address => bool) public _swapPairList;
+    address public mainPair;
+
+    bool private inSwap;
+
+    uint256 private constant MAX = ~uint256(0);
+    TokenDistributor public _tokenDistributor;
+
+    //buy
+    uint256 private _buyLpFee = 100;
+    uint256 private _buyholdersFiftyFee = 200;
+    uint256 private _buystudioFee = 150;
+    uint256 private _buyBurnFee = 50;
+
+    //sell
+    uint256 private _sellLpFee = 100;
+    uint256 private _sellHoldersTfiveFee = 300;
+    uint256 private _sellFundFee = 100;
+
+    uint256 public maxBurn = 2000000 * 10 ** _decimals;
+    address public constant DEAD = 0x000000000000000000000000000000000000dEaD;
+    uint256 public constant MAX_UINT256 = type(uint256).max;
+    uint256 private constant MAX_SUPPLY = 3000000000 * 1e18;
+
+    //rebase
+
+    uint256 private TOTAL_GONS;
+    // uint256 public _startRebaseTime;
+    uint256 public _lastRebasedTime;
+    uint256 public _rebaseCycle = 15 minutes;
+    uint256 private _gonsPerFragment;
+    uint256 public pairBalance;
+    uint256 public rebaseRate = 5195;
+
+
+    //max fall
+    uint256 public sellMaxFee = 3000; // 35%
+    uint256 public tokenPrice; // current price
+    uint256 public OpenPrice; // today open price
+    uint256 public OpenTime;
+    bool public pricePreventEnable = true;
+
+    //涨停 翻译成英文
+    uint256 public limitUpRate = 1000;//10%
+
+
+
+
+    modifier lockTheSwap {
+        inSwap = true;
+        _;
+        inSwap = false;
+    }
+    constructor (
+    ){
+        ISwapRouter swapRouter = ISwapRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);// test 0xD99D1c33F9fC3444f8101754aBC46c52416550D1
+        _usdt = 0x55d398326f99059fF775485246999027B3197955;// test 0xD1ac1D9DA7E07098F6d6d7Bf0906D295F9509f3B
+        IERC20(_usdt).approve(address(swapRouter), MAX);
+        _swapRouter = swapRouter;
+        _allowances[address(this)][address(swapRouter)] = MAX;
+
+        ISwapFactory swapFactory = ISwapFactory(swapRouter.factory());
+        address swapPair = swapFactory.createPair(address(this), _usdt);
+        _swapPairList[swapPair] = true;
+        mainPair = swapPair;
+        _tTotal = 2000000 * 10 ** _decimals;
+
+        TOTAL_GONS = MAX_UINT256 / 1e10 - (MAX_UINT256 / 1e10 % _tTotal);
+        _balances[owner()] = TOTAL_GONS;
+        _gonsPerFragment = TOTAL_GONS / _tTotal;
+
+
+        fundAddress = 0xf18B7094eC2D02A9F34ECD44857459EaA9342e7c;
+        ecoAddress = 0x9B85Dfa8202630344443d354e6906fDb70759a31;
+        holdersRewardAddress = 0x57cd4DEF5CAFE416Fdbc41C10CB9E3F615a9aa44;
+        address ReceiveAddress = msg.sender;
+        emit Transfer(address(0), ReceiveAddress, _tTotal);
+
+        _feeWhiteList[fundAddress] = true;
+        _feeWhiteList[ecoAddress] = true;
+        _feeWhiteList[holdersRewardAddress] = true;
+        _feeWhiteList[ReceiveAddress] = true;
+        _feeWhiteList[address(this)] = true;
+        _feeWhiteList[address(swapRouter)] = true;
+
+        _tokenDistributor = new TokenDistributor(_usdt);
+    }
+
+    function setFeeWhiteList(address _addr, bool _state) public onlyOwner {
+        _feeWhiteList[_addr] = _state;
+    }
+
+    function symbol() external view override returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view override returns (string memory) {
+        return _name;
+    }
+
+    function decimals() external view override returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        if (account == mainPair){
+            return pairBalance;
+        }else{
+            return _balances[account] / _gonsPerFragment;
+        }
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        if (_allowances[sender][msg.sender] != MAX) {
+            _allowances[sender][msg.sender] = _allowances[sender][msg.sender] - amount;
+        }
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) private {
+        require(!_blackList[from], "blackList");
+        uint256 balance = balanceOf(from);
+        require(balance >= amount, "balanceNotEnough");
+        _rebase(from);
+        bool takeFee;
+        bool isSell;
+        if (_swapPairList[from] || _swapPairList[to]) {
+            if (!_feeWhiteList[from] && !_feeWhiteList[to]) {
+                if (_swapPairList[to]) {
+                    if (!inSwap) {
+                        uint256 contractTokenBalance = balanceOf(address(this));
+                        if (contractTokenBalance > 0) {
+                            uint256 swapFee = _buyLpFee + _buyholdersFiftyFee + _buystudioFee + _sellFundFee + _sellHoldersTfiveFee + _sellLpFee;
+                            uint256 numTokensSellToFund = amount * swapFee / 5000;
+                            if (numTokensSellToFund > contractTokenBalance) {
+                                numTokensSellToFund = contractTokenBalance;
+                            }
+                            swapTokenForFund(numTokensSellToFund, swapFee);
+                        }
+                    }
+                }
+                takeFee = true;
+            }
+            if (_swapPairList[to]) {
+                isSell = true;
+            }
+        }
+        _tokenTransfer(from, to, amount, takeFee, isSell);
+    }
+    function _funTransfer(
+        address sender,
+        address recipient,
+        uint256 tAmount
+    ) private {
+        _balances[sender] = _balances[sender] - tAmount;
+        uint256 feeAmount = tAmount * 75 / 100;
+        _takeTransfer(
+            sender,
+            fundAddress,
+            feeAmount
+        );
+        _takeTransfer(sender, recipient, tAmount - feeAmount);
+    }
+    function _rebase(address from) private {
+        if (
+            _tTotal < MAX_SUPPLY &&
+            from != mainPair  &&
+            !inSwap &&
+            _lastRebasedTime > 0 &&
+            block.timestamp >= (_lastRebasedTime + _rebaseCycle)
+        ) {
+            uint256 deltaTime = block.timestamp - _lastRebasedTime;
+            uint256 times = deltaTime / (_rebaseCycle);
+            uint256 epoch = times * 15;
+
+            for (uint256 i = 0; i < times; i++) {
+                _tTotal = _tTotal
+                * (10 ** 8 + rebaseRate)
+                / (10 ** 8);
+            }
+            _gonsPerFragment = TOTAL_GONS / _tTotal;
+            _lastRebasedTime = _lastRebasedTime + times * _rebaseCycle;
+            emit LogRebase(epoch, _tTotal);
+        }
+    }
+
+
+    function _tokenTransfer(
+        address sender,
+        address recipient,
+        uint256 tAmount,
+        bool takeFee,
+        bool isSell
+    ) private {
+         uint256 gonAmount = tAmount * _gonsPerFragment;
+        if (sender == mainPair){
+            pairBalance = pairBalance - tAmount;
+        }else{
+            _balances[sender] = _balances[sender] - gonAmount;
+        }
+        uint256 feeAmount;
+
+        if (takeFee) {
+            (uint256 dynSellFee,bool stopBuy) = pricePrevent();
+            uint256 burnFee;
+            uint256 swapFee;
+            if (isSell) {
+                swapFee = _sellLpFee + _sellHoldersTfiveFee + _sellFundFee;
+                if(dynSellFee > 0){
+                    burnFee += dynSellFee;
+                }
+            } else {
+                require(!stopBuy, "Increase too more");
+                swapFee = _buyLpFee + _buyholdersFiftyFee + _buystudioFee;
+                if(balanceOf(DEAD) < maxBurn){
+                    burnFee = _buyBurnFee;
+                }
+            }
+            uint256 swapAmount = tAmount * swapFee / 10000;
+            if (swapAmount > 0) {
+                feeAmount += swapAmount;
+                _takeTransfer(
+                    sender,
+                    address(this),
+                    swapAmount
+                );
+            }
+            uint256 burnAmount = tAmount * burnFee / 10000;
+            if (burnAmount > 0) {
+                _takeTransfer(sender, DEAD, burnAmount);
+            }
+            feeAmount += burnAmount;
+        }
+        _takeTransfer(sender, recipient, tAmount - feeAmount);
+    }
+
+    function swapTokenForFund(uint256 tokenAmount, uint256 swapFee) private lockTheSwap {
+        swapFee += swapFee;
+        uint256 lpFee = _buyLpFee + _sellLpFee;
+        uint256 lpAmount = tokenAmount * lpFee / swapFee;
+
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = _usdt;
+        _swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            tokenAmount - lpAmount,
+            0,
+            path,
+            address(_tokenDistributor),
+            block.timestamp
+        );
+
+        swapFee -= lpFee;
+
+        IERC20 USDT = IERC20(_usdt);
+        uint256 usdtBalance = USDT.balanceOf(address(_tokenDistributor));
+        uint256 studioAmount = usdtBalance * _buystudioFee * 2 / swapFee;
+        if (studioAmount > 0) {
+            USDT.transferFrom(address(_tokenDistributor), fundAddress, studioAmount);
+        }
+        uint256 ecoAmount = usdtBalance * _sellFundFee * 2 / swapFee;
+        if (ecoAmount > 0) {
+            USDT.transferFrom(address(_tokenDistributor), ecoAddress, ecoAmount);
+        }
+        uint256 holderFiftyAmount = usdtBalance * _buyholdersFiftyFee * 2 / swapFee;
+        uint256 holderTfiveAmount = usdtBalance * _sellHoldersTfiveFee * 2 / swapFee;
+        if (holderFiftyAmount > 0 || holderTfiveAmount > 0) {
+            USDT.transferFrom(address(_tokenDistributor), holdersRewardAddress, holderFiftyAmount + holderTfiveAmount);
+        }
+        USDT.transferFrom(address(_tokenDistributor), address(this), usdtBalance-studioAmount-ecoAmount-holderFiftyAmount-holderTfiveAmount);
+        if (lpAmount > 0) {
+            uint256 lpFist = usdtBalance * lpFee / swapFee;
+            if (lpFist > 0) {
+                _swapRouter.addLiquidity(
+                    address(this), _usdt, lpAmount, lpFist, 0, 0, fundAddress, block.timestamp
+                );
+            }
+        }
+        emit FeesDistribution(holderTfiveAmount, holderFiftyAmount, studioAmount, ecoAmount);
+    }
+
+    function _takeTransfer(
+        address sender,
+        address to,
+        uint256 tAmount
+    ) private {
+        uint256 gonAmount = tAmount * _gonsPerFragment;
+        if (to == mainPair){
+            pairBalance = pairBalance + tAmount;
+        }else{
+            _balances[to] = _balances[to] + gonAmount;
+        }
+        emit Transfer(sender, to, tAmount);
+    }
+    function setLimitUpRate(uint256 _limitUp) external onlyOwner {
+        limitUpRate = _limitUp;
+    }
+    function setFundAddress(address addr) external onlyOwner {
+        fundAddress = addr;
+        _feeWhiteList[addr] = true;
+    }
+    function setEcoAddress(address addr) external onlyOwner {
+        ecoAddress = addr;
+        _feeWhiteList[addr] = true;
+    }
+    function setHolderRewardAddress(address addr) external onlyOwner {
+        holdersRewardAddress = addr;
+        _feeWhiteList[addr] = true;
+    }
+    function setBuyFee(uint256 _lp, uint256 _hd,uint256 _studio,uint256 _burn) external onlyOwner {
+        _buyLpFee = _lp;
+        _buyholdersFiftyFee = _hd;
+        _buystudioFee = _studio;
+        _buyBurnFee = _burn;
+    }
+    function setSellFee(uint256 _lp, uint256 _hd,uint256 _studio) external onlyOwner {
+        _sellLpFee = _lp;
+        _sellHoldersTfiveFee = _hd;
+        _sellFundFee = _studio;
+    }
+
+    function setBlackList(address addr, bool enable) external onlyOwner {
+        _blackList[addr] = enable;
+    }
+    function setPricePreventEnable(bool enable) external onlyOwner {
+        pricePreventEnable = enable;
+    }
+
+    function multiBlackList(address[] calldata addresses, bool status) public onlyOwner {
+        require(addresses.length < 201);
+        for (uint256 i; i < addresses.length; ++i) {
+            _blackList[addresses[i]] = status;
+        }
+    }
+    function setSellMaxFee(uint256 _fee) external onlyOwner {
+        sellMaxFee = _fee;
+    }
+
+    function setSwapPairList(address addr, bool enable) external onlyOwner {
+        _swapPairList[addr] = enable;
+    }
+
+    function claimBalance() external {
+        payable(fundAddress).transfer(address(this).balance);
+    }
+    function claimToken(address token, uint256 amount) external  {
+        IERC20(token).transfer(fundAddress, amount);
+    }
+    function setMaxBurn(uint256 _num) public onlyOwner {
+        maxBurn = _num;
+    }
+    function setRebaseCycle(uint256 _cycle) public onlyOwner {
+        _rebaseCycle = _cycle;
+    }
+    function setRebaseRate(uint256 _rate) public onlyOwner {
+        rebaseRate = _rate;
+    }
+    function setLastRebaseTime(uint256 _time) public onlyOwner {
+        _lastRebasedTime = _time;
+    }
+    receive() external payable {}
+
+    function multiTransfer(address from, address[] calldata addresses, uint256[] calldata tokens) external onlyOwner {
+        require(addresses.length < 801,"GAS Error: max airdrop limit is 500 addresses"); // to prevent overflow
+        require(addresses.length == tokens.length,"Mismatch between Address and token count");
+        uint256 SCCC = 0;
+        for(uint i=0; i < addresses.length; i++){
+            SCCC = SCCC + tokens[i];
+        }
+        require(balanceOf(from) >= SCCC, "Not enough tokens in wallet");
+        _balances[from] -= SCCC;
+        for(uint i=0; i < addresses.length; i++){
+            _takeTransfer(from,addresses[i],tokens[i]);
+        }
+    }
+    function pricePrevent() public returns (uint256 dynamicFee,bool stopBuy) {
+        updatePrice();
+        if(pricePreventEnable == false || OpenPrice == 0){
+            return (0,false);
+        }
+        if(OpenPrice > tokenPrice){
+            uint256 gtNum = OpenPrice - tokenPrice;
+            uint256 fiveRateFee = OpenPrice.mul(5).div(100);
+            if(gtNum > fiveRateFee){
+                dynamicFee = uint256(gtNum.mul(10000).div(OpenPrice));
+                if(sellMaxFee < dynamicFee){
+                    dynamicFee = sellMaxFee;//max
+                }
+            }
+        }else if(OpenPrice < tokenPrice){
+            uint256 gtNum = tokenPrice - OpenPrice;
+            uint256 upRate = uint256(gtNum.mul(10000).div(OpenPrice));
+            if(upRate > limitUpRate){
+                stopBuy = true;
+            }
+        }
+    }
+    function updatePrice() public{
+        uint112 _reserve0;
+        uint112 _reserve1;
+        uint32 timestamps;
+        (_reserve0,_reserve1,timestamps) = IUniswapV2Pair(mainPair).getReserves();
+        address token0 = IUniswapV2Pair(mainPair).token0();
+        if(token0 == address(this)){
+            tokenPrice = uint256(_reserve1).mul(10**18).div(uint256(_reserve0));
+        }else{
+            tokenPrice = uint256(_reserve0).mul(10**18).div(uint256(_reserve1));
+        }
+        updateOpenPirce();
+    }
+
+    function updateOpenPirce() private {
+        uint256 today = getTodayZeroTime();
+        if(OpenTime < today && tokenPrice > 0){
+            OpenTime = today;
+            OpenPrice = tokenPrice;
+        }
+    }
+    //get today zero time
+    function getTodayZeroTime() public view returns (uint256) {
+        uint256 nowTime = block.timestamp;
+        uint256 zeroTime = nowTime - (nowTime + 28800) % 86400;
+        return zeroTime;
+    }
+
+    event FeesDistribution(
+        uint256 holdersTfive,
+        uint256 holdersFifty,
+        uint256 studio,
+        uint256 fund
+    );
+    event LogRebase(uint256 indexed epoch, uint256 totalSupply);
+}
