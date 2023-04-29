@@ -1,0 +1,446 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.7;
+
+interface IERC20 {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+// helper methods for interacting with ERC20 tokens and sending ETH that do not consistently return true/false
+library TransferHelper {
+    function safeApprove(address token, address to, uint256 value) internal {
+        // bytes4(keccak256(bytes('approve(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: APPROVE_FAILED');
+    }
+
+    function safeTransfer(address token, address to, uint256 value) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FAILED');
+    }
+
+    function safeTransferFrom(address token, address from, address to, uint256 value) internal {
+        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FROM_FAILED');
+    }
+
+    function safeTransferETH(address to, uint256 value) internal {
+        (bool success,) = to.call{value:value}(new bytes(0));
+        require(success, 'TransferHelper: ETH_TRANSFER_FAILED');
+    }
+}
+
+abstract contract Ownable {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(msg.sender);
+    }
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function _checkOwner() internal view virtual {
+        require(owner() == msg.sender, "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+interface IPancakePair {
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function name() external pure returns (string memory);
+    function symbol() external pure returns (string memory);
+    function decimals() external pure returns (uint8);
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address owner) external view returns (uint256);
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 value) external returns (bool);
+    function transfer(address to, uint256 value) external returns (bool);
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+    function nonces(address owner) external view returns (uint256);
+
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+
+    event Mint(address indexed sender, uint256 amount0, uint256 amount1);
+    event Burn(address indexed sender, uint256 amount0, uint256 amount1, address indexed to);
+    event Swap(
+        address indexed sender,
+        uint256 amount0In,
+        uint256 amount1In,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint256);
+    function factory() external view returns (address);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function price0CumulativeLast() external view returns (uint256);
+    function price1CumulativeLast() external view returns (uint256);
+    function kLast() external view returns (uint256);
+
+    function mint(address to) external returns (uint256 liquidity);
+    function burn(address to) external returns (uint256 amount0, uint256 amount1);
+    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
+    function skim(address to) external;
+    function sync() external;
+
+    function initialize(address, address) external;
+}
+
+contract FarmStake is Ownable {
+    // The CAKE TOKEN!
+    address public immutable lpToken;
+    address public immutable we2netToken;
+    address public immutable usdtToken;
+
+    // CAKE tokens created per day.
+    uint256 public rewardPerDay;
+    // Secends per day.
+    uint256 private constant secendsPerDay = 24*60*60;
+
+    // Info of pool.
+    uint256 public lastRewardTime; // Last reward time that CAKEs distribution occurs.
+    uint256 public accCakePerShare; // Accumulated CAKEs per share, times 1e12. See below.
+    uint256 private constant mathCalc = 1e12;
+    // Info of each user that stakes LP tokens.
+    mapping(address => uint256) public userAmount;// How many LP tokens the user has provided.
+    mapping(address => uint256) public userRewardDebt;
+    uint256 public totalStakedAmount;
+    // The timestamp when CAKE mining starts.
+    uint256 public startTime;
+    // The timestamp when CAKE mining ends.
+    uint256 public bonusEndTime;
+    //Allow to deposit.
+    bool public canDeposit = true;
+
+    uint256 private unlocked = 1;
+    modifier lock() {
+        require(unlocked == 1, 'LiquidityHub: LOCKED');
+        unlocked = 0;
+        _;
+        unlocked = 1;
+    }
+
+    event Deposit(address indexed user, uint256 amount);
+    event ClaimReward(address indexed user, uint256 amount);
+    event Withdraw(address indexed user, uint256 amount);
+    event EmergencyWithdraw(address indexed user, uint256 amount);
+    event ChangeDeposit(address indexed owner, bool canDeposit);
+    event AddLiquidity(address indexed user, uint256 we2netAmount, uint256 usdtAmount, uint256 lpAmount);
+    event RemoveLiquidity(address indexed user, uint256 we2netAmount, uint256 usdtAmount, uint256 lpAmount);
+
+    constructor(
+        address _lpToken,
+        address _we2netToken,
+        address _usdtToken,
+        uint256 _rewardPerDay,
+        uint256 _startTime,
+        uint256 _bonusEndTime
+    ) {
+        lpToken = _lpToken;
+        we2netToken = _we2netToken;
+        usdtToken = _usdtToken;
+        rewardPerDay = _rewardPerDay;
+        startTime = _startTime;
+        lastRewardTime = _startTime;
+        bonusEndTime = _bonusEndTime;
+    }
+
+    function setPoolInfo(uint256 _rewardPerDay, uint256 _bonusEndTime, bool _updatePoolOrNot) public onlyOwner {
+        require(lastRewardTime < _bonusEndTime, "FarmStake: set bonusEndTime error.");
+        if(_updatePoolOrNot) updatePool();
+        rewardPerDay = _rewardPerDay;
+        bonusEndTime = _bonusEndTime;
+    }
+
+    function setRewardPerDay(uint256 _rewardPerDay) public onlyOwner {
+        updatePool();
+        rewardPerDay = _rewardPerDay;
+    }
+
+    function setRewardEndTime(uint256 _bonusEndTime) public onlyOwner {
+        require(lastRewardTime < _bonusEndTime, "FarmStake: set bonusEndTime error.");
+        updatePool();
+        bonusEndTime = _bonusEndTime;
+    }
+
+    //Annualized Return:  12095 ==> 120.95%
+    function getAnnualizedReturn() public view returns (uint256)
+    {
+        uint256 totalSupply = IERC20(lpToken).totalSupply();
+        uint256 we2netPool = IERC20(we2netToken).balanceOf(lpToken);
+        uint256 mathValue = totalStakedAmount * we2netPool * 2; // poolStakeValue = mathValue / totalSupply;
+        if(mathValue == 0) return 0;
+        uint256 rate = rewardPerDay * 3650000 * totalSupply / mathValue;
+        return rate;
+    }
+
+    // Return reward multiplier over the given _from to _to block.
+    function getMultiplier(uint256 _from, uint256 _to) public view returns (uint256)
+    {
+        if(_to <= bonusEndTime) {
+            return (_to - _from);
+        } else if(_from >= bonusEndTime) {
+            return 0;
+        } else {
+            return (bonusEndTime - _from);
+        }
+    }
+
+    // Update reward variables of the farm's pool to be up-to-date.
+    function updatePool() public {
+        uint256 timestamp = block.timestamp;
+        if(timestamp <= lastRewardTime) {
+            return;
+        }
+        if(totalStakedAmount == 0) {
+            lastRewardTime = timestamp;
+            return;
+        }
+        uint256 multiplier = getMultiplier(lastRewardTime, timestamp);
+        uint256 cakeReward = multiplier * rewardPerDay / secendsPerDay;
+        accCakePerShare += cakeReward * mathCalc / totalStakedAmount;
+        lastRewardTime = timestamp;
+    }
+
+    // View function to see pending Reward on frontend.
+    function pendingReward(address _user) external view returns (uint256) {
+        uint256 cakePerShareCalc = accCakePerShare;
+        uint256 timestamp = block.timestamp;
+        if(timestamp > lastRewardTime && totalStakedAmount > 0) {
+            uint256 multiplier = getMultiplier(lastRewardTime, timestamp);
+            uint256 cakeReward = multiplier * rewardPerDay / secendsPerDay;
+            cakePerShareCalc += cakeReward * mathCalc / totalStakedAmount;
+        }
+        return (userAmount[_user] * cakePerShareCalc / mathCalc - userRewardDebt[_user]);
+    }
+
+    // Stake lp tokens to FarmStake contract
+    function deposit(uint256 _amount) public {
+        require(canDeposit, "FarmStake: can not deposit.");
+
+        updatePool();
+        if(userAmount[msg.sender] > 0) {
+            uint256 pending = userAmount[msg.sender] * accCakePerShare / mathCalc - userRewardDebt[msg.sender];
+            if(pending > 0) {
+                TransferHelper.safeTransfer(we2netToken, msg.sender, pending);
+                emit ClaimReward(msg.sender, pending);
+            }
+        }
+        if(_amount > 0) {
+            TransferHelper.safeTransferFrom(lpToken, msg.sender, address(this), _amount);
+            userAmount[msg.sender] += _amount;
+            totalStakedAmount += _amount;
+        }
+        userRewardDebt[msg.sender] = userAmount[msg.sender] * accCakePerShare / mathCalc;
+
+        emit Deposit(msg.sender, _amount);
+    }
+
+    function calcUsdt(address account) public view returns (uint256) {
+        uint256 totalSupply = IERC20(lpToken).totalSupply();
+        uint256 usdtPool = IERC20(usdtToken).balanceOf(lpToken);
+        uint256 usdtAmount = (userAmount[account] * usdtPool * 2) / totalSupply;
+        return usdtAmount;
+    }
+
+    function calcTotalUsdt() public view returns (uint256) {
+        uint256 totalSupply = IERC20(lpToken).totalSupply();
+        uint256 usdtPool = IERC20(usdtToken).balanceOf(lpToken);
+        uint256 usdtAmount = (totalStakedAmount * usdtPool * 2) / totalSupply;
+        return usdtAmount;
+    }
+
+    function calcOwnLpUsdt(address account) public view returns (uint256) {
+        uint256 totalSupply = IERC20(lpToken).totalSupply();
+        uint256 usdtPool = IERC20(usdtToken).balanceOf(lpToken);
+        uint256 ownLpAmount = IERC20(lpToken).balanceOf(account);
+        uint256 usdtAmount = (ownLpAmount * usdtPool * 2) / totalSupply;
+        return usdtAmount;
+    }
+
+    function calcLpUsdt(uint256 lpAmount) public view returns (uint256) {
+        uint256 totalSupply = IERC20(lpToken).totalSupply();
+        uint256 usdtPool = IERC20(usdtToken).balanceOf(lpToken);
+        uint256 usdtAmount = (lpAmount * usdtPool * 2) / totalSupply;
+        return usdtAmount;
+    }
+
+    function changeDepositState(bool _canDeposit) public onlyOwner{
+        canDeposit = _canDeposit;
+
+        emit ChangeDeposit(msg.sender, _canDeposit);
+    }
+
+    function claimReward() public {
+        updatePool();
+        uint256 pending = userAmount[msg.sender] * accCakePerShare / mathCalc - userRewardDebt[msg.sender];
+        require(pending > 0, "FarmStake: reward is null.");
+        TransferHelper.safeTransfer(we2netToken, msg.sender, pending);
+        userRewardDebt[msg.sender] = userAmount[msg.sender] * accCakePerShare / mathCalc;
+
+        emit ClaimReward(msg.sender, pending);
+    }
+
+    // Withdraw SYRUP tokens from STAKING.
+    function withdraw(uint256 _amount) public {
+        require(userAmount[msg.sender] >= _amount, "FarmStake: staking amount is not enough.");
+        updatePool();
+        uint256 pending = userAmount[msg.sender] * accCakePerShare / mathCalc - userRewardDebt[msg.sender];
+        userAmount[msg.sender] -= _amount;
+        userRewardDebt[msg.sender] = userAmount[msg.sender] * accCakePerShare / mathCalc;
+        if(pending > 0) {
+            TransferHelper.safeTransfer(we2netToken, msg.sender, pending);
+            emit ClaimReward(msg.sender, pending);
+        }
+        if(_amount > 0) {
+            TransferHelper.safeTransfer(lpToken, msg.sender, _amount);
+            totalStakedAmount -= _amount;
+        }
+
+        emit Withdraw(msg.sender, _amount);
+    }
+
+    // Withdraw without caring about rewards. EMERGENCY ONLY.
+    function emergencyWithdraw() public {
+        uint256 trans_amount = userAmount[msg.sender];
+        require(trans_amount > 0, "FarmStake: staking amount is null.");
+        delete userAmount[msg.sender];
+        delete userRewardDebt[msg.sender];
+        totalStakedAmount -= trans_amount;
+        TransferHelper.safeTransfer(lpToken, msg.sender, trans_amount);
+
+        emit EmergencyWithdraw(msg.sender, trans_amount);
+    }
+
+    // Withdraw when EMERGENCY ONLY.
+    function emergencyWithdraw(address tokenAddr, uint256 amount) public onlyOwner {
+        if(tokenAddr == lpToken) {
+            require(amount <= IERC20(lpToken).balanceOf(address(this)) - totalStakedAmount, "FarmStake: Permission Denied.");
+        }
+        TransferHelper.safeTransfer(tokenAddr, msg.sender, amount);
+    }
+
+    function addLiquidity(
+        uint256 we2netDesired,
+        uint256 usdtDesired,
+        uint256 we2netMin,
+        uint256 usdtMin,
+        address to
+    ) public lock returns (uint256 lpAmount) {
+        (uint256 we2netAmount, uint256 usdtAmount) = calcAddLiquidityAmount(we2netDesired, usdtDesired, we2netMin, usdtMin);
+
+        TransferHelper.safeTransferFrom(we2netToken, msg.sender, address(this), we2netAmount);
+        TransferHelper.safeTransfer(we2netToken, lpToken, we2netAmount);
+        TransferHelper.safeTransferFrom(usdtToken, msg.sender, lpToken, usdtAmount);
+
+        lpAmount = IPancakePair(lpToken).mint(to);
+
+        emit AddLiquidity(msg.sender, we2netAmount, usdtAmount, lpAmount);
+    }
+
+    function removeLiquidity(uint256 amount) public lock {
+        require(IERC20(lpToken).balanceOf(msg.sender) >= amount, "FarmStake: liquidity is not enough.");
+
+        TransferHelper.safeTransferFrom(lpToken, msg.sender, lpToken, amount); // send liquidity to pair
+        (uint256 amount0, uint256 amount1) = IPancakePair(lpToken).burn(address(this));
+        if(we2netToken < usdtToken) {
+            TransferHelper.safeTransfer(we2netToken, msg.sender, amount0);
+            TransferHelper.safeTransfer(usdtToken, msg.sender, amount1);
+            emit RemoveLiquidity(msg.sender, amount0, amount1, amount);
+        } else {
+            TransferHelper.safeTransfer(we2netToken, msg.sender, amount1);
+            TransferHelper.safeTransfer(usdtToken, msg.sender, amount0);
+            emit RemoveLiquidity(msg.sender, amount1, amount0, amount);
+        }
+    }
+
+    function calcAddLiquidityAmount(
+        uint256 we2netDesired,
+        uint256 usdtDesired,
+        uint256 we2netMin,
+        uint256 usdtMin
+    ) public view returns (uint256 we2netAmount, uint256 usdtAmount) {
+        require(we2netDesired > 0 && usdtDesired > 0, "FarmStake: INSUFFICIENT_AMOUNT");
+
+        (uint112 reserveA, uint112 reserveB, ) = IPancakePair(lpToken).getReserves();
+        uint256 we2netReserve;
+        uint256 usdtReserve;
+        if(we2netToken < usdtToken) {
+            (we2netReserve, usdtReserve) = (reserveA, reserveB);
+        } else {
+            (we2netReserve, usdtReserve) = (reserveB, reserveA);
+        }
+        if(reserveA == 0 && reserveB == 0) {
+            (we2netAmount, usdtAmount) = (we2netDesired, usdtDesired);
+        } else {
+            require(reserveA > 0 && reserveB > 0, "FarmStake: INSUFFICIENT_LIQUIDITY");
+            uint256 usdtOptimal = we2netDesired * usdtReserve / we2netReserve;
+            if (usdtOptimal <= usdtDesired) {
+                require(usdtOptimal >= usdtMin, "FarmStake: INSUFFICIENT_B_AMOUNT");
+                (we2netAmount, usdtAmount) = (we2netDesired, usdtOptimal);
+            } else {
+                uint256 we2netOptimal = usdtDesired * we2netReserve / usdtReserve;
+                assert(we2netOptimal <= we2netDesired);
+                require(we2netOptimal >= we2netMin, "FarmStake: INSUFFICIENT_A_AMOUNT");
+                (we2netAmount, usdtAmount) = (we2netOptimal, usdtDesired);
+            }
+        }
+    }
+}

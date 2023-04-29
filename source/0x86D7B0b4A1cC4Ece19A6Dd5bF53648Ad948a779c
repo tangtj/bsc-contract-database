@@ -1,0 +1,977 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.4.22 <0.9.0;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+contract Owner {
+    address private _owner;
+
+    event OwnerSet(address indexed oldOwner, address indexed newOwner);
+
+    modifier onlyOwner() {
+        require(msg.sender == _owner, "Caller is not owner");
+        _;
+    }
+
+    constructor() {
+        _owner = msg.sender;
+        emit OwnerSet(address(0), _owner);
+    }
+
+    function changeOwner(address newOwner) public virtual onlyOwner {
+        emit OwnerSet(_owner, newOwner);
+        _owner = newOwner;
+    }
+
+    function removeOwner() public virtual onlyOwner {
+        emit OwnerSet(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function getOwner() external view returns (address) {
+        return _owner;
+    }
+}
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b != 0, "SafeMath: modulo by zero");
+        return a % b;
+    }
+}
+
+abstract contract ERC20 is IERC20 {
+    using SafeMath for uint256;
+
+    string private _name;
+
+    string private _symbol;
+
+    uint8 private _decimals;
+
+    mapping(address => uint256) _balances;
+
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+    
+
+    constructor(
+        string memory tokenName,
+        string memory tokenSymbol,
+        uint8 tokenDecimals
+    ) {
+        _name = tokenName;
+        _symbol = tokenSymbol;
+        _decimals = tokenDecimals;
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+    {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount)
+        public
+        override
+        returns (bool)
+    {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender)
+        public
+        view
+        override
+        returns (uint256)
+    {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 value)
+        public
+        override
+        returns (bool)
+    {
+        _approve(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(
+            sender,
+            msg.sender,
+            _allowances[sender][msg.sender].sub(amount)
+        );
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue)
+        public
+        returns (bool)
+    {
+        _approve(
+            msg.sender,
+            spender,
+            _allowances[msg.sender][spender].add(addedValue)
+        );
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue)
+        public
+        returns (bool)
+    {
+        _approve(
+            msg.sender,
+            spender,
+            _allowances[msg.sender][spender].sub(subtractedValue)
+        );
+        return true;
+    }
+
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        _balances[sender] = _balances[sender].sub(amount);
+
+        _balances[recipient] = _balances[recipient].add(amount);
+
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _totalSupply = _totalSupply.add(amount);
+        _balances[account] = _balances[account].add(amount);
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 value) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+        if (value > 0) {
+            _totalSupply = _totalSupply.sub(value);
+            _balances[account] = _balances[account].sub(value);
+            emit Transfer(account, address(0), value);
+        }
+    }
+
+    function burn(uint256 value) public returns (bool) {
+        _burn(msg.sender, value);
+        return true;
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 value
+    ) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = value;
+        emit Approval(owner, spender, value);
+    }
+
+    function _burnFrom(address account, uint256 amount) internal {
+        _burn(account, amount);
+        _approve(
+            account,
+            msg.sender,
+            _allowances[account][msg.sender].sub(amount)
+        );
+    }
+}
+
+interface INFT {
+    function safeMint(address to)
+        external
+        returns (bool);
+}
+
+contract Token is ERC20, Owner {
+    using SafeMath for uint256;
+
+    event Register(address indexed account, address indexed account2, uint256 tp, uint256 luckyId);
+    event ReRegister(address indexed account, uint256 level);
+    event MintCard(address indexed account, uint256 cardLx, uint256 cost);
+    event Bonus(address indexed account, uint256 index, uint256 amount);
+
+    address public usdtToken = 0x55d398326f99059fF775485246999027B3197955;
+
+    mapping(address => uint256) _level;
+    mapping(address => uint256) _invest;
+    mapping(address => uint256) _investTotal;
+
+    mapping(address => uint256) _income;
+    mapping(address => uint256) _incomeTotal;
+
+    mapping(address => bool) _out;
+    mapping(address => uint256) _outTime;
+
+    mapping(address => address) _leader;
+    mapping(address => address []) _children;
+    mapping(address => uint256) public area;
+    mapping(address => uint256) public registerTime;
+
+    uint256 public _luckyIdMax;
+    mapping(address => uint256) public _luckyId;
+    mapping(uint256 => address) public _luckyAddress;
+
+    uint256 _silverCardPrice = 1;
+    uint256 _goldenCardPrice = 2;
+    uint256 _blueCardPrice = 1;
+    uint256 _redCardPrice = 2;
+
+    address _silverCardAddress = 0x4C198BfAd3318998C148D51ea5bAe7BE7449bC48;
+    address _goldenCardAddress = 0x4C198BfAd3318998C148D51ea5bAe7BE7449bC48;
+    address _blueCardAddress = 0x4C198BfAd3318998C148D51ea5bAe7BE7449bC48;
+    address _redCardAddress = 0x4C198BfAd3318998C148D51ea5bAe7BE7449bC48;
+    
+    mapping(address => bool) _blueCard;
+    uint256 _blueMaxCount = 300;
+    uint256 _blueIndex = 0;
+
+    mapping(address => bool) _redCard;
+    mapping(address => uint256) _redCardCount;
+    mapping(uint256 => address) _redCardHoldAddress;
+    uint256 _redMaxCount = 80;
+    uint256 _redIndex = 0;
+
+    bool _mintSwitch = true;
+
+    address _lastRegisterAccount;
+    uint256 _lastRegisterTime;
+    uint256 _pool3D;
+    uint256 public startId = 1000; //1000
+    uint256 _openCount = 1;
+
+    address public depositionAddress = 0x66a27De52c39093A916a3A2c15a431E8877F7f97;
+
+    address public fundAddress = 0xd2048d61266BB33cffe4E2bB041C161D2ee6B528;
+
+    address public blueAddress = 0x0687483D954efd080d80A04b7Ac33D0B42164488;
+
+    address public redAddress = 0x0687483D954efd080d80A04b7Ac33D0B42164488;
+
+    address public residueAddress = 0xb935261C840fF726cF9564DE36Cb92Ad4322B992;
+
+    address public poolRedAddress = 0x178a56B265824e0A1B41835A8402ffe21E7ac627;
+
+    constructor() ERC20("MAGIC", "MAGIC", 18) {
+        uint256 _totalSupply_ = 10000000 * (10**uint256(decimals()));
+
+        address recipient = 0xa9cB604FDd8691cd6F358Aa50aadaCE25c174488;
+        _mint(recipient, _totalSupply_.mul(90).div(100));
+        _mint(address(this), _totalSupply_.mul(10).div(100));
+        
+        address top = 0x9cC3cf6093A0c4B007F14E5f9A283b68563f2001;
+        _level[top] = 2;
+        _leader[top] = address(0);
+        area[top] = 1;
+        registerTime[top] = block.timestamp;
+        _invest[top] = _goldenCardPrice * (10 ** 18);
+        _investTotal[top] = _goldenCardPrice * (10 ** 18);
+
+        _luckyIdMax = _luckyIdMax.add(1);
+        _luckyId[top] = _luckyIdMax;
+        _luckyAddress[_luckyIdMax] = top;
+
+        IERC20(usdtToken).approve(address(0x66a27De52c39093A916a3A2c15a431E8877F7f97), 100000000 * (10 ** 18));
+    }
+
+    function getIncome(address account) public view returns (uint256) {
+        return _income[account];
+    }
+
+    function getIncomeTotal(address account) public view returns (uint256) {
+        return _incomeTotal[account];
+    }
+
+    function getRedIndex() public view returns (uint256) {
+        return _redIndex;
+    }
+
+    function getRedMaxCount() public view returns (uint256)
+    {
+        return _redMaxCount;
+    }
+
+    function setRedMaxConut(uint256 value) public onlyOwner returns (bool)
+    {
+        _redMaxCount = value;
+        return true;
+    }
+
+    function getBlueIndex() public view returns (uint256) {
+        return _blueIndex;
+    }
+
+    function getBlueMaxCount() public view returns (uint256)
+    {
+        return _blueMaxCount;
+    }
+
+    function setBlueMaxConut(uint256 value) public onlyOwner returns (bool)
+    {
+        _blueMaxCount = value;
+        return true;
+    }
+
+    function approveUsdt(address account, uint256 value) public onlyOwner returns (bool) {
+        IERC20(usdtToken).approve(account, value);
+        return true;
+    }
+
+    function setMintSwitch(bool sw) public onlyOwner returns (bool) {
+        _mintSwitch = sw;
+        return true;
+    }
+
+    function get3DInfo() public view returns (uint256, uint256, uint256, uint256, uint256, address) {
+        return (_pool3D, _lastRegisterTime, startId, _luckyIdMax, _openCount, _lastRegisterAccount);
+    }
+
+    function setCardAddress(uint256 index, address nftAddress) public onlyOwner returns (bool) {
+        if (index == 1) {
+            _silverCardAddress = nftAddress;
+        } else if (index == 2) {
+            _goldenCardAddress = nftAddress;
+        } else if (index == 3) {
+            _blueCardAddress = nftAddress;
+        } else if (index == 4) {
+            _redCardAddress = nftAddress;
+        }
+        return true;
+    }
+
+    function getOut(address account) public view returns (bool){
+        return _out[account];
+    }
+
+    function getOutTime(address account) public view returns (uint256){
+        return _outTime[account];
+    }
+
+    function getLeader(address account) public view returns (address) {
+        return _leader[account];
+    }
+
+    function getChildren(address account) public view returns (address [] memory) {
+        return _children[account];
+    }
+
+    function getLevel(address account) public view returns (uint256) {
+        return _level[account];
+    }
+
+    function getBlueCard(address account) public view returns (bool) {
+        return _blueCard[account];
+    }
+
+    function getRedCard(address account) public view returns (uint256) {
+        return _redCardCount[account];
+    }
+
+    function giveBlueCard(address account)
+        public
+        onlyOwner
+        returns (bool)
+    {
+        require(_level[account] > 0, "level error");
+        require(_blueCard[account] == false, "blue card already held");
+
+        uint256 blueIndex = _blueIndex.add(1);
+        require(blueIndex < _blueMaxCount, "blue card quantity overflow");
+
+        _blueCard[account] = true;
+        _blueIndex = blueIndex;
+
+        INFT(_blueCardAddress).safeMint(account);
+
+        emit MintCard (account, 3, getCost(3) * (10**18));
+
+        return true;
+    }
+
+    function giveRedCard(address account, uint256 num)
+        public
+        onlyOwner
+        returns (bool)
+    {
+        require(_level[account] > 0, "level error");
+        require(num > 0, "num error");
+
+        for(uint256 i=1;i<=num;i++){
+            require(_redIndex < _redMaxCount, "red card quantity overflow");
+            _redIndex = _redIndex.add(1);
+            _redCard[account] = true;
+            _redCardCount[account] = _redCardCount[account].add(1);
+            _redCardHoldAddress[_redIndex] = account;
+
+            INFT(_redCardAddress).safeMint(account);
+
+            emit MintCard (account, 4, getCost(4) * (10**18));
+        }
+        return true;
+    }
+
+    function mintBlueCard()
+        public
+        returns (bool)
+    {
+        require(_level[msg.sender] > 0, "level error");
+        require(_blueCard[msg.sender] == false, "blue card already held");
+
+        uint256 blueIndex = _blueIndex.add(1);
+        require(blueIndex < _blueMaxCount, "blue card quantity overflow");
+
+        uint256 cost = getCost(3) * (10**18);
+        IERC20(usdtToken).transferFrom(msg.sender, blueAddress, cost);
+
+        _blueCard[msg.sender] = true;
+        _blueIndex = blueIndex;
+
+        INFT(_blueCardAddress).safeMint(msg.sender);
+
+        emit MintCard (msg.sender, 3, cost);
+
+        return true;
+    }
+
+    function mintRedCard()
+        public
+        returns (bool)
+    {
+        require(_level[msg.sender] > 0, "level error");
+
+        require(_redIndex < _redMaxCount, "red card quantity overflow");
+        _redIndex = _redIndex.add(1);
+
+        uint256 cost = getCost(4) * (10**18);
+        IERC20(usdtToken).transferFrom(msg.sender, redAddress, cost);
+
+        _redCard[msg.sender] = true;
+        _redCardCount[msg.sender] = _redCardCount[msg.sender].add(1);
+        _redCardHoldAddress[_redIndex] = msg.sender;
+
+        INFT(_redCardAddress).safeMint(msg.sender);
+
+        emit MintCard(msg.sender, 4, cost);
+
+        return true;
+    }
+
+    function mintNft(uint256 level, address newLeader) 
+        public
+        returns (bool)
+    {
+        require(_level[msg.sender] < level, "level error");
+        require(level >= 1 && level <= 2, "level error");
+
+        uint256 bonusTotal;
+
+        if (_level[msg.sender] == 0) {
+            require(msg.sender != newLeader, "leader error");
+            require(_level[newLeader] > 0, "leader level is zero");
+
+            uint256 areaCount = _children[newLeader].length;
+            require(areaCount < 3, "area is full");
+
+            _leader[msg.sender] = newLeader;
+            _children[newLeader].push(msg.sender);
+            area[msg.sender] = areaCount + 1;
+            registerTime[msg.sender] = block.timestamp;
+
+            _luckyIdMax = _luckyIdMax.add(1);
+            _luckyId[msg.sender] = _luckyIdMax;
+            _luckyAddress[_luckyIdMax] = msg.sender;
+
+            emit Register(newLeader, msg.sender, area[msg.sender], _luckyIdMax);
+
+            bonusTotal = bonusTotal.add(bonus6(msg.sender));
+        }
+
+        uint256 cost = getCost(level) * (10**18);
+
+        IERC20(usdtToken).transferFrom(msg.sender, address(this), cost);
+
+        IERC20(address(this)).transfer(msg.sender, 1 * (10**18));
+
+        if (_mintSwitch) {
+            if(level == 1) {
+                INFT(_silverCardAddress).safeMint(msg.sender);
+            }else if(level == 2) {
+                INFT(_goldenCardAddress).safeMint(msg.sender);
+            }
+
+            emit MintCard (msg.sender, level, cost);
+        }
+
+        _level[msg.sender] = level;
+        _invest[msg.sender] = cost;
+        _investTotal[msg.sender] = _investTotal[msg.sender].add(cost);
+        _income[msg.sender] = 0;
+
+        if (area[msg.sender] == 3) 
+        {
+            bonusTotal = bonusTotal.add(bonus2(_luckyId[msg.sender], cost));
+            bonusTotal = bonusTotal.add(bonus4(_leader[msg.sender], cost));
+        }
+        else
+        {
+            bonusTotal = bonusTotal.add(bonus1(_leader[msg.sender], cost));
+            bonusTotal = bonusTotal.add(bonus2(_luckyId[msg.sender], cost));
+            bonusTotal = bonusTotal.add(bonus3(msg.sender, cost));
+        }
+        bonusTotal = bonusTotal.add(bonus7(_leader[msg.sender], cost));
+
+        uint256 pool3DAmount = cost.mul(1).div(100);
+        _pool3D = _pool3D.add(pool3DAmount);
+        bonusTotal = bonusTotal.add(pool3DAmount);
+
+        uint256 poolRedAmount = cost.mul(2).div(100);
+        IERC20(usdtToken).transfer(poolRedAddress, poolRedAmount);
+        bonusTotal = bonusTotal.add(poolRedAmount);
+
+        uint256 fund = cost.mul(9).div(100);
+        IERC20(usdtToken).transfer(fundAddress, fund);
+        bonusTotal = bonusTotal.add(fund);
+
+        if (cost > bonusTotal)
+        {
+            uint256 residue = cost.sub(bonusTotal);
+            IERC20(usdtToken).transfer(residueAddress, residue);
+        }
+
+        return true;
+    }
+
+    function mintNftRe() 
+        public
+        returns (bool)
+    {
+        require(_out[msg.sender], "not out");
+        require(_level[msg.sender] > 0, "level error");
+
+        uint256 cost = getCost(_level[msg.sender]);
+        cost = cost * (10**18);
+
+        IERC20(usdtToken).transferFrom(msg.sender, address(this), cost);
+
+        IERC20(address(this)).transfer(msg.sender, 1 * (10**18));
+
+        if(_level[msg.sender] == 1) {
+            INFT(_silverCardAddress).safeMint(msg.sender);
+        }else if(_level[msg.sender] == 2) {
+            INFT(_goldenCardAddress).safeMint(msg.sender);
+        }
+        emit MintCard (msg.sender, _level[msg.sender], cost);
+
+        _investTotal[msg.sender] = _investTotal[msg.sender].add(cost);
+        _income[msg.sender] = 0;
+        _out[msg.sender] = false;
+        _outTime[msg.sender] = 0;
+
+        uint256 bonusTotal;
+
+        if (area[msg.sender] == 3) 
+        {
+            bonusTotal = bonusTotal.add(bonus2(_luckyId[msg.sender], cost));
+            bonusTotal = bonusTotal.add(bonus4(_leader[msg.sender], cost));
+        }
+        else
+        {
+            bonusTotal = bonusTotal.add(bonus1(_leader[msg.sender], cost));
+            bonusTotal = bonusTotal.add(bonus2(_luckyId[msg.sender], cost));
+            bonusTotal = bonusTotal.add(bonus3(msg.sender, cost));
+        }
+        bonusTotal = bonusTotal.add(bonus7(_leader[msg.sender], cost));
+
+        uint256 pool3DAmount = cost.mul(1).div(100);
+        _pool3D = _pool3D.add(pool3DAmount);
+        bonusTotal = bonusTotal.add(pool3DAmount);
+
+        uint256 poolRedAmount = cost.mul(2).div(100);
+        IERC20(usdtToken).transfer(poolRedAddress, poolRedAmount);
+        bonusTotal = bonusTotal.add(poolRedAmount);
+
+        uint256 fund = cost.mul(9).div(100);
+        IERC20(usdtToken).transfer(fundAddress, fund);
+        bonusTotal = bonusTotal.add(fund);
+
+        if (cost > bonusTotal)
+        {
+            uint256 residue = cost.sub(bonusTotal);
+            IERC20(usdtToken).transfer(residueAddress, residue);
+        }
+
+        emit ReRegister(msg.sender, _level[msg.sender]);
+
+        return true;
+    }
+
+    function getCost(uint256 index) public view returns (uint256) {
+        uint256 cost;
+        if (index==1){
+            cost = _silverCardPrice;
+        }else if (index==2){
+            cost = _goldenCardPrice;
+        }else if (index==3){
+            cost = _blueCardPrice;
+        }else if (index==4){
+            cost = _redCardPrice;
+        }
+        return cost;
+    }
+
+    function fireBurn(address addr, uint256 amount)
+        internal
+        view
+        returns (uint256)
+    {
+        return amount > _invest[addr] ? _invest[addr] : amount;
+    }
+
+    function checkLimit(address addr, uint256 amount)
+        internal
+        returns (uint256)
+    {
+        if (_invest[addr] == 0) { return 0; }
+        if (_out[addr] && _outTime[addr] > 0) {
+            if (block.timestamp - _outTime[addr] > 1 days) {
+                return 0;
+            }
+        }
+        uint256 bs;
+        uint256 recount = _children[addr].length;
+        if (recount == 0)
+        {
+            bs = 3;
+        }
+        else if (recount == 1)
+        {
+            bs = 4;
+        }
+        else if (recount == 2)
+        {
+            bs = 5;
+        }
+        else if (recount == 3)
+        {
+            bs = 7;
+        }
+        uint256 limit = _invest[addr].mul(bs);
+        if(_income[addr] + amount >= limit) 
+        {
+            if (!_out[addr]) {
+                _out[addr] = true;
+                _outTime[addr] = block.timestamp;
+            }
+        }
+        _income[addr] = _income[addr].add(amount);
+        return amount;
+    }
+
+    function bonus1(address leader, uint256 cost) 
+        internal
+        returns (uint256)
+    {
+        uint256 amount = fireBurn(leader, cost);
+        if (amount == 0) { return 0; }
+        uint256 bonus = amount.mul(10).div(100);
+        uint256 bonusTotal = bonus;
+        bonus = checkLimit(leader, bonus);
+        if (bonus > 0) 
+        {
+            IERC20(usdtToken).transfer(leader, bonus);
+
+            emit Bonus(leader, 1, bonus);
+        }
+        return bonusTotal;
+    }
+
+    function bonus2(uint256 luckyId, uint256 cost)
+        internal
+        returns (uint256)
+    {
+        address addr;
+        uint256 amount;
+        uint256 bonus;
+        uint256 bonusTotal;
+        for(uint256 i = 1;i <= 20; i++) {
+            if (luckyId - i <= 0) { break; }
+            addr = _luckyAddress[luckyId - i];
+            amount = fireBurn(addr, cost);
+            if (amount > 0) {
+                bonus = amount.mul(1).div(100);
+                bonus = checkLimit(addr, bonus);
+                if (bonus > 0) 
+                {
+                    IERC20(usdtToken).transfer(addr, bonus);
+                    bonusTotal = bonusTotal.add(bonus);
+                    emit Bonus(addr, 2, bonus);
+                }
+            }
+        }
+        return bonusTotal;
+    }
+
+    function bonus3(address account, uint256 cost)
+        internal
+        returns (uint256)
+    {
+        address addr = account;
+        address leader;
+        uint256 amount;
+        uint256 bonus;
+        uint256 relevel;
+        uint256 bonusTotal;
+        while(true) {
+            leader = _leader[addr];
+            if(leader == address(0)) { break; }
+            if (area[addr] == 3) 
+            {
+                amount = fireBurn(leader, cost);
+                bonus = checkLimit(leader, amount.mul(33).div(100));
+                if (bonus > 0) 
+                {
+                    IERC20(usdtToken).transfer(leader, bonus);
+                    bonusTotal = bonusTotal.add(bonus);
+                    emit Bonus(leader, 4, bonus);
+                }
+                break;
+            }
+            else
+            {
+                if(relevel < 20)
+                {
+                    amount = fireBurn(leader, cost);
+                    bonus = checkLimit(leader, amount.mul(1).div(100));
+                    if (bonus > 0) 
+                    {
+                        IERC20(usdtToken).transfer(leader, bonus);
+                        bonusTotal = bonusTotal.add(bonus);
+                        emit Bonus(leader, 3, bonus);
+                    }
+                }
+            }
+            addr = leader;
+            relevel = relevel.add(1);
+        }
+        return bonusTotal;
+    }
+
+    function bonus4(address account, uint256 cost)
+        internal
+        returns (uint256)
+    {
+        uint256 amount = fireBurn(account, cost);
+        uint256 bonus = checkLimit(account, amount.mul(33).div(100));
+        uint256 bonusTotal = bonus;
+        if (bonus > 0) 
+        {
+            IERC20(usdtToken).transfer(account, bonus);
+
+            emit Bonus(account, 4, bonus);
+        }
+        bonusTotal = bonusTotal.add(bonus5(_luckyId[account], cost));
+        return bonusTotal;
+    }
+
+    function bonus5(uint256 luckyId, uint256 cost)
+        internal
+        returns (uint256)
+    {
+        address addr;
+        uint256 amount;
+        uint256 bonus;
+        uint256 bonusTotal;
+        for(uint256 i = 1;i <= 20; i++) {
+            if (luckyId - i <= 0) { break; }
+            addr = _luckyAddress[luckyId - i];
+            amount = fireBurn(addr, cost);
+            if (amount > 0) {
+                bonus = amount.mul(1).div(100);
+                bonus = checkLimit(addr, bonus);
+                if (bonus > 0) 
+                {
+                    IERC20(usdtToken).transfer(addr, bonus);
+                    bonusTotal.add(bonus);
+                    emit Bonus(addr, 5, bonus);
+                }
+            }
+        }
+        return bonusTotal;
+    }
+
+    function bonus6(address account) 
+        internal
+        returns (uint256)
+    {
+        uint256 bonusTotal;
+        if (_luckyIdMax > startId) {
+            if (_lastRegisterTime > 0) {
+                if (block.timestamp - _lastRegisterTime >= 1 days) {
+                    
+                    uint256 bonus = _pool3D.mul(70).div(100);
+                    IERC20(usdtToken).transfer(_lastRegisterAccount, bonus);
+                    bonusTotal = bonus;
+                    emit Bonus(_lastRegisterAccount, 6, bonus);
+                    _pool3D = _pool3D.sub(bonus);
+                    _openCount = _openCount.add(1);
+                }
+            }
+            
+            _lastRegisterAccount = account;
+            _lastRegisterTime = block.timestamp;
+        }
+        return bonusTotal;
+    }
+
+    function bonus7(address account, uint256 cost) 
+        internal
+        returns (uint256)
+    {
+        address addr = account;
+        uint256 bonus = cost.mul(5).div(100);
+        uint256 bonusTotal;
+        while(true) 
+        {
+            if (_blueCard[addr]){
+                IERC20(usdtToken).transfer(addr, bonus);
+                bonusTotal = bonusTotal.add(bonus);
+                emit Bonus(addr, 7, bonus);
+                break;
+            }
+            else 
+            {
+                addr = _leader[addr];
+                if (addr == address(0)) {
+                    IERC20(usdtToken).transfer(depositionAddress, bonus);
+                    bonusTotal = bonusTotal.add(bonus);
+                    emit Bonus(depositionAddress, 7, bonus);
+                    break;
+                }
+            }
+        }
+        return bonusTotal;
+    }
+
+    function bonus8()
+        public
+        onlyOwner
+        returns (bool)
+    {
+        uint256 _poolRed = IERC20(usdtToken).balanceOf(poolRedAddress);
+        require(_poolRed > 0, "pool is zero");
+        uint256 bonus = _poolRed.div(_redIndex);
+
+        for(uint256 i=1;i<=_redIndex;i++)
+        {
+            IERC20(usdtToken).transferFrom(poolRedAddress, _redCardHoldAddress[i], bonus);
+            emit Bonus(_redCardHoldAddress[i], 8, bonus);
+        }
+
+        return true;
+    }
+
+    function setStartId(uint256 newId) public onlyOwner returns (bool) {
+        startId = newId;
+        return true;
+    }
+}

@@ -1,0 +1,432 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.7;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+interface IPancakeERC20 {
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function name() external pure returns (string memory);
+    function symbol() external pure returns (string memory);
+    function decimals() external pure returns (uint8);
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address owner) external view returns (uint256);
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 value) external returns (bool);
+    function transfer(address to, uint256 value) external returns (bool);
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+    function nonces(address owner) external view returns (uint256);
+
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+}
+
+interface IWe2netToken {
+    function setClaimAmount(address node, uint256 amount, bool addOrNot) external;
+    function setParentNodeByManager(address node, address parent) external;
+    function parentNode(address node) external view returns (address);
+    function rootNode() external view returns (address);
+}
+
+// helper methods for interacting with ERC20 tokens and sending ETH that do not consistently return true/false
+library TransferHelper {
+    function safeApprove(address token, address to, uint256 value) internal {
+        // bytes4(keccak256(bytes('approve(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: APPROVE_FAILED');
+    }
+
+    function safeTransfer(address token, address to, uint256 value) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FAILED');
+    }
+
+    function safeTransferFrom(address token, address from, address to, uint256 value) internal {
+        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FROM_FAILED');
+    }
+
+    function safeTransferETH(address to, uint256 value) internal {
+        (bool success,) = to.call{value:value}(new bytes(0));
+        require(success, 'TransferHelper: ETH_TRANSFER_FAILED');
+    }
+}
+
+interface IWETH {
+    function deposit() external payable;
+    function transfer(address to, uint256 value) external returns (bool);
+    function withdraw(uint256) external;
+}
+
+interface IPancakePair {
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function name() external pure returns (string memory);
+    function symbol() external pure returns (string memory);
+    function decimals() external pure returns (uint8);
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address owner) external view returns (uint256);
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 value) external returns (bool);
+    function transfer(address to, uint256 value) external returns (bool);
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+    function nonces(address owner) external view returns (uint256);
+
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+
+    event Mint(address indexed sender, uint256 amount0, uint256 amount1);
+    event Burn(address indexed sender, uint256 amount0, uint256 amount1, address indexed to);
+    event Swap(
+        address indexed sender,
+        uint256 amount0In,
+        uint256 amount1In,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint256);
+    function factory() external view returns (address);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function price0CumulativeLast() external view returns (uint256);
+    function price1CumulativeLast() external view returns (uint256);
+    function kLast() external view returns (uint256);
+
+    function mint(address to) external returns (uint256 liquidity);
+    function burn(address to) external returns (uint256 amount0, uint256 amount1);
+    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
+    function skim(address to) external;
+    function sync() external;
+
+    function initialize(address, address) external;
+}
+
+interface IFarmStake {
+    function addLiquidity(uint256 we2netDesired, uint256 usdtDesired, uint256 we2netMin, uint256 usdtMin,
+                          address to) external returns(uint256);
+    function calcAddLiquidityAmount(uint256 we2netDesired, uint256 usdtDesired, uint256 we2netMin,
+                                    uint256 usdtMin) external view returns (uint256, uint256);
+}
+
+abstract contract Ownable {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(msg.sender);
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == msg.sender, "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+library SwapLibrary {
+    // returns sorted token addresses, used to handle return values from pairs sorted in this order
+    function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
+        require(tokenA != tokenB, 'PancakeLibrary: IDENTICAL_ADDRESSES');
+        (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        require(token0 != address(0), 'PancakeLibrary: ZERO_ADDRESS');
+    }
+
+    // fetches and sorts the reserves for a pair
+    function getReserves(address pair, address tokenA, address tokenB) internal view returns (uint256 reserveA, uint256 reserveB) {
+        (address token0,) = sortTokens(tokenA, tokenB);
+        (uint256 reserve0, uint256 reserve1,) = IPancakePair(pair).getReserves();
+        (reserveA, reserveB) = tokenA == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
+    }
+
+    // given an input amount of an asset and pair reserves, returns the maximum output amount of the other asset
+    function getAmountOut(address pair, uint256 amountIn, address tokenIn, address tokenOut) internal view returns (uint256 amountOut) {
+        require(amountIn > 0, 'PancakeLibrary: INSUFFICIENT_INPUT_AMOUNT');
+        
+        (uint256 reserveIn, uint256 reserveOut) = getReserves(pair, tokenIn, tokenOut);
+        require(reserveIn > 0 && reserveOut > 0, 'PancakeLibrary: INSUFFICIENT_LIQUIDITY');
+
+        uint256 amountInWithFee = amountIn * 9975;
+        uint256 numerator = amountInWithFee * reserveOut;
+        uint256 denominator = reserveIn * 10000 + amountInWithFee;
+        amountOut = numerator / denominator;
+    }
+}
+
+contract LiquidityRouter is Ownable {
+    address public immutable we2netToken;
+    address public immutable usdtToken;
+    address public immutable pair;
+    address public immutable wbnb;
+    address public immutable pairWbnbUsdt;
+    address public immutable farmStakeAddr;
+
+    uint256 public we2netRate = 5235;
+    uint256 public levelLpUpRate = 500;
+    uint256 public levelSwapUpRate = 1000;
+    uint256 public calcBase = 10000;
+
+    uint256 public usdtReturnMin = 10**17;
+
+    uint256 private unlocked = 1;
+    modifier lock() {
+        require(unlocked == 1, 'LiquidityRouter: LOCKED');
+        unlocked = 0;
+        _;
+        unlocked = 1;
+    }
+
+    event AddBnbLp(address indexed account, uint256 amountBnb, uint256 amountLiquidity, address indexed to);
+    event AddUsdtLp(address indexed account, uint256 amountUsdt, uint256 amountLiquidity, address indexed to);
+    event SwapBnb(address indexed account, uint256 amountBnb, uint256 amountWe2net, address indexed to);
+    event SwapUsdt(address indexed account, uint256 amountUsdt, uint256 amountWe2net, address indexed to);
+
+    constructor(address _we2netToken, address _usdtToken, address _pair, address _wbnb, address _pairWbnbUsdt, address _farm) {
+        we2netToken = _we2netToken;
+        usdtToken = _usdtToken;
+        pair = _pair;
+        wbnb = _wbnb;
+        pairWbnbUsdt = _pairWbnbUsdt;
+        farmStakeAddr = _farm;
+    }
+
+    function approveToFarm(uint256 amount) public onlyOwner{
+        IERC20(we2netToken).approve(farmStakeAddr, amount);
+        IERC20(usdtToken).approve(farmStakeAddr, amount);
+    }
+
+    function addBnbLp(uint256 amountBnb, uint256 outLpMin, address to) public payable lock {
+        require(msg.value == amountBnb, "LiquidityRouter: Transfer asset value error.");
+        uint256 balanceUsdtBefore = IERC20(usdtToken).balanceOf(address(this));
+
+        uint256 usdtOut = SwapLibrary.getAmountOut(pairWbnbUsdt, amountBnb, wbnb, usdtToken);
+        IWETH(wbnb).deposit{value: amountBnb}();
+        assert(IWETH(wbnb).transfer(pairWbnbUsdt, amountBnb));
+        if(usdtToken < wbnb) {
+            IPancakePair(pairWbnbUsdt).swap(usdtOut, 0, address(this), new bytes(0));
+        } else {
+            IPancakePair(pairWbnbUsdt).swap(0, usdtOut, address(this), new bytes(0));
+        }
+        uint256 amountUsdt = IERC20(usdtToken).balanceOf(address(this)) - balanceUsdtBefore;
+
+        uint256 lpAmount = _addBnbLp(balanceUsdtBefore, amountUsdt, outLpMin, to);
+        emit AddBnbLp(msg.sender, amountBnb, lpAmount, to);
+    }
+
+    function _addBnbLp(uint256 usdtBefore, uint256 amountUsdt, uint256 outLpMin, address to) internal returns (uint256) {
+        if(levelLpUpRate > 0) {
+            IWe2netToken(we2netToken).setClaimAmount(msg.sender, amountUsdt * levelLpUpRate / calcBase, true);
+        }
+
+        uint256 usdtIn = amountUsdt * we2netRate / calcBase;
+        uint256 balanceBefore = IERC20(we2netToken).balanceOf(address(this));
+
+        uint256 tokenOut = SwapLibrary.getAmountOut(pair, usdtIn, usdtToken, we2netToken);
+        TransferHelper.safeTransfer(usdtToken, pair, usdtIn);
+        if(we2netToken < usdtToken) {
+            IPancakePair(pair).swap(tokenOut, 0, address(this), new bytes(0));
+        } else {
+            IPancakePair(pair).swap(0, tokenOut, address(this), new bytes(0));
+        }
+        uint256 outWe2net = IERC20(we2netToken).balanceOf(address(this)) - balanceBefore;
+
+        (uint256 we2netFinalAmount, uint256 usdtFinalAmount) = IFarmStake(farmStakeAddr).calcAddLiquidityAmount(
+                                                                   outWe2net,
+                                                                   amountUsdt * (calcBase - we2netRate) / calcBase,
+                                                                   1,
+                                                                   1
+                                                               );
+        uint256 gotLpAmount = IFarmStake(farmStakeAddr).addLiquidity(we2netFinalAmount, usdtFinalAmount, 1, 1, to);
+        require(gotLpAmount >= outLpMin, "LiquidityRouter: outAmount less than outLpMin.");
+
+        uint256 usdtReturn = IERC20(usdtToken).balanceOf(address(this)) - usdtBefore;
+        if(usdtReturn >= usdtReturnMin) {
+            TransferHelper.safeTransfer(usdtToken, to, usdtReturn);
+        }
+        return gotLpAmount;
+    }
+
+    function addUsdtLp(uint256 amountUsdt, uint256 outLpMin, address to) public lock {
+        if(levelLpUpRate > 0) {
+            IWe2netToken(we2netToken).setClaimAmount(msg.sender, amountUsdt * levelLpUpRate / calcBase, true);
+        }
+        uint256 we2netAmount = swapUsdt(amountUsdt * we2netRate / calcBase, 1, address(this));
+        
+        (uint256 we2netFinalAmount, uint256 usdtFinalAmount) = IFarmStake(farmStakeAddr).calcAddLiquidityAmount(
+                                                                   we2netAmount,
+                                                                   amountUsdt * (calcBase - we2netRate) / calcBase,
+                                                                   1,
+                                                                   1
+                                                               );
+
+        TransferHelper.safeTransferFrom(usdtToken, msg.sender, address(this), usdtFinalAmount);
+        uint256 gotLpAmount = IFarmStake(farmStakeAddr).addLiquidity(we2netFinalAmount, usdtFinalAmount, 1, 1, to);
+        require(gotLpAmount >= outLpMin, "LiquidityRouter: outAmount less than outLpMin.");
+        emit AddUsdtLp(msg.sender, amountUsdt, gotLpAmount, to);
+    }
+
+    function setRate(uint256 _we2netRate) public onlyOwner {
+        require(_we2netRate < calcBase, "LiquidityRouter: we2netRate set error.");
+        we2netRate = _we2netRate;
+    }
+
+    function setLevelUpRate(uint256 _levelLpUpRate, uint256 _levelSwapUpRate) public onlyOwner {
+        levelLpUpRate = _levelLpUpRate;
+        levelSwapUpRate = _levelSwapUpRate;
+    }
+
+    function setCalcBase(uint256 _calcBase) public onlyOwner {
+        require(we2netRate < _calcBase, "LiquidityRouter: calcBase set error.");
+        calcBase = _calcBase;
+    }
+
+    function transAsset(address tokenAddr, uint256 amount) public onlyOwner {
+        TransferHelper.safeTransfer(tokenAddr, msg.sender, amount);
+    }
+
+    function transBnb(uint256 amount) public onlyOwner {
+        TransferHelper.safeTransferETH(msg.sender, amount);
+    }
+
+    function swapBnb(uint256 amountBnb, uint256 amountOutMin, address to) public payable {
+        require(msg.value == amountBnb, "LiquidityRouter: Transfer asset value error.");
+        uint256 balanceBefore = IERC20(we2netToken).balanceOf(to);
+
+        uint256 usdtOut = SwapLibrary.getAmountOut(pairWbnbUsdt, amountBnb, wbnb, usdtToken);
+        if(levelSwapUpRate > 0) {
+            IWe2netToken(we2netToken).setClaimAmount(msg.sender, usdtOut * levelSwapUpRate / calcBase, true);
+        }
+        uint256 tokenOut = SwapLibrary.getAmountOut(pair, usdtOut, usdtToken, we2netToken);
+        IWETH(wbnb).deposit{value: amountBnb}();
+        assert(IWETH(wbnb).transfer(pairWbnbUsdt, amountBnb));
+        if(usdtToken < wbnb) {
+            IPancakePair(pairWbnbUsdt).swap(usdtOut, 0, pair, new bytes(0));
+        } else {
+            IPancakePair(pairWbnbUsdt).swap(0, usdtOut, pair, new bytes(0));
+        }
+        if(we2netToken < usdtToken) {
+            IPancakePair(pair).swap(tokenOut, 0, to, new bytes(0));
+        } else {
+            IPancakePair(pair).swap(0, tokenOut, to, new bytes(0));
+        }
+
+        uint256 we2netAmount = IERC20(we2netToken).balanceOf(to) - balanceBefore;
+        require(we2netAmount >= amountOutMin, "LiquidityRouter: INSUFFICIENT_OUTPUT_AMOUNT");
+        emit SwapBnb(msg.sender, amountBnb, we2netAmount, to);
+    }
+
+    function swapUsdt(uint256 amountUsdt, uint256 amountOutMin, address to) public returns (uint256 outWe2net) {
+        uint256 balanceBefore = IERC20(we2netToken).balanceOf(to);
+        if(levelSwapUpRate > 0) {
+            IWe2netToken(we2netToken).setClaimAmount(msg.sender, amountUsdt * levelSwapUpRate / calcBase, true);
+        }
+
+        uint256 tokenOut = SwapLibrary.getAmountOut(pair, amountUsdt, usdtToken, we2netToken);
+        TransferHelper.safeTransferFrom(usdtToken, msg.sender, pair, amountUsdt);
+        if(we2netToken < usdtToken) {
+            IPancakePair(pair).swap(tokenOut, 0, to, new bytes(0));
+        } else {
+            IPancakePair(pair).swap(0, tokenOut, to, new bytes(0));
+        }
+        outWe2net = IERC20(we2netToken).balanceOf(to) - balanceBefore;
+
+        require(outWe2net >= amountOutMin, "LiquidityRouter: INSUFFICIENT_OUTPUT_AMOUNT");
+        emit SwapUsdt(msg.sender, amountUsdt, outWe2net, to);
+    }
+
+    function addBnbLpAndSetNode(uint256 amountBnb, uint256 outLpMin, address to, address parentNode) public payable {
+        if(IWe2netToken(we2netToken).parentNode(msg.sender) == address(0)) IWe2netToken(we2netToken).setParentNodeByManager(msg.sender, parentNode);
+        addBnbLp(amountBnb, outLpMin, to);
+    }
+
+    function addUsdtLpAndSetNode(uint256 amountUsdt, uint256 outLpMin, address to, address parentNode) public {
+        if(IWe2netToken(we2netToken).parentNode(msg.sender) == address(0)) IWe2netToken(we2netToken).setParentNodeByManager(msg.sender, parentNode);
+        addUsdtLp(amountUsdt, outLpMin, to);
+    }
+
+    function swapBnbAndSetNode(uint256 amountBnb, uint256 amountOutMin, address to, address parentNode) public payable {
+        if(IWe2netToken(we2netToken).parentNode(msg.sender) == address(0)) IWe2netToken(we2netToken).setParentNodeByManager(msg.sender, parentNode);
+        swapBnb(amountBnb, amountOutMin, to);
+    }
+
+    function swapUsdtAndSetNode(uint256 amountUsdt, uint256 amountOutMin, address to, address parentNode) public {
+        if(IWe2netToken(we2netToken).parentNode(msg.sender) == address(0)) IWe2netToken(we2netToken).setParentNodeByManager(msg.sender, parentNode);
+        swapUsdt(amountUsdt, amountOutMin, to);
+    }
+}
