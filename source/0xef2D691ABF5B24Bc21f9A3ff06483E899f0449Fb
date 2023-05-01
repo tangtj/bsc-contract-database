@@ -1,0 +1,102 @@
+
+// File: contracts/HUNDonation.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.15;
+
+interface IBEP20 {
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract HUNDonation {
+    address public owner;
+    uint256 public minDonation = 100 ether; // 5 BNB or BUSD or 100 HUN
+    uint256 private constant TOKEN_DECIMALS = 18;
+
+    mapping(address => bool) public acceptedTokens;
+
+    address public hunAddress;
+    uint256 public totalDonator;
+    mapping(address => uint256) public totalDonation;
+    mapping(address => bool) public isDonator;
+    mapping(address => mapping(address => uint256)) public donatorData;
+
+    event Donation(
+        address indexed donor,
+        address indexed token,
+        uint256 amount
+    );
+
+    constructor(address _busdAddress, address _hunAddress) {
+        owner = msg.sender;
+        acceptedTokens[address(0)] = true; // BNB
+        acceptedTokens[_busdAddress] = true; // BUSD
+        acceptedTokens[_hunAddress] = true; // HUN
+        hunAddress = _hunAddress;
+    }
+
+    function donate(address token, uint256 amount) public payable {
+        require(acceptedTokens[token], "Token not accepted");
+        require(amount >= minDonation, "Minimum donation not met");
+
+        if (!isDonator[msg.sender]) {
+            totalDonator = totalDonator + 1;
+            isDonator[msg.sender] = true;
+        }
+
+        totalDonation[token] = totalDonation[token] + amount;
+
+        if (token == address(0)) {
+            require(msg.value == amount, "Incorrect BNB value");
+        } else {
+            IBEP20(token).transferFrom(msg.sender, address(this), amount);
+        }
+
+        emit Donation(msg.sender, token, amount);
+    }
+
+    function withdraw(address token, uint256 amount) public {
+        require(msg.sender == owner, "Only owner can withdraw");
+
+        if (token == address(0)) {
+            payable(owner).transfer(amount);
+        } else {
+            if (token == hunAddress) {
+                require(amount >= minDonation, "Min donation is 100");
+            }
+            require(IBEP20(token).transfer(owner, amount), "Transfer failed");
+        }
+    }
+
+    function changeOwner(address newOwner) public {
+        require(msg.sender == owner, "Only owner can transfer ownership");
+        owner = newOwner;
+    }
+
+    function addAcceptedToken(address token) public {
+        require(msg.sender == owner, "Only owner can add accepted tokens");
+        acceptedTokens[token] = true;
+    }
+
+    function removeAcceptedToken(address token) public {
+        require(msg.sender == owner, "Only owner can remove accepted tokens");
+        acceptedTokens[token] = false;
+    }
+
+    receive() external payable {}
+
+    fallback() external payable {}
+}
+
