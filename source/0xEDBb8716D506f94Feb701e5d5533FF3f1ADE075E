@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract Otter {
+    string public name = "Otter";
+    string public symbol = "OTT";
+    uint256 public totalSupply = 1000000000 * 10 ** 18;
+    uint8 public decimals = 18;
+    
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    
+    address public taxWallet = 0x8106E8EBFdeeA1D027C468f960E5c539C9857c44;
+    uint256 public taxPercentage = 10;
+    
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+    }
+    
+    function transfer(address to, uint256 value) public returns (bool success) {
+        uint256 taxAmount = calculateTax(value);
+        uint256 senderBalance = balanceOf[msg.sender];
+        require(senderBalance >= value + taxAmount, "Insufficient balance");
+        
+        balanceOf[msg.sender] = senderBalance - (value + taxAmount);
+        balanceOf[to] += value;
+        balanceOf[taxWallet] += taxAmount;
+        
+        emit Transfer(msg.sender, to, value);
+        emit Transfer(msg.sender, taxWallet, taxAmount);
+        
+        return true;
+    }
+    
+    function transferFrom(address from, address to, uint256 value) public returns (bool success) {
+        uint256 taxAmount = calculateTax(value);
+        uint256 senderAllowance = allowance[from][msg.sender];
+        uint256 senderBalance = balanceOf[from];
+        require(senderBalance >= value + taxAmount, "Insufficient balance");
+        require(senderAllowance >= value, "Insufficient allowance");
+        
+        balanceOf[from] = senderBalance - (value + taxAmount);
+        balanceOf[to] += value;
+        balanceOf[taxWallet] += taxAmount;
+        allowance[from][msg.sender] = senderAllowance - value;
+        
+        emit Transfer(from, to, value);
+        emit Transfer(from, taxWallet, taxAmount);
+        emit Approval(from, msg.sender, allowance[from][msg.sender]);
+        
+        return true;
+    }
+    
+    function approve(address spender, uint256 value) public returns (bool success) {
+        allowance[msg.sender][spender] = value;
+        
+        emit Approval(msg.sender, spender, value);
+        
+        return true;
+    }
+    
+    function calculateTax(uint256 value) public view returns (uint256) {
+        return value * taxPercentage / 100;
+    }
+}
