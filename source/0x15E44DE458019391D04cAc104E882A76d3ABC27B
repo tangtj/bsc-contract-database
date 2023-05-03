@@ -1,0 +1,682 @@
+
+// File: contracts/SGR_Raffle.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+// import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
+// import "@chainlink/contracts/src/v0.8/VRFConsumerBase.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+// import "hardhat/console.sol";
+
+interface ISGR {
+    function process_Tokens_Now(uint256 percent_Of_Tokens_To_Process) external;
+}
+
+interface ISRGRaffle {
+    function generateTickets(address _account, uint256 _SGRAmount) external;
+}
+
+interface IRandomGenerator {
+    function getRandomNumber(uint256 _divider, uint _count) external view returns (uint256[] memory randoms);
+}
+
+interface IUniswapV2Factory {
+    event PairCreated(address indexed token0, address indexed token1, address pair, uint);
+
+    function feeTo() external view returns (address);
+    function feeToSetter() external view returns (address);
+
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+    function allPairs(uint) external view returns (address pair);
+    function allPairsLength() external view returns (uint);
+
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+
+    function setFeeTo(address) external;
+    function setFeeToSetter(address) external;
+}
+
+interface IUniswapV2Router01 {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETH(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountToken, uint amountETH);
+    function removeLiquidityWithPermit(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETHWithPermit(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountToken, uint amountETH);
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapTokensForExactTokens(
+        uint amountOut,
+        uint amountInMax,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+    function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+
+    function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+interface IUniswapV2Router02 is IUniswapV2Router01 {
+    function removeLiquidityETHSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountETH);
+    function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountETH);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+contract SGRRaffle is ISRGRaffle, Ownable {
+    // Constants
+    uint256 constant private TICKET_PRICE = 5 ether; // 5 USD
+    uint256 constant private MAX_TICKETS_PER_RAFFLE = 50;
+    uint256 constant private COMPANY_FUND_PERCENTAGE = 20_00;
+    uint256 constant private JACKPOT_PERCENTAGE = 40_00;
+    uint256 constant private MEGA_WIN_PERCENTAGE = 25_00;
+    uint256 constant private GOLD_RUSH_PERCENTAGE = 10_00;
+    uint256 constant private LUCKY_POT_PERCENTAGE = 5_00;
+    uint256 public RAFFLE_INTERVAL = 6 hours;   // 6 hours
+    uint256 constant private WINNER_COUNT = 4; //JackPot
+    uint256 constant private PERCENT_DIVIDER = 100_00;
+    uint256 public TAX_FEE = 10_00; // 10%
+
+    address public router = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    // address private router = 0xD99D1c33F9fC3444f8101754aBC46c52416550D1; //Testnet 0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3
+    IUniswapV2Router02 private immutable pcsV2Router;
+    
+
+    // Variables
+    address public SGR;
+    address public BUSD = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+    // address public oracle;
+    address public immutable randomGenerator;
+    // uint256 public SGRPrice = 1 ether; // using chainlink
+    mapping(address => bool) public isReserveCaller;
+    
+    bool public started;
+    uint256 public startTime;
+    uint16 public roundID;
+    mapping(uint16 => uint256) public prizePools;
+    
+    // mapping(address => bool) public blacklist;
+    mapping(address => uint256) public ticketsPerAddress;   // total ticket count of user
+    mapping(uint16 => mapping(address => uint256)) public roundTicketPerAddress; // ticket count that is submitted in current round
+    mapping(uint16 => mapping(uint256 => address)) public roundTicketHolder; 
+    mapping(uint16 => uint256) public roundTicketID; // round Id => roundTicketID
+    mapping(uint16 => address[]) public raffleIdToWinners;
+    mapping(address => uint256) public winningProfit;
+
+    address[] public autoMemberList;
+    mapping(address => uint256) public autoTicketCount;
+    mapping(address => uint) public autoMemberIndex;
+
+    // Events
+    event FundsAdded(address indexed investor, uint256 amount);
+    event PICK_WINNER(uint16 indexed roundID, uint256 prizePool, uint40 tm);
+    event TicketGenerated(address indexed buyer, uint256 sgrAmount, uint16 ticketCount, uint256 sgrPrice, uint40 tm);
+    event UPDATE_TICKETS(address indexed buyer, uint256 agrAmount, uint16 ticketCount, uint256 sgrPrice, uint40 tm);
+
+    constructor(address _sgr, address _randomGenerator){
+        SGR = _sgr;
+        randomGenerator = _randomGenerator;
+        isReserveCaller[_sgr] = true;
+
+        IUniswapV2Router02 _pcsV2Router = IUniswapV2Router02(router);
+        pcsV2Router = _pcsV2Router;
+    }
+
+    // Functions
+    function addFunds(uint256 amount) public {
+        IERC20(SGR).transferFrom(msg.sender, address(this), amount);
+        emit FundsAdded(msg.sender, amount);
+    }
+
+    function getTokenPrice() public view returns (uint) {
+        address[] memory path = new address[](3);
+        path[0] = SGR;
+        path[1] = pcsV2Router.WETH();
+        path[2] = BUSD;
+        uint[] memory amountsOut = pcsV2Router.getAmountsOut(1 ether, path);
+        return amountsOut[2];
+    }
+
+    function generateTickets(address _account, uint256 _SGRAmount) external override {
+        require(isReserveCaller[msg.sender] == true, "Not allowed");
+        // require(!blacklist[msg.sender], "Your address is blacklisted");
+        uint256 SGRPrice = getTokenPrice();
+        uint256 ticketCounts = (SGRPrice * _SGRAmount / (10 ** 18)) / TICKET_PRICE;
+        // console.log("ticketCounts: ", ticketCounts);
+        
+        if (started == true && ticketCounts > 0 && roundTicketPerAddress[roundID][_account] < MAX_TICKETS_PER_RAFFLE) {
+            ticketsPerAddress[_account] += (ticketCounts-1);
+            roundTicketPerAddress[roundID][_account] += 1;
+            roundTicketHolder[roundID][ roundTicketID[roundID] ] = _account; // submit 1 ticket to current Raffle
+            roundTicketID[roundID]++;
+        }
+
+        if (ticketCounts > 0 && autoTicketCount[_account] == 0) { // Already registered
+            autoTicketCount[_account] = 1;
+            autoMemberIndex[_account] = autoMemberList.length;
+            autoMemberList.push(_account);
+        }
+
+        emit TicketGenerated(_account, _SGRAmount, uint16(ticketCounts), SGRPrice, uint40(block.timestamp));
+
+        pickWinner();
+    }
+
+    function putTicketToRaffleManually(uint256 _ticketCount) external {
+        // require(!blacklist[msg.sender], "Your address is blacklisted");
+        require(started == true, "Raffle is not started, yet");
+        require(_ticketCount <= MAX_TICKETS_PER_RAFFLE, "Maximum tickets per raffle exceeded.");
+        require(roundTicketPerAddress[roundID][msg.sender] + _ticketCount <= MAX_TICKETS_PER_RAFFLE, "Maximum tickets per raffle per address");    
+        require(ticketsPerAddress[msg.sender] >= _ticketCount, "You don't have enough tickets");
+
+        ticketsPerAddress[msg.sender] -= _ticketCount;
+        roundTicketPerAddress[roundID][msg.sender] += _ticketCount;
+        for (uint256 i = 0; i < _ticketCount; i++) {
+            roundTicketHolder[roundID][ roundTicketID[roundID] ] = msg.sender; // submit 1 ticket to current Raffle
+            roundTicketID[roundID]++; 
+        }
+
+        pickWinner();
+    }
+    
+    function setAutoTicketCount(uint256 _ticketCount) external {
+        require(_ticketCount <= 50, "Auto ticket count should be more than 0");
+        if (_ticketCount == 0) { // remove
+            require(autoTicketCount[msg.sender] > 0, "You are not auto ticket member");
+            autoTicketCount[msg.sender] = 0;
+            removeElement(autoMemberIndex[msg.sender]);
+        } else { // add
+            if (autoTicketCount[msg.sender] > 0) { // Already registered
+                autoTicketCount[msg.sender] = _ticketCount;
+            } else { // new register
+                autoTicketCount[msg.sender] = _ticketCount;
+                autoMemberIndex[msg.sender] = autoMemberList.length;
+                autoMemberList.push(msg.sender);
+            }
+        }
+    }
+
+    function removeElement(uint index) internal {
+        require(index < autoMemberList.length, "Index out of bounds");
+        if (autoMemberList.length == 0) {
+            autoMemberList.pop();    
+        } else {
+            for (uint i = index; i < autoMemberList.length - 1; i++) {
+                autoMemberList[i] = autoMemberList[i+1];
+                autoMemberIndex[autoMemberList[i]] = i;
+            }
+            autoMemberList.pop();
+        }
+    }
+
+    function pickWinner() public {
+        if (started == true && startTime + RAFFLE_INTERVAL <= block.timestamp && roundTicketID[roundID] > 0) {
+            uint256 curTicketCnt = roundTicketID[roundID];
+            uint256[] memory randoms = IRandomGenerator(randomGenerator).getRandomNumber(curTicketCnt+1, WINNER_COUNT);
+            address[] memory winners = new address[](4);
+            winners[0] = roundTicketHolder[roundID][randoms[0]];
+            winners[1] = roundTicketHolder[roundID][randoms[1]];
+            winners[2] = roundTicketHolder[roundID][randoms[2]];
+            winners[3] = roundTicketHolder[roundID][randoms[3]];
+            raffleIdToWinners[roundID] = winners;
+            // console.log("winners: ", winners[0]);
+            // console.log("winners: ", winners[1]);
+            // console.log("winners: ", winners[2]);
+            // console.log("winners: ", winners[3]);
+
+            uint256 prizePool = getBalance();
+            prizePools[roundID] = prizePool;
+            if (prizePool > 0) {
+                IERC20(SGR).transfer(SGR, prizePool * COMPANY_FUND_PERCENTAGE / PERCENT_DIVIDER);
+                if (winners[0] != address(0)) {
+                    uint256 jackpot = prizePool * JACKPOT_PERCENTAGE / PERCENT_DIVIDER;
+                    IERC20(SGR).transfer(winners[0], jackpot);
+                    winningProfit[winners[0]] += jackpot;
+                }
+                if (winners[1] != address(0)) {
+                    uint256 megawin = prizePool * MEGA_WIN_PERCENTAGE / PERCENT_DIVIDER;
+                    IERC20(SGR).transfer(winners[1], megawin);
+                    winningProfit[winners[1]] += megawin;
+                }
+                if (winners[2] != address(0)) {
+                    uint256 goldrush = prizePool * GOLD_RUSH_PERCENTAGE / PERCENT_DIVIDER;
+                    IERC20(SGR).transfer(winners[2], goldrush);
+                    winningProfit[winners[2]] += goldrush;
+                }
+                if (winners[3] != address(0)) {
+                    uint256 luckypot = prizePool * LUCKY_POT_PERCENTAGE / PERCENT_DIVIDER;
+                    IERC20(SGR).transfer(winners[3], min(luckypot, getBalance()));
+                    winningProfit[winners[3]] += luckypot;
+                }
+            }
+            
+            try ISGR(SGR).process_Tokens_Now(100) {} catch {}
+
+            startTime = block.timestamp; // startTime += RAFFLE_INTERVAL;
+            roundID++;
+            
+            // auto mode for next round
+            uint256[] memory removeIndexList = new uint256[](autoMemberList.length); //for auto remove from automodelist if balance is zero
+            uint removelistLength = 0;
+            for (uint i = 0; i < autoMemberList.length; i++) {
+                address user = autoMemberList[i];
+                // console.log("User: ", user);
+                uint256 newAddCount = autoTicketCount[user];
+                if (ticketsPerAddress[user] <= newAddCount) {
+                    newAddCount = ticketsPerAddress[user];
+                    removeIndexList[removelistLength++] = i; // If balance is not enough, add to auto_remove_list
+                }
+                // console.log("User1: ", newAddCount);
+                if (roundTicketPerAddress[roundID][user] + newAddCount > MAX_TICKETS_PER_RAFFLE) {
+                    newAddCount = MAX_TICKETS_PER_RAFFLE - roundTicketPerAddress[roundID][user];
+                }
+                // console.log("User2: ", newAddCount);
+                if (newAddCount == 0) continue;
+                ticketsPerAddress[user] -= newAddCount;
+                roundTicketPerAddress[roundID][user] += newAddCount;
+                for (uint256 j = 0; j < newAddCount; j++) {
+                    roundTicketHolder[roundID][ roundTicketID[roundID] ] = user; // submit 1 ticket to current Raffle
+                    roundTicketID[roundID]++;
+                }
+                // console.log("User4: ", newAddCount);
+            }
+
+            // console.log("removeListLength: ", removelistLength);
+
+            if(removelistLength > 0) {
+                for (uint i=removelistLength-1; i >= 0 ; i--) {
+                    // console.log("i: ", i);
+                    uint index = removeIndexList[i];
+                    // console.log("index: ", index);
+                    address user = autoMemberList[index]; //index
+                    // console.log("user: ", user);
+                    autoTicketCount[user] = 0;
+                    removeElement(index); //index
+                    if (i == 0) break;
+                }
+            }
+
+            emit PICK_WINNER(roundID, prizePool, uint40(block.timestamp));
+        }
+    }
+
+    function UpdateTickets(uint256 amount) public {
+        uint256 oldBal = IERC20(SGR).balanceOf(address(this));
+        IERC20(SGR).transferFrom(msg.sender, address(this), amount);
+        uint256 realAmount = IERC20(SGR).balanceOf(address(this)) - oldBal;
+
+        uint256 SGRPrice = getTokenPrice();
+        uint256 taxAmount = realAmount * TAX_FEE / PERCENT_DIVIDER;
+        uint256 ticketCount = realAmount / (10 ** 18) * SGRPrice / TICKET_PRICE;
+
+        ticketsPerAddress[msg.sender] += ticketCount;
+        if(ticketCount > 0 && autoTicketCount[msg.sender] == 0) {
+            autoTicketCount[msg.sender] = 1;
+            autoMemberIndex[msg.sender] = autoMemberList.length;
+            autoMemberList.push(msg.sender);
+        }
+        
+        IERC20(SGR).transfer(msg.sender, realAmount - taxAmount);
+
+        emit UPDATE_TICKETS(msg.sender, amount, uint16(ticketCount), SGRPrice, uint40(block.timestamp));
+    }
+
+    function getBalance() public view returns(uint256) {
+        return IERC20(SGR).balanceOf(address(this));
+    }
+
+    function Run() public onlyOwner {
+        startTime = block.timestamp;
+        started = true;
+    }
+
+    function PlayAndPause(bool _bVal) public onlyOwner {
+        require(started != _bVal, "Already setted");
+        started = _bVal;
+    }
+    
+    function setReserveCaller(address _caller, bool _value) public onlyOwner {
+        isReserveCaller[_caller] = _value;
+    }
+
+    function getPrizeHistory(uint16 count) external view returns (uint256[] memory data) {
+        require(roundID > 0, "There is no history, yet");
+        uint16 to = roundID <= count ? 0 : roundID - count;
+        data = new uint256[](roundID - to);
+        for (uint16 i = roundID-1; i >= to; i--) {
+            data[roundID-1-i] = prizePools[i];
+            
+            if (i == 0) break;
+        }
+    }
+
+    function changeTexFee(uint256 _fee) external onlyOwner {
+        require(_fee >= 0 && _fee <= 50_00, "Invalid fee amount");
+        TAX_FEE = _fee;
+    }
+
+    function changeSGR(address _newSGR) external onlyOwner {
+        SGR = _newSGR;
+    }
+
+    function changeRaffleInterval(uint256 _val) external onlyOwner {
+        RAFFLE_INTERVAL = _val * 1 minutes;
+    }
+
+    function min(uint256 a, uint256 b) private pure returns(uint256) {
+        if (a > b) {
+            return b;
+        } else {
+            return a;
+        }
+    }
+}
+
+// File: @openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.7.0) (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+

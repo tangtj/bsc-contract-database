@@ -1,0 +1,682 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.7;
+
+interface IPancakeRouter {
+    function WETH() external pure returns (address);
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts);
+    function getAmountsOut(uint256 amountIn, address[] memory path) external view returns (uint256[] memory amounts);
+}
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address account) external view returns (uint);
+    function transfer(address recipient, uint amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint);
+    function approve(address spender, uint amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+}
+
+contract Cryptell {
+    // Constants
+    address private constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c; // Wrapped Binance Coin (WBNB) address
+    address private constant BUSD_TOKEN_ADDRESS = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56; // Binance USD (BUSD) token address
+    address private constant PANCAKESWAP_ROUTER_ADDRESS = 0x10ED43C718714eb63d5aA57B78B54704E256024E; // PancakeSwap router contract address
+
+    // Events
+    event Invested(address indexed from, uint256 amount, uint256 date, uint256 packageId);
+    event Success(uint256 packageId, uint256 date);
+    event Withdraw(uint256 packageId, uint256 date, uint256 amount);
+    event Created(uint256 packageId, uint256 date);
+    event Payment(uint256 packageId, uint256 date, uint256 amount, uint256 bonusamount, string classification);
+    event Claimed(uint256 packageId, uint256 date, uint256 amount, address user, string classification);
+
+    // Variables
+    uint256 public lockedBalance; // Total locked balance in the contract
+    uint256 public amountPackages; // Total number of investment packages created
+    uint256 private balance; // Internal variable to hold balance of the contract
+    address private creator; // Address of the contract creator
+    uint256 public referrerBonus; // Amount that somebody gets for a successful referral
+
+    uint256 public minimumInvestment = 4900000000000000000;
+
+    // Structs
+    struct Package {
+        uint256 investmentAmount; // The amount of BUSD required to invest in this package
+        uint256 invested; // The total amount of BUSD invested in this package
+        uint256 amountInvestors; // The number of investors who have invested in this package
+        uint256 lockedPackageBalance; // The amount of BUSD locked in this package
+        uint256 paidBack; // The total amount of BUSD paid back to investors for this package
+        uint256 apr; // The annual percentage rate of return for this package
+        uint256 unclaimed; // The total amount of BUSD unclaimed by investors for this package
+        uint256 successPercentage; // The percentage of investment goal required to achieve success for this package
+        uint256 successClaimable; // The amount of BUSD claimable by investors if the package is successful
+        uint256 successClaimed; // The amount of BUSD claimed by investors for successful packages
+        bool success; // Flag indicating if the package is successful
+        bool payBackActive; // Flag indicating if the package allows payback to investors
+        bool repaid; // Flag indicating if the package has been fully paid back to investors
+        bool active; // Flag indicating if the package is active or not
+        address[] investors; // List of investor addresses for this package
+    }
+
+    struct Investor {
+        bool isInvestor; // Flag indicating if the address has invested in any package
+        uint256 amountInvested; // The total amount of BUSD invested by the investor
+        uint256 lockedAmount; // The amount of BUSD currently locked for the investor
+        uint256 amountRepaid; // The total amount of BUSD repaid to the investor
+        uint256 amountBonus; // The total amount of BUSD bonus received by the investor
+        uint256 claimableOverall; // The total amount of BUSD claimable by the investor across all packages
+        uint256 claimed; // The total amount of BUSD claimed by the investor across all packages
+        uint256 amountInvestments; // The total number of packages invested in by the investor
+        uint256[] packageId; // List of package IDs invested in by the investor
+        uint256[] bonusReceived; // List of bonus amounts received by the investor for each package invested in
+        uint256[] paybackReceived; // List of payback amounts received by the investor for each package invested in
+        uint256[] claimable; // List of claimable amounts for each package invested in by the investor
+        uint256[] investedAmount; // List of invested amounts for each package invested in by the investor
+    }
+
+    // Mapping of package IDs to their corresponding Package struct
+    mapping(uint256 => Package) public packages;
+
+    // Mapping of investor addresses to their corresponding Investor struct
+    mapping(address => Investor) private investorList;
+
+    // Mapping of wallets that are prohibited from investing
+    mapping(address => bool) public blackList;
+
+    // Referrer Mapping
+    mapping (address => address) public referrers;
+
+    // Referrer Amount
+    mapping (address => uint256) public referrerAmount;
+
+    // Modifier to restrict certain functions to only the contract creator
+    modifier onlyOwner() {
+        require(msg.sender == creator, "Only the contract creator can execute this function.");
+         _;
+    }
+
+    // Constructor
+    constructor() {
+        creator = msg.sender;
+        amountPackages = 0;
+        lockedBalance = 0;
+    }
+
+    // Function to create a new investment package
+    function createInvestmentPackage(uint256 investmentAmount, uint256 apr, uint256 successPercentage) public onlyOwner {
+        packages[amountPackages] = Package({
+            active: true,
+            investmentAmount: investmentAmount * 1 ether,
+            invested: 0,
+            lockedPackageBalance: 0,
+            successClaimable: 0,
+            apr: apr,
+            amountInvestors: 0,
+            successClaimed: 0,
+            successPercentage: successPercentage,
+            unclaimed: 0,
+            investors: new address[](0),
+            success: false,
+            payBackActive: false,
+            repaid: false,
+            paidBack: 0
+        });
+        amountPackages += 1;
+
+        emit Created(amountPackages - 1,  block.timestamp);
+    }
+
+//----------------------- INVEST FUNCTIONS ------------------------------------------------------------------------------------
+
+    // Function to invest into a a specific package
+    function invest(uint256 packageId, address referrer) public payable {
+        require(blackList[msg.sender] != true, "Wallet is on blacklist. You cannot invest.");
+        require(packages[packageId].active == true, "The Investment Package is either not active anymore or does not exist yet.");
+        require(msg.value > 0, "The investment cannot be less/equal to 0");
+
+        address[] memory path = new address[](2);
+
+        path[0] = WBNB;
+        path[1] = BUSD_TOKEN_ADDRESS;
+
+        // SWAP BNB TO BUSD
+        uint256[] memory amountOut = IPancakeRouter(PANCAKESWAP_ROUTER_ADDRESS).getAmountsOut(msg.value, path);
+
+        require(amountOut[1] > minimumInvestment, "The minimum investment amount of 5 BUSD is not met.");
+    
+        require(packages[packageId].investmentAmount > packages[packageId].invested + amountOut[1], "The investment is too big, please invest less");
+        
+        uint256[] memory amounts = IPancakeRouter(PANCAKESWAP_ROUTER_ADDRESS).swapExactETHForTokens{value:msg.value}(0, path, address(this), block.timestamp+300);
+
+        Package storage package = packages[packageId];
+        package.invested += amounts[1]; 
+        bool investorExists = false;
+
+        // check if investor is already in the list of investors
+        for (uint256 i = 0; i < package.amountInvestors; i++) {
+            if (package.investors[i] == msg.sender) {
+                investorExists = true;
+                for (uint256 x= 0; x < investorList[msg.sender].amountInvestments; x++){
+                    if(investorList[msg.sender].packageId[x] == packageId) {
+                        investorList[msg.sender].amountInvested += amounts[1];
+                        investorList[msg.sender].lockedAmount += amounts[1];
+                        investorList[msg.sender].investedAmount[x] += amounts[1];
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+
+        if(investorList[msg.sender].isInvestor != true) {
+            investorList[msg.sender] = Investor({
+                isInvestor: true, 
+                amountInvested: 0,
+                lockedAmount: 0,
+                amountRepaid: 0,
+                amountBonus:0,
+                claimableOverall:0,
+                claimed:0,
+                amountInvestments:0,
+                packageId: new uint256[](0),
+                bonusReceived: new uint256[](0),
+                paybackReceived: new uint256[](0),
+                claimable: new uint256[](0),
+                investedAmount: new uint256[](0)
+            });
+        }
+
+        // if investor is not already in the list, add them to the end
+        if (!investorExists) {
+            package.investors.push(msg.sender);
+            package.amountInvestors++; 
+
+            investorList[msg.sender].amountInvested += amounts[1];
+            investorList[msg.sender].lockedAmount += amounts[1];
+            investorList[msg.sender].amountInvestments += 1;
+
+            investorList[msg.sender].packageId.push(packageId);
+            investorList[msg.sender].investedAmount.push(amounts[1]);
+            investorList[msg.sender].bonusReceived.push(0);
+            investorList[msg.sender].paybackReceived.push(0);
+            investorList[msg.sender].claimable.push(0);
+        }
+
+        if(package.success != true) {
+            lockedBalance += amounts[1];
+            package.lockedPackageBalance += amounts[1];
+        } else {
+            package.successClaimable += amounts[1];
+        }
+
+        // ADD IF INVESTMENT IS THEN BIGGER THAN GOAL => set success true
+        if((package.invested * 10000) / package.investmentAmount >= package.successPercentage * 100 && package.success != true) {
+            package.success = true;
+            package.successClaimable = package.lockedPackageBalance;
+            lockedBalance -= package.lockedPackageBalance;
+            package.lockedPackageBalance = 0;   
+            emit Success(packageId, block.timestamp);
+        }
+
+        if(referrers[msg.sender] == address(0) && referrer != msg.sender) {
+            referrers[msg.sender] = referrer;
+            referrerAmount[referrer] += 1;
+            investorList[referrer].claimableOverall += referrerBonus;
+        }
+
+        emit Invested(msg.sender, amounts[1], block.timestamp, packageId);
+    }
+
+    // Function to invest into a a specific package
+    function investBUSD(uint256 packageId, uint256 amount, address referrer) public {
+        require(blackList[msg.sender] != true, "Wallet is on blacklist. You cannot invest.");
+        require(packages[packageId].active == true, "The Investment Package is either not active anymore or does not exist yet.");
+        require(amount > 0, "The investment cannot be less/equal to 0");
+        require(IBEP20(BUSD_TOKEN_ADDRESS).allowance(msg.sender, address(this)) > 0, "Allowance error. Please allow more BUSD");
+        require(amount >= minimumInvestment, "The minimum investment amount of 5 BUSD is not met.");
+        require(IBEP20(BUSD_TOKEN_ADDRESS).balanceOf(msg.sender) >= amount, "Not enough BUSD in wallet");
+        require(packages[packageId].investmentAmount > packages[packageId].invested + amount, "The investment is too big, please invest less");
+
+        Package storage package = packages[packageId];
+        
+        bool investorExists = false;
+
+        IBEP20(BUSD_TOKEN_ADDRESS).transferFrom(msg.sender, address(this), amount);
+
+        package.invested += amount; 
+
+        // check if investor is already in the list of investors
+        for (uint256 i = 0; i < package.amountInvestors; i++) {
+            if (package.investors[i] == msg.sender) {
+                investorExists = true;
+                for (uint256 x= 0; x < investorList[msg.sender].amountInvestments; x++){
+                    if(investorList[msg.sender].packageId[x] == packageId) {
+                        investorList[msg.sender].amountInvested += amount;
+                        investorList[msg.sender].lockedAmount += amount;
+                        investorList[msg.sender].investedAmount[x] += amount;
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+
+        if(investorList[msg.sender].isInvestor != true) {
+            investorList[msg.sender] = Investor({
+                isInvestor: true, 
+                amountInvested: 0,
+                lockedAmount: 0,
+                amountRepaid: 0,
+                amountBonus:0,
+                claimableOverall:0,
+                claimed:0,
+                amountInvestments:0,
+                packageId: new uint256[](0),
+                bonusReceived: new uint256[](0),
+                paybackReceived: new uint256[](0),
+                claimable: new uint256[](0),
+                investedAmount: new uint256[](0)
+            });
+        }
+
+        // if investor is not already in the list, add them to the end
+        if (!investorExists) {
+            package.investors.push(msg.sender);
+            package.amountInvestors++; 
+
+            investorList[msg.sender].amountInvested += amount;
+            investorList[msg.sender].lockedAmount += amount;
+            investorList[msg.sender].amountInvestments += 1;
+
+            investorList[msg.sender].packageId.push(packageId);
+            investorList[msg.sender].investedAmount.push(amount);
+            investorList[msg.sender].bonusReceived.push(0);
+            investorList[msg.sender].paybackReceived.push(0);
+            investorList[msg.sender].claimable.push(0);
+        }
+
+        if(package.success != true) {
+            lockedBalance += amount;
+            package.lockedPackageBalance += amount;
+        } else {
+            package.successClaimable += amount;
+        }
+
+        // ADD IF INVESTMENT IS THEN BIGGER THAN GOAL => set success true
+        if((package.invested * 10000) / package.investmentAmount >= package.successPercentage * 100 && package.success != true) {
+            package.success = true;
+            package.successClaimable = package.lockedPackageBalance;
+            lockedBalance -= package.lockedPackageBalance;
+            package.lockedPackageBalance = 0;   
+            emit Success(packageId, block.timestamp);
+        }
+
+        if(referrers[msg.sender] == address(0) && referrer != msg.sender) {
+            referrers[msg.sender] = referrer;
+            referrerAmount[referrer] += 1;
+            investorList[referrer].claimableOverall += referrerBonus;
+        }
+
+        emit Invested(msg.sender, amount, block.timestamp, packageId);
+    }
+
+//----------------------- CLAIM FUNCTIONS --------------------------------
+    
+    // Function for investors to claim their repayment or any bonus for a specific package
+    function claim(uint256 packageId) public {
+        Investor storage investor = investorList[msg.sender];
+        
+        // Get the package to claim
+        Package storage package = packages[packageId];
+        require(package.unclaimed > 0, "Nothing to claim right now.");
+
+        uint256 claimedAmount = 0;
+        // Loop through all of the investor's investments
+        for(uint256 i = 0; i < investor.amountInvestments; i++) {
+            // Check if the current investment matches the package to claim
+            if(investor.packageId[i] == packageId) {
+                // Update the package balances and the investor's claimable amounts
+                uint256 claimable = investor.claimable[i];
+                require(claimable > 0, "Nothing to claim right now.");
+
+                package.lockedPackageBalance -= claimable;
+                package.unclaimed -= claimable;
+                investor.claimableOverall -= claimable;
+                investor.claimed += claimable;
+
+                // Update the locked balance and reset the investor's claimable amount for the investment
+                lockedBalance -= claimable;
+                investor.claimable[i] = 0;
+
+                // Transfer the claimable amount to the investor's wallet
+                IBEP20(BUSD_TOKEN_ADDRESS).transfer(msg.sender, claimable);
+                claimedAmount = claimable;
+                break;
+            }
+        } 
+
+        emit Claimed(packageId, block.timestamp, claimedAmount, msg.sender, "Claim single");
+    }
+
+    // Function for investors to claim their repayment or any bonus for all packages
+    function claimAll() public {
+        // Retrieve the investor's information from investorList mapping
+        Investor storage investor = investorList[msg.sender];
+        
+        // Check if the investor has made an investment
+        
+        // Check if the investor has any claimable amount
+        require(investor.claimableOverall > 0, "Nothing to claim right now.");
+
+        // Iterate through all the investments made by the investor
+        for(uint256 i = 0; i < investor.amountInvestments; i++) {
+            // Check if the investment has any claimable amount
+            if(investor.claimable[i] > 0) {
+                // Reduce the unclaimed and locked package balance for the respective investment package
+
+                packages[investor.packageId[i]].unclaimed -= investor.claimable[i];
+                packages[investor.packageId[i]].lockedPackageBalance -= investor.claimable[i];
+
+                lockedBalance -= investor.claimable[i];
+
+                // Reset the claimable amount for the respective investment
+                investor.claimable[i] = 0;
+            }
+        }
+
+        uint256 claimableOverall = investor.claimableOverall;
+
+        // Update the investor's claimed and claimableOverall amounts
+        investor.claimed += claimableOverall;
+        investor.claimableOverall = 0;
+
+        // Transfer the total claimable amount to the investor's address
+        IBEP20(BUSD_TOKEN_ADDRESS).transfer(msg.sender, claimableOverall);
+
+        emit Claimed(9999, block.timestamp, claimableOverall, msg.sender, "Claim all");
+    }
+
+//----------------------- REPAY/WITHDRAW FUNCTIONS -----------------------
+
+   // Function to pay payback and bonus to investors for a specific package
+    function payPaybackAndBonus(uint256 packageId, uint256 amount) public onlyOwner {
+        // Check if investment payback is not finished yet
+        require(packages[packageId].repaid == false, "The investment payback is already finished");
+
+        // Load the Package
+        Package storage package = packages[packageId];
+
+        // Calculate bonus amount and payback amount
+        uint256 blacklistedAmount = getBlacklistedAmount(packageId);
+        uint256 bonusAmount = calculateBonusAmount(packageId);
+        uint256 totalPaybackAmount = amount - bonusAmount;
+
+        // Check if the BUSD balance in contract is enough to pay back the user
+        require(getBalance() - lockedBalance >= amount, "Not enough balance to pay out bonus/payback");
+
+        // Loop through investors in the package and pay out bonus and payback to each investor
+        for (uint256 i = 0; i < package.amountInvestors; i++) {
+            Investor storage investor = investorList[package.investors[i]];
+            for(uint x = 0; x < investor.amountInvestments; x++) {
+                // If the investor has invested in the current package, pay out bonus and payback
+                if(investor.packageId[x] == packageId){
+                    // Calculate the percentage of invested amount for the investor
+                    uint256 percentage = (investor.investedAmount[x] * 10000 / package.invested);
+                    uint256 percentage_bonus = (investor.investedAmount[x] * 10000 / (package.invested - blacklistedAmount));
+                    
+                    if(blackList[package.investors[i]] != true){
+                        // Calculate bonus amount for the investor and update investor data and package data
+                        uint256 investorBonusAmount = (bonusAmount * percentage_bonus) / 10000;
+                        investor.bonusReceived[x] += investorBonusAmount;
+                        investor.claimable[x] += investorBonusAmount;
+                        investor.claimableOverall += investorBonusAmount;
+                        investor.amountBonus += investorBonusAmount;
+                        package.lockedPackageBalance += investorBonusAmount;
+                        package.unclaimed += investorBonusAmount;
+                        lockedBalance += investorBonusAmount;
+                    }                       
+
+                    // If payback is active for the package, calculate payback amount for the investor and update investor data and package data
+                    if (package.payBackActive == true) {
+                        uint256 paybackAmount = (totalPaybackAmount * percentage) / 10000;
+                        investor.amountRepaid += paybackAmount;
+                        investor.lockedAmount -= paybackAmount;
+                        investor.paybackReceived[x] += paybackAmount;
+                        investor.claimable[x] += paybackAmount;
+                        investor.claimableOverall += paybackAmount;
+                        package.paidBack += paybackAmount;
+                        lockedBalance += paybackAmount;
+                        package.lockedPackageBalance += paybackAmount;
+                        package.unclaimed += paybackAmount;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if(package.paidBack  >= package.invested) {
+            packageSuccessful(packageId);
+        }
+
+        emit Payment(packageId, block.timestamp, totalPaybackAmount, bonusAmount, "Payback/Bonus");
+    }
+
+    // Function to pay back a part of the amount which might has not been needed
+    function payBackPart(uint256 packageId, uint256 amount) public onlyOwner {
+        require(getBalance() - lockedBalance >= amount, "There is not enough Balance in the contract, please add more.");
+        Package storage package = packages[packageId];
+
+        for (uint256 i = 0; i < package.amountInvestors; i++) {
+            Investor storage investor = investorList[package.investors[i]];
+            for(uint256 x = 0; x < investor.amountInvestments; x++) {
+                if (investor.packageId[x] == packageId) {
+                    uint256 percentage = (investor.investedAmount[x] * 10000 / package.invested);
+
+                    uint256 payBackShare = (amount * percentage) / 10000;
+                    package.lockedPackageBalance += payBackShare;
+                    package.invested -= payBackShare;
+                    investor.lockedAmount -= payBackShare;
+
+                    package.unclaimed += payBackShare;
+
+                    investor.amountInvested -= payBackShare;
+
+                    lockedBalance += payBackShare;
+                    investor.investedAmount[x] -= payBackShare;
+                    investor.claimable[x] += payBackShare;
+                    investor.claimableOverall += payBackShare;
+                }
+            }
+        }
+        emit Payment(packageId, block.timestamp, amount, 0, "Partial Payback");
+    }
+
+
+    // Function for the creator to be able to withdraw the amount from a successful funded package 
+    function withdrawFunding(uint256 packageId) public onlyOwner {
+        Package storage package = packages[packageId];
+
+        require((package.invested * 10000) / package.investmentAmount >= package.successPercentage * 100, "The goal is not met yet.");
+        require(package.successClaimable > 0, "There is nothing to withdraw right now.");
+
+        IBEP20(BUSD_TOKEN_ADDRESS).transfer(creator, package.successClaimable);
+        package.successClaimed += package.successClaimable;
+        emit Withdraw(packageId, block.timestamp, package.successClaimable);
+        package.successClaimable = 0;
+    }
+
+    // Function to put the money of every investor back into claimable in case the investment window is not met
+    function repay(uint256 packageId) public onlyOwner {
+        Package storage package = packages[packageId]; 
+        require(getBalance() >= package.invested - lockedBalance, "Not enough balance to pay back. Please add more BUSD.");
+
+        uint256 totalPayment = 0;
+
+        for (uint256 i = 0; i < package.amountInvestors; i++) {
+            Investor storage investor = investorList[package.investors[i]];
+
+            for(uint256 x = 0; x < investor.amountInvestments; x++) {
+                if (investor.packageId[x] == packageId) {
+                    uint256 paybackamount = investor.investedAmount[x] - investor.paybackReceived[x];
+                    
+                    investor.claimable[x] += paybackamount;
+                    investor.claimableOverall += paybackamount;
+                    investor.amountRepaid += paybackamount;
+                    investor.lockedAmount -= paybackamount;
+                    
+                    package.paidBack += paybackamount;
+                    package.unclaimed += paybackamount;
+
+                    package.invested -= paybackamount;
+
+                    totalPayment += paybackamount;
+
+                    if(package.success == true) {
+                        package.lockedPackageBalance += paybackamount;
+                        lockedBalance += paybackamount;
+                    }
+                    break;
+                }
+            }
+        }
+        package.success = false;
+        package.repaid = true;
+        package.active = false;
+
+        emit Payment(packageId, block.timestamp, totalPayment, 0, "Complete Payback");
+    }
+    
+    // Function to move the approved amount of BUSD from the creator wallet into the smart contract
+    function addBUSD(uint256 amount) public onlyOwner{    
+        require(IBEP20(BUSD_TOKEN_ADDRESS).allowance(msg.sender, address(this)) > 0, "Please allow more BUSD");
+        IBEP20(BUSD_TOKEN_ADDRESS).transferFrom(creator, address(this), amount);
+    }
+
+    // Function to add BUSD with BNB
+    function addBUSDwithBNB() public payable onlyOwner{
+        address[] memory path = new address[](2);
+
+        path[0] = WBNB;
+        path[1] = BUSD_TOKEN_ADDRESS;
+        
+        IPancakeRouter(PANCAKESWAP_ROUTER_ADDRESS).swapExactETHForTokens{value:msg.value}(0, path, address(this), block.timestamp+300);
+    }
+
+//----------------------- HELPER FUNCTIONS --------------------------------
+    
+    // Function to retrieve BUSD Balance inside contract
+    function getBalance() public view returns (uint256) {
+        return IBEP20(BUSD_TOKEN_ADDRESS).balanceOf(address(this));
+    }
+
+    // Function to retrieve the Blacklisted Amount
+    function getBlacklistedAmount(uint256 packageId) public onlyOwner view returns (uint256) {
+        uint256 blacklistedAmount = 0;
+        
+        Package storage package = packages[packageId];
+
+        for (uint256 i = 0; i < package.amountInvestors; i++){
+            if(blackList[package.investors[i]] == true){
+                Investor storage investor = investorList[package.investors[i]];
+
+                for(uint256 x = 0; x < investor.amountInvestments; x++) {
+                    if(investor.packageId[x] == packageId) {
+                        blacklistedAmount += investor.investedAmount[x];
+                    }
+                   
+                }
+            }
+        }
+        return blacklistedAmount; 
+    }
+
+    // Calculate the Amount how much a bonus payment is for a package 
+    function calculateBonusAmount(uint256 packageId) public view onlyOwner returns (uint256) {
+        Package storage package = packages[packageId];
+
+        uint256 blacklistedAmount = getBlacklistedAmount(packageId);
+
+        uint256 bonusAmount = (package.invested - blacklistedAmount) / 100 * package.apr / 12;
+        return bonusAmount;
+    }
+
+    // Function to retrieve Investor Stats
+    function getInvestorStats(address investorAddress) public view returns(bool, uint256, uint256, uint256, uint256, uint256, uint256, uint256) {
+        Investor storage investor = investorList[investorAddress];
+         return (
+            investor.isInvestor,
+            investor.amountInvested,
+            investor.lockedAmount,
+            investor.amountRepaid,
+            investor.amountBonus,
+            investor.claimableOverall,
+            investor.claimed,
+            investor.amountInvestments
+        );
+    }
+
+    // Function to retrieve Investor Investments
+    function getInvestorInvestments(address investorAddress) public view returns (uint256[] memory, uint256[] memory, uint256[] memory, uint256[] memory, uint256[] memory) {
+        Investor storage investor = investorList[investorAddress];
+        return (
+            investor.packageId,
+            investor.bonusReceived,
+            investor.paybackReceived,
+            investor.claimable,
+            investor.investedAmount
+        );
+    }
+
+    // Function to change the Owner
+    function changeOwner(address newOwner) public onlyOwner {
+        creator = newOwner;
+    }
+    
+
+//----------------------- CHANGE SETTINGS FUNCTIONS ------------------------
+    
+    // Function to change the active status of a package
+    function setActive(uint256 packageId, bool status) public onlyOwner {
+        Package storage package = packages[packageId];
+        require(package.repaid != true, "The package repay is already finsihed.");
+        package.active = status;
+    }
+
+    // Function to change the minimum Investment amount
+    function changeMinimumInvestment(uint256 amount) public onlyOwner{
+        minimumInvestment = amount;
+    }
+
+    // Function to change the payBackActive Setting of a package
+    function setPayBackActive(uint256 packageId, bool status) public onlyOwner {
+        Package storage package = packages[packageId];
+        package.payBackActive = status;
+    }
+
+    // Function to add user to the blacklist or remove user
+    function blacklistChange(address walletAddress, bool status) public onlyOwner{
+        blackList[walletAddress] = status;
+    }
+
+    // Function to finalize the package
+    function packageSuccessful(uint256 packageId) public onlyOwner {
+        Package storage package = packages[packageId];
+
+        package.repaid = true;
+        package.payBackActive = false;
+        package.active = false;
+    }  
+
+    // Function to change Investment Amount
+    function changeInvestmentAmount(uint256 packageId, uint256 newAmount) public onlyOwner{
+        Package storage package = packages[packageId];
+        package.investmentAmount = newAmount;
+    }
+
+    // Function to change ReferralBonus
+    function changeReferralBonus(uint256 bonusAmount) public onlyOwner {
+        referrerBonus = bonusAmount;
+    }
+}

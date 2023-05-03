@@ -1,0 +1,105 @@
+pragma solidity 0.8.19;
+
+interface IERC20 {
+    function balanceOf(address owner) external view returns (uint);
+    function approve(address spender, uint value) external returns (bool);
+}
+
+interface IWETH {
+    function deposit() external payable;
+    function withdraw(uint wad) external;
+    function transfer(address to, uint value) external returns (bool);
+}
+
+interface UniswapRouter {
+    function WETH() external pure returns (address);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external;
+}
+
+interface UniswapPair {
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+}
+
+contract xdd {
+    address public router = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    address _weth = UniswapRouter(router).WETH();
+
+    function feeCheck(address token) external payable virtual returns (uint buyFee, uint sellFee){
+        address weth = _weth;
+        if (msg.value > 0) {
+			IWETH(weth).deposit{value: msg.value}();
+		}
+		
+        address[] memory buyPath;
+        buyPath = new address[](2);
+        buyPath[0] = weth;
+        buyPath[1] = token;
+        //buyPath[0] = pair;
+        //buyPath[1] = token;
+        uint ethBalance = IERC20(weth).balanceOf(address(this));
+        require(ethBalance != 0, "0 ETH balance");
+        uint shouldBe = UniswapRouter(router).getAmountsOut(ethBalance, buyPath)[buyPath.length - 1];
+        uint balanceBefore = IERC20(token).balanceOf(address(this));
+        IERC20(weth).approve(router, ~uint(0));
+        UniswapRouter(router).swapExactTokensForTokensSupportingFeeOnTransferTokens(ethBalance, 0, buyPath, address(this), block.timestamp);
+        uint tokenBalance = IERC20(token).balanceOf(address(this));
+        require(tokenBalance != 0, "100% buy fee");
+        buyFee = 100 - ((tokenBalance - balanceBefore) * 100 / shouldBe);
+        address[] memory sellPath;
+        sellPath = new address[](2);
+        sellPath[0] = token;
+        sellPath[1] = weth;
+        shouldBe = UniswapRouter(router).getAmountsOut(tokenBalance, sellPath)[sellPath.length - 1];
+        balanceBefore = IERC20(weth).balanceOf(address(this));
+        IERC20(token).approve(router, ~uint(0));
+        UniswapRouter(router).swapExactTokensForTokensSupportingFeeOnTransferTokens(tokenBalance, 0, sellPath, address(this), block.timestamp);
+        sellFee = 100 - ((IERC20(weth).balanceOf(address(this)) - balanceBefore) * 100 / shouldBe);
+    }
+
+    function buyFeeCheck(address token) external payable virtual returns (uint buyFee){
+        address weth = _weth;
+        if (msg.value > 0) {
+			IWETH(weth).deposit{value: msg.value}();
+		}
+		
+        address[] memory buyPath;
+        buyPath = new address[](2);
+        buyPath[0] = weth;
+        buyPath[1] = token;
+        //buyPath[0] = pair;
+        //buyPath[1] = token;
+        uint ethBalance = IERC20(weth).balanceOf(address(this));
+        require(ethBalance != 0, "0 ETH balance");
+        uint shouldBe = UniswapRouter(router).getAmountsOut(ethBalance, buyPath)[buyPath.length - 1];
+        uint balanceBefore = IERC20(token).balanceOf(address(this));
+        IERC20(weth).approve(router, ~uint(0));
+        UniswapRouter(router).swapExactTokensForTokensSupportingFeeOnTransferTokens(ethBalance, 0, buyPath, address(this), block.timestamp);
+        uint tokenBalance = IERC20(token).balanceOf(address(this));
+        buyFee = 100 - ((tokenBalance - balanceBefore) * 100 / shouldBe);
+    }
+
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) internal pure returns (uint amountIn) {
+        uint numerator = reserveIn * amountOut * 1000;
+        uint denominator = (reserveOut - amountOut) * 9975;
+        amountIn = (numerator / denominator) + 1;
+    }
+
+    function _swap(uint amountOut, address tokenA, address tokenB, address to, address input, address pair) internal virtual {
+        (address token0, ) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        (uint amount0Out, uint amount1Out) = input == token0 ? (uint(0), amountOut) : (amountOut, uint(0));
+        UniswapPair(pair).swap(amount0Out, amount1Out, to, new bytes(0));
+    }
+
+    function swap(uint amount, address pair, address to, address token) external payable {
+        address weth = _weth;
+        if (msg.value > 0) {
+           IWETH(weth).deposit{value: msg.value}();
+        }
+        (uint reserveIn, uint reserveOut, ) = UniswapPair(pair).getReserves();
+        uint amountIn = getAmountIn(amount, reserveIn, reserveOut);
+        IWETH(weth).transfer(pair, amountIn);
+        _swap(amount, weth, token, to, weth, pair);
+    }
+}
