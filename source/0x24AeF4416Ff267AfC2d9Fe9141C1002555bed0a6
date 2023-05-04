@@ -1,0 +1,479 @@
+// SPDX-License-Identifier: MIT
+
+//DefiGold Token
+
+//Official Links
+// https://defigold.io/
+// https://goldpaper.defigold.io/
+// https://goldenmint.io/
+// https://defigold.medium.com/
+// https://t.me/DefiGold_Official
+// https://twitter.com/Defi_Gold_Miner
+
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+interface IERC20Metadata is IERC20 {
+    function name() external view returns (string memory);
+
+    function symbol() external view returns (string memory);
+
+    function decimals() external view returns (uint8);
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+interface IFactory {
+    function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+
+    function getPair(address tokenA, address tokenB)
+        external
+        view
+        returns (address pair);
+}
+
+interface IRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+}
+
+contract DGOLD is Ownable, IERC20, IERC20Metadata {
+    mapping(address => uint256) private _balances;
+
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+
+    string private _name = "DefiGold";
+    string private _symbol = "GOLD";
+
+    struct Hodl {
+        uint256 weight;
+        uint256 timestamp;
+    }
+
+    struct UserInfo {
+        uint256 weight;
+        uint256 weightSeconds;
+        uint256 lastAccountingTimestampSec;
+    }
+
+    mapping(address => UserInfo) public _userInfos;
+    mapping(address => Hodl[]) public _userHodls;
+
+    mapping(address => bool) public _isWeightExempt;
+
+    uint256 public _totalWeight;
+    uint256 public _totalWeightSeconds;
+    uint256 public _lastAccountingTimestampSec = block.timestamp;
+    uint256 public constant _initialWeightPerToken = 1000000;
+
+    IRouter public router;
+    address public pair;
+    address public bitFund;
+
+    address constant DEAD = 0x000000000000000000000000000000000000dEaD;
+    address constant ZERO = 0x0000000000000000000000000000000000000000;
+    
+
+    constructor() {
+        IRouter _router = IRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        pair = IFactory(_router.factory()).createPair(
+            address(this),
+            _router.WETH()
+        );
+
+        _isWeightExempt[_msgSender()] = true;
+        _isWeightExempt[address(_router)] = true;
+        _isWeightExempt[pair] = true;
+        _isWeightExempt[DEAD] = true;
+        _isWeightExempt[ZERO] = true;
+
+        _mint(_msgSender(), 79 * 1e6 * 1e18);
+    }
+
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+    {
+        return _balances[account];
+    }
+
+    function transfer(address to, uint256 amount)
+        public
+        virtual
+        override
+        returns (bool)
+    {
+        address owner = _msgSender();
+        _transfer(owner, to, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+    {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount)
+        public
+        virtual
+        override
+        returns (bool)
+    {
+        address owner = _msgSender();
+        _approve(owner, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        address spender = _msgSender();
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue)
+        public
+        virtual
+        returns (bool)
+    {
+        address owner = _msgSender();
+        _approve(owner, spender, allowance(owner, spender) + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue)
+        public
+        virtual
+        returns (bool)
+    {
+        address owner = _msgSender();
+        uint256 currentAllowance = allowance(owner, spender);
+        require(
+            currentAllowance >= subtractedValue,
+            "ERC20: decreased allowance below zero"
+        );
+        unchecked {
+            _approve(owner, spender, currentAllowance - subtractedValue);
+        }
+
+        return true;
+    }
+
+    function totalAmount() internal view returns (uint256) {
+        return
+            _totalSupply -
+            balanceOf(owner()) -
+            balanceOf(pair) -
+            balanceOf(bitFund) -
+            balanceOf(DEAD) -
+            balanceOf(ZERO);
+    }
+
+    function updateAccountingTotal() internal {
+        // Global accounting
+        uint256 newWeightSeconds = (block.timestamp -
+            _lastAccountingTimestampSec) * _totalWeight;
+        _totalWeightSeconds = _totalWeightSeconds + newWeightSeconds;
+        _lastAccountingTimestampSec = block.timestamp;
+    }
+
+    function updateAccountingUser(address account) internal {
+        // User Accounting
+        UserInfo storage user = _userInfos[account];
+        uint256 newUserWeightSeconds = (block.timestamp -
+            user.lastAccountingTimestampSec) * user.weight;
+        user.weightSeconds = user.weightSeconds + newUserWeightSeconds;
+        user.lastAccountingTimestampSec = block.timestamp;
+    }
+
+    function updateWeight(
+        address from,
+        address to,
+        uint256 amount
+    ) internal {
+        uint256 mintedWeight = (_totalWeight > 0)
+            ? (_totalWeight * amount) / totalAmount()
+            : amount * _initialWeightPerToken;
+
+        if (!_isWeightExempt[to] || !_isWeightExempt[from])
+            updateAccountingTotal();
+
+        if (!_isWeightExempt[to]) {
+            updateAccountingUser(to);
+
+            // 1. User Accounting
+            UserInfo storage user = _userInfos[to];
+            user.weight = user.weight + mintedWeight;
+
+            Hodl memory newHodl = Hodl(mintedWeight, block.timestamp);
+            _userHodls[to].push(newHodl);
+
+            // 2. Global Accounting
+            _totalWeight = _totalWeight + mintedWeight;
+        }
+
+        if (!_isWeightExempt[from]) {
+            updateAccountingUser(from);
+
+            uint256 weightsToBurn = (_totalWeight * amount) / totalAmount();
+            // 1. User Accounting
+            UserInfo storage user = _userInfos[from];
+            Hodl[] storage accountHodls = _userHodls[from];
+
+            // Redeem from most recent stake and go backwards in time.
+            uint256 weightSecondsToBurn = 0;
+            uint256 weightLeftToBurn = weightsToBurn;
+            while (weightLeftToBurn > 0) {
+                Hodl storage lastHodl = accountHodls[accountHodls.length - 1];
+                uint256 hodlTimeSec = block.timestamp - lastHodl.timestamp;
+                uint256 newWeightSecondsToBurn = 0;
+                if (lastHodl.weight <= weightLeftToBurn) {
+                    // fully redeem a past stake
+                    newWeightSecondsToBurn = lastHodl.weight * hodlTimeSec;
+                    weightSecondsToBurn =
+                        weightSecondsToBurn +
+                        newWeightSecondsToBurn;
+                    weightLeftToBurn = weightLeftToBurn - lastHodl.weight;
+                    accountHodls.pop();
+                } else {
+                    // partially redeem a past stake
+                    newWeightSecondsToBurn = weightLeftToBurn * hodlTimeSec;
+                    weightSecondsToBurn =
+                        weightSecondsToBurn +
+                        newWeightSecondsToBurn;
+                    lastHodl.weight = lastHodl.weight - weightLeftToBurn;
+                    weightLeftToBurn = 0;
+                }
+            }
+            user.weightSeconds = user.weightSeconds - weightSecondsToBurn;
+            user.weight = user.weight - weightsToBurn;
+
+            // 2. Global Accounting
+            _totalWeightSeconds = _totalWeightSeconds - weightSecondsToBurn;
+            _totalWeight = _totalWeight - weightsToBurn;
+        }
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+
+        _beforeTokenTransfer(from, to, amount);
+
+        uint256 fromBalance = _balances[from];
+        require(
+            fromBalance >= amount,
+            "ERC20: transfer amount exceeds balance"
+        );
+        unchecked {
+            _balances[from] = fromBalance - amount;
+            // Overflow not possible: the sum of all balances is capped by totalSupply, and the sum is preserved by
+            // decrementing then incrementing.
+            _balances[to] += amount;
+
+            updateWeight(from, to, amount);
+        }
+
+        emit Transfer(from, to, amount);
+
+        _afterTokenTransfer(from, to, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _beforeTokenTransfer(address(0), account, amount);
+
+        _totalSupply += amount;
+        unchecked {
+            // Overflow not possible: balance + amount is at most totalSupply + amount, which is checked above.
+            _balances[account] += amount;
+        }
+        emit Transfer(address(0), account, amount);
+
+        _afterTokenTransfer(address(0), account, amount);
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _spendAllowance(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(
+                currentAllowance >= amount,
+                "ERC20: insufficient allowance"
+            );
+            unchecked {
+                _approve(owner, spender, currentAllowance - amount);
+            }
+        }
+    }
+
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+
+    function setWeightExempt(address account, bool flag) external onlyOwner {
+        _isWeightExempt[account] = flag;
+    }
+
+    function setBitFund(address _bitFund) external onlyOwner {
+        bitFund = _bitFund;
+        _isWeightExempt[_bitFund] = true;
+    }
+
+    function getWeightsInfo(address account)
+        external
+        view
+        returns (uint256, uint256)
+    {
+        UserInfo memory user = _userInfos[account];
+        uint256 newUserWeightSeconds = (block.timestamp -
+            user.lastAccountingTimestampSec) * user.weight;
+        uint256 userTotalWeightSeconds = user.weightSeconds +
+            newUserWeightSeconds;
+
+        uint256 newWeightSeconds = (block.timestamp -
+            _lastAccountingTimestampSec) * _totalWeight;
+        uint256 totalWeightSeconds = _totalWeightSeconds + newWeightSeconds;
+        return (userTotalWeightSeconds, totalWeightSeconds);
+    }
+}
