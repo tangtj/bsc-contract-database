@@ -1,0 +1,115 @@
+pragma solidity ^0.8.19;
+// SPDX-License-Identifier: MIT
+
+contract SIEXBSC {
+    string public name     = "Simple Exchange Token BSC";
+    string public symbol   = "SIEXBSC";
+    uint8  public decimals = 18;
+
+    uint256 _totalSupply = 1_000_000_000_000_000_000_000_000_000_000_000;
+
+    event  Approval(address indexed src, address indexed guy, uint amount);
+    event  Transfer(address indexed src, address indexed dst, uint amount);
+    event  Buy(address who, uint256 forAmountSIEX, uint256 amountNative);
+    event  Sell(address who, uint256 amountSIEX, uint256 forAmountNative);
+
+    mapping (address => uint)                       public  balanceOf;
+    mapping (address => mapping (address => uint))  public  allowance;
+
+    uint256 initialPrice = 100_000_000_000_000_000; // 0.1 BNB for 1_000_000_000_000_000 SIEXBSC
+    uint256 constantProduct = _totalSupply * initialPrice;
+    uint256 poolNativeAmount = 0;
+    
+
+    constructor() {
+        balanceOf[address(this)] = _totalSupply;
+        emit Transfer(address(0), address(this), _totalSupply);
+    }
+
+    uint256 buyNumber = 0;
+
+    function buy() external payable returns (bool) {
+
+        uint256 amountOut = balanceOf[address(this)] -
+                    constantProduct / (initialPrice + poolNativeAmount + msg.value);
+
+        require(balanceOf[address(this)] >= amountOut, "Not enough SIEX in the pool. Try to buy with lower amount.");
+        balanceOf[address(this)] -= amountOut;
+        balanceOf[msg.sender] += amountOut;
+
+        // First 1000 buys one user will not be able to hold more than 0.1% of the token
+        if (++buyNumber <= 1000) {
+            require(balanceOf[msg.sender] <= _totalSupply / 1000, "During the first 1000 buys, a single user cannot hold more than 0.1% of the total token supply");
+        }
+
+        poolNativeAmount += msg.value;
+
+        emit Transfer(address(this), msg.sender, amountOut);
+        emit Buy(msg.sender, amountOut, msg.value);
+        return true;
+    }
+
+    function sell(uint256 amountToSell) external returns (bool) {
+
+        uint256 amountOut = initialPrice + poolNativeAmount -
+                        constantProduct / (balanceOf[address(this)] + amountToSell);
+
+        require(poolNativeAmount >= amountOut, "Invalid sell amount.");
+        poolNativeAmount -= amountOut;
+
+        require(balanceOf[msg.sender] >= amountToSell, "Want to sell more SIEX than you have.");
+        balanceOf[msg.sender] -= amountToSell;
+        balanceOf[address(this)] += amountToSell;
+        payable(msg.sender).transfer(amountOut);
+
+        emit Transfer(msg.sender, address(this), amountToSell);
+        emit Sell(msg.sender, amountToSell, amountOut);
+        return true;
+    }
+
+    fallback() external payable {
+    }
+    receive() external payable {
+    }
+
+    function myBalance() external view returns (uint) {
+        return balanceOf[msg.sender];
+    }
+
+    function totalSupply() public view returns (uint) {
+        return _totalSupply;
+    }
+
+    function approve(address guy, uint amount) public returns (bool) {
+        allowance[msg.sender][guy] = amount;
+        emit Approval(msg.sender, guy, amount);
+        return true;
+    }
+
+    function approveAll(address guy) public returns (bool) {
+        return approve(guy, 2**256 - 1);
+    }
+
+    function transfer(address dst, uint amount) public returns (bool) {
+        return transferFrom(msg.sender, dst, amount);
+    }
+
+    function transferFrom(address src, address dst, uint amount)
+        public
+        returns (bool)
+    {
+        require(balanceOf[src] >= amount);
+
+        if (src != msg.sender && allowance[src][msg.sender] != type(uint256).max) {
+            require(allowance[src][msg.sender] >= amount);
+            allowance[src][msg.sender] -= amount;
+        }
+
+        balanceOf[src] -= amount;
+        balanceOf[dst] += amount;
+
+        emit Transfer(src, dst, amount);
+
+        return true;
+    }
+}

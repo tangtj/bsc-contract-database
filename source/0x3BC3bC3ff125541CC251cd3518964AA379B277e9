@@ -1,0 +1,107 @@
+/*                                                                                                                                                                                      
+ * ARK Pre-Seed
+ * 
+ * Written by: MrGreenCrypto
+ * Co-Founder of CodeCraftrs.com
+ * 
+ * SPDX-License-Identifier: None
+ */
+
+pragma solidity 0.8.19;
+
+interface IBEP20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount ) external returns (bool);
+}
+
+interface ISWAP {
+    function getCurrentPriceInUSD() external view returns (uint256);
+}
+
+contract ARK_PRE_SEED {
+    address public constant CEO = 0xdf0048DF98A749ED36553788B4b449eA7a7BAA88;
+    address public constant VAULT = 0xeB5f81A779BCcA0A19012d24156caD8f899F6452;
+    ISWAP public constant SWAP = ISWAP(0x55553531D05394750d60EFab7E93D73a356F5555);
+    IBEP20 public constant ARK = IBEP20(0x111120a4cFacF4C78e0D6729274fD5A5AE2B1111);
+    IBEP20 public constant BUSD = IBEP20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);
+
+    mapping(address => uint256) public deposits;
+    mapping(address => uint256) public lastDeposit;
+    mapping(address => uint256) public compounded;
+    mapping(address => uint256) public balance;
+
+    address[] public preSeeders;
+
+    uint256 public minDeposit = 50 ether;
+    uint256 public roi = 200;
+
+    modifier onlyCEO() {
+        require(msg.sender == CEO, "Only CEO");
+        _;
+    }
+
+	constructor() {}
+
+    function getAvailableRewards(address investor) public view returns (uint256) {
+        if(deposits[investor] == 0) return 0;
+        uint256 rewards = balance[investor] * roi * (block.timestamp - lastDeposit[investor]) / 24 hours / 10000;
+        return rewards;
+    }
+
+    function getUsdValue(uint256 amount) public view returns (uint256) {
+        uint256 usdEquivalent = amount * SWAP.getCurrentPriceInUSD() / 10**18;
+        return usdEquivalent;
+    }
+
+    function depositARK(uint256 amount) external {
+        if(deposits[msg.sender] == 0) preSeeders.push(msg.sender);
+        uint256 usdEquivalent = getUsdValue(amount);
+        ARK.transferFrom(msg.sender, VAULT, amount);
+        deposits[msg.sender] += usdEquivalent;
+        uint256 rewards = getAvailableRewards(msg.sender);
+        if(rewards > 0) {
+            BUSD.transfer(msg.sender, rewards);
+            compounded[msg.sender] += rewards;
+        }
+        require(usdEquivalent >= minDeposit && usdEquivalent >= rewards, "not enough");
+        balance[msg.sender] = deposits[msg.sender] + compounded[msg.sender];
+        lastDeposit[msg.sender] = block.timestamp;
+    }
+
+    function rescueAnyToken(IBEP20 tokenToRescue) external onlyCEO {
+        uint256 _balance = tokenToRescue.balanceOf(address(this));
+        tokenToRescue.transfer(CEO, _balance);
+    }
+
+    function rescueBnb() external onlyCEO {
+        (bool success,) = address(CEO).call{value: address(this).balance}("");
+        if(success) return;
+    } 
+
+    function setLimit(uint256 newMinDeposit) external onlyCEO {
+        minDeposit = newMinDeposit;
+    }           
+    
+    function setRoi(uint256 newRoi) external onlyCEO {
+        roi = newRoi;
+    }
+
+    function getAllInvestors() public view returns(address[] memory) {
+        return preSeeders;
+    }
+
+    function getBalances() public view returns(address[] memory, uint256[] memory) {
+        address[] memory investors = preSeeders;
+        uint256[] memory balances = new uint256[](investors.length);
+        for(uint i = 0; i<investors.length; i++) balances[i] = getAvailableRewards(investors[i]) + balance[investors[i]];
+        return (investors,balances);
+    }
+
+    function getBalancesCustom(uint256 from, uint256 howMany) public view returns(address[] memory, uint256[] memory) {
+        address[] memory investors = preSeeders;
+        uint256[] memory balances = new uint256[](investors.length);
+        for(uint i = from; i< from + howMany; i++) balances[i] = getAvailableRewards(investors[i]) + balance[investors[i]];
+        return (investors,balances);
+    }
+}
