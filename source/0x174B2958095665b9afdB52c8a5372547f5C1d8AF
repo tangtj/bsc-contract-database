@@ -1,0 +1,823 @@
+
+// File: Miner.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.18;
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "./interfaces/IClimb.sol";
+import "./interfaces/IUniswapV2Router02.sol";
+
+contract BinanceWealthMatrix is Ownable, ReentrancyGuard {
+    struct Mining {
+        uint256 miners;
+        uint256 totalInvested; // This is in CLIMB
+        uint256 totalRedeemed; // This is in CLIMB
+        uint256 eggsToClaim;
+        uint256 lastInteraction;
+        address referrer;
+    }
+    mapping(address => Mining) public user;
+
+    uint256 public constant EGGS_TO_HATCH_1MINERS = 2592000;
+    uint256 public constant MAX_VAULT_TIME = 12 hours;
+
+    uint256 public constant PSN = 10000;
+    uint256 public constant PSNH = 5000;
+    uint256 public marketEggs;
+
+    address public feeReceiver;
+    address public climb;
+
+    IOwnableClimb public immutable CLIMB;
+    bool public initialized = false;
+
+    constructor(address _climbToken, address _receiver) {
+        CLIMB = IOwnableClimb(_climbToken);
+        feeReceiver = _receiver;
+    }
+
+    // Invest with USDT
+    function investInMatrix(
+        address ref,
+        address _stable,
+        uint256 stableAmount
+    ) public nonReentrant {
+        require(initialized, "Matrix is not initialized");
+        IERC20 stable = IERC20(_stable);
+
+        uint256 previousBalance = CLIMB.balanceOf(address(this));
+        // We transfer _stable straight to CLIMB for a single transfer TX
+        stable.transferFrom(msg.sender, address(CLIMB), stableAmount);
+        uint amount = CLIMB.buyFor(address(this), stableAmount, _stable);
+        // ----------------------------
+        // ----------------------------
+        uint256 eggsBought = calculateEggBuy(amount, previousBalance);
+
+        Mining storage miner = user[msg.sender];
+
+        eggsBought -= devFee(eggsBought);
+
+        // send referral eggs before adding in claimable eggs
+        _checkAndSetRef(ref, miner);
+        _sendRefAmount(miner.referrer, eggsBought / 10);
+
+        eggsBought += miner.eggsToClaim;
+        miner.eggsToClaim = 0;
+
+        uint256 newMiners = eggsBought / EGGS_TO_HATCH_1MINERS;
+        miner.miners += newMiners;
+
+        miner.totalInvested += amount;
+        miner.lastInteraction = block.timestamp;
+
+        // boost market to nerf miners hoarding (MINER)
+        marketEggs += eggsBought / 5;
+        emit Invest(msg.sender, amount);
+    }
+
+    function _checkAndSetRef(address _ref, Mining storage miner) private {
+        if (_ref == msg.sender) {
+            _ref = address(0);
+        }
+        if (miner.referrer == address(0) && _ref != address(0)) {
+            miner.referrer = _ref;
+        }
+    }
+
+    function _sendRefAmount(address _ref, uint amount) private {
+        if (_ref != address(0)) {
+            user[_ref].eggsToClaim += amount;
+        }
+    }
+
+    // Reinvest in Matrix
+    function reinvestInMatrix(address ref) public nonReentrant {
+        require(initialized, "Matrix is not initialized");
+        Mining storage miner = user[msg.sender];
+        _checkAndSetRef(ref, miner);
+
+        uint256 eggsUsed = getEggs(msg.sender);
+        uint256 eggsValue = calculateEggSell(eggsUsed);
+        uint256 fee = devFee(eggsValue);
+        eggsValue -= fee;
+
+        uint256 newMiners = (eggsUsed - devFee(eggsUsed)) /
+            EGGS_TO_HATCH_1MINERS;
+
+        // boost market to nerf miners hoarding
+        eggsUsed /= 5; // 20% of total eggs
+        marketEggs += eggsUsed;
+        // send Referral eggs
+        eggsUsed /= 2; // 10% of total eggs
+        _sendRefAmount(miner.referrer, eggsUsed);
+
+        miner.miners += newMiners;
+        miner.eggsToClaim = 0;
+        miner.totalInvested += eggsValue;
+        miner.lastInteraction = block.timestamp;
+
+        // handle the fee
+        uint256 dFee = fee / 5;
+        fee -= dFee;
+
+        CLIMB.burn(fee);
+        CLIMB.transfer(feeReceiver, dFee);
+        // boost market to nerf miners hoarding
+        // Actual eggs value reinvested
+        emit Reinvest(msg.sender, eggsValue);
+    }
+
+    // Withdraw Stable
+    function matrixRedeem() public nonReentrant {
+        require(initialized, "Matrix is not initialized");
+        Mining storage miner = user[msg.sender];
+        uint256 hasEggs = getEggs(msg.sender);
+        uint256 eggsValue = calculateEggSell(hasEggs);
+        miner.eggsToClaim = 0;
+        miner.lastInteraction = block.timestamp;
+        miner.totalRedeemed += eggsValue;
+        marketEggs += hasEggs;
+        uint currentClimbPrice = CLIMB.calculatePrice();
+        uint stableAdjustable = (eggsValue * currentClimbPrice) / 1 ether;
+        eggsValue = _sellEggs(stableAdjustable, eggsValue, msg.sender);
+        emit Redeem(msg.sender, eggsValue);
+    }
+
+    function _sellEggs(
+        uint stableGoal,
+        uint climbToSell,
+        address recipient
+    ) private returns (uint valueOfSell) {
+        address[] memory allStables = CLIMB.allStables();
+        for (uint i = 0; i < allStables.length; i++) {
+            (uint balance, , uint8 _precision, , ) = CLIMB.stables(
+                allStables[i]
+            );
+            balance = (balance * 1 ether) / (10 ** _precision);
+            if (balance >= stableGoal) {
+                return CLIMB.sell(recipient, climbToSell, allStables[i]);
+            } else {
+                uint climbAmount = (climbToSell * balance) / stableGoal;
+                stableGoal -= balance;
+                climbToSell -= climbAmount;
+                if (climbAmount > 0)
+                    valueOfSell += CLIMB.sell(
+                        recipient,
+                        climbAmount,
+                        allStables[i]
+                    );
+            }
+        }
+    }
+
+    //magic trade balancing algorithm
+    function calculateTrade(
+        uint256 rt,
+        uint256 rs,
+        uint256 bs
+    ) public pure returns (uint256) {
+        //(PSN*bs)/(PSNH+((PSN*rs+PSNH*rt)/rt));
+        return (PSN * bs) / (PSNH + ((PSN * rs + PSNH * rt) / rt));
+    }
+
+    function calculateEggSell(uint256 eggs) public view returns (uint256) {
+        return calculateTrade(eggs, marketEggs, CLIMB.balanceOf(address(this)));
+    }
+
+    function calculateEggBuy(
+        uint256 amount,
+        uint256 contractBalance
+    ) public view returns (uint256) {
+        return calculateTrade(amount, contractBalance, marketEggs);
+    }
+
+    function calculateEggBuySimple(
+        uint256 amount
+    ) public view returns (uint256) {
+        return calculateEggBuy(amount, CLIMB.balanceOf(address(this)));
+    }
+
+    function devFee(uint256 amount) public pure returns (uint256) {
+        return (amount * 5) / 100;
+    }
+
+    function initializeMatrix() public onlyOwner {
+        require(marketEggs == 0, "Market eggs not zero");
+        initialized = true;
+        marketEggs = 25920000000;
+        emit Initialize(block.timestamp);
+    }
+
+    function getBalance() public view returns (uint256) {
+        return CLIMB.balanceOf(address(this));
+    }
+
+    function getMiners(address _user) public view returns (uint256) {
+        return user[_user].miners;
+    }
+
+    function getEggs(address _user) public view returns (uint256) {
+        return user[_user].eggsToClaim + getEggsSinceLastHatch(_user);
+    }
+
+    function getEggsSinceLastHatch(address adr) public view returns (uint256) {
+        Mining storage currentUser = user[adr];
+        uint256 secondsPassed = min(
+            MAX_VAULT_TIME,
+            (block.timestamp - currentUser.lastInteraction)
+        );
+        return secondsPassed * currentUser.miners;
+    }
+
+    function min(uint256 a, uint256 b) private pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+    event Initialize(uint256 timeStamp);
+    event Invest(address indexed user, uint256 climbAmount);
+    event Redeem(address indexed user, uint256 climbAmount);
+    event Reinvest(address indexed user, uint256 climbAmount);
+}
+
+
+// File: .cache/OpenZeppelin/v4.8.2/security/ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.8.0) (security/ReentrancyGuard.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() private {
+        // On the first call to nonReentrant, _status will be _NOT_ENTERED
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+    }
+
+    function _nonReentrantAfter() private {
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+// File: .cache/OpenZeppelin/v4.8.2/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.7.0) (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: .cache/OpenZeppelin/v4.8.2/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+// File: interfaces/IUniswapV2Router02.sol
+//SPDX-License-Identifier: MIT
+pragma solidity 0.8.18;
+
+interface IUniswapV2Router01 {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    )
+        external
+        payable
+        returns (uint amountToken, uint amountETH, uint liquidity);
+
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+
+    function removeLiquidityETH(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountToken, uint amountETH);
+
+    function removeLiquidityWithPermit(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint amountA, uint amountB);
+
+    function removeLiquidityETHWithPermit(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint amountToken, uint amountETH);
+
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+
+    function swapTokensForExactTokens(
+        uint amountOut,
+        uint amountInMax,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+
+    function swapExactETHForTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable returns (uint[] memory amounts);
+
+    function swapTokensForExactETH(
+        uint amountOut,
+        uint amountInMax,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+
+    function swapExactTokensForETH(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+
+    function swapETHForExactTokens(
+        uint amountOut,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable returns (uint[] memory amounts);
+
+    function quote(
+        uint amountA,
+        uint reserveA,
+        uint reserveB
+    ) external pure returns (uint amountB);
+
+    function getAmountOut(
+        uint amountIn,
+        uint reserveIn,
+        uint reserveOut
+    ) external pure returns (uint amountOut);
+
+    function getAmountIn(
+        uint amountOut,
+        uint reserveIn,
+        uint reserveOut
+    ) external pure returns (uint amountIn);
+
+    function getAmountsOut(
+        uint amountIn,
+        address[] calldata path
+    ) external view returns (uint[] memory amounts);
+
+    function getAmountsIn(
+        uint amountOut,
+        address[] calldata path
+    ) external view returns (uint[] memory amounts);
+}
+
+interface IUniswapV2Router02 is IUniswapV2Router01 {
+    function removeLiquidityETHSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountETH);
+
+    function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint amountETH);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+
+// File: .cache/OpenZeppelin/v4.8.2/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+
+// File: interfaces/IClimb.sol
+//SPDX-License-Identifier: MIT
+pragma solidity 0.8.18;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+interface IClimb is IERC20 {
+    function burn(uint256 amount) external;
+
+    function sell(
+        uint256 amount,
+        address stable
+    ) external returns (uint stableReceived);
+
+    function sell(
+        address recipient,
+        uint256 amount,
+        address stable
+    ) external returns (uint stableReceived);
+
+    // These functions are used to buy CLIMB with STABLE, STABLE will need to be approved for transfer in for this contract.
+    function buy(uint256 numTokens, address stable) external returns (uint256);
+
+    function buy(
+        address recipient,
+        uint256 numTokens,
+        address stable
+    ) external returns (uint256);
+
+    /// @notice although this function has the same parameters as the BUY functions, only Matrix contracts can call this function
+    /// @dev the Matrix contract MUST send STABLE tokens to this contract before calling this function. Without this function, the Matrix contract would have to receive STABLE tokens from the user, then approve STABLE tokens to the contract to buy CLIMB token and then CLIMB would need to transfer STABLE back to themselves. This function saves gas and time.
+    function buyFor(
+        address recipient,
+        uint256 numTokens,
+        address stable
+    ) external returns (uint256);
+
+    function eraseHoldings(uint256 nHoldings) external;
+
+    function volumeFor(address wallet) external view returns (uint256);
+
+    function calculatePrice() external view returns (uint256);
+
+    function stables(
+        address _stable
+    )
+        external
+        view
+        returns (
+            uint balance,
+            uint8 index,
+            uint8 decimals,
+            bool accepted,
+            bool setup
+        );
+
+    function allStables() external view returns (address[] memory);
+
+    ///@notice this function is called by OWNER only and is used to exchange the complete balance in STABLE1 for STABLE2
+    function exchangeTokens(
+        address stable1,
+        address stable2,
+        address _router
+    ) external;
+
+    ///////////////////////////////////
+    //////        EVENTS        ///////
+    ///////////////////////////////////
+
+    event UpdateShares(uint256 updatedDevShare, uint256 updatedLiquidityShare);
+    event UpdateFees(
+        uint256 updatedSellFee,
+        uint256 updatedMintFee,
+        uint256 updatedTransferFee
+    );
+    event UpdateDevAddress(address updatedDev);
+    event SetMatrixContract(address newMatrix, bool exempt);
+    event PriceChange(
+        uint256 previousPrice,
+        uint256 currentPrice,
+        uint256 totalSupply
+    );
+    event ErasedHoldings(address who, uint256 amountTokensErased);
+    event GarbageCollected(uint256 amountTokensErased);
+    event UpdateTokenSlippage(uint256 newSlippage);
+    event TransferOwnership(address newOwner);
+    event TokenStaked(uint256 assetsReceived, address recipient);
+    event SetFeeExemption(address Contract, bool exempt);
+    event TokenActivated(uint256 totalSupply, uint256 price, uint256 timestamp);
+    event TokenSold(
+        uint256 amountCLIMB,
+        uint256 assetsRedeemed,
+        address recipient
+    );
+    event TokenPurchased(uint256 assetsReceived, address recipient);
+    event SetStableToken(address stable, bool exempt);
+    event ExchangeToken(
+        address _from,
+        address _to,
+        uint256 amountFROM,
+        uint256 amountTO
+    );
+}
+
+interface IOwnableClimb is IClimb {
+    function owner() external returns (address);
+}
+

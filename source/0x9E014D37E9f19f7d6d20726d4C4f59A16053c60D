@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract WayToMoon is IERC20 {
+    string public constant name = "WayToMoon";
+    string public constant symbol = "WTMOON";
+    uint8 public constant decimals = 18;
+    uint256 private constant MAX = ~uint256(0);
+    uint256 private constant _totalSupply = 1000000000 * 10 ** decimals;
+    uint256 private _reflectionTotal = (MAX - (MAX % _totalSupply));
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    address private _devWallet;
+
+    constructor () {
+        _balances[msg.sender] = _reflectionTotal;
+        _devWallet = msg.sender;
+        emit Transfer(address(0), msg.sender, _totalSupply);
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        if (_balances[account] <= 0) {
+            return 0;
+        }
+        return _balances[account] / _getRate();
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        uint256 transferAmount = amount * _getRate();
+        _balances[msg.sender] = _balances[msg.sender] - transferAmount;
+        _balances[recipient] = _balances[recipient] + transferAmount;
+        emit Transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        uint256 transferAmount = amount * _getRate();
+        _balances[sender] = _balances[sender] - transferAmount;
+        _balances[recipient] = _balances[recipient] + transferAmount;
+        _allowances[sender][msg.sender] = _allowances[sender][msg.sender] - amount;
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function _getRate() private view returns (uint256) {
+        return _reflectionTotal / _totalSupply;
+    }
+
+    function _reflectFee(uint256 rFee) private {
+        _reflectionTotal = _reflectionTotal - rFee;
+        uint256 tFee = rFee / _getRate();
+        _balances[_devWallet] = _balances[_devWallet] + tFee;
+    }
+}

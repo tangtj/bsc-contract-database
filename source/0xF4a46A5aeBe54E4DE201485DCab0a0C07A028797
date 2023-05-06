@@ -1,0 +1,213 @@
+/*
+█▄▄ █░░ █▀█ █▀▀ █▄▀ █▀▀ █░█ ▄▀█ █ █▄░█ ▀█▀ █▀█ █▄▀ █▀▀ █▄░█ █▀ █▄░█ █ █▀█ █▀▀ █▀█
+█▄█ █▄▄ █▄█ █▄▄ █░█ █▄▄ █▀█ █▀█ █ █░▀█ ░█░ █▄█ █░█ ██▄ █░▀█ ▄█ █░▀█ █ █▀▀ ██▄ █▀▄
+
+blockchaintokensniper.github.io
+*/
+
+pragma solidity ^0.8;
+
+interface IBTSRouterV1 {
+    function userTier(address) external view returns (uint);
+}
+
+contract BTSManagerV2 {
+    address public adminAddress = msg.sender;
+    address public btsRouterV1Address = 0xf96Bcf9D4A340911f3fd735B56d11ad5cb6AD85d;
+
+    uint public defaultReferralDiscount;
+    uint public defaultReferralCommission;
+    uint public defaultReferralSnipeFeeCut;
+
+    struct ReferrerData {
+        bool isReferrer;
+        uint referralDiscount;
+        uint referralCommission;
+        uint referralSnipeFeeCut;
+    }
+
+    mapping(address => ReferrerData) public referrerInfo;
+    mapping(address => address) public userReferrer;
+    mapping(address => uint) public numReferrals;
+    bool public freeReferrerRegistrationAllowed;
+
+    mapping(address => uint) public userTier;
+
+    mapping(uint => uint) public tierSnipeFees;
+    mapping(uint => uint) public tierPrices;
+
+    mapping(address => bool) public hasMigrated;
+
+    uint public numUsers;
+    uint public numReferrers;
+
+    modifier onlyAdmin() {
+        require(msg.sender == adminAddress, "Admin only");
+        _;
+    }
+
+    // **** TIER FUNCTIONS ****
+
+    function migrateTier() external {
+        require(!hasMigrated[msg.sender], "Already migrated");
+        require(userTier[msg.sender] == 0, "Already registered");
+
+        uint newUserTier = IBTSRouterV1(btsRouterV1Address).userTier(msg.sender) - 1;
+
+        require(newUserTier > 0, "Cannot migrate");
+        userTier[msg.sender] = newUserTier;
+
+        numUsers++;
+        hasMigrated[msg.sender] = true;
+    }
+
+    function buyTier(uint _tierID, address _refAddress) external payable {
+        uint currentTier = userTier[msg.sender];
+        uint buyPrice = tierPrices[_tierID];
+
+        require(currentTier == 0, "Wallet already registered");
+        require(_tierID >= 1 && _tierID <= 4, "Invalid tier choice");
+        require(msg.sender != _refAddress, "Referral address invalid");
+
+        if (_refAddress != address(0)) {
+            require(referrerInfo[_refAddress].isReferrer, "Referrer does not exist");
+
+            uint userBuyPrice = uint((buyPrice * (10000 - referrerInfo[_refAddress].referralDiscount)) / 10000);
+            uint referrerCommission = uint((buyPrice * referrerInfo[_refAddress].referralCommission) / 10000);
+
+            require(msg.value >= userBuyPrice, "Insufficient funds");
+
+            payable(_refAddress).transfer(referrerCommission);
+            payable(adminAddress).transfer(address(this).balance);
+
+            numReferrals[_refAddress]++;
+            userReferrer[msg.sender] = _refAddress;
+        }
+        
+        else {
+            require(msg.value >= buyPrice, "Insufficient funds");
+            payable(adminAddress).transfer(address(this).balance);
+        }
+
+        userTier[msg.sender] = _tierID;
+        numUsers++;
+    }
+
+    function upgradeTier(uint _tierID, address _refAddress) external payable {
+        uint currentTier = userTier[msg.sender];
+
+        require(_tierID > currentTier, "Downgrading tier not permitted");
+        require(_tierID > 0 && _tierID <= 4, "Invalid tier choice");
+        require(msg.sender != _refAddress, "Referral address invalid");
+
+        uint upgradePrice = tierPrices[_tierID] - tierPrices[currentTier];
+
+        if (_refAddress != address(0)) {
+            require(referrerInfo[_refAddress].isReferrer, "Referrer does not exist");
+
+            uint userUpgradePrice = uint((upgradePrice * (10000 - referrerInfo[_refAddress].referralDiscount)) / 10000);
+            uint referrerCommission = uint((upgradePrice * referrerInfo[_refAddress].referralCommission) / 10000);
+
+            require(msg.value >= userUpgradePrice, "Not enough funds");
+
+            payable(_refAddress).transfer(referrerCommission);
+            payable(adminAddress).transfer(address(this).balance);
+
+            numReferrals[_refAddress]++;
+        } 
+        
+        else {
+            require(msg.value >= upgradePrice, "Not enough funds");
+            payable(adminAddress).transfer(address(this).balance);
+        }
+
+        userTier[msg.sender] = _tierID;
+    }
+
+    // **** USER ADMIN FUNCTIONS ****
+
+    function registerAsReferrer() external {
+        require(!referrerInfo[msg.sender].isReferrer, "Referrer already registered");
+        if (!freeReferrerRegistrationAllowed) require(userTier[msg.sender] > 0, "User not registered");
+
+        referrerInfo[msg.sender].isReferrer = true;
+        referrerInfo[msg.sender].referralDiscount = defaultReferralDiscount;
+        referrerInfo[msg.sender].referralCommission = defaultReferralCommission;
+        referrerInfo[msg.sender].referralSnipeFeeCut = defaultReferralSnipeFeeCut;
+
+        numReferrers++;
+    }
+
+    function changeWallet(address _walletAddress) external {
+        require(userTier[msg.sender] > 0, "User not registered");
+        require(userTier[_walletAddress] == 0, "New wallet already registered");
+
+        userTier[_walletAddress] = userTier[msg.sender];
+        userTier[msg.sender] = 0;
+
+        userReferrer[_walletAddress] = userReferrer[msg.sender];
+        userReferrer[msg.sender] = address(0);
+    }
+
+    // **** ADMIN ONLY FUNCTIONS ****
+
+    function setAdminAddress(address _adminAddress) external onlyAdmin {
+        adminAddress = _adminAddress;
+    }
+
+    function setUserTier(address _userAddress, uint _tierType) external onlyAdmin {
+        require(_tierType > userTier[_userAddress]);
+        require(_tierType <= 4);
+
+        if(userTier[_userAddress] == 0) { 
+            numUsers++;
+        }
+
+        userTier[_userAddress] = _tierType;
+    }
+
+    function setTierPrice(uint _tierType, uint _tierPrice) external onlyAdmin {
+        require(_tierType <= 4);
+        tierPrices[_tierType] = _tierPrice;
+    }
+
+    function setSnipeFee(uint _tierType, uint _snipeFee) external onlyAdmin {
+        require(_tierType <= 4);
+        require(_snipeFee < 10000);
+        tierSnipeFees[_tierType] = _snipeFee;
+    }
+
+    function allowFreeReferrerRegistration(bool _freeReferrerRegistrationAllowed) external onlyAdmin {
+        freeReferrerRegistrationAllowed = _freeReferrerRegistrationAllowed;
+    }
+
+    function setReferrerCommission(address _refAddress, uint _commissionAmount) external onlyAdmin {
+        require(_commissionAmount < 10000);
+        referrerInfo[_refAddress].referralCommission = _commissionAmount;
+    }
+
+    function setReferrerDiscount(address _refAddress, uint _discountAmount) external onlyAdmin {
+        require(_discountAmount < 10000);
+        referrerInfo[_refAddress].referralDiscount = _discountAmount;
+    }
+
+    function setReferrerSnipeFeeCut(address _refAddress, uint _snipeFeeCut) external onlyAdmin {
+        require(_snipeFeeCut < 10000);
+        referrerInfo[_refAddress].referralSnipeFeeCut = _snipeFeeCut;
+    }
+
+    function setDefaultReferralCommission(uint _defaultReferralCommission) external onlyAdmin {
+        require(_defaultReferralCommission < 10000);
+        defaultReferralCommission = _defaultReferralCommission;
+    }
+
+    function setDefaultReferralDiscount(uint _defaultReferralDiscount) external onlyAdmin {
+        require(_defaultReferralDiscount < 10000);
+        defaultReferralDiscount = _defaultReferralDiscount;
+    }
+
+    function setDefaultReferralSnipeFeeCut(uint _defaultReferralSnipeFeeCut) external onlyAdmin {
+        require(_defaultReferralSnipeFeeCut < 10000);
+        defaultReferralSnipeFeeCut = _defaultReferralSnipeFeeCut;
+    }
+}
