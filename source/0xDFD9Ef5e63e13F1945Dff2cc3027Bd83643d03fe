@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract MultiSend {
+    address public owner;
+    constructor(){
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "!o");
+        _;
+    }
+
+    function sendETH(address[] memory tos, uint256 perAmount) external onlyOwner {
+        uint256 len = tos.length;
+        require(address(this).balance >= perAmount * len, "eth not enough");
+        for (uint256 i; i < len;) {
+            safeTransferETH(tos[i], perAmount);
+        unchecked{
+            ++i;
+        }
+        }
+    }
+
+    function sendETHs(address[] memory tos, uint256[] memory amounts) external onlyOwner {
+        uint256 balance = address(this).balance;
+        uint256 len = tos.length;
+        uint256 totalAmount;
+        for (uint256 i; i < len;) {
+            safeTransferETH(tos[i], amounts[i]);
+            totalAmount += amounts[i];
+        unchecked{
+            ++i;
+        }
+        }
+        require(balance >= totalAmount, "eth not enough");
+    }
+
+    //批量转账代币，token=代币合约，tos=地址列表，perAmount=相同数量，最小精度
+    function sendToken(address token, address[] memory tos, uint256 perAmount) external onlyOwner {
+        uint256 len = tos.length;
+        for (uint256 i; i < len;) {
+            safeTransfer(token, tos[i], perAmount);
+        unchecked{
+            ++i;
+        }
+        }
+    }
+
+    //批量转账代币，token=代币合约，tos=地址列表，amounts=数量列表，最小精度
+    function sendTokens(address token, address[] memory tos, uint256[] memory amounts) external onlyOwner {
+        uint256 len = tos.length;
+        for (uint256 i; i < len;) {
+            safeTransfer(token, tos[i], amounts[i]);
+        unchecked{
+            ++i;
+        }
+        }
+    }
+
+    function claimETH(uint256 amount) external {
+        safeTransferETH(owner, amount);
+    }
+
+    function claimToken(address token, uint256 amount) external {
+        safeTransfer(token, owner, amount);
+    }
+
+    function setOwner(address o) external onlyOwner {
+        owner = o;
+    }
+
+    receive() external payable {}
+
+    function safeTransfer(address token, address to, uint value) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TTF');
+    }
+
+    function safeTransferETH(address to, uint value) internal {
+        (bool success,) = to.call{value : value}(new bytes(0));
+        require(success, 'TF');
+    }
+}

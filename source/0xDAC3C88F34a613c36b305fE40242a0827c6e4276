@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+
+
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+contract AICoin is IBEP20 {
+    string public name = "AICoin";
+    string public symbol = "AIC";
+    uint8 public decimals = 18;
+    uint256 public override totalSupply = 1000000 * 10**decimals;
+    uint256 public transactionFee = 1; // 1% por defecto
+    uint256 public tokenPrice = 100; // Precio de 100 tokens por BNB por defecto
+    address public owner;
+
+    mapping (address => uint256) balances;
+    mapping (address => mapping (address => uint256)) allowed;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Burn(address indexed from, uint256 value);
+    event Mint(address indexed to, uint256 value);
+
+    constructor() {
+        owner = msg.sender;
+        balances[msg.sender] = totalSupply;
+    }
+
+    function mint(address to, uint256 amount) public {
+        require(msg.sender == owner, "Only contract owner can mint tokens");
+        balances[to] += amount;
+        totalSupply += amount;
+        emit Mint(to, amount);
+    }
+
+    function burn(uint256 amount) public {
+        require(balances[msg.sender] >= amount, "Not enough balance");
+        balances[msg.sender] -= amount;
+        totalSupply -= amount;
+        emit Burn(msg.sender, amount);
+    }
+
+    function buyTokens() payable public {
+        uint256 tokenAmount = (msg.value * tokenPrice) / 10**18; // Calcular la cantidad de tokens a emitir
+        require(tokenAmount <= balances[address(this)], "Not enough tokens in contract"); // Verificar que hay suficientes tokens en el contrato
+        balances[msg.sender] += tokenAmount; // Añadir tokens a la cuenta del comprador
+        balances[address(this)] -= tokenAmount; // Restar tokens de la cuenta del contrato
+        uint256 fee = (tokenAmount * transactionFee) / 100;
+        balances[address(this)] += fee; // Añadir la tarifa al saldo del contrato
+        emit Transfer(address(this), msg.sender, tokenAmount);
+    }
+
+    function withdraw(uint256 amount) public {
+        require(msg.sender == owner, "Only contract owner can withdraw"); // Verificar que solo el propietario puede retirar BNB
+        require(amount <= address(this).balance, "Not enough BNB in contract"); // Verificar que hay suficientes BNB en el contrato
+        payable(msg.sender).transfer(amount); // Transferir BNB al propietario
+    }
+
+    function setTransactionFee(uint256 fee) public {
+        require(msg.sender == owner, "Only contract owner can modify transaction fee"); // Verificar que solo el propietario puede modificar la tarifa
+        require(fee >= 1 && fee <= 99, "Fee must be between 1 and 99 percent");
+        transactionFee = fee;
+    }
+
+    function setTokenPrice(uint256 price) public {
+        require(msg.sender == owner, "Only contract owner can modify token price"); // Verificar que solo el propietario puede modificar el precio
+        tokenPrice = price;
+    }
+
+    function balanceOf(address owner) public view override returns (uint256) {
+        return balances[owner];
+    }
+
+    function transfer(address to, uint256 amount) public override returns (bool) {
+        require(amount <= balances[msg.sender], "Not enough balance");
+        balances[msg.sender] -= amount;
+        balances[to] += amount;
+        emit Transfer(msg.sender, to, amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        allowed[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) public override returns (bool) {
+        require(amount <= balances[from], "Not enough balance");
+        require(amount <= allowed[from][msg.sender], "Not enough allowance");
+        balances[from] -= amount;
+        allowed[from][msg.sender] -= amount;
+        balances[to] += amount;
+        emit Transfer(from, to, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return allowed[owner][spender];
+    }
+}

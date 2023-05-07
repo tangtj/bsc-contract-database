@@ -1,0 +1,1032 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return payable(msg.sender);
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+library Address {
+    function isContract(address account) internal view returns (bool) {
+        bytes32 codehash;
+        bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+        // solhint-disable-next-line no-inline-assembly
+        assembly {
+            codehash := extcodehash(account)
+        }
+        return (codehash != accountHash && codehash != 0x0);
+    }
+
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(
+            address(this).balance >= amount,
+            "Address: insufficient balance"
+        );
+
+        // solhint-disable-next-line avoid-low-level-calls, avoid-call-value
+        (bool success, ) = recipient.call{value: amount}("");
+        require(
+            success,
+            "Address: unable to send value, recipient may have reverted"
+        );
+    }
+
+    function functionCall(address target, bytes memory data)
+        internal
+        returns (bytes memory)
+    {
+        return functionCall(target, data, "Address: low-level call failed");
+    }
+
+    function functionCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        return _functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value
+    ) internal returns (bytes memory) {
+        return
+            functionCallWithValue(
+                target,
+                data,
+                value,
+                "Address: low-level call with value failed"
+            );
+    }
+
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        require(
+            address(this).balance >= value,
+            "Address: insufficient balance for call"
+        );
+        return _functionCallWithValue(target, data, value, errorMessage);
+    }
+
+    function _functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 weiValue,
+        string memory errorMessage
+    ) private returns (bytes memory) {
+        require(isContract(target), "Address: call to non-contract");
+
+        (bool success, bytes memory returndata) = target.call{value: weiValue}(
+            data
+        );
+        if (success) {
+            return returndata;
+        } else {
+            if (returndata.length > 0) {
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+
+contract Ownable is Context {
+    address private _owner;
+    address private _previousOwner;
+    uint256 private _lockTime;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function waiveOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+}
+
+interface IUniswapV2Router {
+    function factory() external pure returns (address);
+}
+
+contract MoiToken is Context, IERC20, Ownable {
+    using SafeMath for uint256;
+    using Address for address;
+
+    string private _name = "MOI CHAIN";
+    string private _symbol = "MOI";
+    uint8 private _decimals = 18;
+
+    //全网持仓分红
+    address public holdingDividindsAddress =
+        0x1dbB2BD67b665Ce132585ec8F94264b5aa315076;
+    //回流地址
+    address public reflowAddress = 0xDf037b50152a17CD7Dd5927Ac524a31B31c0e52f;
+
+    address public extraDividendsAddress =
+        0xC355C7193b5e91297fE58077FB1e9B8F08453e2a;
+
+    mapping(address => uint256) _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    mapping(address => bool) public isExcludedFromFee;
+
+    uint256 constant _baseFee = 1000;
+    //交易总手续费
+    uint256 public _totalTxFee;
+    uint256 public _destroyFee = 16;
+    uint256 public _reflowFee = 24;
+    uint256 public _liquidityFee = 32;
+    uint256 public _holdingFee = 8;
+    //SSSR分红
+    uint256 public _sssRFee = 10;
+    //空投奖励
+    uint256[2] public _marketingShares;
+    //用户持币状态
+    mapping(address => bool) public _holdTokenFlag;
+    //持币地址
+    address[] public _holdTokenUsers;
+    uint256 private _totalSupply = 21000000 * 10**_decimals;
+    IUniswapV2Router public uniswapV2Router;
+    address public uniswapPair;
+    mapping(address => address) public referers;
+    mapping(address => bool) public isMarketPair;
+    uint256 private unlocked = 1;
+    address[] public sssrUsers;
+    mapping(address => bool) public sssrUserFlag;
+    mapping(address => UserInfo) public userInfos;
+    //有效持币数量
+    uint256 public validAmount = 1e20;
+    mapping(address => address[]) public _leaderRefers;
+    uint256 public startTime = 1646913600;
+    uint256 public endTime;
+
+    struct UserInfo {
+        uint8 levelId;
+        uint256 communityPerformance;
+        uint256 totalPerformance;
+        uint256 performance;
+    }
+
+    struct LevelConfig {
+        uint8 id;
+        uint256 performance;
+        uint256 communityPerformance;
+        uint256 rewardFee;
+    }
+    mapping(uint8 => LevelConfig) public levelConfigs;
+
+    function addLevelConfig(
+        uint8 _id,
+        uint256 _performance,
+        uint256 _communityPerformance,
+        uint256 _rewardFee
+    ) public onlyOwner {
+        levelConfigs[_id] = LevelConfig({
+            id: _id,
+            performance: _performance * 1e18,
+            communityPerformance: _communityPerformance * 1e18,
+            rewardFee: _rewardFee
+        });
+    }
+
+    function setReflowAddress(address newValue) public onlyOwner {
+        reflowAddress = newValue;
+    }
+
+    function setHoldingDividindsAddress(address newValue) public onlyOwner {
+        holdingDividindsAddress = newValue;
+    }
+
+    modifier lock() {
+        require(unlocked == 1, "MOIToken: LOCKED");
+        unlocked = 0;
+        _;
+        unlocked = 1;
+    }
+
+    constructor() {
+        endTime = startTime.add(3 days);
+        _marketingShares = [30, 20];
+        IUniswapV2Router _uniswapRouter = IUniswapV2Router(
+            0x10ED43C718714eb63d5aA57B78B54704E256024E
+        );
+        uniswapPair = IUniswapV2Factory(_uniswapRouter.factory()).createPair(
+            address(this),
+            0x55d398326f99059fF775485246999027B3197955
+        );
+        _allowances[address(this)][address(uniswapPair)] = _totalSupply;
+        _totalTxFee = _destroyFee.add(_reflowFee).add(_liquidityFee).add(
+            _holdingFee
+        );
+        isMarketPair[address(uniswapPair)] = true;
+        _balances[0xC355C7193b5e91297fE58077FB1e9B8F08453e2a] = _totalSupply;
+        emit Transfer(
+            address(0),
+            0xC355C7193b5e91297fE58077FB1e9B8F08453e2a,
+            _totalSupply
+        );
+        isExcludedFromFee[0xC355C7193b5e91297fE58077FB1e9B8F08453e2a] = true;
+
+        levelConfigs[1] = LevelConfig({
+            id: 1,
+            performance: 20000 * 1e18,
+            communityPerformance: 5000 * 1e18,
+            rewardFee: 20
+        });
+        levelConfigs[2] = LevelConfig({
+            id: 2,
+            performance: 100000 * 1e18,
+            communityPerformance: 60000 * 1e18,
+            rewardFee: 30
+        });
+        levelConfigs[3] = LevelConfig({
+            id: 3,
+            performance: 200000 * 1e18,
+            communityPerformance: 120000 * 1e18,
+            rewardFee: 40
+        });
+        levelConfigs[4] = LevelConfig({
+            id: 4,
+            performance: 600000 * 1e18,
+            communityPerformance: 240000 * 1e18,
+            rewardFee: 60
+        });
+        levelConfigs[5] = LevelConfig({
+            id: 5,
+            performance: 1000000 * 1e18,
+            communityPerformance: 600000 * 1e18,
+            rewardFee: 80
+        });
+        levelConfigs[6] = LevelConfig({
+            id: 6,
+            performance: 3000000 * 1e18,
+            communityPerformance: 1500000 * 1e18,
+            rewardFee: 100
+        });
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function allowance(address owner, address spender)
+        public
+        view
+        override
+        returns (uint256)
+    {
+        return _allowances[owner][spender];
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue)
+        public
+        virtual
+        returns (bool)
+    {
+        _approve(
+            _msgSender(),
+            spender,
+            _allowances[_msgSender()][spender].add(addedValue)
+        );
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue)
+        public
+        virtual
+        returns (bool)
+    {
+        _approve(
+            _msgSender(),
+            spender,
+            _allowances[_msgSender()][spender].sub(
+                subtractedValue,
+                "ERC20: decreased allowance below zero"
+            )
+        );
+        return true;
+    }
+
+    function approve(address spender, uint256 amount)
+        public
+        override
+        returns (bool)
+    {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) private {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function setMarketPairStatus(address account, bool newValue)
+        public
+        onlyOwner
+    {
+        isMarketPair[account] = newValue;
+    }
+
+    function setIsExcludedFromFee(address account, bool newValue)
+        public
+        onlyOwner
+    {
+        isExcludedFromFee[account] = newValue;
+    }
+
+    function transfer(address recipient, uint256 amount)
+        public
+        override
+        returns (bool)
+    {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        _approve(
+            sender,
+            _msgSender(),
+            _allowances[sender][_msgSender()].sub(
+                amount,
+                "ERC20: transfer amount exceeds allowance"
+            )
+        );
+        _transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) private returns (bool) {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        //更新持币用户
+        _updateHoldInfo(sender, recipient);
+        if (isExcludedFromFee[sender] || isExcludedFromFee[recipient]) {
+            return _basicTransfer(sender, recipient, amount);
+        } else {
+            //绑定层级关系
+            _createRelation(sender, recipient);
+            _balances[sender] = _balances[sender].sub(
+                amount,
+                "Insufficient Balance"
+            );
+            uint256 finalAmount = takeFee(sender, recipient, amount);
+            _balances[recipient] = _balances[recipient].add(finalAmount);
+            emit Transfer(sender, recipient, finalAmount);
+            return true;
+        }
+    }
+
+    //持币分红
+    function holdDividends() public onlyOwner {
+        uint256 _totalDividends = _balances[holdingDividindsAddress];
+        require(
+            _totalDividends > 0,
+            "MOI: holding address Insufficient Balance"
+        );
+        _balances[holdingDividindsAddress] = 0;
+        uint256 _totalDividendsSupply = getTotalHoldDividendsSupply();
+        for (uint256 i = 0; i < _holdTokenUsers.length; i++) {
+            address _user = _holdTokenUsers[i];
+            uint256 _userBalance = _balances[_user];
+            if (
+                _userBalance == 0 ||
+                isMarketPair[_user] ||
+                isExcludedFromFee[_user] ||
+                _user == address(this)
+            ) {
+                continue;
+            }
+            uint256 dividends = _totalDividends.mul(_userBalance).div(
+                _totalDividendsSupply
+            );
+            _balances[_user] = _balances[_user].add(dividends);
+        }
+    }
+
+    function getTotalHoldDividendsSupply() internal view returns (uint256) {
+        uint256 _totalDeivdendsSupply;
+        for (uint256 i = 0; i < _holdTokenUsers.length; i++) {
+            address _user = _holdTokenUsers[i];
+            uint256 _userBalance = _balances[_user];
+            if (
+                _userBalance == 0 ||
+                isMarketPair[_user] ||
+                isExcludedFromFee[_user] ||
+                _user == address(this)
+            ) {
+                continue;
+            }
+            _totalDeivdendsSupply = _totalDeivdendsSupply.add(_userBalance);
+        }
+        return _totalDeivdendsSupply;
+    }
+
+    function _updateHoldInfo(address sender, address recipient) internal {
+        if (
+            isMarketPair[sender] ||
+            isMarketPair[recipient] ||
+            sender == recipient ||
+            isExcludedFromFee[sender] ||
+            isExcludedFromFee[recipient] ||
+            Address.isContract(sender) ||
+            Address.isContract(recipient)
+        ) {
+            return;
+        }
+        if (!_holdTokenFlag[sender]) {
+            _holdTokenFlag[sender] = true;
+            _holdTokenUsers.push(sender);
+        }
+        if (!_holdTokenFlag[recipient]) {
+            _holdTokenFlag[recipient] = true;
+            _holdTokenUsers.push(recipient);
+        }
+    }
+
+    event Relation(address indexed user, address indexed leader);
+
+    //创建层级关系
+    function _createRelation(address from, address to) internal {
+        if (
+            isMarketPair[from] ||
+            isMarketPair[to] ||
+            from == to ||
+            isExcludedFromFee[from] ||
+            isExcludedFromFee[to] ||
+            Address.isContract(from) ||
+            Address.isContract(to) ||
+            _leaderRefers[to].length > 0
+        ) {
+            return; 
+        }
+        if (_balances[to] == 0 && referers[to] == address(0)) {
+            referers[to] = from;
+            _leaderRefers[from].push(to);
+            emit Relation(to, from);
+        }
+    }
+
+    function _basicTransfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal returns (bool) {
+        _balances[sender] = _balances[sender].sub(
+            amount,
+            "Insufficient Balance"
+        );
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function openStage() internal view returns (bool) {
+        return block.timestamp >= startTime && block.timestamp <= endTime;
+    }
+
+    function takeFee(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal returns (uint256) {
+        uint256 feeAmount = amount.mul(_totalTxFee).div(_baseFee);
+        if (feeAmount > 0) {
+            _balances[address(this)] = _balances[address(this)].add(feeAmount);
+            emit Transfer(sender, address(this), feeAmount);
+            //销毁
+            _destroy(amount);
+            //回流
+            _addReflowDividends(amount);
+            //持有lp
+            _addLiquidityDividends(amount);
+            //持有代币
+            _addHoldTokenDividends(amount);
+            if (
+                openStage() && !isMarketPair[sender] && !isMarketPair[recipient]
+            ) {
+                _refreshPerformance(recipient, amount);
+            }
+            if (isMarketPair[sender]) {
+                //获取团队奖励
+                _addLeaderTeamReward(recipient, amount, 0, false);
+                //刷新级别
+                _refreshPerformance(recipient, amount);
+                //sssr级别分红
+                _sssrDividends(amount);
+                //推荐奖励
+                _addAirdropReward(recipient, amount, 0);
+            }
+        }
+        return amount.sub(feeAmount);
+    }
+
+    //发送团队奖励
+    function _addLeaderTeamReward(
+        address user,
+        uint256 amount,
+        uint256 teamFee,
+        bool pl
+    ) internal {
+        address _leader = referers[user];
+        if (_leader == address(0)) {
+            return;
+        }
+        uint8 _leaderLevelId = userInfos[_leader].levelId;
+        //领导人级别
+        uint256 _leaderFee = levelConfigs[_leaderLevelId].rewardFee;
+        if (_leaderLevelId == 0 || _balances[_leader] < validAmount) {
+            _addLeaderTeamReward(_leader, amount, teamFee, false);
+        } else if (_leaderLevelId == 1 && _leaderFee == teamFee) {
+            //N级别 平级无奖励
+            _addLeaderTeamReward(_leader, amount, teamFee, false);
+        } else if (_leaderFee < teamFee) {
+            //下级超越奖励
+            uint256 _reward = amount.mul(10).div(_baseFee);
+            _balances[_leader] = _balances[_leader].add(_reward);
+            require(
+                _balances[extraDividendsAddress] >= _reward,
+                "MOI: Dividends leader Insufficient Balance"
+            );
+            _balances[extraDividendsAddress] = _balances[extraDividendsAddress]
+                .sub(_reward);
+            emit Transfer(extraDividendsAddress, _leader, _reward);
+            _addLeaderTeamReward(
+                _leader,
+                amount,
+                levelConfigs[_leaderLevelId].rewardFee,
+                false
+            );
+        } else if (_leaderFee > teamFee) {
+            //极差
+            uint256 _rewardFee = levelConfigs[_leaderLevelId].rewardFee.sub(
+                teamFee
+            );
+            uint256 _reward = amount.mul(_rewardFee).div(_baseFee);
+            _balances[_leader] = _balances[_leader].add(_reward);
+
+            require(
+                _balances[extraDividendsAddress] >= _reward,
+                "MOI: Dividends leader Insufficient Balance"
+            );
+            _balances[extraDividendsAddress] = _balances[extraDividendsAddress]
+                .sub(_reward);
+            emit Transfer(extraDividendsAddress, _leader, _reward);
+
+            _addLeaderTeamReward(
+                _leader,
+                amount,
+                levelConfigs[_leaderLevelId].rewardFee,
+                false
+            );
+        } else if (pl) {
+            //拿到过平级奖励
+            _addLeaderTeamReward(
+                _leader,
+                amount,
+                levelConfigs[_leaderLevelId].rewardFee,
+                true
+            );
+        } else {
+            //平级节流
+            uint256 _reward = amount.mul(10).div(_baseFee);
+            _balances[_leader] = _balances[_leader].add(_reward);
+            require(
+                _balances[extraDividendsAddress] >= _reward,
+                "MOI: Dividends leader Insufficient Balance"
+            );
+            _balances[extraDividendsAddress] = _balances[extraDividendsAddress]
+                .sub(_reward);
+            emit Transfer(extraDividendsAddress, _leader, _reward);
+            _addLeaderTeamReward(
+                _leader,
+                amount,
+                levelConfigs[_leaderLevelId].rewardFee,
+                true
+            );
+        }
+    }
+
+    //持仓分红
+    function _addHoldTokenDividends(uint256 amount) internal {
+        uint256 _feeAmount = amount.mul(_holdingFee).div(_baseFee);
+        if (_feeAmount > 0) {
+            _balances[holdingDividindsAddress] = _balances[
+                holdingDividindsAddress
+            ].add(_feeAmount);
+            emit Transfer(address(this), holdingDividindsAddress, _feeAmount);
+        }
+    }
+
+    //流动性奖励
+    function _addLiquidityDividends(uint256 amount) internal {
+        uint256 _totalSupplyForLpToken = IERC20(uniswapPair).totalSupply();
+        if (_totalSupplyForLpToken == 0) {
+            return;
+        }
+        uint256 _feeAmount = amount.mul(_liquidityFee).div(_baseFee);
+        if (_feeAmount == 0) {
+            return;
+        }
+        for (uint256 i = 0; i < _holdTokenUsers.length; i++) {
+            address user = _holdTokenUsers[i];
+            uint256 _lpBalance = IERC20(uniswapPair).balanceOf(user);
+            if (_lpBalance == 0) {
+                continue;
+            }
+            uint256 _dividendsAmount = _lpBalance.mul(_feeAmount).div(
+                _totalSupplyForLpToken
+            );
+            _balances[user] = _balances[user].add(_dividendsAmount);
+            emit Transfer(address(this), user, _dividendsAmount);
+        }
+    }
+
+    //回流奖励
+    function _addReflowDividends(uint256 amount) internal {
+        uint256 _feeAmount = amount.mul(_reflowFee).div(_baseFee);
+        if (_feeAmount > 0) {
+            _balances[reflowAddress] = _balances[reflowAddress].add(_feeAmount);
+            _balances[address(this)] = _balances[address(this)].sub(_feeAmount);
+            emit Transfer(address(this), reflowAddress, _feeAmount);
+        }
+    }
+
+    //销毁
+    function _destroy(uint256 amount) internal {
+        uint256 _feeAmount = amount.mul(_destroyFee).div(_baseFee);
+        if (_feeAmount > 0) {
+            _balances[address(this)] = _balances[address(this)].sub(_feeAmount);
+            _totalSupply = _totalSupply.sub(_feeAmount);
+        }
+    }
+
+    //持币分红
+    function _holdingDividends(uint256 amount) internal {
+        uint256 _feeAmount = amount.mul(_holdingFee).div(_baseFee);
+        if (_feeAmount > 0) {
+            _balances[holdingDividindsAddress] = _balances[
+                holdingDividindsAddress
+            ].add(amount);
+            _balances[address(this)] = _balances[address(this)].sub(_feeAmount);
+            emit Transfer(address(this), holdingDividindsAddress, _feeAmount);
+        }
+    }
+
+    //空投奖励
+    function _addAirdropReward(
+        address user,
+        uint256 amount,
+        uint8 shareCounts
+    ) internal {
+        uint8 counter = shareCounts;
+        if (shareCounts == 2) {
+            return;
+        }
+        address _leader = referers[user];
+        if (_leader == address(0)) {
+            return;
+        }
+        if (_balances[_leader] > validAmount) {
+            uint256 _reward = amount.mul(_marketingShares[shareCounts]).div(
+                _baseFee
+            );
+            _balances[_leader] = _balances[_leader].add(_reward);
+            counter++;
+            require(
+                _balances[extraDividendsAddress] >= _reward,
+                "MOI: Dividends Insufficient Balance"
+            );
+            _balances[extraDividendsAddress] = _balances[extraDividendsAddress]
+                .sub(_reward);
+            emit Transfer(extraDividendsAddress, _leader, _reward);
+        }
+        _addAirdropReward(_leader, amount, counter);
+    }
+
+    //添加用户业绩
+    function addUserPerformance(address user, uint256 amount) public onlyOwner {
+        _refreshPerformance(user, amount);
+    }
+
+    //刷新业绩
+    function _refreshPerformance(address user, uint256 amount) internal {
+        UserInfo memory _userInfo = userInfos[user];
+        if (_userInfo.performance == 0) {
+            //创建用户级别
+            userInfos[user] = UserInfo({
+                levelId: 0,
+                communityPerformance: 0,
+                totalPerformance: 0,
+                performance: amount
+            });
+        } else {
+            userInfos[user].performance = userInfos[user].performance.add(
+                amount
+            );
+            uint256 maxCommunityPerformance = _getMaxCommodityPerformance(user);
+            if (maxCommunityPerformance > 0) {
+                userInfos[user].communityPerformance = userInfos[user]
+                    .totalPerformance
+                    .sub(maxCommunityPerformance);
+            }
+
+            for (uint8 i = 6; i >= 1; i--) {
+                LevelConfig memory _levelConfig = levelConfigs[i];
+                //查询用户的小区资产
+                if (
+                    userInfos[user].totalPerformance >
+                    _levelConfig.performance &&
+                    userInfos[user].communityPerformance >
+                    _levelConfig.communityPerformance
+                ) {
+                    if (userInfos[user].levelId < _levelConfig.id) {
+                        userInfos[user].levelId = _levelConfig.id;
+                        if (_levelConfig.id == 6 && !sssrUserFlag[user]) {
+                            sssrUserFlag[user] = true;
+                            sssrUsers.push(user);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        //刷新领导人级别
+        _refreshLeader(user, amount);
+    }
+
+    function _getMaxCommodityPerformance(address user)
+        internal
+        view
+        returns (uint256)
+    {
+        uint256 maxTotalformance = 0;
+        if (_leaderRefers[user].length <= 1) {
+            return maxTotalformance;
+        }
+        for (uint256 i = 0; i < _leaderRefers[user].length; i++) {
+            address _addr = _leaderRefers[user][i];
+            UserInfo memory _userInfo = userInfos[_addr];
+            uint256 totalPerf = _userInfo.totalPerformance.add(
+                _userInfo.performance
+            );
+            if (maxTotalformance < totalPerf) {
+                maxTotalformance = totalPerf;
+            }
+        }
+        return maxTotalformance;
+    }
+
+    //刷新领导人级别
+    function _refreshLeader(address user, uint256 amount) internal {
+        address leader = referers[user];
+        if (leader == address(0)) {
+            return;
+        }
+        userInfos[leader].totalPerformance = userInfos[leader]
+            .totalPerformance
+            .add(amount);
+        //上级用户的总业绩
+        uint256 maxCommodityPerformance = _getMaxCommodityPerformance(leader);
+        if (maxCommodityPerformance > 0) {
+            userInfos[leader].communityPerformance = userInfos[leader]
+                .totalPerformance
+                .sub(maxCommodityPerformance);
+        }
+        for (uint8 i = 6; i >= 1; i--) {
+            LevelConfig memory _levelConfig = levelConfigs[i];
+            if (
+                userInfos[leader].totalPerformance > _levelConfig.performance &&
+                userInfos[leader].communityPerformance >
+                _levelConfig.communityPerformance
+            ) {
+                if (userInfos[leader].levelId < _levelConfig.id) {
+                    userInfos[leader].levelId = _levelConfig.id;
+                    if (_levelConfig.id == 6 && !sssrUserFlag[leader]) {
+                        sssrUserFlag[leader] = true;
+                        sssrUsers.push(leader);
+                    }
+                }
+                break;
+            }
+        }
+        //判断用户级别
+        _refreshLeader(leader, amount);
+    }
+
+    function addSuperNode(address user) public onlyOwner {
+        if (!sssrUserFlag[user]) {
+            sssrUserFlag[user] = true;
+            sssrUsers.push(user);
+        }
+    }
+
+    function getRefers(address sender, uint256 _high)
+        internal
+        view
+        returns (address)
+    {
+        address _leader = sender;
+        for (uint256 i = 0; i <= _high; i++) {
+            _leader = referers[_leader];
+            if (_leader == address(0)) {
+                break;
+            }
+        }
+        return _leader;
+    }
+
+    //sssr级别分红
+    function _sssrDividends(uint256 amount) internal {
+        if (sssrUsers.length == 0 || _sssRFee == 0) {
+            return;
+        }
+        uint256 _length = sssrUsers.length;
+        uint256 _feeAmount = amount.mul(_sssRFee).div(_baseFee);
+        require(
+            _balances[extraDividendsAddress] >= _feeAmount,
+            "MOI: Dividends SSSR Insufficient Balance"
+        );
+        _balances[extraDividendsAddress] = _balances[extraDividendsAddress].sub(
+            _feeAmount
+        );
+        uint256 _perFeeAmount = _feeAmount.div(_length);
+        for (uint256 i = 0; i < sssrUsers.length; i++) {
+            address _user = sssrUsers[i];
+            _balances[_user] = _balances[_user].add(_perFeeAmount);
+            emit Transfer(extraDividendsAddress, _user, _perFeeAmount);
+        }
+    }
+}

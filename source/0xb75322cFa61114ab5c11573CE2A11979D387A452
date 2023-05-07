@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract Staking {
+    
+    struct Stake {
+        uint256 amount;
+        uint256 timestamp;
+        uint256 duration;
+    }
+    
+    mapping(address => Stake) public stakes;
+    
+    uint256 public totalStakedAmount;
+    uint256 public apy = 100; // 100% APY
+    uint256 public minStakingAmount = 0.01 ether; // Minimum staking amount
+    uint256 public earlyWithdrawalPenalty = 90; // 90% early withdrawal penalty
+    uint256 public constant DURATION_LOCK = 10 days; // 10-day duration lock
+    
+    address public owner;
+    address public constant STAKEABLE_TOKEN_ADDRESS = 0x4ab3E27848595da74b2DDD91110c9C85fe309FD6;
+    
+    constructor() {
+        owner = msg.sender;
+    }
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function.");
+        _;
+    }
+    
+    function stake(uint256 amount) public {
+        require(amount >= minStakingAmount, "Staked amount must be greater than or equal to the minimum staking amount.");
+        
+        Stake storage userStake = stakes[msg.sender];
+        require(userStake.amount == 0, "Only one stake per user allowed.");
+        
+        IERC20(STAKEABLE_TOKEN_ADDRESS).transferFrom(msg.sender, address(this), amount);
+        
+        userStake.amount = amount;
+        userStake.timestamp = block.timestamp;
+        userStake.duration = DURATION_LOCK;
+        
+        totalStakedAmount += amount;
+    }
+    
+    function unstake() public {
+        Stake storage userStake = stakes[msg.sender];
+        require(userStake.amount > 0, "No stake found for this user.");
+        
+        uint256 withdrawalAmount = 0;
+        uint256 stakingDuration = block.timestamp - userStake.timestamp;
+        if (stakingDuration >= DURATION_LOCK) {
+            withdrawalAmount = userStake.amount * (userStake.duration * apy / 365 days + 100) / 100;
+        } else {
+            withdrawalAmount = userStake.amount * earlyWithdrawalPenalty / 100;
+        }
+        
+        IERC20(STAKEABLE_TOKEN_ADDRESS).transfer(msg.sender, withdrawalAmount);
+        
+        totalStakedAmount -= userStake.amount;
+        userStake.amount = 0;
+        userStake.timestamp = 0;
+        userStake.duration = 0;
+    }
+    
+    function ownerWithdraw(uint256 amount) public onlyOwner {
+        require(amount <= IERC20(STAKEABLE_TOKEN_ADDRESS).balanceOf(address(this)), "Insufficient balance.");
+        
+        IERC20(STAKEABLE_TOKEN_ADDRESS).transfer(msg.sender, amount);
+    }
+    
+    function setMinStakingAmount(uint256 amount) public onlyOwner {
+        minStakingAmount = amount;
+    }
+    
+    function addTokensToPot(uint256 amount) public onlyOwner {
+        IERC20(STAKEABLE_TOKEN_ADDRESS).transferFrom(msg.sender, address(this), amount);
+        totalStakedAmount += amount;
+    }
+    
+}

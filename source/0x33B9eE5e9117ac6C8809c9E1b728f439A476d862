@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract StakingContract {
+    address public owner;
+    address public tokenAddress;
+    uint256 public payoutPercentage;
+    uint256 public lockPeriod;
+    uint256 public minimumStakeAmount;
+    mapping(address => uint256) public stakedBalances;
+    mapping(address => uint256) public lastStakeTimestamps;
+
+    constructor(address _owner, address _tokenAddress, uint256 _payoutPercentage, uint256 _lockPeriod, uint256 _minimumStakeAmount) {
+        owner = _owner;
+        tokenAddress = _tokenAddress;
+        payoutPercentage = _payoutPercentage;
+        lockPeriod = _lockPeriod;
+        minimumStakeAmount = _minimumStakeAmount;
+    }
+
+    function stake(uint256 amount) public {
+        require(amount >= minimumStakeAmount, "Amount is below minimum stake amount");
+        require(stakedBalances[msg.sender] == 0, "You have already staked tokens");
+
+        require(IERC20(tokenAddress).transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+
+        stakedBalances[msg.sender] = amount;
+        lastStakeTimestamps[msg.sender] = block.timestamp;
+    }
+
+    function addTokens(uint256 amount) public {
+        require(msg.sender == owner, "Only the owner can add tokens");
+
+        require(IERC20(tokenAddress).transferFrom(msg.sender, address(this), amount), "Token transfer failed");
+    }
+
+    function withdraw() public {
+        require(stakedBalances[msg.sender] > 0, "You have not staked any tokens");
+        require(block.timestamp >= lastStakeTimestamps[msg.sender] + lockPeriod, "Tokens are still locked");
+
+        uint256 payoutAmount = stakedBalances[msg.sender] * payoutPercentage / 100;
+        uint256 penaltyAmount = stakedBalances[msg.sender] - payoutAmount;
+
+        stakedBalances[msg.sender] = 0;
+
+        require(IERC20(tokenAddress).transfer(msg.sender, payoutAmount), "Token transfer failed");
+
+        if (penaltyAmount > 0) {
+            require(IERC20(tokenAddress).transfer(owner, penaltyAmount), "Token transfer failed");
+        }
+    }
+
+    function setMinimumStakeAmount(uint256 _minimumStakeAmount) public {
+        require(msg.sender == owner, "Only the owner can set the minimum stake amount");
+        minimumStakeAmount = _minimumStakeAmount;
+    }
+}
+
+interface IERC20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
