@@ -1,0 +1,217 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function increaseAllowance(address spender, uint256 addedValue) external returns (bool);
+    function decreaseAllowance(address spender, uint256 subtractedValue) external returns (bool);
+    function burn(uint256 amount) external returns (bool);
+    function burnFrom(address account, uint256 amount) external returns (bool);
+    function addMinter(address account) external;
+    function removeMinter(address account) external;
+    function renounceMinter() external;
+    function mint(address account, uint256 amount) external returns (bool);
+    function isMinter(address account) external view returns (bool);
+    function setCommission(uint256 _commission) external;
+    function lock(address account) external;
+    function unlock(address account) external;
+    function isLocked(address account) external view returns (bool);
+    function lockTokens(address account, uint256 amount) external;
+    function unlockTokens(address account, uint256 amount) external;
+    function isTokensLocked(address account) external view returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Burn(address indexed account, uint256 amount);
+    event MinterAdded(address indexed account);
+    event MinterRemoved(address indexed account);
+    event CommissionSet(uint256 commission);
+    event Locked(address indexed account);
+    event Unlocked(address indexed account);
+    event TokensLocked(address indexed account, uint256 amount);
+    event TokensUnlocked(address indexed account, uint256 amount);
+}
+
+contract Artem228 is IBEP20 {
+    string public name = "Artem 228";
+    string public symbol = "ARTM";
+    uint8 public decimals = 9;
+    uint256 private _totalSupply = 100000 * 10**9;
+    uint256 private _commission = 0;
+    address private _owner;
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => bool) private _minters;
+    mapping(address => bool) private _locked;
+    mapping(address => uint256) private _lockedTokens;
+
+    constructor() {
+        _owner = msg.sender;
+        _balances[msg.sender] = _totalSupply;
+        emit Transfer(address(0), msg.sender, _totalSupply);
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == _owner, "Artem228: caller is not the owner");
+        _;
+    }
+
+    modifier onlyMinter() {
+        require(_minters[msg.sender], "Artem228: caller is not a minter");
+        _;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        require(recipient != address(0), "Artem228: transfer to the zero address");
+        require(amount <= _balances[msg.sender], "Artem228: transfer amount exceeds balance");
+        _balances[msg.sender] -= amount;
+        _balances[recipient] += amount;
+        emit Transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        require(recipient != address(0), "Artem228: transfer to the zero address");
+        require(amount <= _balances[sender], "Artem228: transfer amount exceeds balance");
+        require(amount <= _allowances[sender][msg.sender], "Artem228: transfer amount exceeds allowance");
+        _balances[sender] -= amount;
+        _balances[recipient] += amount;
+        _allowances[sender][msg.sender] -= amount;
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public override returns (bool) {
+        _allowances[msg.sender][spender] += addedValue;
+        emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public override returns (bool) {
+        uint256 currentAllowance = _allowances[msg.sender][spender];
+        require(currentAllowance >= subtractedValue, "Artem228: decreased allowance below zero");
+        _allowances[msg.sender][spender] = currentAllowance - subtractedValue;
+        emit Approval(msg.sender, spender, _allowances[msg.sender][spender]);
+        return true;
+    }
+
+    function burn(uint256 amount) public override returns (bool) {
+        require(amount <= _balances[msg.sender], "Artem228: burn amount exceeds balance");
+        _balances[msg.sender] -= amount;
+        _totalSupply -= amount;
+        emit Burn(msg.sender, amount);
+        emit Transfer(msg.sender, address(0), amount);
+        return true;
+    }
+
+    function burnFrom(address account, uint256 amount) public override returns (bool) {
+        require(amount <= _balances[account], "Artem228: burn amount exceeds balance");
+        require(amount <= _allowances[account][msg.sender], "Artem228: burn amount exceeds allowance");
+        _balances[account] -= amount;
+        _totalSupply -= amount;
+        _allowances[account][msg.sender] -= amount;
+        emit Burn(account, amount);
+        emit Transfer(account, address(0), amount);
+        return true;
+    }
+
+    function addMinter(address account) public override onlyOwner {
+        _minters[account] = true;
+        emit MinterAdded(account);
+    }
+
+    function removeMinter(address account) public override onlyOwner {
+        _minters[account] = false;
+        emit MinterRemoved(account);
+    }
+
+    function renounceMinter() public override {
+        _minters[msg.sender] = false;
+        emit MinterRemoved(msg.sender);
+    }
+
+    function mint(address account, uint256 amount) public override onlyMinter returns (bool) {
+        require(account != address(0), "Artem228: mint to the zero address");
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+        return true;
+    }
+
+    function isMinter(address account) public view override returns (bool) {
+        return _minters[account];
+    }
+
+    function setCommission(uint256 commission) public override onlyOwner {
+        require(commission <= 100, "Artem228: commission cannot exceed 100%");
+        _commission = commission;
+        emit CommissionSet(commission);
+    }
+
+    function lock(address account) public override onlyOwner {
+        _locked[account] = true;
+        emit Locked(account);
+    }
+
+    function unlock(address account) public override onlyOwner {
+        _locked[account] = false;
+        emit Unlocked(account);
+    }
+
+    function isLocked(address account) public view override returns (bool) {
+        return _locked[account];
+    }
+
+    function lockTokens(address account, uint256 amount) public override onlyOwner {
+        require(amount <= _balances[account], "Artem228: lock amount exceeds balance");
+        _lockedTokens[account] += amount;
+        _balances[account] -= amount;
+        emit TokensLocked(account, amount);
+    }
+
+    function unlockTokens(address account, uint256 amount) public override onlyOwner {
+        require(amount <= _lockedTokens[account], "Artem228: unlock amount exceeds locked tokens");
+        _lockedTokens[account] -= amount;
+        _balances[account] += amount;
+        emit TokensUnlocked(account, amount);
+    }
+
+    function isTokensLocked(address account) public view override returns (bool) {
+        return _lockedTokens[account] > 0;
+    }
+
+    function transferWithCommission(address recipient, uint256 amount) public returns (bool) {
+        require(recipient != address(0), "Artem228: transfer to the zero address");
+        require(amount <= _balances[msg.sender], "Artem228: transfer amount exceeds balance");
+        uint256 commissionAmount = amount * _commission / 100;
+        uint256 transferAmount = amount - commissionAmount;
+        _balances[msg.sender] -= amount;
+        _balances[recipient] += transferAmount;
+        _balances[_owner] += commissionAmount;
+        emit Transfer(msg.sender, recipient, transferAmount);
+        emit Transfer(msg.sender, _owner, commissionAmount);
+        return true;
+    }
+}
