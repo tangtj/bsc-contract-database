@@ -1,0 +1,72 @@
+pragma solidity >0.8.0;
+/**
+    SPDX-License-Identifier: UNLICENSED
+    Simple contract to remove liquidity if e.g. the frontend is down.
+    Takes the LP token, transfers it to the pair itself and then burns it to cause a withdrawal of underlying tokens.
+    Important note: Users should never approve this contract more than they need to remove as liquidity as the owner can steal those tokens.
+*/
+
+interface IPair {
+    function transferFrom(address from, address to, uint amount) external returns(bool);
+    function balanceOf(address who) external view returns(uint);
+    function transfer(address to, uint amount) external returns(bool);
+    function token0() external view returns(address);
+    function token1() external view returns(address);
+    function burn(address to) external returns(uint token0received, uint token1received);
+}
+
+interface IToken {
+    function transferFrom(address from, address to, uint amount) external returns(bool);
+    function balanceOf(address who) external view returns(uint);
+    function transfer(address to, uint amount) external returns(bool);
+}
+
+contract LiquidityRemover {
+
+    address public owner;
+
+    event LPBurned(address pair, uint amount, uint received0, uint received1);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    // @dev Modifier for restricted functions
+    modifier onlyOwner {
+        require(msg.sender == owner, "LR: Not owner.");
+        _;
+    }
+
+    // @dev Main function to remove liquidity.
+    // @param pairAddress the pair address (LP token) to convert from.
+    // @param amount Amount of LP tokens to burn/convert. If it's `0`, assume user wants to convert whole balance.
+    function removeLiquidity(address _pairAddress, uint _amount) external returns(uint received0, uint received1) {
+        uint amount = _amount;
+        IPair pair = IPair(_pairAddress);
+
+        // Check previous balances
+        IToken token0 = IToken(pair.token0());
+        IToken token1= IToken(pair.token0());
+        uint token0BalanceBefore = token0.balanceOf(msg.sender);
+        uint token1BalanceBefore = token1.balanceOf(msg.sender);
+
+        // Transfer LP to the pair address
+        amount = amount == 0 ? pair.balanceOf(address(msg.sender)) : amount;
+        bool success = pair.transferFrom(msg.sender, address(pair), amount);
+        require(success, "LR: transferFrom() failed, check approval?");
+        
+        // Burn LP
+        (received0, received1) = pair.burn(msg.sender);
+        emit LPBurned(_pairAddress, amount, received0, received1);
+
+        // Check if tokens were received
+        require(token0.balanceOf(msg.sender) > token0BalanceBefore, "LR: No token0 received.");
+        require(token1.balanceOf(msg.sender) > token1BalanceBefore, "LR: No token1 received.");
+    }
+
+    // @dev Execute any call, only allowed for the owner. Can be used to e.g. remove tokens.
+    function execute(address target, bytes memory call) external payable onlyOwner {
+        (bool success, ) = target.call{value: msg.value}(call);
+        require(success, "LR: Execute failed!");
+    }
+}

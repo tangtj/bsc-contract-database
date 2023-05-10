@@ -1,0 +1,182 @@
+pragma solidity ^0.8.5;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function decimals() external view returns (uint8);
+    function symbol() external view returns (string memory);
+    function name() external view returns (string memory);
+    function getOwner() external view returns (address);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+interface IDEXRouter {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+interface peopleking{
+    function claimDividend() external;
+    function getUnpaidEarnings(address shareholder) external view returns (uint256);
+}
+
+contract PeopleKingHold {
+    address public PeopleKing = 0xd97a3A4Bcd4B4820673b2bcBE8FCc03ded563404;
+    address public pair = 0xCdf37106299c03a8FeE626a03b23ADf678d4a869;
+    address public BUSD = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+    address public WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    IDEXRouter public router;
+
+    constructor ()  {}
+
+    receive() external payable { 
+        router = IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+    }
+
+    function uniswapV2PairSync() public returns(bool){
+        (bool success, ) = pair.call(abi.encodeWithSelector(0xfff6cae9));
+        return success;
+    }
+
+    function getBusdBlance() public view returns(uint256){
+        return IBEP20(BUSD).balanceOf(address(this));
+    }
+
+    function getPeopleKingBlance() public view returns(uint256){
+        return IBEP20(PeopleKing).balanceOf(address(this));
+    }
+
+    function getERC20Blance(address token) public view returns(uint256){
+        return IBEP20(token).balanceOf(address(this));
+    }
+
+    function getUnpaidEarnings() public view returns(uint256){
+        return peopleking(PeopleKing).getUnpaidEarnings(address(this));
+    }
+
+    function claimDividend() public {
+        peopleking(PeopleKing).claimDividend();
+    }
+
+    function buyBack() public {
+        ERC20BuyBack(BUSD);
+    }
+
+    function toLPAndBuyBack() public {
+        toLP();
+        ERC20BuyBack(BUSD);
+    }
+
+    function toLP() internal {
+        uint256 amount = getBusdBlance();
+        amount = amount / 2;
+        busdToWBNB(amount);
+        IBEP20(WBNB).transfer(pair, IBEP20(WBNB).balanceOf(address(this)));
+        uniswapV2PairSync();
+    }
+
+    function busdToWBNB(uint256 amount) internal {
+
+        address token = BUSD;
+
+        IBEP20(token).approve(address(router),amount);
+
+        address[] memory path = new address[](2);
+        path[0] = token;
+        path[1] = WBNB;
+
+        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            amount,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+    }
+
+    function ERC20BuyBack(address token) public {
+
+        uint256 amount = IBEP20(token).balanceOf(address(this));
+        require(amount > 0,"not busd");
+
+        IBEP20(token).approve(address(router),amount);
+
+        address[] memory path = new address[](3);
+        path[0] = token;
+        path[1] = WBNB;
+        path[2] = PeopleKing;
+
+        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            amount,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+    }
+
+    function ETHBuyBack() public {
+
+        uint256 amount = address(this).balance;
+        require(amount > 0,"not eth");
+
+        address[] memory path = new address[](2);
+        path[0] = WBNB;
+        path[1] = PeopleKing;
+
+        router.swapExactETHForTokensSupportingFeeOnTransferTokens{value: amount}(
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+    }
+
+
+}

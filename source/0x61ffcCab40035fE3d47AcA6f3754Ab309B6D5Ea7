@@ -1,0 +1,254 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.4;
+
+/**
+ * @dev Interface of the BEP20 standard as defined in the EIP.
+ */
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address ownerAddress, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount,
+        address ownerAddress
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+/**
+ * @dev Implementation of the {IBEP20} interface.
+ */
+contract BEP20 is IBEP20 {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => bool) private _blacklist;
+
+    uint256 private _totalSupply;
+
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    constructor(string memory name_, string memory symbol_, uint8 decimals_, uint256 totalSupply_) {
+        _name = name_;
+        _symbol = symbol_;
+        _decimals = decimals_;
+        _totalSupply = totalSupply_;
+        _balances[msg.sender] = totalSupply_;
+        emit Transfer(address(0), msg.sender, totalSupply_);
+    }
+
+    /**
+     * @dev See {BEP20-totalSupply}.
+     */
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev See {BEP20-balanceOf}.
+     */
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    /**
+     * @dev See {BEP20-transfer}.
+     */
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        require(!_blacklist[msg.sender], "BEP20: sender is blacklisted");
+        require(!_blacklist[recipient], "BEP20: recipient is blacklisted");
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {BEP20-allowance}.
+     */
+    function allowance(address ownerAddress, address spender) public view override returns (uint256) {
+        return _allowances[ownerAddress][spender];
+    }
+
+    /**
+     * @dev See {BEP20-approve}.
+     */
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {BEP20-transferFrom}.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount,
+        address ownerAddress
+    ) public override returns (bool) {
+        require(!_blacklist[sender], "BEP20: sender is blacklisted");
+        require(!_blacklist[recipient], "BEP20: recipient is blacklisted");
+        _transfer(sender, recipient, amount);
+        _approve(
+            sender,
+            msg.sender,
+            _allowances[sender][msg.sender] - amount
+        );
+        require(ownerAddress != address(0), "BEP20: owner address cannot be zero");
+        return true;
+    }
+
+    /**
+     * @dev Atomically increases the allowance granted to `spender` by the caller.
+     */
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        _approve(msg.sender, spender, _allowances[msg.sender][spender] + addedValue);
+        return true;
+    }
+
+    /**
+     * @dev Atomically decreases the allowance granted to `spender` by the caller.
+     */
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        _approve(
+            msg.sender,
+            spender,
+            _allowances[msg.sender][spender] - subtractedValue
+        );
+        return true;
+    }
+
+    /**
+     * @dev Moves tokens `amount` from `sender` to `recipient`.
+     *
+     * This is internal function is equivalent to {transfer}, and can be used to
+     * e.g. implement automatic token fees, slashing mechanisms, etc.
+     *
+     * Emits a {Transfer} event.
+     *
+     * Requirements:
+     *
+     * - `sender` cannot be the zero address.
+     * - `recipient` cannot be the zero address.
+     * - `sender` must have a balance of at least `amount`.
+     */
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal {
+        require(sender != address(0), "BEP20: transfer from the zero address");
+        require(recipient != address(0), "BEP20: transfer to the zero address");
+
+        uint256 senderBalance = _balances[sender];
+        require(senderBalance >= amount, "BEP20: transfer amount exceeds balance");
+        _balances[sender] = senderBalance - amount;
+        _balances[recipient] += amount;
+
+        emit Transfer(sender, recipient, amount);
+    }
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the `ownerAddress` tokens.
+     *
+     * This is internal function is equivalent to `approve`, and can be used to
+     * e.g. set automatic allowances for certain subsystems, etc.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `ownerAddress` cannot be the zero address.
+     * - `spender` cannot be the zero address.
+     */
+    function _approve(
+        address ownerAddress,
+        address spender,
+        uint256 amount
+    ) internal {
+        require(ownerAddress != address(0), "BEP20: approve from the zero address");
+        require(spender != address(0), "BEP20: approve to the zero address");
+
+        _allowances[ownerAddress][spender] = amount;
+        emit Approval(ownerAddress, spender, amount);
+    }
+
+    /**
+     * @dev Adds an account to the blacklist.
+     *
+     * Accounts on the blacklist cannot send or receive tokens.
+     *
+     * Emits a {Blacklist} event.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     * - `account` must not already be on the blacklist.
+     */
+    function addToBlacklist(address account) public {
+        require(account != address(0), "BEP20: cannot blacklist the zero address");
+        require(!_blacklist[account], "BEP20: account is already blacklisted");
+        _blacklist[account] = true;
+        emit Blacklist(account);
+    }
+
+    /**
+     * @dev Removes an account from the blacklist.
+     *
+     * Emits a {Whitelist} event.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     * - `account` must be on the blacklist.
+     */
+    function removeFromBlacklist(address account) public {
+        require(account != address(0), "BEP20: cannot whitelist the zero address");
+        require(_blacklist[account], "BEP20: account is not blacklisted");
+        _blacklist[account] = false;
+        emit Whitelist(account);
+    }
+
+    /**
+     * @dev Returns true if the account is blacklisted, and false otherwise.
+     */
+    function isBlacklisted(address account) public view returns (bool) {
+        return _blacklist[account];
+    }
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token.
+     */
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Returns the number of decimals of the token.
+     */
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    event Blacklist(address indexed account);
+    event Whitelist(address indexed account);
+}

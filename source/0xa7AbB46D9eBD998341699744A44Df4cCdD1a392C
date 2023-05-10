@@ -1,0 +1,239 @@
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+
+
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+// File: contracts/bex.sol
+
+
+pragma solidity ^0.8.0;
+
+
+interface IBoracle {
+    function blaPrice() external view returns (uint256);
+    function decimals() external view returns (uint256);
+}
+
+contract Bex {
+    address public owner;
+    uint256 public decimals;
+    uint256 internal constant feeBp = 50;
+    IBoracle internal boracle;
+    IERC20 internal usdt;
+    IERC20 internal bla;
+
+    event TransferOwnership(address newOwner);
+    event SetBoracleAddress(address newBoracleAddress); 
+    event DepositUsdt(uint256 amount);
+    event WithdrawUsdt(uint256 amount);
+    event DepositBla(uint256 amount);
+    event WithdrawBla(uint256 amount);
+    event BuyBla(address user, uint256 amount_usdt, uint256 amount_bla, uint256 fee_bla);
+    event SellBla(address user, uint256 amount_bla, uint256 amount_usdt, uint256 fee_usdt);
+
+    constructor(address address_Boracle, address address_Usdt, address address_bla) {
+        boracle = IBoracle(address_Boracle);
+        usdt = IERC20(address_Usdt);
+        bla = IERC20(address_bla);
+        owner = msg.sender;
+        decimals = boracle.decimals();
+    }
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not the owner");
+        _;
+    }
+
+    function getBlaPrice() public view returns (uint256) {
+        uint256 price = boracle.blaPrice();
+        return price;
+    }
+
+    function getAvailableUsdt() public view returns (uint256){
+        return usdt.balanceOf(address(this));
+    }
+    
+    function getAvailableBla() public view returns (uint256){
+        return bla.balanceOf(address(this));
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Zero address");
+        require(newOwner != owner, "New owner must be different from current owner");
+        owner = newOwner;
+        emit TransferOwnership(newOwner);
+    }
+
+    function setBoracleAddress(address newBoracleAddress) external onlyOwner {
+        require(newBoracleAddress != address(0), "Zero address");
+        boracle = IBoracle(newBoracleAddress);
+        decimals = boracle.decimals();
+        emit SetBoracleAddress(newBoracleAddress);
+    }
+
+    // Owner 
+
+    function depositUsdt(uint256 amount) external onlyOwner {
+        // check
+        require(amount > 0, "Amount should be greater than zero");
+
+        // send
+        require(usdt.transferFrom(msg.sender, address(this), amount), "Failed to transfer USDT");
+
+        // emit
+        emit DepositUsdt(amount);
+    }
+
+    function withdrawUsdt(uint256 amount) external onlyOwner {
+        // check
+        require(amount > 0, "Amount should be greater than zero");
+        uint256 availableUsdt = getAvailableUsdt();
+        require(availableUsdt >= amount, "Not enough available USDT");
+        
+        // send 
+        require(usdt.transfer(msg.sender, amount), "Failed to transfer USDT");
+
+        // emit
+        emit WithdrawUsdt(amount);
+    }
+
+    function depositBla(uint256 amount) external onlyOwner{
+        // check
+        require(amount > 0, "Amount should be greater than zero");
+
+        // send
+        require(bla.transferFrom(msg.sender, address(this), amount), "Failed to transfer BLA");
+
+        // emit
+        emit DepositBla(amount);
+    }
+
+    function withdrawBla(uint256 amount) external onlyOwner{
+        // check
+        require(amount > 0, "Amount should be greater than zero");
+        uint256 availableBla = getAvailableBla();
+        require(availableBla >= amount, "Not enough available BLA");
+
+        // send
+        require(bla.transfer(msg.sender, amount), "Failed to transfer BLA");
+
+        // emit
+        emit WithdrawBla(amount);
+    }
+
+    // User
+    function buyBla(uint256 amount_usdt) external {
+        // check 
+        require(amount_usdt > 0, "Amount should be greater than zero");
+        uint256 price = getBlaPrice();
+        uint256 amount_bla = amount_usdt *10**decimals / price;
+        uint256 fee_bla = amount_bla * feeBp / 10**4;
+        uint256 availableBla = getAvailableBla();
+        require(availableBla >= amount_bla - fee_bla, "Not enough available BLA");
+
+        // send
+        require(usdt.transferFrom(msg.sender, address(this), amount_usdt), "Failed to transfer USDT");
+        require(bla.transfer(msg.sender, amount_bla - fee_bla), "Failed to transfer BLA");
+
+        // emit
+        emit BuyBla(msg.sender, amount_usdt, amount_bla, fee_bla);
+    }
+
+    function sellBla(uint256 amount_bla) external {
+        // check
+        require(amount_bla > 0, "Amount should be greater than zero");
+        uint256 price = getBlaPrice();
+        uint256 amount_usdt = amount_bla * price / 10**decimals;
+        uint256 fee_usdt = amount_usdt * feeBp / 10**4;
+        uint256 availableUsdt = getAvailableUsdt();
+        require(availableUsdt >= amount_usdt - fee_usdt, "Not enough available USDT");
+
+        //send
+        require(bla.transferFrom(msg.sender, address(this), amount_bla), "Failed to transfer BLA");
+        require(usdt.transfer(msg.sender, amount_usdt - fee_usdt), "Failed to transfer USDT");
+
+        // emit
+        emit SellBla(msg.sender, amount_bla, amount_usdt, fee_usdt);
+    }
+
+}

@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface Token {
+    function transfer(address to, uint256 value) external returns (bool);
+    function balanceOf(address who) external view returns (uint256);
+}
+
+contract MiningContract {
+    address owner;
+    address public token;
+    uint256 public DEFAULT_MINING_RATE = 1; // 1 token per second
+
+    mapping(address => uint256) public miningStartTimes;
+
+
+    event Mined(address indexed miner, uint256 tokensMined);
+    event TokenWithdrawn(address indexed miner, uint256 tokensWithdrawn);
+
+    constructor(address _token) {
+        owner = msg.sender;
+        token = _token;
+    }
+
+    function mine() public payable {
+        require(msg.value == 100000000000000000, "Mine function requires 0.1 BNB fee");
+        require(miningStartTimes[msg.sender] == 0, "You have already started mining");
+
+        miningStartTimes[msg.sender] = block.timestamp;
+        emit Mined(msg.sender, DEFAULT_MINING_RATE);
+    }
+
+    function getTokensMined(address _miner) public view returns (uint256) {
+        require(miningStartTimes[_miner] != 0, "This user has not started mining yet");
+        
+        uint256 elapsedTime = block.timestamp - miningStartTimes[_miner];
+        uint256 tokensMined = elapsedTime * DEFAULT_MINING_RATE;
+        
+        return tokensMined;
+}
+
+
+    function withdrawToken() public {
+        require(miningStartTimes[msg.sender] != 0, "You have not started mining yet");
+
+        uint256 elapsedTime = block.timestamp - miningStartTimes[msg.sender];
+        uint256 tokenAmount = elapsedTime * DEFAULT_MINING_RATE;
+
+       
+        (bool success, ) = token.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, tokenAmount * 10 ** 18));
+        require(success, "Token transfer failed");
+
+        miningStartTimes[msg.sender] = block.timestamp;
+        emit TokenWithdrawn(msg.sender, tokenAmount);
+    }
+
+       function withdraw() public {
+        require(msg.sender == owner, "Only owner can withdraw");
+        payable(owner).transfer(address(this).balance);
+    }
+}
