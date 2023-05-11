@@ -1,0 +1,530 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.6.12;
+
+
+interface BEP20 {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address tokenOwner) external view returns (uint balance);
+    function allowance(address tokenOwner, address spender) external view returns (uint remaining);
+    function transfer(address to, uint tokens) external returns (bool success);
+    function approve(address spender, uint tokens) external returns (bool success);
+    function transferFrom(address from, address to, uint tokens) external returns (bool success);
+
+    event Transfer(address indexed from, address indexed to, uint tokens);
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+}
+contract BscGame2 {
+    using SafeMath for uint256; 
+    BEP20 public busd = BEP20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56); 
+    uint256 private constant baseDivider = 10000;
+    uint256 private constant feePercents = 150; 
+    uint256 private constant managerPercents = 100;
+    uint256 private constant maxAddFreeze = 45 days;
+    uint256 private constant timeStep = 1 days;
+    uint256 private constant minDeposit = 100e18;
+    uint256 private constant maxDeposit = 2000e18;
+    uint256 private managerStart = 0;
+    
+    struct UserInfo {
+        address referrer;
+        uint256 refNo;
+        uint256 myLastDeposit;
+        uint256 totalIncome;
+        uint256 totalWithdraw;
+        uint256 isStar;
+        uint256 isLeader;
+        uint256 isManager;
+        uint256 isPlatinum;
+        uint256 split;
+        uint256 splitAct;
+        uint256 splitTrnx;
+        uint256 myRegister;
+        uint256 myActDirect;
+        mapping(uint256 => uint256) levelTeam;
+        mapping(uint256 => uint256) incomeArray;
+        mapping(uint256 => uint256) directBuz;
+    }
+    mapping(address=>UserInfo) public userInfo;
+    
+    struct UserDept{
+        uint256 amount;
+        uint256 depTime;
+        uint256 unfreeze; 
+        uint256 nof; 
+        uint256 nofDays; 
+        bool isUnfreezed;
+    }
+    struct SingleLoop{
+        uint256 ind;
+    }
+    struct SingleIndex{
+        address ads;
+    }
+    mapping(uint => SingleIndex) public singleIndex;
+    mapping(address => SingleLoop) public singleAds;
+    mapping(address => UserDept[]) public userDepts;
+    uint256 allIndex=1;
+    
+    address feeReceiver = 0xD5eF33D8697A142C03850e347D5dd2Cdb0b8caD8;
+    address feeReceiver2 = 0x5F1E9A125d5900b5Db5d1a6a878dc1c2684Fb6e7;
+    address public defaultRefer;
+    address public aggregator;
+    uint256 public startTime;
+    
+    mapping(uint256 => uint256) manager_reward;
+    address [] manager_array;
+    
+    event Register(address user, address referral);
+    event Deposit(address user, uint256 amount);
+    event DepositBySplit(address user, uint256 amount);
+    event TransferBySplit(address user, address receiver, uint256 amount);
+    
+    uint[] level_bonuses = [500, 100, 200, 300, 100, 200, 100, 100, 100, 100, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50];  
+    uint[] single_bonuses = [200, 100, 100, 50, 50, 100, 100, 50, 50, 50, 100, 100, 50, 50, 50, 50, 50, 50, 50, 50];  
+    modifier onlyAggregator(){
+        require(msg.sender == aggregator,"You are not authorized.");
+        _;
+    }
+
+    constructor() public {
+        startTime = block.timestamp;
+        defaultRefer = msg.sender;
+        aggregator = msg.sender;
+    }
+    
+    function contractInfo() public view returns(uint256 balance, uint256 init){
+       return (busd.balanceOf(address(this)),startTime);
+    }
+    
+    function register(address _referral) external {
+        require(userInfo[_referral].myLastDeposit > 0 || _referral == defaultRefer, "invalid refer");
+        UserInfo storage user = userInfo[msg.sender];
+        require(user.referrer == address(0), "referrer bonded");
+        user.referrer = _referral;
+        user.refNo = userInfo[_referral].myRegister;
+        userInfo[_referral].myRegister++;
+        emit Register(msg.sender, _referral);
+    }
+    function deposit(uint256 _busd) external {
+        _deposit(msg.sender, _busd, false);
+        emit Deposit(msg.sender, _busd);
+    }
+    function _deposit(address _user, uint256 _amount, bool isSplit) private {
+        require(_amount>=minDeposit && _amount<=maxDeposit && _amount.mod(minDeposit) == 0, "Minimum 100 And Multiple 100");
+        require(userInfo[_user].referrer != address(0), "register first");
+        // require(_amount>=userInfo[_user].myLastDeposit, "Amount greater than previous Deposit");
+        if(isSplit==false){
+            busd.transferFrom(msg.sender, address(this),_amount);
+        }
+        bool _isReDept = false;
+        if(userInfo[_user].myLastDeposit==0){
+            userInfo[userInfo[_user].referrer].myActDirect++;
+        }else{
+            _isReDept=true;
+        }
+        
+        userInfo[_user].myLastDeposit+=_amount;
+        
+        _distributeDeposit(_amount);
+        uint256 unfreezeTime = block.timestamp.add(timeStep.mul(10));
+        userDepts[_user].push(UserDept(
+            _amount,
+            block.timestamp,
+            unfreezeTime,
+            1,
+            10,
+            false
+        ));
+        if(singleAds[msg.sender].ind==0){
+            singleIndex[allIndex].ads=msg.sender;
+            singleAds[msg.sender].ind=allIndex;
+            allIndex++;
+        }
+        _setReferral(_user,userInfo[_user].referrer,_amount,_isReDept,false);
+        _setSingle(_user,userInfo[_user].referrer,_amount);
+
+        uint256 totalDays=getCurDay();
+        manager_reward[totalDays]+=_amount.mul(managerPercents).div(baseDivider);
+        updateManager(totalDays);
+    }
+    function _setReferral(address _user,address _referral, uint256 _refAmount, bool _isReDept, bool _isClaim) private {
+        for(uint8 i = 0; i < level_bonuses.length; i++) {
+            if(_isClaim==false){
+                if(_isReDept==false){
+                    userInfo[_referral].levelTeam[userInfo[_user].refNo]+=1;
+                }
+                userInfo[_referral].directBuz[userInfo[_user].refNo]+=_refAmount;
+            }
+            if(userInfo[_referral].isStar==0 || userInfo[_referral].isLeader==0 || userInfo[_referral].isManager==0 || userInfo[_referral].isPlatinum==0){
+                (uint256 ltA,uint256 ltB,uint256 lbA, uint256 lbB)=teamBuzInfo(_referral);
+                if(userInfo[_referral].isStar==0 && userInfo[_referral].myActDirect>=5 && ltA>=10 && ltB>=30 && userInfo[_referral].myLastDeposit>=1000e18 && lbA>=10000e18 && lbB>=10000e18){
+                   userInfo[_referral].isStar=1;
+                }
+                if(userInfo[_referral].isLeader==0 && userInfo[_referral].myActDirect>=7 && ltA>=30 && ltB>=90 && userInfo[_referral].myLastDeposit>=2000e18 && lbA>=30000e18 && lbB>=30000e18){
+                   userInfo[_referral].isLeader=1;
+                }
+                if(userInfo[_referral].isManager==0 && userInfo[_referral].myActDirect>=10 && ltA>=90 && ltB>=150 && userInfo[_referral].myLastDeposit>=2000e18 && lbA>=50000e18 && lbB>=50000e18){
+                   userInfo[_referral].isManager=1;
+                }
+                if(userInfo[_referral].isPlatinum==0 && userInfo[_referral].myActDirect>=15 && ltA>=150 && ltB>=250 && userInfo[_referral].myLastDeposit>=2000e18 && lbA>=100000e18 && lbB>=100000e18){
+                   userInfo[_referral].isPlatinum=1;
+                   manager_array.push(_referral);
+                }
+            }
+            uint256 levelOn=_refAmount;
+            if(_refAmount>userInfo[_referral].myLastDeposit){
+                levelOn=userInfo[_referral].myLastDeposit;
+            }
+            if(i==0){
+                userInfo[_referral].totalIncome+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                userInfo[_referral].incomeArray[2]+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+            }else{
+                if(userInfo[_referral].myLastDeposit>=500e18 && i == 1){
+                    userInfo[_referral].totalIncome+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                    userInfo[_referral].incomeArray[3]+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                }else if(userInfo[_referral].myLastDeposit>=1000e18 && i == 2){
+                    userInfo[_referral].totalIncome+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                    userInfo[_referral].incomeArray[4]+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                }else if(userInfo[_referral].isStar==1 && i >= 3 && i < 6){
+                    userInfo[_referral].totalIncome+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                    userInfo[_referral].incomeArray[5]+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                }else if(userInfo[_referral].isLeader==1 && i >= 6 && i < 10){
+                    userInfo[_referral].totalIncome+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                    userInfo[_referral].incomeArray[6]+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                }else if(userInfo[_referral].isManager==1 && i >= 10 && i < 15){
+                    userInfo[_referral].totalIncome+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                    userInfo[_referral].incomeArray[7]+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                }else if(userInfo[_referral].isPlatinum==1 && i >= 15){
+                    userInfo[_referral].totalIncome+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                    userInfo[_referral].incomeArray[8]+=levelOn.mul(level_bonuses[i]).div(baseDivider);
+                }
+            }
+            
+           _user = _referral;
+           _referral = userInfo[_referral].referrer;
+            if(_referral == address(0)) break;
+        }
+    }
+    function _setSingle(address _myAds, address _referral, uint256 _refAmount) private {
+        uint256 selfIndex=singleAds[_myAds].ind-1;
+        uint256 selfLimit=(selfIndex>19)?selfIndex-19:0;
+        uint256 s=0;
+        uint256 sAmt;
+        for(uint256 k = selfIndex; k >=selfLimit; k--) {
+            sAmt=0;
+            uint256 levelSelf=_refAmount;
+            address selfads=singleIndex[k].ads;
+            if(userInfo[selfads].myLastDeposit>=userInfo[selfads].incomeArray[12] ){
+                if(_refAmount>userInfo[selfads].myLastDeposit){
+                    levelSelf=userInfo[selfads].myLastDeposit;
+                }
+                if(s==0){
+                    sAmt=levelSelf.mul(single_bonuses[s]).div(baseDivider);
+                    userInfo[selfads].incomeArray[13]+=sAmt;
+                }else{
+                    if(userInfo[selfads].myLastDeposit>=500e18 && s == 1){
+                        sAmt=levelSelf.mul(single_bonuses[s]).div(baseDivider);
+                        userInfo[selfads].incomeArray[14]+=sAmt;
+                    }else if(userInfo[selfads].myLastDeposit>=1000e18 && s == 2){
+                        sAmt=levelSelf.mul(single_bonuses[s]).div(baseDivider);
+                        userInfo[selfads].incomeArray[15]+=sAmt;
+                    }else if(userInfo[selfads].isStar==1 && s >= 3 && s < 6){
+                        sAmt=levelSelf.mul(single_bonuses[s]).div(baseDivider);
+                        userInfo[selfads].incomeArray[16]+=sAmt;
+                    }else if(userInfo[selfads].isLeader==1 && s >= 6 && s < 10){
+                        sAmt=levelSelf.mul(single_bonuses[s]).div(baseDivider);
+                        userInfo[selfads].incomeArray[17]+=sAmt;
+                    }else if(userInfo[selfads].isManager==1 && s >= 10 && s < 15){
+                        sAmt=levelSelf.mul(single_bonuses[s]).div(baseDivider);
+                        userInfo[selfads].incomeArray[18]+=sAmt;
+                    }else if(userInfo[selfads].isPlatinum==1 && s >= 15){
+                        sAmt=levelSelf.mul(single_bonuses[s]).div(baseDivider);
+                        userInfo[selfads].incomeArray[19]+=sAmt;
+                    }
+                }
+                userInfo[selfads].totalIncome+=sAmt;
+                userInfo[selfads].incomeArray[12]+=sAmt;
+            }    
+            s++;
+            
+            if(k<1) break;
+        }
+        uint256 myIndex=singleAds[_referral].ind-1;
+        uint256 myLimit=(myIndex>19)?myIndex-19:0;
+        uint256 j=0;
+         uint256 jAmt;
+        for(uint256 i = myIndex; i >=myLimit; i--) {
+            jAmt=0;
+            uint256 levelOn=_refAmount;
+            address myads=singleIndex[i].ads;
+            if(userInfo[myads].myLastDeposit>=userInfo[myads].incomeArray[12]){
+                if(_refAmount>userInfo[myads].myLastDeposit){
+                    levelOn=userInfo[myads].myLastDeposit;
+                }
+                if(j==0){
+                    jAmt=levelOn.mul(single_bonuses[j]).div(baseDivider);
+                    userInfo[myads].incomeArray[13]+=jAmt;
+                }else{
+                    if(userInfo[myads].myLastDeposit>=500e18 && j == 1){
+                        jAmt=levelOn.mul(single_bonuses[j]).div(baseDivider);
+                        userInfo[myads].incomeArray[14]+=jAmt;
+                    }else if(userInfo[myads].myLastDeposit>=1000e18 && j == 2){
+                        jAmt=levelOn.mul(single_bonuses[j]).div(baseDivider);
+                        userInfo[myads].incomeArray[15]+=jAmt;
+                    }else if(userInfo[myads].isStar==1 && j >= 3 && j < 6){
+                        jAmt=levelOn.mul(single_bonuses[j]).div(baseDivider);
+                        userInfo[myads].incomeArray[16]+=jAmt;
+                    }else if(userInfo[myads].isLeader==1 && j >= 6 && j < 10){
+                        jAmt=levelOn.mul(single_bonuses[j]).div(baseDivider);
+                        userInfo[myads].incomeArray[17]+=jAmt;
+                    }else if(userInfo[myads].isManager==1 && j >= 10 && j < 15){
+                        jAmt=levelOn.mul(single_bonuses[j]).div(baseDivider);
+                        userInfo[myads].incomeArray[18]+=jAmt;
+                    }else if(userInfo[myads].isPlatinum==1 && j >= 15){
+                        jAmt=levelOn.mul(single_bonuses[j]).div(baseDivider);
+                        userInfo[myads].incomeArray[19]+=jAmt;
+                    }
+                }
+                userInfo[myads].totalIncome+=jAmt;
+                userInfo[myads].incomeArray[12]+=jAmt;
+            }   
+            j++;
+            if(i<1) break;
+        }
+    }
+    function _distributeDeposit(uint256 _amount) private {
+        uint256 fee = _amount.mul(feePercents).div(baseDivider);
+        busd.transfer(feeReceiver,fee);
+        busd.transfer(feeReceiver2,fee);
+    }
+    function depositBySplit(uint256 _amount) external {
+        require(_amount >= minDeposit  && _amount<=maxDeposit && _amount.mod(minDeposit) == 0, "amount err");
+        require(userInfo[msg.sender].myLastDeposit == 0, "actived");
+        uint256 splitLeft = userInfo[msg.sender].split.sub(userInfo[msg.sender].splitAct).sub(userInfo[msg.sender].splitTrnx);
+        require(splitLeft >= _amount, "insufficient split");
+        userInfo[msg.sender].splitAct = userInfo[msg.sender].splitAct.add(_amount);
+        _deposit(msg.sender, _amount,true);
+        emit DepositBySplit(msg.sender, _amount);
+    }
+
+    function transferBySplit(uint256 _amount,address _receiver) external {
+        require(_amount >= minDeposit && _amount<=maxDeposit && _amount.mod(minDeposit) == 0, "amount err");
+        uint256 splitLeft = userInfo[msg.sender].split.sub(userInfo[msg.sender].splitAct).sub(userInfo[msg.sender].splitTrnx);
+        require(splitLeft >= _amount, "insufficient income");
+        userInfo[msg.sender].splitTrnx = userInfo[msg.sender].splitTrnx.add(_amount);
+        userInfo[_receiver].split = userInfo[_receiver].split.add(_amount);
+        emit TransferBySplit(msg.sender, _receiver, _amount);
+    }
+    function unfreezeDepts() external {
+        address _addr=msg.sender;
+        uint8 isdone;
+        for(uint i=0;i<userDepts[_addr].length;i++){
+            UserDept storage pl = userDepts[_addr][i];
+            if(pl.isUnfreezed==false && block.timestamp>=pl.unfreeze && isdone==0){
+                pl.isUnfreezed=true;
+                userInfo[_addr].totalIncome+=pl.amount.mul(15).div(100);
+                userInfo[_addr].incomeArray[1]+=pl.amount.mul(15).div(100);
+                
+                isdone=1;
+                if(pl.nof<9){
+                    uint256 nextDays=(pl.nof.add(pl.nofDays)).mul(timeStep);
+                    uint256 unfreezeTime = block.timestamp.add(nextDays);
+                    userDepts[_addr].push(UserDept(
+                        pl.amount,
+                        block.timestamp,
+                        unfreezeTime,
+                        pl.nof+1,
+                        pl.nofDays+pl.nof,
+                        false
+                    ));
+                    _setReferral(_addr,userInfo[_addr].referrer,pl.amount,false,true);
+                    _setSingle(_addr,userInfo[_addr].referrer,pl.amount);
+                }
+                break;
+            }
+        }
+    }
+    function teamBuzInfo(address _addr) view private returns(uint256 ltA,uint256 ltB,uint256 lbA,uint256 lbB) {
+        uint256 lbATemp;
+        uint256 lb;
+        uint256 lTeam;
+        uint256 lbTTemp;
+        for(uint256 i=0;i<userInfo[_addr].myRegister;i++){
+            lTeam+=userInfo[_addr].levelTeam[i];
+            lb+=userInfo[_addr].directBuz[i];
+            if(lbATemp==0 || userInfo[_addr].directBuz[i]>lbATemp){
+               lbATemp=userInfo[_addr].directBuz[i]; 
+               lbTTemp=userInfo[_addr].levelTeam[i]; 
+            }
+        }
+        lbB=lb-lbATemp;
+        ltB=lTeam-lbTTemp;
+        return (
+           lbTTemp,
+           ltB,
+           lbATemp,
+           lbB
+        );
+    }
+    
+    
+    
+    function updateManager(uint256 totalDays) private {
+        if(managerStart==0){
+            if(manager_array.length>0){
+                uint256 distAmount;
+                for(uint256 i=0; i < totalDays; i++){
+                    distAmount+=manager_reward[i];
+                    manager_reward[i]=0;
+                }
+                distAmount=distAmount.div(manager_array.length);
+                for(uint8 i = 0; i < manager_array.length; i++) {
+                    userInfo[manager_array[i]].totalIncome+=distAmount;
+                    userInfo[manager_array[i]].incomeArray[11]+=distAmount;
+                }
+                managerStart=1;
+            }
+            
+        }else if(managerStart>0 && manager_reward[totalDays-1]>0){
+            if(manager_array.length>0){
+                uint256 distAmount=manager_reward[totalDays-1].div(manager_array.length);
+                for(uint8 i = 0; i < manager_array.length; i++) {
+                    userInfo[manager_array[i]].totalIncome+=distAmount;
+                    userInfo[manager_array[i]].incomeArray[11]+=distAmount;
+                }
+                manager_reward[totalDays-1]=0;
+            } 
+        }
+    }
+    function getCurDay() public view returns(uint256) {
+        return (block.timestamp.sub(startTime)).div(timeStep);
+    }
+    function leaderPool() view external returns(uint256 mp,uint256 mr,uint256 mpTeam) {
+        uint256 totalDays=getCurDay();
+        if(manager_array.length==0){
+            for(uint256 i=0; i <= totalDays; i++){
+                mp+=manager_reward[i];
+            }
+            mr=mp-manager_reward[totalDays-1];
+        }else{
+            mp=manager_reward[totalDays];
+            mr=manager_reward[totalDays-1];
+        }
+        return (mp,mr,manager_array.length);
+    }
+    function incomeDetails(address _addr) view external returns(uint256[20] memory p) {
+        for(uint8 i=0;i<20;i++){
+            p[i]=userInfo[_addr].incomeArray[i];
+        }
+        return (
+           p
+        );
+    }
+    function userDetails(address _addr) view external returns(address ref,uint256 ltA,uint256 ltB,uint256 lbA,uint256 lbB,uint256 myDirect) {
+        UserInfo storage player = userInfo[_addr];
+        uint256 lbATemp;
+        uint256 lb;
+        uint256 lTeam;
+        uint256 lbTTemp;
+        for(uint256 i=0;i<player.myRegister;i++){
+            lTeam+=player.levelTeam[i];
+            lb+=player.directBuz[i];
+            if(lbATemp==0 || player.directBuz[i]>lbATemp){
+               lbATemp=player.directBuz[i]; 
+               lbTTemp=player.levelTeam[i]; 
+            }
+        }
+        lbB=lb-lbATemp;
+        ltB=lTeam-lbTTemp;
+        return (
+           player.referrer,
+           lbTTemp,
+           ltB,
+           lbATemp,
+           lbB,
+           player.myRegister
+        );
+    }
+    
+    function withdraw(uint256 _amount) public{
+        require(_amount >= 10e18, "Minimum 10 need");
+        UserInfo storage player = userInfo[msg.sender];
+        uint256 myLimit=player.myLastDeposit.mul(2);
+        if(player.isManager==1 || player.isPlatinum==1){
+            myLimit=player.myLastDeposit.mul(3);
+        }
+        myLimit-=player.totalWithdraw;
+        uint256 bonus;
+        bonus=player.totalIncome-player.totalWithdraw;
+        bonus=(myLimit>bonus)?bonus:myLimit;
+        require(bonus >= _amount, "cross limit");
+        player.totalWithdraw+=_amount;
+        uint256 tempSplit=_amount.mul(30).div(100);
+        player.split+=tempSplit;
+        uint256 wamount=_amount.sub(tempSplit);
+        uint256 adminCharge=_amount.mul(5).div(100);
+        wamount=wamount.sub(adminCharge);
+        busd.transfer(msg.sender,wamount);
+        busd.transfer(feeReceiver,adminCharge.div(2));
+        busd.transfer(feeReceiver,adminCharge.div(2));
+    }
+    
+}
+
+
+library SafeMath {
+   
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}

@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.19;
+
+contract ANMLKNDMCell {
+    string public name;
+    string public symbol;
+    uint8 public decimals = 18;
+    uint256 public totalSupply;
+    address public owner;
+    uint256 public taxPercentage = 200; // 2% tax, represented as parts per 10,000 for precision
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => uint256) public lastDividendPoints;
+
+    uint256 totalDividendPoints;
+    uint256 unclaimedDividends;
+
+    // To prevent reentrancy attacks
+    uint256 private unlocked = 1;
+    modifier lock() {
+        require(unlocked == 1, 'ANMLKNDMCell: LOCKED');
+        unlocked = 0;
+        _;
+        unlocked = 1;
+    }
+
+    constructor(uint256 initialSupply) {
+        name = "ANML KNDM Cell";
+        symbol = "AKC";
+        totalSupply = initialSupply * 10 ** uint256(decimals);
+        balanceOf[msg.sender] = totalSupply;
+        owner = msg.sender;
+        emit Transfer(address(0), msg.sender, totalSupply);
+    }
+
+    function transfer(address _to, uint256 _value) public lock returns (bool success) {
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+
+        uint256 tax = (_value * taxPercentage) / 10000; // using 10000 for more precision
+        uint256 netValue = _value - tax;
+
+        updateDividends(msg.sender);
+        updateDividends(_to);
+
+        balanceOf[msg.sender] -= _value;
+        balanceOf[_to] += netValue;
+        balanceOf[owner] += tax / 2;
+        totalDividendPoints += tax / 2;
+        unclaimedDividends += tax / 2;
+
+        emit Transfer(msg.sender, _to, netValue);
+        emit Transfer(msg.sender, owner, tax / 2);
+
+        return true;
+    }
+
+    function dividendsOwing(address account) public view returns(uint256) {
+        uint256 newDividendPoints = totalDividendPoints - lastDividendPoints[account];
+        return (balanceOf[account] * newDividendPoints) / totalSupply;
+    }
+
+    function updateDividends(address account) internal {
+        uint256 owing = dividendsOwing(account);
+        if(owing > 0) {
+            unclaimedDividends -= owing;
+            balanceOf[account] += owing;
+            emit Dividends(account, owing);
+        }
+        lastDividendPoints[account] = totalDividendPoints;
+    }
+
+    event Transfer(address indexed _from, address indexed _to, uint256 _value);
+    event Dividends(address indexed _to, uint256 _value);
+}

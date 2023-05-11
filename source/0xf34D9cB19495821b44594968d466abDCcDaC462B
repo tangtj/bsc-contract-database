@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.19;
+
+contract InvestmentTracker {
+    address public admin;
+    uint256 public totalInvestment;
+
+    struct Investment {
+        uint256 amount;
+        uint256 startedDate;
+        uint256 expireDate;
+        InvestmentStatus status;
+    }
+
+    enum InvestmentStatus { Active, Pending, Expired }
+
+    mapping(string => Investment) public investments;
+
+    event InvestmentAdded(string userId, uint256 amount, uint256 startedDate, uint256 expireDate);
+    event InvestmentStatusUpdated(string userId, InvestmentStatus newStatus);
+
+    error Unauthorized();
+    error InvalidStatus(InvestmentStatus currentStatus, InvestmentStatus newStatus);
+
+    constructor() {
+        admin = msg.sender;
+    }
+
+    function addInvestment(string memory userId, uint256 amount, uint256 durationInDays) public {
+        require(msg.sender == admin, "Only the admin can call this function");
+        require(bytes(userId).length > 0, "User ID must not be empty");
+        require(amount > 0, "Amount must be greater than 0");
+        require(durationInDays > 0, "Duration in days must be greater than 0");
+        
+        uint256 startedDate = block.timestamp;
+        uint256 expireDate = startedDate + (durationInDays * 1 days);
+
+        investments[userId] = Investment({
+            amount: amount,
+            startedDate: startedDate,
+            expireDate: expireDate,
+            status: InvestmentStatus.Active
+        });
+
+        totalInvestment += amount;
+
+        emit InvestmentAdded(userId, amount, startedDate, expireDate);
+    }
+
+    function getInvestment(string memory userId) public view returns (Investment memory) {
+        return investments[userId];
+    }
+
+    function updateInvestmentStatus(string memory userId, InvestmentStatus newStatus) public {
+        require(bytes(userId).length > 0, "User ID must not be empty");
+        
+        if (msg.sender != admin) {
+            revert Unauthorized();
+        }
+
+        InvestmentStatus currentStatus = investments[userId].status;
+        if (currentStatus == newStatus) {
+            revert InvalidStatus({currentStatus: currentStatus, newStatus: newStatus});
+        }
+
+        investments[userId].status = newStatus;
+        emit InvestmentStatusUpdated(userId, newStatus);
+    }
+}

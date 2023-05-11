@@ -1,0 +1,305 @@
+pragma solidity 0.5.10; 
+
+contract owned
+{
+    address public owner;
+    address internal newOwner;
+
+    event OwnershipTransferred(address indexed _from, address indexed _to);
+
+    constructor() public {
+        owner = msg.sender;
+
+    }
+
+    modifier onlyOwner {
+        require(msg.sender == owner);
+        _;
+    }
+
+
+    function transferOwnership(address _newOwner) public onlyOwner {
+        newOwner = _newOwner;
+    }
+
+    //the reason for this flow is to protect owners from sending ownership to unintended address due to human error
+    function acceptOwnership() public {
+        require(msg.sender == newOwner);
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+        newOwner = address(0);
+    }
+}
+
+//*******************************************************************//
+//------------------         token interface        -------------------//
+//*******************************************************************//
+
+
+interface ERC20In {
+  /**
+   * @dev Returns the amount of tokens in existence.
+   */
+  function totalSupply() external view returns (uint256);
+
+  /**
+   * @dev Returns the token decimals.
+   */
+  function decimals() external view returns (uint8);
+
+  /**
+   * @dev Returns the token symbol.
+   */
+  function symbol() external view returns (string memory);
+
+  /**
+  * @dev Returns the token name.
+  */
+  function name() external view returns (string memory);
+
+  /**
+   * @dev Returns the bep token owner.
+   */
+  function getOwner() external view returns (address);
+
+  /**
+   * @dev Returns the amount of tokens owned by `account`.
+   */
+  function balanceOf(address account) external view returns (uint256);
+
+  /**
+   * @dev Moves `amount` tokens from the caller's account to `recipient`.
+   *
+   * Returns a boolean value indicating whether the operation succeeded.
+   *
+   * Emits a {Transfer} event.
+   */
+  function transfer(address recipient, uint256 amount) external returns (bool);
+
+  /**
+   * @dev Returns the remaining number of tokens that `spender` will be
+   * allowed to spend on behalf of `owner` through {transferFrom}. This is
+   * zero by default.
+   *
+   * This value changes when {approve} or {transferFrom} are called.
+   */
+  function allowance(address _owner, address spender) external view returns (uint256);
+
+  /**
+   * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+   *
+   * Returns a boolean value indicating whether the operation succeeded.
+   *
+   * IMPORTANT: Beware that changing an allowance with this method brings the risk
+   * that someone may use both the old and the new allowance by unfortunate
+   * transaction ordering. One possible solution to mitigate this race
+   * condition is to first reduce the spender's allowance to 0 and set the
+   * desired value afterwards:
+   * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+   *
+   * Emits an {Approval} event.
+   */
+  function approve(address spender, uint256 amount) external returns (bool);
+
+  /**
+   * @dev Moves `amount` tokens from `sender` to `recipient` using the
+   * allowance mechanism. `amount` is then deducted from the caller's
+   * allowance.
+   *
+   * Returns a boolean value indicating whether the operation succeeded.
+   *
+   * Emits a {Transfer} event.
+   */
+  function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+  /**
+   * @dev Emitted when `value` tokens are moved from one account (`from`) to
+   * another (`to`).
+   *
+   * Note that `value` may be zero.
+   */
+  event Transfer(address indexed from, address indexed to, uint256 value);
+
+  /**
+   * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+   * a call to {approve}. `value` is the new allowance.
+   */
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+ 
+
+contract sevenFx is owned {
+
+
+    struct verFiedUser {
+
+        uint verfiedAmount;
+        uint8 userStatus;      // it will indicate the state of users || 0 =  inactive || 1= deposited || 2 = claim || 3 = expire 
+        bool isLocked;
+        uint rewardFund;
+        uint userPayValidity;
+        bool isUserConnect;
+        uint payPercent;
+
+    }
+
+
+    address public tokenAddress;
+
+
+    mapping(address=>verFiedUser) public sevenFxUsers;
+
+    uint claimPeriod = 45 days;
+
+
+    constructor() public {
+
+
+    }
+
+    function addSevenFxWallet (address _wallet, uint _verfiedAmount, uint _payPercent) external onlyOwner returns(bool) {
+
+        require(_wallet!=address(0) && _verfiedAmount!=0 && sevenFxUsers[_wallet].verfiedAmount==0,"invalid Input or you may have already entry in wallet");
+        require(_payPercent>0 && _payPercent<100,"Invalid Percent rate");
+        sevenFxUsers[_wallet].verfiedAmount=_verfiedAmount;
+        sevenFxUsers[_wallet].payPercent=_payPercent;
+
+        return true;
+    }
+
+
+    function addTokenAddress(address _wallet) onlyOwner external {
+
+        require(_wallet!=address(0),"invalid address");
+
+        tokenAddress = _wallet;
+
+    }
+
+
+
+
+    function connectUser() external {
+
+        
+        require(sevenFxUsers[msg.sender].isUserConnect==false,"invalid address");
+
+        require(sevenFxUsers[msg.sender].verfiedAmount!=0,"user is not registered");
+
+
+
+        sevenFxUsers[msg.sender].isUserConnect=true;
+
+        sevenFxUsers[msg.sender].userPayValidity=now+claimPeriod;  
+
+
+
+    }
+
+
+    function depositFund() external returns(bool) {
+
+        uint deposAmount = sevenFxUsers[msg.sender].verfiedAmount*sevenFxUsers[msg.sender].payPercent/100;
+
+        require(deposAmount>0 ,"invalid value");
+
+        require(sevenFxUsers[msg.sender].userPayValidity>now,"Deposit period expire");
+
+          require(sevenFxUsers[msg.sender].isUserConnect==true ,"Please connect user First");
+
+        require(sevenFxUsers[msg.sender].verfiedAmount!=0  && sevenFxUsers[msg.sender].userStatus==0,"user is not connected/unregistered");
+
+
+             sevenFxUsers[msg.sender].userStatus=1; // deposited
+    
+             sevenFxUsers[msg.sender].rewardFund = deposAmount*10/100;
+
+
+        ERC20In(tokenAddress).transferFrom(msg.sender,address(this),deposAmount);   
+
+    }
+
+
+
+    // function claim 
+
+
+    function claimFund() external {
+
+        require(sevenFxUsers[msg.sender].userStatus==1,"Invalid user");
+
+        require(sevenFxUsers[msg.sender].isLocked==false && sevenFxUsers[msg.sender].userPayValidity<now,"You can't withdraw now");
+        
+
+        uint growth = sevenFxUsers[msg.sender].verfiedAmount;
+     
+
+        sevenFxUsers[msg.sender].userStatus=2; // claimed
+        ERC20In(tokenAddress).transfer(msg.sender,growth);   
+
+    }
+
+
+    function claimReward() external {
+
+        require(sevenFxUsers[msg.sender].userStatus!=0 ,"Invalid user");
+        require(sevenFxUsers[msg.sender].rewardFund>0,"invalid fund");
+
+        require(sevenFxUsers[msg.sender].isLocked==false,"You can't withdraw now");
+        
+        uint reward = sevenFxUsers[msg.sender].rewardFund;
+
+        sevenFxUsers[msg.sender].rewardFund=0;
+
+        ERC20In(tokenAddress).transfer(msg.sender,reward);   
+
+    }
+
+
+    function reFillContract(uint _amount) onlyOwner external {
+
+        require(_amount>0,"invalid amount");
+
+        ERC20In(tokenAddress).transferFrom(msg.sender,address(this),_amount);   
+
+    }
+
+
+    function ownerClaim(uint _amount) onlyOwner external{
+
+            require(_amount>0,"invalid amount");
+
+          ERC20In(tokenAddress).transfer(msg.sender,_amount);  
+
+    }
+
+
+    function lockUserWallet(address user) onlyOwner external {
+
+        require(sevenFxUsers[user].isLocked==false,"invalid amount");
+
+        sevenFxUsers[user].isLocked=true; 
+
+    }
+
+    function unlockUserWallet(address user) onlyOwner external {
+
+        require(sevenFxUsers[user].isLocked==true,"invalid amount");
+
+        sevenFxUsers[user].isLocked=false; 
+
+    }
+
+
+    function setClaimPeriod(uint _time) onlyOwner external {
+
+        claimPeriod= _time;
+
+    }
+
+
+
+
+
+}

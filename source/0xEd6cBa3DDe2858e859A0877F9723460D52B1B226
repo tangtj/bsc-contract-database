@@ -1,0 +1,433 @@
+
+// File: /contracts/TrustLaunchServices.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.17;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+pragma solidity 0.8.17;
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+interface ITrustLaunchAdmins  {
+    function isAllowed(address _address, uint256 actionCode) external view returns (bool allowed);
+    function isMichaelOrJan(address _address) external view returns (bool allowed);
+    function getAddress(uint256 index) external view returns (address addr);
+    function isAdminsContract() external pure returns (bool response);
+
+}
+
+pragma solidity 0.8.17;
+contract Ownable is Context {
+    address private _initialOwner;
+    address public _trustLaunchAdmins;
+
+    ITrustLaunchAdmins public trustLaunchAdminsContract;
+
+    function setAdminsContractAddress( address newAddr) public {
+        require(trustLaunchAdminsContract.isMichaelOrJan(_msgSender()), "bad sender");
+        trustLaunchAdminsContract = ITrustLaunchAdmins(newAddr);
+        require(trustLaunchAdminsContract.isAdminsContract(), "bad contract");
+        _trustLaunchAdmins = newAddr;
+    }
+
+
+    modifier onlyAdminsContract() {
+        require(_trustLaunchAdmins == _msgSender(), "Ownable: caller is not AdminContract");
+        _;
+    }
+
+
+
+    constructor () {
+        address msgSender = _msgSender();
+        _initialOwner = msgSender;
+        if( block.chainid == 97) {
+            _trustLaunchAdmins = address(0x4a05D94995cAE2c06797b39ee7fDB27a94375Cf6);
+            trustLaunchAdminsContract = ITrustLaunchAdmins(_trustLaunchAdmins);
+        }
+        if( block.chainid == 56) {
+            _trustLaunchAdmins = address(0xd3aE3EA3daEa54145D6B6Eec9F0260c28ff2E850);
+            trustLaunchAdminsContract = ITrustLaunchAdmins(_trustLaunchAdmins);
+        }
+
+        require(trustLaunchAdminsContract.isAdminsContract(), "bad contract");
+    }
+    function Michael() public view returns (address) {
+        return trustLaunchAdminsContract.getAddress(0);
+    }
+    function Jan() public view returns (address) {
+        return trustLaunchAdminsContract.getAddress(1);
+    }
+    function initialOwner() public view returns (address) {
+        return _initialOwner;
+    }
+
+    modifier onlyMichael(){
+        address msgSender = _msgSender();
+        require(trustLaunchAdminsContract.getAddress(0) == msgSender, "Only Michael can call this function");
+        _;
+    }
+
+    modifier onlyJan(){
+        address msgSender = _msgSender();
+        require(trustLaunchAdminsContract.getAddress(1) == msgSender, "Only Jan can call this function");
+        _;
+    }
+
+
+    modifier onlyOwner() {
+        address msgSender = _msgSender();
+        require(trustLaunchAdminsContract.isMichaelOrJan(msgSender), "Ownable: caller is not one of allowed owners");
+        _;
+    }
+}
+
+contract ReentrancyGuard {
+  bool private rL = false;
+  modifier nonReentrant() {
+    require(!rL);
+    rL = true;
+    _;
+    rL = false;
+  }
+}
+
+interface ITrustEvents {
+function addEventAllData(uint256 eventTypeId,
+        uint256[] memory numbers,
+        bool[] memory booleans,
+        address[] memory addresses,
+        string[] memory strings,
+        uint256 _hash,
+        uint256 ts
+        ) external;
+}
+
+interface ITrustLaunchFees  {
+    function getFeeData(uint256 optionId) external view returns (bool active, uint256 fee, address feeReceiver);
+    function getFeeDataSE(uint256 optionId, address sender) external view returns (bool active, uint256 fee, address feeReceiver);
+}
+
+abstract contract WalletDetector {
+    function _ow() private view{
+        require(msg.sender == tx.origin, "Reverting, Method can only be called directly by user.");
+    }
+
+    modifier onlyWallet() {
+        _ow();
+        _;
+    }
+}
+
+
+
+
+contract TrustLaunchServices is Ownable,ReentrancyGuard,WalletDetector {
+    using SafeMath for uint256;
+
+    struct PaymentOption {
+        string name;
+        bool active;
+        bool autoSendPayout;
+
+        uint256 paymentDivider;
+        address paymentReceiver; 
+        uint256 minimalPaymentAmount;
+        uint256 currentAmount;
+        uint256 paidAmount;
+        uint256 lastPayout;
+        bool moveToUnused;
+    }
+
+    mapping(uint256 => PaymentOption) public paymentOptions;
+
+    mapping(uint256 => PaymentOption) public JanOffer;
+    mapping(uint256 => PaymentOption) public MichaelOffer;
+
+    uint256 public paymentOptionsCounter = 0;
+    uint256 public unusedBalance = 0;
+    bool public autoRun = true;
+    uint256 public feeIndex = 7;
+    uint256 public eventIndex = 6;
+    string public serviceName = "Pinksale Import";
+
+    event PaymentReceived(address indexed sender, uint256 value);
+    ITrustEvents private TrustEventsContract;
+    ITrustLaunchFees private tlf;
+
+
+    uint256 private MAX_INT = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF;
+
+    function setAddress(uint256 _index, address newAddr) external onlyAdminsContract {
+       if( _index == 1) { //fees
+            tlf = ITrustLaunchFees(newAddr);
+        }
+        if( _index == 8) { //events
+            TrustEventsContract = ITrustEvents(newAddr);
+        }
+    }
+
+    constructor() {
+        _addPaymentOption("ServiceProvider");
+        uint256 optionId = 0;
+        paymentOptions[optionId].active = true;
+        paymentOptions[optionId].paymentDivider = 1000;
+        paymentOptions[optionId].paymentReceiver = 0xE58172Ec90F2A120042c71205cbbACd494975E94;
+        paymentOptions[optionId].autoSendPayout = true;
+    }
+
+    function _addPaymentOption(string memory name) private {
+        paymentOptions[paymentOptionsCounter].name = name;
+        paymentOptions[paymentOptionsCounter].active = false;
+        paymentOptions[paymentOptionsCounter].paymentDivider = 0;
+        paymentOptionsCounter++;
+    }
+
+    function addPaymentOption(string memory name) external onlyOwner {
+        _addPaymentOption(name);
+    }
+
+    function setIndexes(uint256 _feeIndex, uint256 _eventIndex) public onlyOwner{
+        feeIndex = _feeIndex;
+        eventIndex = _eventIndex;
+    }
+
+    function setServiceName(string memory newName) public onlyOwner {
+        serviceName = newName;
+    }
+
+    function buy(address pinksaleAddress) public payable nonReentrant onlyWallet {        
+        (bool active, uint256 fee,) = tlf.getFeeDataSE(feeIndex, msg.sender);
+        require(active, "Fee not active!");
+        require(fee == msg.value, "bad amount");
+        emit PaymentReceived(msg.sender, msg.value);
+        unusedBalance = unusedBalance.add(msg.value);
+        if(autoRun) {
+            _runPayments();
+        }
+        uint256[] memory _data = new uint256[](1);
+        bool[] memory _bool = new bool[](1);
+        address[] memory _addresses = new address[](2);
+        _addresses[0] = msg.sender;
+        _addresses[1] = pinksaleAddress;
+        string[] memory _strings = new string[](1);
+        TrustEventsContract.addEventAllData(eventIndex, _data, _bool, _addresses, _strings, 0, block.timestamp);
+    }
+
+    function _runPayments() private {
+        //divide unused balance into all active receivers
+        uint256 a = 0;
+        uint256 initialValue = unusedBalance;
+        uint256 remainigValue = unusedBalance;
+
+        for( a = 0; a < paymentOptionsCounter; a++){
+            if( paymentOptions[a].active && remainigValue > 0 && paymentOptions[a].paymentDivider > 0) {
+                uint256 paymentPart = initialValue.mul(paymentOptions[a].paymentDivider).div(1000);
+                if(paymentPart > remainigValue) {
+                    paymentPart = remainigValue;
+                }
+                remainigValue = remainigValue.sub(paymentPart);
+                paymentOptions[a].currentAmount = paymentOptions[a].currentAmount.add(paymentPart);
+            }
+        }
+
+        //what we did not divided, it is new unused balance, and we will use it later
+        unusedBalance = remainigValue;
+
+        for(a = 0; a < paymentOptionsCounter; a++) {
+            if( paymentOptions[a].autoSendPayout && paymentOptions[a].currentAmount > 0 && paymentOptions[a].currentAmount >= paymentOptions[a].minimalPaymentAmount) {
+                _dopayout(a);
+            }
+        }
+    }
+
+    function _dopayout(uint256 a) private {
+        (bool success,) = payable(paymentOptions[a].paymentReceiver).call{value: paymentOptions[a].currentAmount}("");
+        require(success, "Failed to send!");
+        paymentOptions[a].paidAmount = paymentOptions[a].paidAmount.add(paymentOptions[a].currentAmount);
+        paymentOptions[a].currentAmount = 0;
+        paymentOptions[a].lastPayout = block.timestamp;
+    }
+
+    function doManualPayout(uint256 option) external {
+            require( msg.sender == paymentOptions[option].paymentReceiver || msg.sender == Jan() || msg.sender == Michael(), "You are not allowed to call");
+            if( paymentOptions[option].currentAmount > 0) {
+                _dopayout(option);
+            }
+    }
+
+    function setAutoRun(bool run) external onlyOwner {
+            autoRun=run;
+    }
+
+
+
+    function runPayments() external onlyOwner {
+        _runPayments();
+    }
+
+    function compareStrings(string memory str1, string memory str2) public pure returns (bool) {
+        return keccak256(abi.encodePacked(str1)) == keccak256(abi.encodePacked(str2));
+    }
+
+    function verifySameOffer(uint256 optionId) private {
+        if(
+            compareStrings(JanOffer[optionId].name,MichaelOffer[optionId].name) && 
+            JanOffer[optionId].paymentDivider == MichaelOffer[optionId].paymentDivider && 
+            JanOffer[optionId].active == MichaelOffer[optionId].active && 
+            JanOffer[optionId].paymentReceiver == MichaelOffer[optionId].paymentReceiver && JanOffer[optionId].paymentReceiver != address(0) &&
+            JanOffer[optionId].minimalPaymentAmount == MichaelOffer[optionId].minimalPaymentAmount &&
+            JanOffer[optionId].autoSendPayout == MichaelOffer[optionId].autoSendPayout
+        ){
+            paymentOptions[optionId].active = JanOffer[optionId].active;
+            paymentOptions[optionId].paymentDivider = JanOffer[optionId].paymentDivider;
+            paymentOptions[optionId].paymentReceiver = JanOffer[optionId].paymentReceiver;
+            paymentOptions[optionId].name = JanOffer[optionId].name;
+            paymentOptions[optionId].minimalPaymentAmount = JanOffer[optionId].minimalPaymentAmount;
+            paymentOptions[optionId].autoSendPayout = JanOffer[optionId].autoSendPayout;
+        }
+
+        if( false && block.chainid == 97) {
+            paymentOptions[optionId].active = JanOffer[optionId].active;
+            paymentOptions[optionId].paymentDivider = JanOffer[optionId].paymentDivider;
+            paymentOptions[optionId].paymentReceiver = JanOffer[optionId].paymentReceiver;
+            paymentOptions[optionId].name = JanOffer[optionId].name;
+            paymentOptions[optionId].minimalPaymentAmount = JanOffer[optionId].minimalPaymentAmount;
+            paymentOptions[optionId].autoSendPayout = JanOffer[optionId].autoSendPayout;
+        }
+    }
+
+
+    function verifyMove(uint256 optionId) private {
+        if(
+            JanOffer[optionId].moveToUnused &&
+            JanOffer[optionId].moveToUnused == MichaelOffer[optionId].moveToUnused 
+        ){
+            unusedBalance = unusedBalance.add(paymentOptions[optionId].currentAmount);
+            paymentOptions[optionId].currentAmount = 0;
+            JanOffer[optionId].moveToUnused = false;
+            MichaelOffer[optionId].moveToUnused = false;
+        }
+    }
+
+    function setMichaelOption(uint256 optionId, uint256 minimalPaymentAmount, bool autoSendPayout) external onlyMichael {
+        require( paymentOptions[optionId].paymentReceiver == Michael(), "Bad caller"); 
+        paymentOptions[optionId].minimalPaymentAmount = minimalPaymentAmount;
+        if( autoSendPayout == false) {
+            paymentOptions[optionId].autoSendPayout = autoSendPayout;
+        }
+    }
+
+    function setJanOption(uint256 optionId, uint256 minimalPaymentAmount, bool autoSendPayout) external onlyJan {
+        require( paymentOptions[optionId].paymentReceiver == Jan(), "Bad caller") ;
+        paymentOptions[optionId].minimalPaymentAmount = minimalPaymentAmount;
+        if( autoSendPayout == false) {
+            paymentOptions[optionId].autoSendPayout = autoSendPayout;
+        }
+    
+    }
+
+
+    function setJanOffer(uint256 optionId, bool active, bool autoSendPayout, uint256 minimalPaymentAmount, uint256 paymentDivider, address paymentReceiver , string memory name) external onlyJan {
+        JanOffer[optionId].active = active;
+        JanOffer[optionId].autoSendPayout = autoSendPayout;
+        JanOffer[optionId].paymentDivider = paymentDivider;
+        JanOffer[optionId].paymentReceiver = paymentReceiver;
+        JanOffer[optionId].minimalPaymentAmount = minimalPaymentAmount;
+        JanOffer[optionId].name = name;
+        verifySameOffer(optionId);
+    }
+
+    function moveToUnusedJan(uint256 optionId, bool move) external onlyJan {
+        JanOffer[optionId].moveToUnused = move;
+        verifyMove(optionId);
+    }
+
+    function setMichaelOffer(uint256 optionId, bool active, bool autoSendPayout, uint256 minimalPaymentAmount, uint256 paymentDivider, address paymentReceiver, string memory name) external onlyMichael {
+        MichaelOffer[optionId].active = active;
+        MichaelOffer[optionId].autoSendPayout = autoSendPayout;
+        MichaelOffer[optionId].paymentDivider = paymentDivider;
+        MichaelOffer[optionId].paymentReceiver = paymentReceiver;
+        MichaelOffer[optionId].minimalPaymentAmount = minimalPaymentAmount;
+        MichaelOffer[optionId].name = name;
+
+        verifySameOffer(optionId);
+    }
+    function moveToUnusedMichael(uint256 optionId, bool move) external onlyMichael {
+        MichaelOffer[optionId].moveToUnused = move;
+        verifyMove(optionId);
+    }
+
+    function getPaymenteInfo(uint256 id) external view returns (PaymentOption memory) {
+        return paymentOptions[id];
+    }
+    function getJanInfo(uint256 id) external view returns (PaymentOption memory) {
+        return JanOffer[id];
+    }
+    function getMichaelInfo(uint256 id) external view returns (PaymentOption memory) {
+        return MichaelOffer[id];
+    }
+
+
+
+}
+
