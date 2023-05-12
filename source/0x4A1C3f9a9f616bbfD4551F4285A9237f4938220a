@@ -1,0 +1,247 @@
+pragma solidity 0.6.12;
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address _to, uint _value) external returns (bool);
+    function transferFrom(address _from, address _to, uint _value) external returns (bool);
+}
+
+interface IPancakeRouter02 {
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+contract Ownable {
+    address public owner;
+
+    constructor () public{
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        owner = newOwner;
+    }
+}
+
+contract GenesisNode is Ownable {
+    IERC20 public c_erc20 = IERC20(0x3B7a854852a175d3b746815504F0e7D229f70EC4);
+    IPancakeRouter02 public uniswapV2Router = IPancakeRouter02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+    address public c_usdt = 0x55d398326f99059fF775485246999027B3197955;
+    address public lpPoolAddress;
+   
+    uint256 public startReleaseTime = 1659157980;
+
+    uint256 public interval = 30*24*60*60;
+    uint256 public intervalAmount = 200*10**18;
+    uint256 public totalInterval = 13;
+
+    uint256 public constant maxLockAmount = 10000*10**18;
+
+    mapping(address => bool) public isGenesisNode;
+    struct Info {
+        uint256 withdrawnReleaseAmount;
+
+        uint256 perDividendAmount;
+        uint256 withdrawnDividendAmount;
+
+        uint256 downlineCount;
+        uint256 downlineUSDT;
+        uint256 unlockAmount;
+        uint256 withdrawnUnlockAmount;
+    }
+    mapping(address => Info) public genesisInfos;
+    uint256 public genesisNodeNum;
+    uint256 public perDividend;
+    uint256 public totalDividend;
+
+    mapping(address => bool) public isFrozen;
+
+    function setAddr(address lpp) external onlyOwner {
+        lpPoolAddress = lpp;
+    }
+
+    function initialGenesisNode(address[] memory addrs) external onlyOwner {
+        uint256 len = addrs.length;
+        for (uint256 i = 0; i < len; i++) {
+            require(!isGenesisNode[addrs[i]], "already genesis node");
+            isGenesisNode[addrs[i]] = true;
+        }
+        genesisNodeNum += len;
+        require(genesisNodeNum <= 100, "maxNodeNum is 100");
+    }
+
+    function pendGenesisNode(address[] memory addrs) external onlyOwner {
+        uint256 len = addrs.length;
+        for (uint256 i = 0; i < len; i++) {
+            require(!isGenesisNode[addrs[i]], "already genesis node");
+            isGenesisNode[addrs[i]] = true;
+            genesisInfos[addrs[i]].perDividendAmount = perDividend;
+        }
+        genesisNodeNum += len;
+        require(genesisNodeNum <= 100, "maxNodeNum is 100");
+    }
+
+    function addGenesisNode(address addr) external onlyOwner {
+        require(!isGenesisNode[addr], "already genesis node");
+        isGenesisNode[addr] = true;
+        genesisInfos[addr].perDividendAmount = perDividend;
+        genesisNodeNum++;
+        require(genesisNodeNum <= 100, "maxNodeNum is 100");
+    }
+
+    function freezeGenesisNode(address addr) external onlyOwner {
+        require(isGenesisNode[addr], "not genesis node");
+        require(!isFrozen[addr], "already frozen");
+        isFrozen[addr] = true;
+        require(genesisNodeNum >= 2 , "num err");
+        genesisNodeNum--;
+    }
+
+    function unfreezeGenesisNode(address addr) external onlyOwner {
+        require(isGenesisNode[addr], "not genesis node");
+        require(isFrozen[addr], "not frozen");
+        isFrozen[addr] = false;
+        genesisInfos[addr].perDividendAmount = perDividend;
+        genesisNodeNum++;
+        require(genesisNodeNum <= 100, "maxNodeNum is 100");
+    }
+
+    function distributeDividend(uint256 amount) external {
+        require(msg.sender == address(c_erc20), "addr err");
+        perDividend += amount/genesisNodeNum;
+        totalDividend += amount;
+    }
+
+    function getDividend() external {
+        require(isGenesisNode[msg.sender], "not genesis node");
+        require(!isFrozen[msg.sender], "already frozen");
+
+        Info storage o = genesisInfos[msg.sender];
+        uint256 w = perDividend - o.perDividendAmount;
+        if(w > 0){
+            c_erc20.transfer(msg.sender, w);
+            o.perDividendAmount = perDividend;
+            o.withdrawnDividendAmount += w;
+        }
+    }
+
+    function unlockByDownlineCount(address addr, uint256 downlineCount) external {
+        require(msg.sender == lpPoolAddress, "addr err");
+        Info storage o = genesisInfos[addr];
+        uint256 _max = maxLockAmount;
+        uint256 u = o.unlockAmount;
+        uint256 d = o.downlineCount;
+        if(u >= _max) {
+            return;
+        }
+        if(downlineCount <= d + 9 || downlineCount < 100) {
+            return;
+        }
+
+        o.downlineCount = downlineCount;
+        if(d == 0) {
+            o.unlockAmount = 500*10**18;
+            return;
+        }
+        
+        u += 1*10**18;
+        if(u > _max) {
+            u = _max;
+        }
+        o.unlockAmount = u;
+    }
+
+    function unlockByDownlineUSDT(address addr, uint256 downlineUSDT) external {
+        require(msg.sender == lpPoolAddress, "addr err");
+        Info storage o = genesisInfos[addr];
+        uint256 _max = maxLockAmount;
+        uint256 u = o.unlockAmount;
+        if(u >= _max) {
+            return;
+        }
+
+        uint256 du = o.downlineUSDT;
+        uint256 i = 10000*10**18;
+        if(downlineUSDT < du + i) {
+            return;
+        }
+
+        uint256 iNum = (downlineUSDT - du)/i;
+        uint256 unlockAmount = 5*iNum*i*10**16/getTokenPrice();
+        o.downlineUSDT += i*iNum;
+        
+        u += unlockAmount;
+        if(u > _max) {
+            u = _max;
+        }
+        o.unlockAmount = u;
+    }
+
+    function getTokenPrice() public view returns(uint256) {
+        address[] memory path = new address[](2);
+        path[0] = address(c_erc20);
+        path[1] = c_usdt;
+        uint[] memory amounts = new uint[](2);
+        amounts = uniswapV2Router.getAmountsOut(10**18, path);
+        return amounts[1];
+    }
+
+    function getUnlockAmount() external {
+        require(isGenesisNode[msg.sender], "not genesis node");
+        require(!isFrozen[msg.sender], "already frozen");
+
+        Info storage o = genesisInfos[msg.sender];
+        uint256 u = o.unlockAmount - o.withdrawnUnlockAmount;
+        if(u > 0){
+            c_erc20.transfer(msg.sender, u);
+            o.withdrawnUnlockAmount += u;
+        }
+    }
+
+    function getRelease() external {
+        require(isGenesisNode[msg.sender], "not genesis node");
+        require(!isFrozen[msg.sender], "already frozen");
+
+        uint256 withdrawableAmount = getWithdrawableRelease(msg.sender);
+        if(withdrawableAmount > 0) {
+            c_erc20.transfer(msg.sender, withdrawableAmount);
+            genesisInfos[msg.sender].withdrawnReleaseAmount += withdrawableAmount;
+        }
+    }
+
+    function getWithdrawableRelease(address addr) public view returns(uint256) {
+        if (block.timestamp <= startReleaseTime) {
+            return 0;
+        }
+
+        uint256 num = (block.timestamp - startReleaseTime)/interval;
+        num++;
+        if (num > totalInterval) {
+            num = totalInterval;
+        }
+        num = intervalAmount*num;
+
+        num -= genesisInfos[addr].withdrawnReleaseAmount;
+        uint256 b = c_erc20.balanceOf(address(this));
+        if(num > b){
+            num = b;
+        }
+        return num;
+    }
+
+    function isAvailableGenesisNode(address addr) external view returns(bool) {
+        return isGenesisNode[addr] && !isFrozen[addr];
+    }
+
+    function userInfo(address addr) external view returns(uint256, uint256, uint256, uint256, uint256, uint256) {
+        uint256 withdrawableAmount = getWithdrawableRelease(addr);
+        Info memory o = genesisInfos[addr];
+        uint256 w = perDividend - o.perDividendAmount;
+        return (withdrawableAmount, o.withdrawnReleaseAmount, w, o.withdrawnDividendAmount, o.unlockAmount, o.withdrawnUnlockAmount);
+    }
+}

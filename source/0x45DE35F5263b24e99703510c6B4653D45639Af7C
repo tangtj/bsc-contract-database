@@ -1,0 +1,434 @@
+pragma solidity ^0.8.0;
+
+// SPDX-License-Identifier: MIT
+
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() private {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+    }
+
+    function _nonReentrantAfter() private {
+        _status = _NOT_ENTERED;
+    }
+
+    function _reentrancyGuardEntered() internal view returns (bool) {
+        return _status == _ENTERED;
+    }
+}
+
+library Counters {
+    struct Counter {
+        uint256 _value;
+    }
+
+    function current(Counter storage counter) internal view returns (uint256) {
+        return counter._value;
+    }
+
+    function increment(Counter storage counter) internal {
+        unchecked {
+            counter._value += 1;
+        }
+    }
+
+    function decrement(Counter storage counter) internal {
+        uint256 value = counter._value;
+        require(value > 0, "Counter: decrement overflow");
+        unchecked {
+            counter._value = value - 1;
+        }
+    }
+
+    function reset(Counter storage counter) internal {
+        counter._value = 0;
+    }
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+interface IERC20 {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+contract RaffleDrop is Ownable, ReentrancyGuard {
+    using Counters for Counters.Counter;
+
+    struct TokenData {
+        Counters.Counter ticketCounter;
+        uint256 totalEntries;
+    }
+
+    uint256 public maxWinProbability = 45;
+    uint256 public housePercentage = 55;
+    uint256 public prizePoolPercentage = 90; // You can set the desired percentage
+
+    mapping(address => TokenData) public tokenData;
+    mapping(uint256 => uint256) public entryAmounts;
+    mapping(uint256 => address) public ticketOwners;
+    mapping(uint256 => address) public ticketTokens;
+    mapping(uint256 => bool) public hasClaimed;
+    mapping(address => mapping(address => uint256)) public rafflesWon;
+    mapping(address => mapping(address => uint256)) public rafflesLost;
+    mapping(address => mapping(address => uint256)) public tokensSpent;
+    mapping(address => mapping(address => uint256)) public tokensWon;
+    mapping(address => uint256) public claimableReserve;
+
+    address public taxTokenAddress;
+    uint256 public totalSupply;
+    uint8 public decimals;
+    uint256 public minHoldPercentage;
+
+    event Entry(
+        address indexed token,
+        uint256 indexed ticketId,
+        address indexed user,
+        uint256 amount
+    );
+    event PrizeClaimed(
+        address indexed token,
+        uint256 indexed ticketId,
+        address indexed user,
+        uint256 prize
+    );
+
+    function getRafflesWon(
+        address user,
+        address token
+    ) public view returns (uint256) {
+        return rafflesWon[user][token];
+    }
+
+    function getRafflesLost(
+        address user,
+        address token
+    ) public view returns (uint256) {
+        return rafflesLost[user][token];
+    }
+
+    function isWhitelisted(address _holder) public view returns (bool) {
+    require(taxTokenAddress != address(0), "Tax token address not set");
+        
+        IERC20 token = IERC20(taxTokenAddress);
+        uint256 balance = token.balanceOf(_holder);
+        uint256 threshold = (totalSupply * minHoldPercentage) / (10 ** (uint256(decimals) + 2));
+        
+        return balance >= threshold;
+    }
+
+    function getTokensSpent(
+        address user,
+        address token
+    ) public view returns (uint256) {
+        return tokensSpent[user][token];
+    }
+
+    function getTokensWon(
+        address user,
+        address token
+    ) public view returns (uint256) {
+        return tokensWon[user][token];
+    }
+
+    function getBNBRafflesWon(address user) public view returns (uint256) {
+        address bnbToken = address(0);
+        return rafflesWon[user][bnbToken];
+    }
+
+    function getBNBRafflesLost(address user) public view returns (uint256) {
+        address bnbToken = address(0);
+        return rafflesLost[user][bnbToken];
+    }
+
+    function getBNBTokensSpent(address user) public view returns (uint256) {
+        address bnbToken = address(0);
+        return tokensSpent[user][bnbToken];
+    }
+
+    function getBNBTokensWon(address user) public view returns (uint256) {
+        address bnbToken = address(0);
+        return tokensWon[user][bnbToken];
+    }
+
+    function getTokenPrice(address _token) public view returns (uint256) {
+        uint256 tokenBalance = IERC20(_token).balanceOf(address(this));
+        uint256 tokenPrice = (tokenBalance * 1) / 100; // 1% of the total balance
+        uint256 roundedTokenPrice = ((tokenPrice + 9) / 10) * 10; // Round up to the nearest 10
+        return roundedTokenPrice;
+    }
+
+    function enterRaffle(address _token, uint256 _amount) external nonReentrant {
+        // Check if the sender is whitelisted
+        bool senderWhitelisted = isWhitelisted(msg.sender);
+
+        uint256 taxAmount = senderWhitelisted ? 0 : (_amount / 10);
+
+        claimableReserve[_token] += taxAmount;
+
+        uint256 netAmount = _amount - taxAmount;
+
+        TokenData storage data = tokenData[_token];
+        uint256 ticketId = data.ticketCounter.current();
+        ticketOwners[ticketId] = msg.sender;
+        ticketTokens[ticketId] = _token;
+        entryAmounts[ticketId] = netAmount;
+        data.totalEntries += netAmount;
+
+        IERC20(_token).transferFrom(msg.sender, address(this), _amount);
+        data.ticketCounter.increment();
+
+        emit Entry(_token, ticketId, msg.sender, netAmount);
+
+        uint256 randomIndex = uint256(
+            keccak256(abi.encodePacked(block.timestamp, msg.sender))
+        ) % 100;
+        uint256 randomBlockNumber = block.number - 1 - randomIndex;
+        uint256 randomTimestamp = block.timestamp - randomIndex;
+        uint256 random = (uint256(
+            keccak256(
+                abi.encodePacked(
+                    blockhash(randomBlockNumber),
+                    randomTimestamp,
+                    msg.sender,
+                    data.totalEntries
+                )
+            )
+        ) % 100) + 1;
+
+        if (random <= maxWinProbability) {
+            hasClaimed[ticketId] = false;
+            rafflesWon[msg.sender][_token]++;
+        } else {
+            hasClaimed[ticketId] = true;
+            rafflesLost[msg.sender][_token]++;
+        }
+
+        tokensSpent[msg.sender][_token] += _amount;
+    }
+
+
+    function enterRaffleWithBNB() external payable nonReentrant {
+        address _token = address(0);
+        uint256 _amount = msg.value;
+
+        // Check if the sender is whitelisted
+        bool senderWhitelisted = isWhitelisted(msg.sender);
+
+        uint256 taxAmount = senderWhitelisted ? 0 : (_amount / 10);
+
+        claimableReserve[_token] += taxAmount;
+
+        uint256 netAmount = _amount - taxAmount;
+
+        TokenData storage data = tokenData[_token];
+        uint256 ticketId = data.ticketCounter.current();
+        ticketOwners[ticketId] = msg.sender;
+        ticketTokens[ticketId] = _token;
+        entryAmounts[ticketId] = netAmount;
+        data.totalEntries += netAmount;
+
+        data.ticketCounter.increment();
+
+        emit Entry(_token, ticketId, msg.sender, netAmount);
+
+        uint256 randomIndex = uint256(
+            keccak256(abi.encodePacked(block.timestamp, msg.sender))
+        ) % 100;
+        uint256 randomBlockNumber = block.number - 1 - randomIndex;
+        uint256 randomTimestamp = block.timestamp - randomIndex;
+        uint256 random = (uint256(
+            keccak256(
+                abi.encodePacked(
+                    blockhash(randomBlockNumber),
+                    randomTimestamp,
+                    msg.sender,
+                    data.totalEntries
+                )
+            )
+        ) % 100) + 1;
+
+        if (random <= maxWinProbability) {
+            hasClaimed[ticketId] = false;
+            rafflesWon[msg.sender][_token]++;
+        } else {
+            hasClaimed[ticketId] = true;
+            rafflesLost[msg.sender][_token]++;
+        }
+
+        tokensSpent[msg.sender][_token] += _amount;
+    }
+
+    function claimPrizeWithBNB(uint256 _ticketId) external nonReentrant {
+        require(ticketOwners[_ticketId] == msg.sender, "Not the ticket owner");
+        require(!hasClaimed[_ticketId], "Prize already claimed or not won");
+
+        uint256 prize = calculatePrize(_ticketId);
+        address token = ticketTokens[_ticketId];
+        require(token == address(0), "Token is not BNB");
+
+        payable(msg.sender).transfer(prize);
+        hasClaimed[_ticketId] = true;
+
+        emit PrizeClaimed(token, _ticketId, msg.sender, prize);
+
+        tokensWon[msg.sender][token] += prize;
+    }
+
+    function calculatePrize(uint256 _ticketId) internal view returns (uint256) {
+        address token = ticketTokens[_ticketId];
+        uint256 entryAmount = entryAmounts[_ticketId];
+        uint256 totalEntries = tokenData[token].totalEntries;
+        uint256 prizePool = (totalEntries * prizePoolPercentage) / 100;
+        uint256 prize = (prizePool * entryAmount) / totalEntries;
+        return prize;
+    }
+
+    function claimPrize(uint256 _ticketId) external nonReentrant {
+        require(ticketOwners[_ticketId] == msg.sender, "Not the ticket owner");
+        require(!hasClaimed[_ticketId], "Prize already claimed or not won");
+
+        uint256 prize = calculatePrize(_ticketId);
+        address token = ticketTokens[_ticketId];
+        IERC20(token).transfer(msg.sender, prize);
+        hasClaimed[_ticketId] = true;
+
+        emit PrizeClaimed(token, _ticketId, msg.sender, prize);
+
+        tokensWon[msg.sender][token] += prize;
+    }
+
+    function approveToken(address _token, uint256 _amount) external {
+        IERC20(_token).approve(address(this), _amount);
+    }
+
+    function claimTreasury(address _token) external onlyOwner {
+        uint256 reservedAmount = claimableReserve[_token];
+        require(reservedAmount > 0, "No tokens to claim");
+
+        claimableReserve[_token] = 0;
+
+        IERC20(_token).transfer(owner(), reservedAmount);
+    }
+
+    function approveTokenMax(address _token) external {
+        IERC20(_token).approve(address(this), type(uint256).max);
+    }
+
+    function checkAllowance(
+        address _token,
+        address _user
+    ) external view returns (uint256) {
+        return IERC20(_token).allowance(_user, address(this));
+    }
+
+    function setTaxTokenDetails(
+        address _taxTokenAddress,
+        uint256 _totalSupply,
+        uint8 _decimals,
+        uint256 _minHoldPercentage
+    ) external onlyOwner {
+        taxTokenAddress = _taxTokenAddress;
+        totalSupply = _totalSupply;
+        decimals = _decimals;
+        minHoldPercentage = _minHoldPercentage;
+    }
+
+    function withdraw(address _token, uint256 _amount) external onlyOwner {
+        require(
+            _amount <= IERC20(_token).balanceOf(address(this)),
+            "Insufficient balance"
+        );
+        IERC20(_token).transfer(owner(), _amount);
+    }
+}

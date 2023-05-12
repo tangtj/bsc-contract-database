@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.6.12;
+
+interface BEP20 {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address tokenOwner) external view returns (uint balance);
+    function allowance(address tokenOwner, address spender) external view returns (uint remaining);
+    function transfer(address to, uint tokens) external returns (bool success);
+    function approve(address spender, uint tokens) external returns (bool success);
+    function transferFrom(address from, address to, uint tokens) external returns (bool success);
+
+    event Transfer(address indexed from, address indexed to, uint tokens);
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+}
+contract DefiTrade {
+    using SafeMath for uint256; 
+
+    BEP20 public busd = BEP20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56); 
+
+    address public signer;
+    address public defaultRefer;
+    uint256 public startTime;
+
+    uint256 private constant minDeposit = 100e18;
+    uint256 private constant maxDeposit = 5000e18;
+    uint256 private constant timeStep = 1 days;
+
+    uint256 public inTax = 3;
+    uint256 public outTax = 15;
+    uint256 public subOutTax = 5;
+
+    address public taxReceiver1 = 0x69150dE6800692429aBB74f6F53105B9a1FAa903;
+    address public taxReceiver2 = 0xe997947C0b1abaF95d9919106695fD99d70e9475;
+    address public taxReceiver3 = 0x7E74A79c9b338EF1d8C8f4C7A2028Cc531afCBb2;
+
+    struct UserInfo {
+        address referrer;
+        bool isReg;
+        bool isActive;
+        uint256 myLastDeposit;
+    }
+
+    mapping(address=>UserInfo) public userInfo;
+    
+    event Register(address user, address referral);
+    event Deposit(address user, uint256 amount);
+    event Payout(address user, uint256 amount);
+    event Unstake(address user, uint256 amount);
+
+    modifier onlySigner(){
+        require(msg.sender == signer,"You are not authorized signer.");
+        _;
+    }
+
+    modifier security {
+        uint size;
+        address sandbox = msg.sender;
+        assembly { size := extcodesize(sandbox) }
+        require(size == 0, "Smart contract detected!");
+        _;
+    }
+
+    constructor() public {
+        signer = msg.sender;
+        defaultRefer = msg.sender;
+        startTime = block.timestamp;
+        userInfo[msg.sender].isReg=true;
+        userInfo[msg.sender].isActive=true;
+    }
+    
+    function contractInfo() public view returns(uint256 balance, uint256 init){
+       return (busd.balanceOf(address(this)),startTime);
+    }
+    
+    function register(address _referral) external security{
+        require(userInfo[_referral].isActive==true,"Referral is not active.");
+        require(_referral!=msg.sender,"You cannot refer yourself!");
+        userInfo[msg.sender].referrer = _referral;
+        userInfo[msg.sender].isReg = true;
+        emit Register(msg.sender, _referral);
+    }
+    
+    function deposit(uint256 _busd) external security{
+        require(_busd>=minDeposit && _busd<=maxDeposit && _busd.mod(minDeposit) == 0, "Minimum 100 , Multiple 100 and maximum 2000 busd");
+        require(userInfo[msg.sender].referrer != address(0), "register first");
+        require(_busd>=userInfo[msg.sender].myLastDeposit, "Amount greater than previous Deposit");
+        busd.transferFrom(msg.sender,address(this),_busd);
+        userInfo[msg.sender].isActive = true;
+        _taxation(_busd,true);
+        emit Deposit(msg.sender, _busd);
+    }
+
+    
+    function _taxation(uint256 _busd, bool isInTax) private{
+        uint256 tax = (isInTax==true)?_busd.mul(inTax.div(3)).div(100):_busd.mul((outTax-subOutTax).div(3)).div(100);
+        busd.transfer(taxReceiver1,tax);
+        busd.transfer(taxReceiver2,tax);
+        busd.transfer(taxReceiver3,tax);
+    }
+
+    function payout(address _address, uint256 _busd) external onlySigner security{
+        require(busd.balanceOf(address(this))>=_busd,"Balance unavailable.");
+        _taxation(_busd,false);
+        busd.transfer(_address,_busd.sub(_busd.mul(outTax).div(100)));
+        emit Payout(_address, _busd);
+    }
+
+    function unstake(address buyer,uint _amount) external onlySigner security{
+        busd.transfer(buyer,_amount);
+        emit Unstake(buyer,_amount);
+    }
+
+    function setTaxation(uint256 _inTax, uint256 _outTax, uint256 _subOutTax) external onlySigner security{
+        inTax = _inTax;
+        outTax = _outTax;
+        subOutTax = _subOutTax;
+    }
+
+    function getCurDay() public view returns(uint256) {
+        return (block.timestamp.sub(startTime)).div(timeStep);
+    }
+
+}
+
+library SafeMath {
+   
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}

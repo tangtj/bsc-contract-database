@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+}
+
+
+contract LockingLiquidity {
+    IERC20 private _token;
+    address private _owner;
+    uint256 private _lockedAmount;
+    uint256 private _lockEndTime;
+
+    event LiquidityLocked(uint256 amount, uint256 lockEndTime);
+    event LiquidityUnlocked(uint256 amount);
+    event LockingPeriodExtended(uint256 newLockEndTime);
+
+    constructor(address tokenAddress) {
+        _token = IERC20(tokenAddress);
+        _owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == _owner, "Only the contract owner can call this function");
+        _;
+    }
+
+    modifier lockPeriodExpired() {
+        require(block.timestamp >= _lockEndTime, "Locking period has not expired yet");
+        _;
+    }
+
+    function depositTokens(uint256 amount, uint256 lockingPeriodInSeconds) external onlyOwner {
+        require(amount > 0, "Amount must be greater than zero");
+        require(_lockedAmount == 0, "Tokens already locked");
+
+        _token.transferFrom(_owner, address(this), amount);
+        _lockedAmount += amount;
+        _lockEndTime = block.timestamp + lockingPeriodInSeconds;
+
+        emit LiquidityLocked(amount, _lockEndTime);
+    }
+
+    function withdrawTokens() external onlyOwner lockPeriodExpired {
+        require(_lockedAmount >= 0, "Insufficient locked amount");
+        require(block.timestamp >= _lockEndTime, "Locking period hasn't expired yet");
+
+        _lockedAmount -= _lockedAmount;
+        _token.transfer(_owner, _lockedAmount);
+
+        emit LiquidityUnlocked(_lockedAmount);
+    }
+
+    function increaseLockingPeriod(uint256 newLockingPeriodInSeconds) external onlyOwner {
+        require(newLockingPeriodInSeconds > 0, "Locking period must be greater than zero");
+        require(_lockedAmount > 0, "Cannot extend locking period after it has expired");
+
+        _lockEndTime += newLockingPeriodInSeconds;
+
+        emit LockingPeriodExtended(_lockEndTime);
+    }
+
+    function getLockedAmount() external view onlyOwner returns (uint256) {
+        return _lockedAmount;
+    }
+
+    function getRemainingTime() external view returns (uint256) {
+        if (block.timestamp >= _lockEndTime) {
+            return 0;
+        } else {
+            return _lockEndTime - block.timestamp;
+        }
+    }
+
+    function getOwner() external view returns (address) {
+        return _owner;
+    }
+}
