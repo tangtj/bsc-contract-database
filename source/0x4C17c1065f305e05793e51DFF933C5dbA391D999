@@ -1,0 +1,150 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.19;
+
+contract OpencallCapital {
+    address public admin;
+    uint256 public totalInvestment;
+
+    struct Investment {
+        string userId;
+        uint256 amount;
+        uint256 duration;
+        uint256 startedDate;
+        uint256 expireDate;
+        InvestmentStatus status;
+    }
+
+    enum InvestmentStatus {
+        Active,
+        Pending,
+        Expired
+    }
+
+    mapping(uint256 => Investment) public investments;
+    mapping(string => uint256[]) public userInvestments;
+
+    uint256 public nextInvestmentId = 10000;
+
+    event InvestmentAdded(
+        uint256 investmentId,
+        string userId,
+        uint256 amount,
+        uint256 startedDate,
+        uint256 expireDate
+    );
+    event InvestmentStatusUpdated(
+        uint256 investmentId,
+        InvestmentStatus newStatus
+    );
+
+    error Unauthorized();
+    error InvalidStatus(
+        InvestmentStatus currentStatus,
+        InvestmentStatus newStatus
+    );
+
+    constructor() {
+        admin = msg.sender;
+    }
+
+    function addInvestment(
+        string memory userId,
+        uint256 amount,
+        uint256 durationInDays
+    ) public {
+        require(msg.sender == admin, "Only the admin can call this function");
+        require(bytes(userId).length > 0, "User ID must not be empty");
+        require(amount > 0, "Amount must be greater than 0");
+        require(durationInDays > 0, "Duration in days must be greater than 0");
+
+        uint256 startedDate = block.timestamp;
+        uint256 expireDate = startedDate + (durationInDays * 1 days);
+
+        investments[nextInvestmentId] = Investment({
+            userId: userId,
+            amount: amount,
+            duration: durationInDays,
+            startedDate: startedDate,
+            expireDate: expireDate,
+            status: InvestmentStatus.Active
+        });
+
+        userInvestments[userId].push(nextInvestmentId);
+
+        totalInvestment += amount;
+
+        emit InvestmentAdded(
+            nextInvestmentId,
+            userId,
+            amount,
+            startedDate,
+            expireDate
+        );
+
+        nextInvestmentId++;
+    }
+
+    function getInvestment(uint256 investmentId)
+        public
+        view
+        returns (Investment memory)
+    {
+        return investments[investmentId];
+    }
+
+    function getInvestmentsIdsForUser(string memory userId)
+        public
+        view
+        returns (uint256[] memory)
+    {
+        return userInvestments[userId];
+    }
+
+    function getInvestmentsForUser(string memory userId)
+        public
+        view
+        returns (
+            uint256[] memory,
+            uint256[] memory,
+            uint256[] memory,
+            uint256[] memory,
+            InvestmentStatus[] memory
+        )
+    {
+        uint256[] memory investmentIds = userInvestments[userId];
+        uint256[] memory amounts = new uint256[](investmentIds.length);
+        uint256[] memory durations = new uint256[](investmentIds.length);
+        uint256[] memory startedDates = new uint256[](investmentIds.length);
+        uint256[] memory expireDates = new uint256[](investmentIds.length);
+        InvestmentStatus[] memory statuses = new InvestmentStatus[](
+            investmentIds.length
+        );
+
+        for (uint256 i = 0; i < investmentIds.length; i++) {
+            Investment storage investment = investments[investmentIds[i]];
+            amounts[i] = investment.amount;
+            durations[i] = investment.duration;
+            startedDates[i] = investment.startedDate;
+            expireDates[i] = investment.expireDate;
+            statuses[i] = investment.status;
+        }
+
+        return (amounts, durations, startedDates, expireDates, statuses);
+    }
+
+    function checkAndUpdateAllInvestmentsStatus() public {
+        require(msg.sender == admin, "Only the admin can call this function");
+
+        for (uint256 i = 1; i < nextInvestmentId; i++) {
+            Investment storage investment = investments[i];
+
+            if (
+                investment.expireDate < block.timestamp &&
+                investment.status != InvestmentStatus.Expired
+            ) {
+                investment.status = InvestmentStatus.Expired;
+                emit InvestmentStatusUpdated(i, InvestmentStatus.Expired);
+            }
+        }
+    }
+}
