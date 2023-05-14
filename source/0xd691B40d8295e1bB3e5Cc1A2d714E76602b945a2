@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IPancakeRouter {
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        payable
+        returns (
+            uint256 amountToken,
+            uint256 amountETH,
+            uint256 liquidity
+        );
+}
+
+contract Zenobia {
+    string public name = "Zenobia";
+    string public symbol = "ZENOB";
+    uint256 public totalSupply = 500000000000 * 10**18; // 500 billion tokens
+    address public owner;
+    mapping(address => uint256) public balanceOf;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    constructor() {
+        owner = msg.sender;
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    function transfer(address to, uint256 value) external returns (bool) {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += value;
+        emit Transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function buy() external payable returns (bool) {
+        uint256 amount = msg.value;
+        require(amount > 0, "Amount should be greater than zero");
+
+        uint256 tokensToTransfer = amount;
+        balanceOf[owner] -= tokensToTransfer;
+        balanceOf[msg.sender] += tokensToTransfer;
+        emit Transfer(owner, msg.sender, tokensToTransfer);
+        return true;
+    }
+
+    function sell(uint256 tokensToSell) external returns (bool) {
+        require(balanceOf[msg.sender] >= tokensToSell, "Insufficient balance");
+
+        uint256 amountToTransfer = tokensToSell;
+        balanceOf[msg.sender] -= tokensToSell;
+        balanceOf[owner] += tokensToSell;
+        emit Transfer(msg.sender, owner, tokensToSell);
+
+        payable(msg.sender).transfer(amountToTransfer);
+        return true;
+    }
+
+    function addLiquidityToPancakeSwap(address routerAddress) external returns (bool) {
+        IPancakeRouter router = IPancakeRouter(routerAddress);
+        uint256 tokenAmount = balanceOf[address(this)];
+        uint256 bnbAmount = address(this).balance;
+
+        // Approve the PancakeSwap router to spend the token
+        approve(routerAddress, tokenAmount);
+
+        // Add liquidity to PancakeSwap
+        router.addLiquidityETH{value: bnbAmount}(
+            address(this),
+            tokenAmount,
+            tokenAmount,
+            bnbAmount,
+            address(this),
+            block.timestamp + 3600
+        );
+
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) internal {
+        (bool success, bytes memory data) =
+            address(this).call(
+                abi.encodeWithSignature("approve(address,uint256)", spender, amount)
+            );
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "Approval failed");
+    }
+}

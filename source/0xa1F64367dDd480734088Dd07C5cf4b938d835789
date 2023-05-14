@@ -1,0 +1,1888 @@
+
+// File: @openzeppelin/contracts/access/AccessControl.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.8.0) (access/AccessControl.sol)
+
+pragma solidity ^0.8.0;
+
+import "./IAccessControl.sol";
+import "../utils/Context.sol";
+import "../utils/Strings.sol";
+import "../utils/introspection/ERC165.sol";
+
+/**
+ * @dev Contract module that allows children to implement role-based access
+ * control mechanisms. This is a lightweight version that doesn't allow enumerating role
+ * members except through off-chain means by accessing the contract event logs. Some
+ * applications may benefit from on-chain enumerability, for those cases see
+ * {AccessControlEnumerable}.
+ *
+ * Roles are referred to by their `bytes32` identifier. These should be exposed
+ * in the external API and be unique. The best way to achieve this is by
+ * using `public constant` hash digests:
+ *
+ * ```
+ * bytes32 public constant MY_ROLE = keccak256("MY_ROLE");
+ * ```
+ *
+ * Roles can be used to represent a set of permissions. To restrict access to a
+ * function call, use {hasRole}:
+ *
+ * ```
+ * function foo() public {
+ *     require(hasRole(MY_ROLE, msg.sender));
+ *     ...
+ * }
+ * ```
+ *
+ * Roles can be granted and revoked dynamically via the {grantRole} and
+ * {revokeRole} functions. Each role has an associated admin role, and only
+ * accounts that have a role's admin role can call {grantRole} and {revokeRole}.
+ *
+ * By default, the admin role for all roles is `DEFAULT_ADMIN_ROLE`, which means
+ * that only accounts with this role will be able to grant or revoke other
+ * roles. More complex role relationships can be created by using
+ * {_setRoleAdmin}.
+ *
+ * WARNING: The `DEFAULT_ADMIN_ROLE` is also its own admin: it has permission to
+ * grant and revoke this role. Extra precautions should be taken to secure
+ * accounts that have been granted it.
+ */
+abstract contract AccessControl is Context, IAccessControl, ERC165 {
+    struct RoleData {
+        mapping(address => bool) members;
+        bytes32 adminRole;
+    }
+
+    mapping(bytes32 => RoleData) private _roles;
+
+    bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
+
+    /**
+     * @dev Modifier that checks that an account has a specific role. Reverts
+     * with a standardized message including the required role.
+     *
+     * The format of the revert reason is given by the following regular expression:
+     *
+     *  /^AccessControl: account (0x[0-9a-f]{40}) is missing role (0x[0-9a-f]{64})$/
+     *
+     * _Available since v4.1._
+     */
+    modifier onlyRole(bytes32 role) {
+        _checkRole(role);
+        _;
+    }
+
+    /**
+     * @dev See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return interfaceId == type(IAccessControl).interfaceId || super.supportsInterface(interfaceId);
+    }
+
+    /**
+     * @dev Returns `true` if `account` has been granted `role`.
+     */
+    function hasRole(bytes32 role, address account) public view virtual override returns (bool) {
+        return _roles[role].members[account];
+    }
+
+    /**
+     * @dev Revert with a standard message if `_msgSender()` is missing `role`.
+     * Overriding this function changes the behavior of the {onlyRole} modifier.
+     *
+     * Format of the revert message is described in {_checkRole}.
+     *
+     * _Available since v4.6._
+     */
+    function _checkRole(bytes32 role) internal view virtual {
+        _checkRole(role, _msgSender());
+    }
+
+    /**
+     * @dev Revert with a standard message if `account` is missing `role`.
+     *
+     * The format of the revert reason is given by the following regular expression:
+     *
+     *  /^AccessControl: account (0x[0-9a-f]{40}) is missing role (0x[0-9a-f]{64})$/
+     */
+    function _checkRole(bytes32 role, address account) internal view virtual {
+        if (!hasRole(role, account)) {
+            revert(
+                string(
+                    abi.encodePacked(
+                        "AccessControl: account ",
+                        Strings.toHexString(account),
+                        " is missing role ",
+                        Strings.toHexString(uint256(role), 32)
+                    )
+                )
+            );
+        }
+    }
+
+    /**
+     * @dev Returns the admin role that controls `role`. See {grantRole} and
+     * {revokeRole}.
+     *
+     * To change a role's admin, use {_setRoleAdmin}.
+     */
+    function getRoleAdmin(bytes32 role) public view virtual override returns (bytes32) {
+        return _roles[role].adminRole;
+    }
+
+    /**
+     * @dev Grants `role` to `account`.
+     *
+     * If `account` had not been already granted `role`, emits a {RoleGranted}
+     * event.
+     *
+     * Requirements:
+     *
+     * - the caller must have ``role``'s admin role.
+     *
+     * May emit a {RoleGranted} event.
+     */
+    function grantRole(bytes32 role, address account) public virtual override onlyRole(getRoleAdmin(role)) {
+        _grantRole(role, account);
+    }
+
+    /**
+     * @dev Revokes `role` from `account`.
+     *
+     * If `account` had been granted `role`, emits a {RoleRevoked} event.
+     *
+     * Requirements:
+     *
+     * - the caller must have ``role``'s admin role.
+     *
+     * May emit a {RoleRevoked} event.
+     */
+    function revokeRole(bytes32 role, address account) public virtual override onlyRole(getRoleAdmin(role)) {
+        _revokeRole(role, account);
+    }
+
+    /**
+     * @dev Revokes `role` from the calling account.
+     *
+     * Roles are often managed via {grantRole} and {revokeRole}: this function's
+     * purpose is to provide a mechanism for accounts to lose their privileges
+     * if they are compromised (such as when a trusted device is misplaced).
+     *
+     * If the calling account had been revoked `role`, emits a {RoleRevoked}
+     * event.
+     *
+     * Requirements:
+     *
+     * - the caller must be `account`.
+     *
+     * May emit a {RoleRevoked} event.
+     */
+    function renounceRole(bytes32 role, address account) public virtual override {
+        require(account == _msgSender(), "AccessControl: can only renounce roles for self");
+
+        _revokeRole(role, account);
+    }
+
+    /**
+     * @dev Grants `role` to `account`.
+     *
+     * If `account` had not been already granted `role`, emits a {RoleGranted}
+     * event. Note that unlike {grantRole}, this function doesn't perform any
+     * checks on the calling account.
+     *
+     * May emit a {RoleGranted} event.
+     *
+     * [WARNING]
+     * ====
+     * This function should only be called from the constructor when setting
+     * up the initial roles for the system.
+     *
+     * Using this function in any other way is effectively circumventing the admin
+     * system imposed by {AccessControl}.
+     * ====
+     *
+     * NOTE: This function is deprecated in favor of {_grantRole}.
+     */
+    function _setupRole(bytes32 role, address account) internal virtual {
+        _grantRole(role, account);
+    }
+
+    /**
+     * @dev Sets `adminRole` as ``role``'s admin role.
+     *
+     * Emits a {RoleAdminChanged} event.
+     */
+    function _setRoleAdmin(bytes32 role, bytes32 adminRole) internal virtual {
+        bytes32 previousAdminRole = getRoleAdmin(role);
+        _roles[role].adminRole = adminRole;
+        emit RoleAdminChanged(role, previousAdminRole, adminRole);
+    }
+
+    /**
+     * @dev Grants `role` to `account`.
+     *
+     * Internal function without access restriction.
+     *
+     * May emit a {RoleGranted} event.
+     */
+    function _grantRole(bytes32 role, address account) internal virtual {
+        if (!hasRole(role, account)) {
+            _roles[role].members[account] = true;
+            emit RoleGranted(role, account, _msgSender());
+        }
+    }
+
+    /**
+     * @dev Revokes `role` from `account`.
+     *
+     * Internal function without access restriction.
+     *
+     * May emit a {RoleRevoked} event.
+     */
+    function _revokeRole(bytes32 role, address account) internal virtual {
+        if (hasRole(role, account)) {
+            _roles[role].members[account] = false;
+            emit RoleRevoked(role, account, _msgSender());
+        }
+    }
+}
+
+
+// File: @openzeppelin/contracts/access/IAccessControl.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (access/IAccessControl.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev External interface of AccessControl declared to support ERC165 detection.
+ */
+interface IAccessControl {
+    /**
+     * @dev Emitted when `newAdminRole` is set as ``role``'s admin role, replacing `previousAdminRole`
+     *
+     * `DEFAULT_ADMIN_ROLE` is the starting admin for all roles, despite
+     * {RoleAdminChanged} not being emitted signaling this.
+     *
+     * _Available since v3.1._
+     */
+    event RoleAdminChanged(bytes32 indexed role, bytes32 indexed previousAdminRole, bytes32 indexed newAdminRole);
+
+    /**
+     * @dev Emitted when `account` is granted `role`.
+     *
+     * `sender` is the account that originated the contract call, an admin role
+     * bearer except when using {AccessControl-_setupRole}.
+     */
+    event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
+
+    /**
+     * @dev Emitted when `account` is revoked `role`.
+     *
+     * `sender` is the account that originated the contract call:
+     *   - if using `revokeRole`, it is the admin role bearer
+     *   - if using `renounceRole`, it is the role bearer (i.e. `account`)
+     */
+    event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
+
+    /**
+     * @dev Returns `true` if `account` has been granted `role`.
+     */
+    function hasRole(bytes32 role, address account) external view returns (bool);
+
+    /**
+     * @dev Returns the admin role that controls `role`. See {grantRole} and
+     * {revokeRole}.
+     *
+     * To change a role's admin, use {AccessControl-_setRoleAdmin}.
+     */
+    function getRoleAdmin(bytes32 role) external view returns (bytes32);
+
+    /**
+     * @dev Grants `role` to `account`.
+     *
+     * If `account` had not been already granted `role`, emits a {RoleGranted}
+     * event.
+     *
+     * Requirements:
+     *
+     * - the caller must have ``role``'s admin role.
+     */
+    function grantRole(bytes32 role, address account) external;
+
+    /**
+     * @dev Revokes `role` from `account`.
+     *
+     * If `account` had been granted `role`, emits a {RoleRevoked} event.
+     *
+     * Requirements:
+     *
+     * - the caller must have ``role``'s admin role.
+     */
+    function revokeRole(bytes32 role, address account) external;
+
+    /**
+     * @dev Revokes `role` from the calling account.
+     *
+     * Roles are often managed via {grantRole} and {revokeRole}: this function's
+     * purpose is to provide a mechanism for accounts to lose their privileges
+     * if they are compromised (such as when a trusted device is misplaced).
+     *
+     * If the calling account had been granted `role`, emits a {RoleRevoked}
+     * event.
+     *
+     * Requirements:
+     *
+     * - the caller must be `account`.
+     */
+    function renounceRole(bytes32 role, address account) external;
+}
+
+
+// File: @openzeppelin/contracts/security/ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.8.0) (security/ReentrancyGuard.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() private {
+        // On the first call to nonReentrant, _status will be _NOT_ENTERED
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+    }
+
+    function _nonReentrantAfter() private {
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/introspection/ERC165.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/introspection/ERC165.sol)
+
+pragma solidity ^0.8.0;
+
+import "./IERC165.sol";
+
+/**
+ * @dev Implementation of the {IERC165} interface.
+ *
+ * Contracts that want to implement ERC165 should inherit from this contract and override {supportsInterface} to check
+ * for the additional interface id that will be supported. For example:
+ *
+ * ```solidity
+ * function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+ *     return interfaceId == type(MyInterface).interfaceId || super.supportsInterface(interfaceId);
+ * }
+ * ```
+ *
+ * Alternatively, {ERC165Storage} provides an easier to use but more expensive implementation.
+ */
+abstract contract ERC165 is IERC165 {
+    /**
+     * @dev See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return interfaceId == type(IERC165).interfaceId;
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/introspection/IERC165.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/introspection/IERC165.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC165 standard, as defined in the
+ * https://eips.ethereum.org/EIPS/eip-165[EIP].
+ *
+ * Implementers can declare support of contract interfaces, which can then be
+ * queried by others ({ERC165Checker}).
+ *
+ * For an implementation, see {ERC165}.
+ */
+interface IERC165 {
+    /**
+     * @dev Returns true if this contract implements the interface defined by
+     * `interfaceId`. See the corresponding
+     * https://eips.ethereum.org/EIPS/eip-165#how-interfaces-are-identified[EIP section]
+     * to learn more about how these ids are created.
+     *
+     * This function call must use less than 30 000 gas.
+     */
+    function supportsInterface(bytes4 interfaceId) external view returns (bool);
+}
+
+
+// File: @openzeppelin/contracts/utils/math/Math.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.8.0) (utils/math/Math.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Standard math utilities missing in the Solidity language.
+ */
+library Math {
+    enum Rounding {
+        Down, // Toward negative infinity
+        Up, // Toward infinity
+        Zero // Toward zero
+    }
+
+    /**
+     * @dev Returns the largest of two numbers.
+     */
+    function max(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a : b;
+    }
+
+    /**
+     * @dev Returns the smallest of two numbers.
+     */
+    function min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+    /**
+     * @dev Returns the average of two numbers. The result is rounded towards
+     * zero.
+     */
+    function average(uint256 a, uint256 b) internal pure returns (uint256) {
+        // (a + b) / 2 can overflow.
+        return (a & b) + (a ^ b) / 2;
+    }
+
+    /**
+     * @dev Returns the ceiling of the division of two numbers.
+     *
+     * This differs from standard division with `/` in that it rounds up instead
+     * of rounding down.
+     */
+    function ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+        // (a + b - 1) / b can overflow on addition, so we distribute.
+        return a == 0 ? 0 : (a - 1) / b + 1;
+    }
+
+    /**
+     * @notice Calculates floor(x * y / denominator) with full precision. Throws if result overflows a uint256 or denominator == 0
+     * @dev Original credit to Remco Bloemen under MIT license (https://xn--2-umb.com/21/muldiv)
+     * with further edits by Uniswap Labs also under MIT license.
+     */
+    function mulDiv(
+        uint256 x,
+        uint256 y,
+        uint256 denominator
+    ) internal pure returns (uint256 result) {
+        unchecked {
+            // 512-bit multiply [prod1 prod0] = x * y. Compute the product mod 2^256 and mod 2^256 - 1, then use
+            // use the Chinese Remainder Theorem to reconstruct the 512 bit result. The result is stored in two 256
+            // variables such that product = prod1 * 2^256 + prod0.
+            uint256 prod0; // Least significant 256 bits of the product
+            uint256 prod1; // Most significant 256 bits of the product
+            assembly {
+                let mm := mulmod(x, y, not(0))
+                prod0 := mul(x, y)
+                prod1 := sub(sub(mm, prod0), lt(mm, prod0))
+            }
+
+            // Handle non-overflow cases, 256 by 256 division.
+            if (prod1 == 0) {
+                return prod0 / denominator;
+            }
+
+            // Make sure the result is less than 2^256. Also prevents denominator == 0.
+            require(denominator > prod1);
+
+            ///////////////////////////////////////////////
+            // 512 by 256 division.
+            ///////////////////////////////////////////////
+
+            // Make division exact by subtracting the remainder from [prod1 prod0].
+            uint256 remainder;
+            assembly {
+                // Compute remainder using mulmod.
+                remainder := mulmod(x, y, denominator)
+
+                // Subtract 256 bit number from 512 bit number.
+                prod1 := sub(prod1, gt(remainder, prod0))
+                prod0 := sub(prod0, remainder)
+            }
+
+            // Factor powers of two out of denominator and compute largest power of two divisor of denominator. Always >= 1.
+            // See https://cs.stackexchange.com/q/138556/92363.
+
+            // Does not overflow because the denominator cannot be zero at this stage in the function.
+            uint256 twos = denominator & (~denominator + 1);
+            assembly {
+                // Divide denominator by twos.
+                denominator := div(denominator, twos)
+
+                // Divide [prod1 prod0] by twos.
+                prod0 := div(prod0, twos)
+
+                // Flip twos such that it is 2^256 / twos. If twos is zero, then it becomes one.
+                twos := add(div(sub(0, twos), twos), 1)
+            }
+
+            // Shift in bits from prod1 into prod0.
+            prod0 |= prod1 * twos;
+
+            // Invert denominator mod 2^256. Now that denominator is an odd number, it has an inverse modulo 2^256 such
+            // that denominator * inv = 1 mod 2^256. Compute the inverse by starting with a seed that is correct for
+            // four bits. That is, denominator * inv = 1 mod 2^4.
+            uint256 inverse = (3 * denominator) ^ 2;
+
+            // Use the Newton-Raphson iteration to improve the precision. Thanks to Hensel's lifting lemma, this also works
+            // in modular arithmetic, doubling the correct bits in each step.
+            inverse *= 2 - denominator * inverse; // inverse mod 2^8
+            inverse *= 2 - denominator * inverse; // inverse mod 2^16
+            inverse *= 2 - denominator * inverse; // inverse mod 2^32
+            inverse *= 2 - denominator * inverse; // inverse mod 2^64
+            inverse *= 2 - denominator * inverse; // inverse mod 2^128
+            inverse *= 2 - denominator * inverse; // inverse mod 2^256
+
+            // Because the division is now exact we can divide by multiplying with the modular inverse of denominator.
+            // This will give us the correct result modulo 2^256. Since the preconditions guarantee that the outcome is
+            // less than 2^256, this is the final result. We don't need to compute the high bits of the result and prod1
+            // is no longer required.
+            result = prod0 * inverse;
+            return result;
+        }
+    }
+
+    /**
+     * @notice Calculates x * y / denominator with full precision, following the selected rounding direction.
+     */
+    function mulDiv(
+        uint256 x,
+        uint256 y,
+        uint256 denominator,
+        Rounding rounding
+    ) internal pure returns (uint256) {
+        uint256 result = mulDiv(x, y, denominator);
+        if (rounding == Rounding.Up && mulmod(x, y, denominator) > 0) {
+            result += 1;
+        }
+        return result;
+    }
+
+    /**
+     * @dev Returns the square root of a number. If the number is not a perfect square, the value is rounded down.
+     *
+     * Inspired by Henry S. Warren, Jr.'s "Hacker's Delight" (Chapter 11).
+     */
+    function sqrt(uint256 a) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        // For our first guess, we get the biggest power of 2 which is smaller than the square root of the target.
+        //
+        // We know that the "msb" (most significant bit) of our target number `a` is a power of 2 such that we have
+        // `msb(a) <= a < 2*msb(a)`. This value can be written `msb(a)=2**k` with `k=log2(a)`.
+        //
+        // This can be rewritten `2**log2(a) <= a < 2**(log2(a) + 1)`
+        // → `sqrt(2**k) <= sqrt(a) < sqrt(2**(k+1))`
+        // → `2**(k/2) <= sqrt(a) < 2**((k+1)/2) <= 2**(k/2 + 1)`
+        //
+        // Consequently, `2**(log2(a) / 2)` is a good first approximation of `sqrt(a)` with at least 1 correct bit.
+        uint256 result = 1 << (log2(a) >> 1);
+
+        // At this point `result` is an estimation with one bit of precision. We know the true value is a uint128,
+        // since it is the square root of a uint256. Newton's method converges quadratically (precision doubles at
+        // every iteration). We thus need at most 7 iteration to turn our partial result with one bit of precision
+        // into the expected uint128 result.
+        unchecked {
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            return min(result, a / result);
+        }
+    }
+
+    /**
+     * @notice Calculates sqrt(a), following the selected rounding direction.
+     */
+    function sqrt(uint256 a, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = sqrt(a);
+            return result + (rounding == Rounding.Up && result * result < a ? 1 : 0);
+        }
+    }
+
+    /**
+     * @dev Return the log in base 2, rounded down, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log2(uint256 value) internal pure returns (uint256) {
+        uint256 result = 0;
+        unchecked {
+            if (value >> 128 > 0) {
+                value >>= 128;
+                result += 128;
+            }
+            if (value >> 64 > 0) {
+                value >>= 64;
+                result += 64;
+            }
+            if (value >> 32 > 0) {
+                value >>= 32;
+                result += 32;
+            }
+            if (value >> 16 > 0) {
+                value >>= 16;
+                result += 16;
+            }
+            if (value >> 8 > 0) {
+                value >>= 8;
+                result += 8;
+            }
+            if (value >> 4 > 0) {
+                value >>= 4;
+                result += 4;
+            }
+            if (value >> 2 > 0) {
+                value >>= 2;
+                result += 2;
+            }
+            if (value >> 1 > 0) {
+                result += 1;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @dev Return the log in base 2, following the selected rounding direction, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log2(uint256 value, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = log2(value);
+            return result + (rounding == Rounding.Up && 1 << result < value ? 1 : 0);
+        }
+    }
+
+    /**
+     * @dev Return the log in base 10, rounded down, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log10(uint256 value) internal pure returns (uint256) {
+        uint256 result = 0;
+        unchecked {
+            if (value >= 10**64) {
+                value /= 10**64;
+                result += 64;
+            }
+            if (value >= 10**32) {
+                value /= 10**32;
+                result += 32;
+            }
+            if (value >= 10**16) {
+                value /= 10**16;
+                result += 16;
+            }
+            if (value >= 10**8) {
+                value /= 10**8;
+                result += 8;
+            }
+            if (value >= 10**4) {
+                value /= 10**4;
+                result += 4;
+            }
+            if (value >= 10**2) {
+                value /= 10**2;
+                result += 2;
+            }
+            if (value >= 10**1) {
+                result += 1;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @dev Return the log in base 10, following the selected rounding direction, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log10(uint256 value, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = log10(value);
+            return result + (rounding == Rounding.Up && 10**result < value ? 1 : 0);
+        }
+    }
+
+    /**
+     * @dev Return the log in base 256, rounded down, of a positive value.
+     * Returns 0 if given 0.
+     *
+     * Adding one to the result gives the number of pairs of hex symbols needed to represent `value` as a hex string.
+     */
+    function log256(uint256 value) internal pure returns (uint256) {
+        uint256 result = 0;
+        unchecked {
+            if (value >> 128 > 0) {
+                value >>= 128;
+                result += 16;
+            }
+            if (value >> 64 > 0) {
+                value >>= 64;
+                result += 8;
+            }
+            if (value >> 32 > 0) {
+                value >>= 32;
+                result += 4;
+            }
+            if (value >> 16 > 0) {
+                value >>= 16;
+                result += 2;
+            }
+            if (value >> 8 > 0) {
+                result += 1;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @dev Return the log in base 10, following the selected rounding direction, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log256(uint256 value, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = log256(value);
+            return result + (rounding == Rounding.Up && 1 << (result * 8) < value ? 1 : 0);
+        }
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/Strings.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.8.0) (utils/Strings.sol)
+
+pragma solidity ^0.8.0;
+
+import "./math/Math.sol";
+
+/**
+ * @dev String operations.
+ */
+library Strings {
+    bytes16 private constant _SYMBOLS = "0123456789abcdef";
+    uint8 private constant _ADDRESS_LENGTH = 20;
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` decimal representation.
+     */
+    function toString(uint256 value) internal pure returns (string memory) {
+        unchecked {
+            uint256 length = Math.log10(value) + 1;
+            string memory buffer = new string(length);
+            uint256 ptr;
+            /// @solidity memory-safe-assembly
+            assembly {
+                ptr := add(buffer, add(32, length))
+            }
+            while (true) {
+                ptr--;
+                /// @solidity memory-safe-assembly
+                assembly {
+                    mstore8(ptr, byte(mod(value, 10), _SYMBOLS))
+                }
+                value /= 10;
+                if (value == 0) break;
+            }
+            return buffer;
+        }
+    }
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation.
+     */
+    function toHexString(uint256 value) internal pure returns (string memory) {
+        unchecked {
+            return toHexString(value, Math.log256(value) + 1);
+        }
+    }
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation with fixed length.
+     */
+    function toHexString(uint256 value, uint256 length) internal pure returns (string memory) {
+        bytes memory buffer = new bytes(2 * length + 2);
+        buffer[0] = "0";
+        buffer[1] = "x";
+        for (uint256 i = 2 * length + 1; i > 1; --i) {
+            buffer[i] = _SYMBOLS[value & 0xf];
+            value >>= 4;
+        }
+        require(value == 0, "Strings: hex length insufficient");
+        return string(buffer);
+    }
+
+    /**
+     * @dev Converts an `address` with fixed length of 20 bytes to its not checksummed ASCII `string` hexadecimal representation.
+     */
+    function toHexString(address addr) internal pure returns (string memory) {
+        return toHexString(uint256(uint160(addr)), _ADDRESS_LENGTH);
+    }
+}
+
+
+// File: contracts/FalconTest.sol
+//SPDX-License-Identifier: MIT
+pragma solidity 0.8.18;
+
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+
+contract FalconTest is AccessControl, ReentrancyGuard {
+    struct Pool {
+        uint256 poolId;
+        uint256 amount;
+    }
+
+    struct Deposit {
+        uint8 poolType;
+        uint256 depositAmount;
+        uint64 depositDate;
+        uint64 releaseDate;
+        uint256 toBeExcluded;
+        address owner;
+    }
+
+    struct Reward {
+        uint8 poolType;
+        uint256 totalRewards;
+        uint256 rewardPerShare;
+        uint256 totalClaimed;
+        uint64 validFrom;
+        uint64 validTo;
+        bool isTransferred;
+    }
+
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+
+    IERC20 public immutable usdt;
+    //userPoolsPerDay[date][user][plan] - tracking for user pool per date
+    mapping(uint256 => mapping(address => mapping(uint256 => uint256))) private userPoolsPerDay;
+    //totalPoolSize[plan] - stores total deposited amount to each pool
+    mapping(uint256 => uint256) public totalPoolSize;
+    //depositInfo[poolId] - stores pool info
+    mapping(uint256 => Deposit) public depositInfo;
+    //rewardInfo[plan][rewardPoolId] - stores reward pool info
+    mapping(uint256 => mapping(uint256 => Reward)) public rewardInfo;
+    //toBeExcluded[plan][rewardPoolId] - stores amount to be excluded from deposit amount due to incomplete staking periods
+    mapping(uint256 => mapping(uint256 => uint256)) public toBeExcluded;
+    //isRewardClaimed[depositPool][plan][reward pool] - checking if provided pool already claim reward
+    mapping(uint256 => mapping(uint256 =>  mapping(uint256 => bool))) public isRewardClaimed;
+    //counter for rewards pools
+    mapping(uint256 => uint256) public rewardPoolCounter;
+
+    address public investingAddress;
+    address public vaultContract;
+
+    //constants
+    uint256 constant ONE_DAY = 1 days;
+    uint256 constant ONE_MONTH = 30 days;
+    uint256 constant THREE_MONTHS = 90 days;
+    uint256 constant ONE_YEAR = 365 days;
+    int256 private constant OFFSET19700101 = 2440588; //FOR CALENDAR
+    uint256 constant SECONDS_PER_DAY = 24 * 60 * 60;
+    uint256 private constant ACC_FACTOR = 10**36; //ACCURACY FACTOR
+
+    uint256 public poolCounter = 1;
+    uint256[4] public lastRewardPool;
+    uint64 public immutable initialDate;
+    bool public isInvestingOpen;
+
+    //EVENTS
+    event PoolCreated(
+        uint256 poolId,
+        uint256 poolType,
+        uint256 depositAmount,
+        uint256 depositDate,
+        uint256 releaseDate,
+        uint256 toBeExcluded,
+        address indexed onwer
+    );
+    event PoolUpdated(uint256 poolId, uint256 newDepositAmount, uint256 newExcludedAmount, address indexed owner);
+    event RewardDeposited(
+        uint256 plan,
+        uint256 rewardPoolId,
+        uint256 totalRewardAmount,
+        uint256 validFrom,
+        uint256 validTo
+    );
+    event PoolDeleted(uint256 poolId);
+    event UnclaimedRewardTransferred(uint256 plan, uint256 rewardPoolId, uint256 time);
+    event RewardClaimed(uint256 plan, uint256 rewardPoolId, uint256[] pools);
+    event VaultContractSet(address contractAddress);
+    event InvestingStatusUpdated(bool newStatus);
+
+    modifier onlyVault {
+        require(msg.sender == vaultContract, "NOT AUTHORIZED");
+        _;
+    }
+
+    constructor (address _usdt, address _investingAddress) {
+        usdt = IERC20(_usdt);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, msg.sender);
+        investingAddress = _investingAddress;
+
+        uint256 today = _uintDate(block.timestamp);
+        initialDate = uint64(today - today%100 + 1);
+        isInvestingOpen = true;
+    }
+
+    /**
+     * @dev Allows default admin to set/change investing address
+     */
+    function setInvestingAddress(address _newAddress) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        investingAddress = _newAddress;
+    }
+
+    /**
+     * @dev Allows default admin to set/change vault address
+     */
+    function setVaultContract(address _newAddress) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        vaultContract = _newAddress;
+        _revokeRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, vaultContract);
+        _grantRole(ADMIN_ROLE, vaultContract);
+
+        emit VaultContractSet(_newAddress);
+    }
+
+    /**
+     * @dev Allows user to create/update deposit pool
+     * @param amount - amount of USDT in WEI
+     */
+    function deposit(uint256 amount) external {
+        require(isInvestingOpen, "New investing currently suspended");
+        require(amount >= 1 ether, "AMOUNT MUST BE AT LEAST 1$"); //FOR TEST ONLY
+        require(usdt.transferFrom(msg.sender, address(this), amount), "TOKEN TRANSFER FAILED");
+        uint256 today = _uintDate(block.timestamp);
+        _handlePoolTransfer(today, 0, amount, 0, msg.sender);
+    }
+
+    /**
+     * @dev Allows user to buy plan
+     * @param plan - selected pool (1-quarterly, 2-year, 3-lite)
+     * @param userPools - an array of [deposit pool ID, amount to withdraw from pool]
+     */
+    function getPlan(uint256 plan, Pool[] memory userPools) external nonReentrant {
+        require(isInvestingOpen, "New investing currently suspended");
+        require(plan > 0 && plan < 4, "WRONG PLAN");
+
+        (uint256 totalAmount, uint256 today) = _withdrawFromDeposit(userPools);
+
+        require(totalAmount >= 1 ether, "AMOUNT MUST BE AT LEAST 1$"); //FOR TEST ONLY
+        require(usdt.transfer(investingAddress, totalAmount), "TOKEN TRANSFER FAILED");
+
+        uint256 excludedAmount;
+
+        (uint256 fullDays, uint256 period) = _calculateDays();
+        excludedAmount = totalAmount - totalAmount * fullDays / period;
+
+        uint256 currentEpoch = _getEpoch(today);
+        toBeExcluded[plan][currentEpoch] += excludedAmount;
+
+        _handlePoolTransfer(today, plan, totalAmount, excludedAmount, msg.sender);
+    }
+
+    /**
+     * @dev Internal function to create/update pool.
+     * Pool can be updated user created it in same day
+     * otherwise new pool will be created
+     * @param today - date in format YYYYMMDD
+     * @param plan - from 0 to 3
+     * @param totalAmount - deposit amount
+     * @param excludedAmount - amount to be excluded during next claim
+     * @param owner - owner wallet address
+     */
+    function _handlePoolTransfer(
+        uint256 today,
+        uint256 plan,
+        uint256 totalAmount,
+        uint256 excludedAmount,
+        address owner
+    ) internal {
+        totalPoolSize[plan] += totalAmount;
+        if (userPoolsPerDay[today][owner][plan] != 0) {
+            uint256 poolId = userPoolsPerDay[today][owner][plan];
+            depositInfo[poolId].depositAmount += totalAmount;
+            depositInfo[poolId].toBeExcluded += excludedAmount;
+            //EVENT POOL UPDATED
+            emit PoolUpdated(poolId, depositInfo[poolId].depositAmount, depositInfo[poolId].toBeExcluded, owner);
+        } else {
+            uint256 poolId = poolCounter++;
+            uint256 releaseDate = _getReleaseTimes(plan, today);
+            depositInfo[poolId] = Deposit(uint8(plan), totalAmount, uint64(today), uint64(releaseDate), excludedAmount, owner);
+            userPoolsPerDay[today][owner][plan] = poolId;
+            //EVENT POOL CREATED
+            emit PoolCreated(poolId, plan, totalAmount, today, releaseDate, excludedAmount, owner);
+        }
+    }
+
+    /**
+     * @dev Allows vault to deposit reward
+     * @param _plan - selected plan (1-quarterly, 2-year, 3-lite)
+     * @param _totalReward - total amount of USDT to be distributed
+     */
+    function depositReward(uint256 _plan, uint256 _totalReward) external onlyVault {
+        require(_plan > 0 && _plan < 4, "WRONG PLAN");
+
+        uint256 today = _uintDate(block.timestamp);
+        uint256 currentEpoch = _getEpoch(today);
+        require(currentEpoch >= rewardPoolCounter[_plan], "PROHIBITED TO DEPOSIT IN ADVANCE");
+        if (currentEpoch == rewardPoolCounter[_plan]) {
+            (uint256 validFrom, uint256 validUntil) = _validTimesFromEpoch(currentEpoch);
+            uint256 nextDay = _uintDate(block.timestamp + ONE_DAY);
+
+            require(nextDay == validFrom, "NOT THE LAST DAY OF EPOCH");
+            require(usdt.transferFrom(msg.sender, address(this), _totalReward), "USDT TRANSFER FAILED");
+
+            uint256 currentPoolSize = totalPoolSize[_plan] - toBeExcluded[_plan][rewardPoolCounter[_plan]];
+            uint256 rewardPerShare;
+
+            if (currentPoolSize > 0) {
+                rewardPerShare = _totalReward * ACC_FACTOR / currentPoolSize;
+            }
+            uint256 rewardPoolId = rewardPoolCounter[_plan]++;
+
+            rewardInfo[_plan][rewardPoolId] = Reward(
+                uint8(_plan),
+                _totalReward,
+                rewardPerShare,
+                0,
+                uint64(validFrom),
+                uint64(validUntil),
+                false
+            );
+            lastRewardPool[_plan] = rewardPoolId;
+
+            //EVENT REWARD DEPOSITED
+            emit RewardDeposited(_plan, rewardPoolId, _totalReward, validFrom, validUntil);
+        } else {
+            (uint256 validFrom, uint256 validUntil) = _validTimesFromEpoch(rewardPoolCounter[_plan]);
+
+            uint256 rewardPoolId = rewardPoolCounter[_plan]++;
+
+            rewardInfo[_plan][rewardPoolId] = Reward(
+                uint8(_plan),
+                0,
+                0,
+                0,
+                uint64(validFrom),
+                uint64(validUntil),
+                false
+            );
+            lastRewardPool[_plan] = rewardPoolId;
+
+            //EVENT REWARD DEPOSITED
+            emit RewardDeposited(_plan, rewardPoolId, 0, validFrom, validUntil);
+        }
+    }
+
+    /**
+     * @dev Allows user to claim reward.
+     * At the end function will create deposit pool for user.
+     * @param userPools - an array of user pool IDs
+     * @param plan - selected plan (1-quarterly, 2-year, 3-lite)
+     * @param rewardPoolId - ID of reward pool
+     */
+    function claim(uint256[] memory userPools, uint256 plan, uint256 rewardPoolId) external nonReentrant {
+        require(plan > 0 && plan < 4, "WRONG PLAN");
+        uint256 totalShare;
+
+        uint256 today = _uintDate(block.timestamp);
+        require(
+            rewardInfo[plan][rewardPoolId].validFrom <= today
+            && today <=  rewardInfo[plan][rewardPoolId].validTo,
+            "OUTSIDE CLAIMABLE PERIOD"
+        );
+
+        for (uint i=0; i < userPools.length; i++) {
+            require(!isRewardClaimed[userPools[i]][plan][rewardPoolId], "REWARD ALREADY CLAIMED");
+            require(
+                depositInfo[userPools[i]].poolType == plan,
+                "WRONG POOL TYPE"
+            );
+            require(depositInfo[userPools[i]].owner == msg.sender, "CALLER NOT THE POOL OWNER");
+            require(
+                depositInfo[userPools[i]].depositDate < rewardInfo[plan][rewardPoolId].validFrom,
+                "WRONG DEPOSIT DATE"
+            );
+            if (plan !=3) {
+                require(
+                    depositInfo[userPools[i]].releaseDate > rewardInfo[plan][rewardPoolId].validFrom,
+                    "WRONG RELEASE DATE"
+                );
+            }
+
+            bool isFullPeriod = _handleExcludedAmount(
+                depositInfo[userPools[i]].depositDate,
+                rewardInfo[plan][rewardPoolId].validFrom
+            );
+
+            if (isFullPeriod) {
+                if (depositInfo[userPools[i]].toBeExcluded != 0) {
+                    depositInfo[userPools[i]].toBeExcluded = 0;
+                }
+                totalShare += depositInfo[userPools[i]].depositAmount;
+            } else {
+                totalShare += depositInfo[userPools[i]].depositAmount - depositInfo[userPools[i]].toBeExcluded;
+                depositInfo[userPools[i]].toBeExcluded = 0;
+            }
+            isRewardClaimed[userPools[i]][plan][rewardPoolId] = true;
+        }
+
+        uint256 userTotalReward = totalShare * rewardInfo[plan][rewardPoolId].rewardPerShare / ACC_FACTOR;
+        rewardInfo[plan][rewardPoolId].totalClaimed += userTotalReward;
+
+        _handlePoolTransfer(today, 0, userTotalReward, 0, msg.sender);
+
+        emit RewardClaimed(plan, rewardPoolId, userPools);
+    }
+
+    /**
+     * @dev Public view method to check amount to claim.
+     * Does not check pool ownership. Only for UI.
+     * @param userPools - an array of user pool IDs
+     * @param plan - selected plan (1-quarterly, 2-year, 3-lite)
+     * @param rewardPoolId - ID of reward pool
+     */
+    function viewUnpaid(uint256[] memory userPools, uint256 plan, uint256 rewardPoolId) external view returns (uint256) {
+        uint256 totalShare;
+        for (uint i=0; i < userPools.length; i++) {
+            require(
+                depositInfo[userPools[i]].poolType == plan,
+                "WRONG POOL TYPE"
+            );
+            require(
+                depositInfo[userPools[i]].depositDate < rewardInfo[plan][rewardPoolId].validFrom,
+                "WRONG DEPOSIT DATE"
+            );
+            if (plan !=3) {
+                require(
+                    depositInfo[userPools[i]].releaseDate > rewardInfo[plan][rewardPoolId].validFrom,
+                    "WRONG RELEASE DATE"
+                );
+            }
+            bool isFullPeriod = _handleExcludedAmount(
+                depositInfo[userPools[i]].depositDate,
+                rewardInfo[plan][rewardPoolId].validFrom
+            );
+
+            if (isFullPeriod) {
+                totalShare += depositInfo[userPools[i]].depositAmount;
+            } else {
+                totalShare += depositInfo[userPools[i]].depositAmount - depositInfo[userPools[i]].toBeExcluded;
+            }
+        }
+        uint256 userTotalReward = totalShare * rewardInfo[plan][rewardPoolId].rewardPerShare / ACC_FACTOR;
+
+        return userTotalReward;
+    }
+
+    /**
+     * @dev Allows user withdraw USDT.
+     * Will delete old empty pools
+     * @param userPools - an array of [deposit pool ID, amount to withdraw from pool]
+     */
+    function withdrawFromDeposit(uint256[] memory userPools) external nonReentrant {
+        uint256 totalAmount;
+        uint256 today = _uintDate(block.timestamp);
+        for (uint i=0; i < userPools.length; i++) {
+            require(depositInfo[userPools[i]].poolType == 0, "WRONG POOL TYPE");
+            require(
+                depositInfo[userPools[i]].depositAmount > 0,
+                "INSUFFICIENT DEPOSIT BALANCE"
+            );
+            require(depositInfo[userPools[i]].owner == msg.sender, "CALLER NOT THE POOL OWNER");
+            require(depositInfo[userPools[i]].releaseDate >= today, "POOL EXPIRED");
+            totalAmount += depositInfo[userPools[i]].depositAmount;
+            if (
+                today > depositInfo[userPools[i]].depositDate
+                && depositInfo[userPools[i]].depositAmount == 0
+            ) {
+                delete depositInfo[userPools[i]];
+                emit PoolDeleted(userPools[i]);
+            } else {
+                depositInfo[userPools[i]].depositAmount = 0;
+                emit PoolUpdated(
+                    userPools[i],
+                    depositInfo[userPools[i]].depositAmount,
+                    depositInfo[userPools[i]].toBeExcluded,
+                    msg.sender
+                );
+            }
+        }
+        totalPoolSize[0] -= totalAmount;
+        require(usdt.transfer(_msgSender(), totalAmount), "TOKEN TRANSFER FAILED");
+    }
+
+    /**
+     * @dev Internal function to remove funds from deposit pools.
+     * Will delete old empty pools. Used in getPlan() and withdrawFromDeposit().
+     * @param userPools - an array of deposit pool ID
+     * @return totalAmount - total amount of USDT
+     * @return today - date in YYYYMMDD format for getPlan() function.
+     */
+    function _withdrawFromDeposit(Pool[] memory userPools) internal returns (uint256, uint256) {
+        uint256 totalAmount;
+        uint256 today = _uintDate(block.timestamp);
+        for (uint i=0; i < userPools.length; i++) {
+            require(depositInfo[userPools[i].poolId].poolType == 0, "WRONG POOL TYPE");
+            require(
+                depositInfo[userPools[i].poolId].depositAmount >= userPools[i].amount &&
+                userPools[i].amount > 0,
+                "INSUFFICIENT DEPOSIT BALANCE"
+            );
+            require(depositInfo[userPools[i].poolId].owner == msg.sender, "CALLER NOT THE POOL OWNER");
+            require(depositInfo[userPools[i].poolId].releaseDate >= today, "POOL EXPIRED");
+            depositInfo[userPools[i].poolId].depositAmount -= userPools[i].amount;
+            totalAmount += userPools[i].amount;
+            if (
+                today > depositInfo[userPools[i].poolId].depositDate
+                && depositInfo[userPools[i].poolId].depositAmount == 0
+            ) {
+                delete depositInfo[userPools[i].poolId];
+                emit PoolDeleted(userPools[i].poolId);
+            } else {
+                emit PoolUpdated(
+                    userPools[i].poolId,
+                    depositInfo[userPools[i].poolId].depositAmount,
+                    depositInfo[userPools[i].poolId].toBeExcluded,
+                    msg.sender
+                );
+            }
+        }
+        totalPoolSize[0] -= totalAmount;
+        return (totalAmount, today);
+    }
+
+    /**
+     * @dev Allows admin to transfer unclaimed deposit pool
+     * to lite plan.
+     * @param poolIds - an array of deposit pool IDs
+     */
+    function transferUnclaimedPool(uint256[] memory poolIds) external onlyRole(ADMIN_ROLE) {
+        for (uint i=0; i < poolIds.length; i++) {
+            _transferUnclaimedPool(poolIds[i]);
+        }
+    }
+
+    function _transferUnclaimedPool(uint256 poolId) internal {
+        uint256 amount;
+        uint256 today = _uintDate(block.timestamp);
+
+        require(depositInfo[poolId].depositAmount > 0, "EMPTY POOL");
+        require(depositInfo[poolId].poolType == 0, "WRONG POOL TYPE");
+        require(depositInfo[poolId].releaseDate < today, "POOL NOT EXPIRED");
+        address poolOwner = depositInfo[poolId].owner;
+
+        amount = depositInfo[poolId].depositAmount;
+        totalPoolSize[0] -= amount;
+        require(usdt.transfer(investingAddress, amount), "TOKEN TRANSFER FAILED");
+
+        (uint256 fullDays, uint256 period) = _calculateDays();
+        uint256 excludedAmount = amount - amount * fullDays / period;
+
+        uint256 currentEpoch = _getEpoch(today);
+        toBeExcluded[3][currentEpoch] += excludedAmount;
+
+        _handlePoolTransfer(today, 3, amount, excludedAmount, poolOwner);
+
+        delete depositInfo[poolId];
+        emit PoolDeleted(poolId);
+    }
+
+    /**
+     * @dev Allows admin to transfer unclaimed rewards to investor wallet.
+     * @param plan - selected plan (1-quarterly, 2-year, 3-lite)
+     * @param rewardPoolId - ID of reward pool
+     */
+    function transferUnclaimedRewards(uint256 plan, uint256 rewardPoolId) external onlyRole(ADMIN_ROLE) {
+        uint256 today = _uintDate(block.timestamp);
+        require(plan > 0 && plan < 4, "INVALID POOL TYPE");
+        require(rewardPoolCounter[plan] > rewardPoolId, "INVALID REWARD POOL ID");
+        require(
+            today > rewardInfo[plan][rewardPoolId].validTo,
+            "CLAIMABLE PERIOD NOT ENDED"
+        );
+        require(!rewardInfo[plan][rewardPoolId].isTransferred, "POOL ALREADY TRANSFERRED");
+
+        uint256 amount = rewardInfo[plan][rewardPoolId].totalRewards - rewardInfo[plan][rewardPoolId].totalClaimed;
+        rewardInfo[plan][rewardPoolId].isTransferred = true;
+
+        require(usdt.transfer(investingAddress, amount), "USDT TRANSFER FAILED");
+
+        emit UnclaimedRewardTransferred(plan, rewardPoolId, block.timestamp);
+    }
+
+    /**
+     * @dev Allows admin to claim reward to lite plan.
+     * @param userPools - an array of users pool IDs
+     * @param plan - from 0 to 3
+     * @param rewardPoolId - ID of reward pool
+     */
+    function claimAdmin(
+        uint256[] memory userPools,
+        uint256 plan,
+        uint256 rewardPoolId
+    ) external nonReentrant onlyRole(ADMIN_ROLE) {
+        require(rewardInfo[plan][rewardPoolId].isTransferred, "POOL MUST BE TRANSFERRED");
+        require(rewardPoolId+1 == rewardPoolCounter[plan], "NEW REWARD DEPOSITED");
+
+        for (uint i=0; i < userPools.length; i++) {
+            _claim(userPools[i], rewardPoolId, plan, 3);
+        }
+
+        emit RewardClaimed(plan, rewardPoolId, userPools);
+    }
+
+    /**
+     * @dev Internal function to claim reward to deposit/lite plan.
+     * @param userPool - user pool ID
+     * @param rewardPoolId - ID of reward pool
+     * @param plan - from 0 to 3
+     * @param destination - 0 for deposit, 3 for lite plan
+     */
+    function _claim(uint256 userPool, uint256 rewardPoolId, uint256 plan, uint256 destination) internal {
+        uint256 totalShare;
+        address poolOwner = depositInfo[userPool].owner;
+        require(!isRewardClaimed[userPool][plan][rewardPoolId], "REWARD ALREADY CLAIMED");
+        require(depositInfo[userPool].poolType == rewardInfo[plan][rewardPoolId].poolType, "WRONG PLAN");
+        require(
+            depositInfo[userPool].depositDate < rewardInfo[plan][rewardPoolId].validFrom,
+            "WRONG DEPOSIT DATE"
+        );
+        if (plan != 3) {
+            require(depositInfo[userPool].releaseDate >= rewardInfo[plan][rewardPoolId].validFrom, "WRONG RELEASE DATE");
+        }
+        bool isFullPeriod = _handleExcludedAmount(
+            depositInfo[userPool].depositDate,
+            rewardInfo[plan][rewardPoolId].validFrom
+        );
+
+        if (isFullPeriod) {
+            if (depositInfo[userPool].toBeExcluded != 0) {
+                depositInfo[userPool].toBeExcluded = 0;
+            }
+            totalShare += depositInfo[userPool].depositAmount;
+        } else {
+            totalShare += depositInfo[userPool].depositAmount - depositInfo[userPool].toBeExcluded;
+            depositInfo[userPool].toBeExcluded = 0;
+        }
+        isRewardClaimed[userPool][plan][rewardPoolId] = true;
+
+        uint256 userTotalReward = totalShare * rewardInfo[plan][rewardPoolId].rewardPerShare / ACC_FACTOR;
+        uint256 excludedAmount;
+        uint256 today = _uintDate(block.timestamp);
+
+        rewardInfo[plan][rewardPoolId].totalClaimed += userTotalReward;
+
+        if (destination != 0) {
+            (uint256 fullDays, uint256 period) = _calculateDaysByData(rewardInfo[plan][rewardPoolId].validTo + 1);
+            excludedAmount = userTotalReward - userTotalReward * fullDays / period;
+            toBeExcluded[destination][rewardPoolCounter[destination]] += excludedAmount;
+        }
+
+        if (today <= rewardInfo[plan][rewardPoolId].validTo) {
+            _handlePoolTransfer(rewardInfo[plan][rewardPoolId].validFrom, destination, userTotalReward, excludedAmount, poolOwner);
+        } else {
+            _handlePoolTransfer((rewardInfo[plan][rewardPoolId].validTo+1), destination, userTotalReward, excludedAmount, poolOwner);
+        }
+    }
+
+    /**
+     * @dev Allows admin to return deposit.
+     * New deposit pool will be created.
+     * @param returnPools - array of pool id and return amount ([[1, 100 ether], [2, 200 ether], ...])
+     * cannot be less than deposit amount
+     */
+    function returnDeposit(Pool[] memory returnPools) external onlyVault {
+        uint256 totalAmount;
+        for (uint i = 0; i < returnPools.length; i++) {
+            uint256 _poolId = returnPools[i].poolId;
+            uint256 totalReturnAmount = returnPools[i].amount;
+
+            require(depositInfo[_poolId].poolType > 0 && depositInfo[_poolId].poolType < 4, "WRONG PLAN");
+
+            uint256 today = _uintDate(block.timestamp);
+            uint256 plan = depositInfo[_poolId].poolType;
+
+            require(today >= depositInfo[_poolId].releaseDate, "POOL STILL VALID");
+            require(totalReturnAmount >= depositInfo[_poolId].depositAmount, "PROVIDED AMOUNT LESS THAN DEPOSIT");
+
+            address poolOwner = depositInfo[_poolId].owner;
+
+            if (
+                !isRewardClaimed[_poolId][plan][lastRewardPool[plan]] &&
+                (depositInfo[_poolId].releaseDate >= rewardInfo[plan][lastRewardPool[plan]].validFrom ||
+                plan == 3)
+            ) {
+                _claim(_poolId, lastRewardPool[plan], plan, 0);
+            }
+
+            _handlePoolTransfer(today, 0, totalReturnAmount, 0, poolOwner);
+            totalAmount += totalReturnAmount;
+
+            totalPoolSize[depositInfo[_poolId].poolType] -= depositInfo[_poolId].depositAmount;
+            delete depositInfo[_poolId];
+            emit PoolDeleted(_poolId);
+        }
+        require(usdt.transferFrom(msg.sender, address(this), totalAmount), "USDT TRANSFER FAILED");
+    }
+
+    function flipInvestingStatus() external onlyVault {
+        isInvestingOpen = !isInvestingOpen;
+        emit InvestingStatusUpdated(isInvestingOpen);
+    }
+
+    /**
+     * @dev Internal helper, checks if full period passed
+     * between two dates.
+     * @param depositDate - date in format YYYYMMDD
+     * @param rewardDate - date in format YYYYMMDD
+     * @return true - if full period passes, otherwise - false
+     */
+    function _handleExcludedAmount(uint256 depositDate, uint256 rewardDate) internal pure returns (bool) {
+        uint256 diff = rewardDate - depositDate;
+        if (diff < 15) {
+            return false;
+        } else {
+            if (70 <= diff && diff <= 86 && rewardDate % 100 != 15) {
+                //Deposit between 15th and 31st day of previous month
+                //Reward date not 15th
+                return false;
+            } else {
+                if (8886 <= diff && diff <= 8870) {
+                    //Deposit between 15th and 31st day of previous year
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @dev Internal helper, calculates validFrom and validTo dates
+     * @param _timestamp - block.timestamp
+     * @return validFrom - date in format YYYYMMDD
+     * @return validTo - date in format YYYYMMDD
+     */
+    function _getValidTimes(uint256 _timestamp) internal pure returns (uint256, uint256) {
+        (uint256 year, uint256 month, uint256 day) = _daysToDate(_timestamp / ONE_DAY);
+        return _calculateValidTimes(year, month, day);
+    }
+
+    function _calculateValidTimes(uint256 year, uint256 month, uint256 day) internal pure returns (uint256, uint256) {
+        if (day >= 15) {
+            if (month == 12) {
+                year += 1;
+                month = 1;
+            } else {
+                month += 1;
+            }
+            uint256 validFrom = year * 10**4 + month * 10**2 + 1;
+            uint256 validUntil = validFrom + 6;
+            return (validFrom, validUntil);
+        } else {
+            uint256 validFrom = year * 10**4 + month * 10**2 + 15;
+            uint256 validUntil = validFrom + 6;
+            return (validFrom, validUntil);
+        }
+    }
+
+    /**
+     * @dev Internal helper, calculates release date for specified plan
+     * @param poolType - from 0 to 3
+     * @param today - date YYYYMMDD
+     * @return releaseDate - date in format YYYYMMDD
+     */
+    function _getReleaseTimes(uint256 poolType, uint256 today) internal pure returns (uint256) {
+        uint256 releaseTime;
+        uint256 year = today / 10**4;
+        uint256 month = (today % 10**4) / 100;
+        uint256 day = today % 100;
+        uint256 _timestamp = _timestampFromDate(year, month, day);
+        if (poolType == 0) {
+            releaseTime = _timestamp + 6 * ONE_DAY;
+            return _uintDate(releaseTime);
+        }
+        if (poolType == 1) {
+            releaseTime = _timestamp + THREE_MONTHS;
+            (uint256 result,) = _getValidTimes(releaseTime);
+            return result;
+        }
+        if (poolType == 2) {
+            releaseTime = _timestamp + ONE_YEAR;
+            (uint256 result,) = _getValidTimes(releaseTime);
+            return result;
+        }
+        if (poolType == 3) {
+            releaseTime = _timestamp + ONE_MONTH;
+            (uint256 result,) = _getValidTimes(releaseTime);
+            return result;
+        }
+        return 0;
+    }
+
+    /**
+     * @dev Internal helper, separates YYYYMMDD date and calculate period
+     * via _calculatePeriod()
+     * @param date - date in format YYYYMMDD
+     * @return fullDays - date in format DD
+     * @return fullPeriod - date in format DD
+     */
+    function _calculateDaysByData(uint256 date) internal pure returns (uint256, uint256) {
+        (uint256 year, uint256 month, uint256 day) = _convertDateToYMD(date);
+        return _calculatePeriod(year, month, day);
+    }
+
+    function _convertDateToYMD(uint256 date) internal pure returns (uint256, uint256, uint256) {
+        uint256 year = date / 10**4;
+        uint256 month = (date % 10**4) / 100;
+        uint256 day = date % 100;
+        return(year, month, day);
+    }
+
+    /**
+     * @dev Internal helper, separates YYYYMMDD date and calculate period
+     * via _calculatePeriod() for current block.timestamp
+     * @return fullDays - date in format DD
+     * @return fullPeriod - date in format DD
+     */
+    function _calculateDays() public view returns (uint256, uint256) {
+        (uint256 year, uint256 month, uint256 day) = _daysToDate(block.timestamp / ONE_DAY);
+        return _calculatePeriod(year, month, day);
+    }
+
+    /**
+     * @dev Internal helper, calculated how many days to be excluded.
+     * @param year - date in format YYYY
+     * @param month - date in format MM
+     * @param day - date in format DD
+     * @return fullDays - date in format DD
+     * @return fullPeriod - date in format DD
+     */
+    function _calculatePeriod(uint256 year, uint256 month, uint256 day) internal pure returns (uint256, uint256) {
+        if (day == 14 || day == 31) {return (0,15);}
+        if (day < 14) {
+            return (14 - day, 14);
+        }
+        if (day > 14) {
+            if (month == 2) {
+                if (year % 4 != 0) {
+                    return(28 - day, 28-15);
+                } else {
+                    return(29 - day, 29-15);
+                }
+            }
+            if (
+                month == 4 ||
+                month == 6 ||
+                month == 9 ||
+                month == 11
+            ) {
+                return (30 - day, 30-15);
+            } else {
+                return (31 - day, 31-15);
+            }
+        }
+        revert("DATE ERROR");
+    }
+
+    /**
+     * @dev Internal helper, transfers passed timestamp to YYYYMMDD format
+     * @param _timestamp - unix time
+     * @return date - date in format YYYYMMDD
+     */
+    function _uintDate(uint256 _timestamp) internal pure returns (uint256) {
+        (uint256 year, uint256 month, uint256 day) = _daysToDate(_timestamp / ONE_DAY);
+        uint256 date = year*10**4 + month*10**2 + day;
+        return date;
+    }
+
+    // date conversion algorithm from http://aa.usno.navy.mil/faq/docs/JD_Formula.php
+    function _daysToDate(uint256 _days) internal pure returns (uint256, uint256, uint256) {
+        int256 __days = int256(_days);
+
+        int256 L = __days + 68569 + OFFSET19700101;
+        int256 N = (4 * L) / 146097;
+        L = L - (146097 * N + 3) / 4;
+        int256 _year = (4000 * (L + 1)) / 1461001;
+        L = L - (1461 * _year) / 4 + 31;
+        int256 _month = (80 * L) / 2447;
+        int256 _day = L - (2447 * _month) / 80;
+        L = _month / 11;
+        _month = _month + 2 - 12 * L;
+        _year = 100 * (N - 49) + _year + L;
+
+        return (uint256(_year), uint256(_month), uint256(_day));
+    }
+
+    // ------------------------------------------------------------------------
+    // Calculate the number of days from 1970/01/01 to year/month/day using
+    // the date conversion algorithm from
+    //   http://aa.usno.navy.mil/faq/docs/JD_Formula.php
+    // and subtracting the offset 2440588 so that 1970/01/01 is day 0
+    //
+    // days = day
+    //      - 32075
+    //      + 1461 * (year + 4800 + (month - 14) / 12) / 4
+    //      + 367 * (month - 2 - (month - 14) / 12 * 12) / 12
+    //      - 3 * ((year + 4900 + (month - 14) / 12) / 100) / 4
+    //      - offset
+    // ------------------------------------------------------------------------
+    function _daysFromDate(uint256 year, uint256 month, uint256 day) internal pure returns (uint256 _days) {
+        require(year >= 1970);
+        int256 _year = int256(year);
+        int256 _month = int256(month);
+        int256 _day = int256(day);
+
+        int256 __days = _day - 32075 + (1461 * (_year + 4800 + (_month - 14) / 12)) / 4
+            + (367 * (_month - 2 - ((_month - 14) / 12) * 12)) / 12
+            - (3 * ((_year + 4900 + (_month - 14) / 12) / 100)) / 4 - OFFSET19700101;
+
+        _days = uint256(__days);
+    }
+
+    function _timestampFromDate(uint256 year, uint256 month, uint256 day) internal pure returns (uint256 timestamp) {
+        timestamp = _daysFromDate(year, month, day) * SECONDS_PER_DAY;
+    }
+
+    function _getEpoch(uint256 today) internal view returns (uint256) {
+        uint256 epoch;
+        (uint256 initYear, uint256 initMonth, uint256 initDay) = _convertDateToYMD(initialDate);
+        (uint256 currYear, uint256 currMonth, uint256 currDay) = _convertDateToYMD(today);
+
+        if (currYear > initYear) {
+            //year change
+            currMonth += (currYear - initYear) * 12;
+        }
+        //2 epoch in month, even for 1 - 15, odd for 15-31
+        epoch = (currMonth - initMonth) * 2;
+        if ((currDay - initDay) > 13) {
+            // current day > 14, odd epoch
+            epoch += 1;
+        }
+        return epoch;
+    }
+
+    function _validTimesFromEpoch(uint256 epoch) internal view returns (uint256, uint256) {
+        (uint256 year, uint256 month, uint256 day) = _convertDateToYMD(initialDate);
+        //odd epoch, initial day + 15
+        day += (epoch % 2) * 15;
+
+        //number of months passed
+        uint256 mounthsPassed = epoch/2;
+        month += mounthsPassed;
+
+        if (mounthsPassed > 12) {
+            //more than one year pass
+            uint256 diff = mounthsPassed / 12;
+            year += diff;
+            month -= diff * 12;
+
+        }
+        //check if month still > 12
+        if (month > 12) {
+            year += 1;
+            month -= 12;
+        }
+        return _calculateValidTimes(year, month, day);
+    }
+
+    function getCurrentEpoch() public view returns (uint256) {
+        uint256 today = _uintDate(block.timestamp);
+        uint256 currentEpoch = _getEpoch(today);
+        return currentEpoch;
+    }
+
+    //FOR TEST ONLY, IMPACT ON ABI
+    function testOnly() public view returns (uint256) {
+        return block.timestamp;
+    }
+}
