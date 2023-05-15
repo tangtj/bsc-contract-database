@@ -1,0 +1,458 @@
+
+// File: contracts/BUSDStaking.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+
+        _;
+
+        _status = _NOT_ENTERED;
+    }
+}
+
+interface IBUSD {
+    function balanceOf(address account) external view returns (uint256);
+
+    function allowance(
+        address spender,
+        address owner
+    ) external view returns (uint256);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+}
+
+contract BUSDStaking is ReentrancyGuard {
+    address immutable public admin;
+    address immutable public tradingAddress;
+    uint256 private constant MIN_STAKING_AMOUNT = 10 ether; // minimum staking amount is $10
+    uint256[] private referralEarningsPercentages = [
+        700,
+        300,
+        200,
+        100,
+        60,
+        40,
+        20,
+        10,
+        10,
+        10
+    ]; // in percentage
+    uint256 public constant STAKING_APR = 300; // 3% APR
+    uint256 public constant TRADING_PERCENTAGE = 3000; // 30% APR
+    uint256 private constant STAKING_DURATION = 30 days;
+    uint256 private constant HARVEST_FEE_PERCENTAGE = 1000; // in percentage
+    uint256 private constant PENALTY_PERCENTAGE = 2000; // in percentage
+    uint8 private constant REFERRAL_LEVELS = 10;
+
+    struct Staking {
+        uint256 totalInvestments;
+        uint256 amount;
+        uint256 referralDebt;
+        uint256 rewardDebt;
+        uint256 initialTime;
+        uint256 withdrawnAt;
+        uint256 totalWithdrawal;
+        uint256 lockEndTime;
+        uint256 totalCommissionEarned;
+        address[] referrals;
+        uint256 totalTeam;
+        uint256 leadershipScore;
+        uint256 currentLeadershipPosition; // leadership position 1 - 7
+    }
+
+    struct LeadershipInfo {
+        uint256 sales;
+        uint256 reward;
+    }
+
+    mapping(address => address) private referrals;
+    mapping(address => Staking) public stakings;
+    mapping(address => uint256) public referralCounts;
+    LeadershipInfo[] public leadershipPositionsReward;
+
+    uint256 public totalStaked;
+    uint256 public contractInitializedAt;
+    uint256 public totalPayouts;
+    uint256 public totalTeams = 0;
+
+    IBUSD public busd;
+
+    event Staked(address indexed staker, uint256 amount);
+    event Unstaked(address indexed staker, uint256 amount);
+    event Harvested(address indexed staker, uint256 amount);
+    event ReferralRecorded(address indexed user, address indexed referrer);
+
+    constructor(address _adminAdd, address _tradingAddress, address _busd) {
+        admin = _adminAdd;
+        tradingAddress = _tradingAddress;
+        busd = IBUSD(_busd);
+        contractInitializedAt = block.timestamp;
+
+        leadershipPositionsReward.push(
+            LeadershipInfo(10000000000000000000000, 200000000000000000000)
+        );
+        leadershipPositionsReward.push(
+            LeadershipInfo(20000000000000000000000, 500000000000000000000)
+        );
+        leadershipPositionsReward.push(
+            LeadershipInfo(50000000000000000000000, 2000000000000000000000)
+        );
+        leadershipPositionsReward.push(
+            LeadershipInfo(100000000000000000000000, 5000000000000000000000)
+        );
+        leadershipPositionsReward.push(
+            LeadershipInfo(250000000000000000000000, 15000000000000000000000)
+        );
+        leadershipPositionsReward.push(
+            LeadershipInfo(500000000000000000000000, 30000000000000000000000)
+        );
+        leadershipPositionsReward.push(
+            LeadershipInfo(750000000000000000000000, 50000000000000000000000)
+        );
+        leadershipPositionsReward.push(
+            LeadershipInfo(1000000000000000000000000, 100000000000000000000000)
+        );
+    }
+
+    function isReferred(address _user) public view returns (bool) {
+        return referrals[_user] != address(0);
+    }
+
+    function referralsCount(address _account) public view returns (uint256) {
+        Staking storage staking = stakings[_account];
+        return staking.referrals.length;
+    }
+
+    function getRewards(address _account) public view returns (uint256) {
+        uint256 pendingReward = 0;
+        Staking storage staking = stakings[_account];
+
+        if (staking.amount > 0) {
+            uint256 stakeAmount = staking.amount;
+            uint256 timeDiff;
+            unchecked {
+                timeDiff = block.timestamp - staking.initialTime;
+            }
+            if (timeDiff >= STAKING_DURATION) {
+                uint256 STAKING_DURATION_DAYS = 30;
+                return
+                    ((stakeAmount * STAKING_APR) / 10000) *
+                    STAKING_DURATION_DAYS;
+            }
+            uint256 returnsIn30days = STAKING_APR * 30;
+            uint256 rewardAmount = (((stakeAmount * returnsIn30days) / 10000) *
+                timeDiff) / STAKING_DURATION;
+            pendingReward = rewardAmount;
+        }
+
+        uint256 pending = staking.rewardDebt + pendingReward;
+        return pending;
+    }
+
+    function getUserDetails(
+        address _account
+    ) external view returns (Staking memory, uint256) {
+        uint256 reward = getRewards(_account);
+        Staking memory staking = stakings[_account];
+        return (staking, reward);
+    }
+
+    function updateReferralDebt(address _account) internal {
+        address referrer = _account;
+        if (referrer != address(0)) {
+            uint256 userReward = getRewards(_account);
+
+            for (uint8 i = 0; i < REFERRAL_LEVELS; i++) {
+                referrer = referrals[referrer];
+                Staking storage staking = stakings[referrer];
+                if (referrer == address(0)) break;
+
+                uint256 referralEarningsPercentage = referralEarningsPercentages[
+                        i
+                    ];
+                uint256 referralEarningsShare = (userReward *
+                    referralEarningsPercentage) / 10000;
+                staking.referralDebt =
+                    staking.referralDebt +
+                    referralEarningsShare;
+                staking.totalCommissionEarned += referralEarningsShare;
+            }
+        }
+    }
+
+    function getReferralRewards(
+        address _account
+    ) public view returns (uint256) {
+        uint256 pendingReward = 0;
+        Staking storage staking = stakings[_account];
+        for (uint256 i = 0; i < staking.referrals.length; i++) {
+            uint256 userRewards = getRewards(staking.referrals[i]);
+            uint256 rewardsPercentage = referralEarningsPercentages[0];
+            pendingReward =
+                pendingReward +
+                ((userRewards * rewardsPercentage) / 10000);
+
+            Staking storage referredStaking = stakings[staking.referrals[i]];
+            uint256 generation = 1;
+            uint256 maxGenerations = REFERRAL_LEVELS - 1;
+
+            while (
+                generation <= maxGenerations &&
+                referredStaking.referrals.length > 0
+            ) {
+                uint256 _referralsCount = referredStaking.referrals.length;
+                for (uint256 j = 0; j < _referralsCount; j++) {
+                    address referrer = referredStaking.referrals[j];
+                    if (referrer == address(0)) continue;
+
+                    userRewards = getRewards(referrer);
+                    uint256 referralEarningsPercentage = referralEarningsPercentages[
+                            generation
+                        ];
+
+                    uint256 referralEarningsShare = (userRewards *
+                        referralEarningsPercentage) / 10000;
+                    pendingReward = pendingReward + referralEarningsShare;
+                }
+
+                referredStaking = stakings[referredStaking.referrals[0]];
+                generation++;
+            }
+        }
+
+        return pendingReward;
+    }
+
+    function getUplines(
+        address _user
+    ) internal view returns (address[] memory) {
+        address[] memory uplines = new address[](totalTeams);
+        address current = _user;
+        for (uint i = 0; i < totalTeams; i++) {
+            uplines[i] = referrals[current];
+            if (uplines[i] == address(0)) {
+                break;
+            }
+            current = uplines[i];
+        }
+        return uplines;
+    }
+
+    function updateUplines(address _user) internal {
+        address[] memory userUplines = getUplines(_user);
+
+        for (uint256 i = 0; i < userUplines.length; i++) {
+            address referrer = userUplines[i];
+
+            if (referrer != address(0)) {
+                Staking storage staking = stakings[referrer];
+                staking.totalTeam = staking.totalTeam + 1;
+            }
+        }
+    }
+
+    function updateUserStake(address _address) internal {
+        Staking storage staking = stakings[_address];
+        uint256 rewardAmount = getRewards(_address);
+        staking.rewardDebt = rewardAmount;
+        staking.initialTime = block.timestamp;
+        staking.lockEndTime = staking.initialTime + STAKING_DURATION;
+    }
+
+    function stake(uint256 _amount) external {
+        require(
+            _amount >= MIN_STAKING_AMOUNT,
+            "Amount is less than the minimum staking amount"
+        );
+        require(
+            busd.balanceOf(msg.sender) >= _amount,
+            "Insufficient BUSD balance"
+        );
+
+        uint256 busdAllowance = busd.allowance(msg.sender, address(this));
+        require(busdAllowance >= _amount, "BUSD allowance is not enough");
+        require(
+            busd.transferFrom(msg.sender, address(this), _amount),
+            "Failed to transfer BUSD"
+        );
+
+        uint256 tradingFee = (_amount * TRADING_PERCENTAGE) / 10000;
+        busd.transfer(tradingAddress, tradingFee);
+
+        updateUserStake(msg.sender);
+
+        Staking storage staking = stakings[msg.sender];
+        staking.amount += _amount;
+        staking.initialTime = block.timestamp;
+        staking.lockEndTime = block.timestamp + STAKING_DURATION;
+        staking.totalInvestments = staking.totalInvestments + _amount;
+
+        totalStaked += _amount;
+
+        payReferrerCommission(msg.sender, _amount);
+
+        emit Staked(msg.sender, _amount);
+    }
+
+    function harvest() external {
+        Staking storage staking = stakings[msg.sender];
+        uint256 referralReward = getReferralRewards(msg.sender);
+        uint256 rewardAmount = getRewards(msg.sender) +
+            referralReward +
+            staking.referralDebt;
+        require(rewardAmount > 0, "harvest: not enough funds");
+
+        updateReferralDebt(msg.sender);
+        updateUserStake(msg.sender);
+
+        staking.rewardDebt = 0;
+        staking.referralDebt = 0;
+        staking.totalWithdrawal = staking.totalWithdrawal + rewardAmount;
+        staking.withdrawnAt = block.timestamp;
+
+        uint256 harvestFee = (rewardAmount * HARVEST_FEE_PERCENTAGE) / 10000;
+
+        totalPayouts = totalPayouts + rewardAmount;
+
+        busd.transfer(admin, harvestFee);
+
+        busd.transfer(msg.sender, rewardAmount - harvestFee);
+
+        emit Harvested(msg.sender, rewardAmount - harvestFee);
+    }
+
+    function _harvestableAmount(
+        uint256 _amount,
+        uint256 _harvestFee,
+        address _account
+    ) private view returns (uint256) {
+        uint256 penalty = (_amount * PENALTY_PERCENTAGE) / 10000;
+        Staking storage staking = stakings[_account];
+        uint256 harvestableAmount = _amount - _harvestFee;
+
+        if (staking.lockEndTime > block.timestamp) {
+            harvestableAmount = harvestableAmount - penalty;
+        }
+
+        return harvestableAmount;
+    }
+
+    function unstake() external {
+        Staking storage staking = stakings[msg.sender];
+        uint256 totalBalance = getRewards(msg.sender) +
+            getReferralRewards(msg.sender) +
+            staking.amount +
+            staking.referralDebt;
+        require(totalBalance > 0, "BUSDStaking: nothing to unstake");
+
+        uint256 harvestFee = (totalBalance * HARVEST_FEE_PERCENTAGE) / 10000;
+        uint256 harvestableAmount = _harvestableAmount(
+            totalBalance,
+            harvestFee,
+            msg.sender
+        );
+
+        require(
+            busd.balanceOf(address(this)) >= harvestableAmount + harvestFee,
+            "Insufficient fund to initiate unstake"
+        );
+
+        updateReferralDebt(msg.sender);
+        updateUserStake(msg.sender);
+
+        staking.amount = 0;
+        staking.referralDebt = 0;
+        staking.rewardDebt = 0;
+        staking.totalWithdrawal = staking.totalWithdrawal + totalBalance;
+        staking.withdrawnAt = block.timestamp;
+
+        totalPayouts = totalPayouts + harvestableAmount;
+
+        busd.transfer(admin, harvestFee);
+
+        busd.transfer(msg.sender, harvestableAmount);
+
+        emit Unstaked(msg.sender, harvestableAmount);
+    }
+
+    function recordReferral(address _referrer) public {
+        require(msg.sender.code.length == 0, "Contracts not allowed.");
+        if (
+            msg.sender != address(0) &&
+            _referrer != address(0) &&
+            msg.sender != _referrer &&
+            referrals[msg.sender] == address(0)
+        ) {
+            referrals[msg.sender] = _referrer;
+            referralCounts[_referrer]++;
+            Staking storage staking = stakings[_referrer];
+            staking.referrals.push(msg.sender);
+            totalTeams = totalTeams + 1;
+            updateUplines(msg.sender);
+            emit ReferralRecorded(msg.sender, _referrer);
+        }
+    }
+
+    function payReferrerCommission(
+        address _user,
+        uint256 _transactionAmount
+    ) internal {
+        address referrer = referrals[_user];
+        if (referrer != address(0)) {
+            address[] memory userUps = getUplines(_user);
+
+            for (uint256 i = 0; i < userUps.length; i++) {
+                Staking storage referrerUserInfo = stakings[userUps[i]];
+                referrerUserInfo.leadershipScore =
+                    referrerUserInfo.leadershipScore +
+                    _transactionAmount;
+                uint256 currentPosition = referrerUserInfo
+                    .currentLeadershipPosition;
+                uint256 points = 0;
+                for (
+                    uint256 index = currentPosition;
+                    index < leadershipPositionsReward.length;
+                    index++
+                ) {
+                    LeadershipInfo memory pos = leadershipPositionsReward[
+                        index
+                    ];
+                    if (referrerUserInfo.leadershipScore < pos.sales) {
+                        break;
+                    }
+                    points = points + pos.reward;
+                    currentPosition = currentPosition + 1;
+                }
+                referrerUserInfo.currentLeadershipPosition = currentPosition;
+                referrerUserInfo.referralDebt =
+                    referrerUserInfo.referralDebt +
+                    points;
+            }
+        }
+    }
+}
+

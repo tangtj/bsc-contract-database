@@ -1,0 +1,400 @@
+pragma solidity 0.5.8;
+
+contract BNBMOON {
+	using SafeMath for uint256;
+
+	uint256 constant public INVEST_MIN_AMOUNT = 0.05 ether;
+	uint256[] public REFERRAL_PERCENTS = [50, 25, 5];
+	uint256 constant public PROJECT_FEE = 90;
+	uint256 constant public DEVELOPER_FEE = 9;
+	uint256 constant public PERCENT_STEP = 5;
+	uint256 constant public PERCENTS_DIVIDER = 1000;
+	uint256 constant public TIME_STEP = 1 days;
+	
+	uint256 constant public MAX_HOLD_PERCENT = 20;
+	
+	uint256 constant public CASHBACK_PERCENT_1 = 5; // 0.5%
+	uint256 constant public CASHBACK_PERCENT_2 = 7; // 0.7%
+	uint256 constant public CASHBACK_PERCENT_3 = 9; // 0.9%
+	uint256 constant public CASHBACK_PERCENT_4 = 10; // 1%
+	uint256 constant public CASHBACK_PERCENT_5 = 12; // 1.2%
+	uint256 constant public CASHBACK_PERCENT_6 = 14; // 1.4%
+	
+	uint256 constant public INSURANCE = 6; //0.6%
+
+	uint256 public totalStaked;
+	uint256 public totalRefBonus;
+	uint256 public totalCashback;
+	uint256 public totalInsurance;
+
+    struct Plan {
+        uint256 time;
+        uint256 percent;
+    }
+
+    Plan[] internal plans;
+
+	struct Deposit {
+        uint8 plan;
+		uint256 percent;
+		uint256 amount;
+		uint256 profit;
+		uint256 start;
+		uint256 finish;
+	}
+
+	struct User {
+		Deposit[] deposits;
+		uint256 checkpoint;
+		uint256 holdBonusCheckpoint;
+		address payable referrer;
+		uint256[3] levels;
+		uint256 totalBonus;
+	}
+
+	mapping (address => User) internal users;
+
+	uint256 public startUNIX;
+	address payable private commissionWallet;
+	address payable private developerWallet;
+	
+	address payable public insuranceFund;
+
+	event Newbie(address user);
+	event NewDeposit(address indexed user, uint8 plan, uint256 percent, uint256 amount, uint256 profit, uint256 start, uint256 finish);
+	event Withdrawn(address indexed user, uint256 amount);
+	event RefBonus(address indexed referrer, address indexed referral, uint256 indexed level, uint256 amount);
+
+	constructor(address payable wallet, address payable _developer, address payable _insurance) public {
+		require(!isContract(wallet));
+		commissionWallet = wallet;
+		developerWallet = _developer;
+		insuranceFund = _insurance;
+		startUNIX = block.timestamp;
+
+        plans.push(Plan(15, 80)); // 8% per day for 15 days
+        plans.push(Plan(20, 70)); // 7% per day for 20 days
+        plans.push(Plan(20, 40)); // random % (4-12%) per day for 20 days
+	}
+
+
+function invest(address payable referrer,uint8 plan) public payable {
+        _invest(referrer, plan, msg.sender, msg.value, 0);
+           
+    }
+
+
+	function _invest(address payable referrer, uint8 plan, address payable sender, uint256 value, uint256 extraProfit) private {
+		require(value >= INVEST_MIN_AMOUNT);
+        require(plan < 3, "Invalid plan");
+
+		uint256 fee = value.mul(PROJECT_FEE).div(PERCENTS_DIVIDER);
+		commissionWallet.transfer(fee);
+		uint256 developerFee = value.mul(DEVELOPER_FEE).div(PERCENTS_DIVIDER);
+		developerWallet.transfer(developerFee);
+		uint256 insuranceAmount = value.mul(INSURANCE).div(PERCENTS_DIVIDER);
+		insuranceFund.transfer(insuranceAmount);
+		
+		totalInsurance = totalInsurance.add(insuranceAmount);
+		
+		User storage user = users[sender];
+
+		if (user.referrer == address(0)) {
+			if (users[referrer].deposits.length > 0 && referrer != sender) {
+				user.referrer = referrer;
+			}
+
+			address upline = user.referrer;
+			for (uint256 i = 0; i < 3; i++) {
+				if (upline != address(0)) {
+					users[upline].levels[i] = users[upline].levels[i].add(1);
+					upline = users[upline].referrer;
+				} else break;
+			}
+		}
+
+		if (user.referrer != address(0)) {
+
+			address payable upline = user.referrer;
+			for (uint256 i = 0; i < 3; i++) {
+				if (upline != address(0)) {
+					uint256 amount = value.mul(REFERRAL_PERCENTS[i]).div(PERCENTS_DIVIDER);
+					
+					users[upline].totalBonus = users[upline].totalBonus.add(amount);
+					
+					upline.transfer(amount);
+					emit RefBonus(upline, sender, i, amount);
+					upline = users[upline].referrer;
+				} else break;
+			}
+
+		}
+
+		if (user.deposits.length == 0) {
+			user.checkpoint = block.timestamp;
+			user.holdBonusCheckpoint = block.timestamp;
+			emit Newbie(sender);
+		}
+
+		(uint256 percent, uint256 profit, uint256 finish) = getResult(plan, value);
+		
+		percent = percent.add(extraProfit);
+		
+		user.deposits.push(Deposit(plan, percent, value, profit, block.timestamp, finish));
+
+		totalStaked = totalStaked.add(value);
+		
+		uint256 cashback = getCashback(value);
+		
+		if(cashback > 0){
+		    totalCashback = totalCashback.add(cashback);
+		    sender.transfer(cashback);
+		}
+		emit NewDeposit(sender, plan, percent, value, profit, block.timestamp, finish);
+	}
+
+	function withdraw() public {
+		User storage user = users[msg.sender];
+
+		uint256 totalAmount = getUserDividends(msg.sender);
+
+		require(totalAmount > 0, "User has no dividends");
+
+		uint256 contractBalance = address(this).balance;
+		if (contractBalance < totalAmount) {
+			totalAmount = contractBalance;
+		}
+
+		user.checkpoint = block.timestamp;
+		user.holdBonusCheckpoint = block.timestamp;
+
+		msg.sender.transfer(totalAmount);
+
+		emit Withdrawn(msg.sender, totalAmount);
+
+	}
+	
+	function withdrawAndReinvest(uint256 reinvestmentPercent, uint8 plan, address payable referrer) public {
+	    require(reinvestmentPercent >=50, "Min. reinvestment must be 50%");
+	    require(reinvestmentPercent <=100, "Max. reinvestment must be 100%");
+	    
+	    User storage user = users[msg.sender];
+	    
+	    uint256 totalAmount = getUserDividends(msg.sender);
+
+		require(totalAmount > 0, "User has no dividends");
+		
+		uint256 reinvestment = totalAmount.mul(reinvestmentPercent).div(100);
+		totalAmount = totalAmount.sub(reinvestment);
+		
+		
+		_invest(referrer, plan, msg.sender, reinvestment, 5); // +0.5% profit if user does reinvestment
+		
+		
+		user.checkpoint = block.timestamp;
+		
+		if(totalAmount > 0){
+		    msg.sender.transfer(totalAmount);
+		}
+		
+		emit Withdrawn(msg.sender, totalAmount);
+	}
+	
+
+	function getContractBalance() public view returns (uint256) {
+		return address(this).balance;
+	}
+
+	function getPlanInfo(uint8 plan) public view returns(uint256 time, uint256 percent) {
+		time = plans[plan].time;
+		percent = plans[plan].percent;
+	}
+
+	function getPercent(uint8 plan) public view returns (uint256) {
+	    
+		if(plan < 2){
+			 return plans[plan].percent.add(PERCENT_STEP.mul(block.timestamp.sub(startUNIX)).div(TIME_STEP));
+		} else {
+		    uint256 random = getRandomPercent();
+		    return plans[plan].percent.add(random).add(PERCENT_STEP.mul(block.timestamp.sub(startUNIX)).div(TIME_STEP));
+		}
+    }
+    
+    function getRandomPercent() private view returns(uint256) {
+        bytes32 _blockhash = blockhash(block.number-1);
+        
+        
+        uint256 random =  uint256(keccak256(abi.encode(_blockhash,block.timestamp,block.difficulty, totalStaked))).mod(10); // random number 0...9
+        
+        if(random == 9){
+            random = random.sub(1);
+        }
+        
+        return random.mul(10); // number 0...80
+    }
+
+	function getResult(uint8 plan, uint256 deposit) public view returns (uint256 percent, uint256 profit, uint256 finish) {
+		percent = getPercent(plan);
+
+	
+		profit = deposit.mul(percent).div(PERCENTS_DIVIDER).mul(plans[plan].time);
+	
+
+		finish = block.timestamp.add(plans[plan].time.mul(TIME_STEP));
+	}
+	
+	 function getUserPercentRate(address userAddress) public view returns (uint) {
+        User storage user = users[userAddress];
+
+        uint256 timeMultiplier = block.timestamp.sub(user.holdBonusCheckpoint).div(TIME_STEP).mul(5); // +0.5% per day
+            if (timeMultiplier > MAX_HOLD_PERCENT) {
+                timeMultiplier = MAX_HOLD_PERCENT;
+            }
+
+         return timeMultiplier;
+    }
+    
+    function getCashback(uint256 amount) public view returns(uint256) {
+
+		if((amount > 0 ether) && (amount <= 0.99 ether)) {
+            return 0;
+        }
+        
+        if((amount >= 1 ether) && (amount <= 9.99 ether)) {
+            return amount.mul(CASHBACK_PERCENT_1).div(PERCENTS_DIVIDER);
+        }
+        
+        if((amount >= 10 ether) && (amount <= 24.99 ether)) {
+            return amount.mul(CASHBACK_PERCENT_2).div(PERCENTS_DIVIDER);
+        }
+        
+        if((amount >= 25 ether) && (amount <= 49.99 ether)) {
+            return amount.mul(CASHBACK_PERCENT_3).div(PERCENTS_DIVIDER);
+        }
+        
+        if((amount >= 50 ether) && (amount <= 99.99 ether)) {
+            return amount.mul(CASHBACK_PERCENT_4).div(PERCENTS_DIVIDER);
+        }
+        
+        if((amount >= 100 ether) && (amount <= 249.99 ether)) {
+            return amount.mul(CASHBACK_PERCENT_5).div(PERCENTS_DIVIDER);
+        }
+        
+        if(amount >= 250 ether) {
+            return amount.mul(CASHBACK_PERCENT_6).div(PERCENTS_DIVIDER);
+        }
+    }
+
+	function getUserDividends(address userAddress) public view returns (uint256) {
+		User storage user = users[userAddress];
+
+		uint256 totalAmount;
+		
+		uint256 holdBonus = getUserPercentRate(userAddress);
+
+		for (uint256 i = 0; i < user.deposits.length; i++) {
+			if (user.checkpoint < user.deposits[i].finish) {
+				
+					uint256 share = user.deposits[i].amount.mul(user.deposits[i].percent.add(holdBonus)).div(PERCENTS_DIVIDER);
+					uint256 from = user.deposits[i].start > user.checkpoint ? user.deposits[i].start : user.checkpoint;
+					uint256 to = user.deposits[i].finish < block.timestamp ? user.deposits[i].finish : block.timestamp;
+					if (from < to) {
+						totalAmount = totalAmount.add(share.mul(to.sub(from)).div(TIME_STEP));
+					}
+			}
+		}
+
+		return totalAmount;
+	}
+
+	function getUserCheckpoint(address userAddress) public view returns(uint256) {
+		return users[userAddress].checkpoint;
+	}
+    
+	function getUserReferrer(address userAddress) public view returns(address) {
+		return users[userAddress].referrer;
+	}
+
+	function getUserDownlineCount(address userAddress) public view returns(uint256, uint256, uint256) {
+		return (users[userAddress].levels[0], users[userAddress].levels[1], users[userAddress].levels[2]);
+	}
+
+	function getUserReferralTotalBonus(address userAddress) public view returns(uint256) {
+		return users[userAddress].totalBonus;
+	}
+
+	function getUserReferralWithdrawn(address userAddress) public view returns(uint256) {
+		return users[userAddress].totalBonus;
+	}
+
+	function getUserAvailable(address userAddress) public view returns(uint256) {
+		return getUserDividends(userAddress);
+	}
+
+	function getUserAmountOfDeposits(address userAddress) public view returns(uint256) {
+		return users[userAddress].deposits.length;
+	}
+
+	function getUserTotalDeposits(address userAddress) public view returns(uint256 amount) {
+		for (uint256 i = 0; i < users[userAddress].deposits.length; i++) {
+			amount = amount.add(users[userAddress].deposits[i].amount);
+		}
+	}
+
+	function getUserDepositInfo(address userAddress, uint256 index) public view returns(uint8 plan, uint256 percent, uint256 amount, uint256 profit, uint256 start, uint256 finish) {
+	    User storage user = users[userAddress];
+
+		plan = user.deposits[index].plan;
+		percent = user.deposits[index].percent;
+		amount = user.deposits[index].amount;
+		profit = user.deposits[index].profit;
+		start = user.deposits[index].start;
+		finish = user.deposits[index].finish;
+	}
+
+	function isContract(address addr) internal view returns (bool) {
+        uint size;
+        assembly { size := extcodesize(addr) }
+        return size > 0;
+    }
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+
+        return c;
+    }
+    
+     function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b != 0);
+        return a % b;
+    }
+}
