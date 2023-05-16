@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+}
+
+contract MexaiLottery {
+    address public manager; // Manager of the lottery
+    address payable[] public players; // Array to store the addresses of the players
+    uint public winnerIndex; // Index of the winner in the players array
+    uint public minJoinPrice; // Minimum join price in BUSD
+    uint public drawTime; // Time of the daily draw in UNIX timestamp
+    IERC20 public busd; // Binance USD (BUSD) token contract
+
+    constructor(address _busdAddress, uint _minJoinPrice) {
+    manager = msg.sender; // Set the contract deployer as the manager
+    minJoinPrice = _minJoinPrice; // Set the minimum join price to the value passed as a parameter
+    drawTime = (block.timestamp / 1 days + 1) * 1 days; // Set the draw time to the next day at 12AM
+    busd = IERC20(_busdAddress); // Initialize the Binance USD (BUSD) token contract
+    }
+
+    // Modifier to restrict access to the manager
+    modifier onlyManager() {
+        require(msg.sender == manager, "Only manager can perform this operation");
+        _;
+    }
+
+    // Modifier to check if the draw time has passed
+    modifier afterDrawTime() {
+        require(block.timestamp >= drawTime, "Draw time has not passed yet");
+        _;
+    }
+
+    // Function to allow players to join the lottery
+    function join() public {
+        require(busd.transferFrom(msg.sender, address(this), minJoinPrice), "Failed to transfer BUSD"); // Transfer the minimum join price of BUSD from the player to the contract
+        players.push(payable(msg.sender)); // Add the player to the players array
+    }
+
+    // Function to get the current balance of the contract in BUSD
+    function getContractBalance() public view returns(uint) {
+        return busd.balanceOf(address(this));
+    }
+
+    // Function to get the total number of players
+    function getTotalPlayers() public view returns(uint) {
+        return players.length;
+    }
+
+    function getDrawCountdown() public view returns(uint) {
+        if (block.timestamp >= drawTime) {
+            return 0; // If the draw time has passed, return 0 as the countdown
+        } else {
+            return drawTime - block.timestamp; // Otherwise, return the remaining time until the next draw
+        }
+    }
+
+    // Function to draw the winner after the draw time has passed
+    function drawWinner() public onlyManager afterDrawTime {
+        require(players.length > 0, "No players in the lottery");
+
+        // Generate a random winner index using block timestamp and players length
+        winnerIndex = uint(keccak256(abi.encodePacked(block.timestamp, players.length))) % players.length;
+
+        busd.transfer(players[winnerIndex], getContractBalance()); // Transfer the contract balance to the winner
+        players = new address payable[](0); // Reset the players array for the next round
+
+        drawTime = (block.timestamp / 1 days + 1) * 1 days; // Set the draw time to the next day at 12AM
+    }
+
+    function setMinJoinPrice(uint _minJoinPrice) public onlyManager {
+        minJoinPrice = _minJoinPrice;
+    }
+
+}
