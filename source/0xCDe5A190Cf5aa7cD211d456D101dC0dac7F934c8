@@ -1,0 +1,474 @@
+// SPDX-License-Identifier: MIT
+
+/*
+
+    $ElonTrump is driven by the community Supported by the 
+    Community for sure the ElonTrump meme will be 
+    famous around the world,
+
+    ElonTrump provides a diverse range of products 
+    and services, including DeFi solutions, NFT marketplace, 
+    decentralized exchange (DEX) DAO Farm Ai solutions
+    Partnership with other projects We are also developing 
+    an interactive AI Bot to which you can ask questions and hit chat.
+
+    We are always expanding this set of 
+    utilities and working on new ideas every day.
+
+
+    https://elontrumpceo.com/
+    https://t.me/ElonTrumpCEO
+
+*/
+
+
+pragma solidity 0.8.10;
+
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+*/
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _status;
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+        _;
+        _status = _NOT_ENTERED;
+    }
+}
+
+contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+}
+
+
+contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Is impossible to renounce the ownership of the contract");
+        require(newOwner != address(0xdead), "Is impossible to renounce the ownership of the contract");
+
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+interface IERC20 {
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+}
+
+
+interface IERC20Metadata {
+
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+
+}
+
+
+interface IUniswapV2Router02 {
+
+    function getAmountsOut(
+        uint amountIn, 
+        address[] calldata path) 
+        external view returns (uint[] memory amounts);
+
+}
+
+
+contract ERC20 is Context, IERC20Metadata {
+    mapping(address => uint256) internal _balances;
+
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 internal _totalSupply;
+
+    string private _name;
+    string private _symbol;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+    }
+
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 0;
+    }
+
+    function totalSupply() public view virtual returns (uint256) {
+        return _totalSupply;
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+}
+
+contract ElonTrumpPrivateSale is ERC20, Ownable, ReentrancyGuard {
+
+    uint256 public timeDeployContract;
+
+    uint256 public percent;
+    uint256 public priceBNB;
+    uint256 public priceUSD;
+    uint256 public denominatorUSD;
+
+    //As the sale is in more than one cryptocurrency
+    //so there will be a difference due to BNB or to BNB conversion spreeds
+    uint256 public errorMarginPercent;
+
+    //Private sale limit
+    uint256 public hardCapPrivateSale;
+
+    uint256 public minBNBBuy;
+    uint256 public maxBNBbuy;
+
+    //Stats here
+    //Number of purchases in private
+    uint256 public count;
+    //All BNB purchases are added to this variable
+    uint256 public totalBNBpaid;
+    //All USD purchases are added to this variable
+    uint256 public totalUSDpaid;
+
+    //All tokens sold in private
+    //Tokens sold without adding the private sale bonus
+    uint256 public totalTokensElonTrump;
+
+    //Total amount sold equivalent in BNB
+    uint256 public totalSoldInBNB;
+    //Total sold amount equivalent in USD
+    uint256 public totalSoldInUSD;
+
+    bool public isOpenPrivateSale;
+
+    address public uniswapV2Router  = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    address public addressBUSD      = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+    address public addressUSDT      = 0x55d398326f99059fF775485246999027B3197955;
+    address public addressWBNB      = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address public addressElonTrump      = 0x7bd39A800C1568099444BcAD949fB15aA4261Cc0;
+
+    address public privateSaleReceiver    = payable(0x00823349FB629A5e22CDFdfDdd749403A8922DCE);
+    address public walletTokens    = payable(0xf02A473c71EFD7f6d97ee8dD27376e8745518C66);
+    address public projectWalletReceiver    = payable(0x979fc05dDEe214adbF8f845C309A6a29169a35D5);
+
+    struct structBuy {
+        //All tokens that a uer bought
+        uint256 amountTokenPurchased;
+        //Only the amounts in BNB that the user has paid
+        uint256 amountBNBpaid;
+        //Only the values in BUSD that the user paid
+        uint256 amountBUSDpaid;
+        //Only the amounts in USDT that the user paid
+        uint256 amountUSDTpaid;
+        //Conversion of USD to BNB added to the BNB paid in this PrivateSale
+        uint256 amountBNBPaidConverted;
+        //Conversion of BNB to USD added to the USD paid in this PrivateSale
+        uint256 amountUSDPaidConverted;
+    }
+
+    mapping (address => structBuy) mappingStructBuy;
+
+    receive() external payable 
+    {}
+
+    constructor() ERC20("ElonTrump (PrivateSale)", "") {
+        timeDeployContract = block.timestamp;
+
+        priceBNB = 12500000;
+        priceUSD = 2512;
+        denominatorUSD = 100000000;
+        percent = 15;
+
+        errorMarginPercent = 110;
+
+        hardCapPrivateSale = 100 * 10 ** 18;
+
+        minBNBBuy = 5 * 10 ** 18 / 1000;
+        maxBNBbuy = 30 * 10 ** 18;
+
+        _mint(address(0), 1);
+    }
+
+    function maxUSDbuy() public view returns (uint256) {
+        return convert(addressWBNB, addressBUSD, maxBNBbuy);
+    }
+
+    function minUSDbuy() public view returns (uint256) {
+        return convert(addressWBNB, addressBUSD, minBNBBuy);
+    }
+
+    function getTokensOut_BNB(uint256 amountIn) public view returns (uint256) {
+        return amountIn * priceBNB;
+    }
+
+    function getTokensOut_USD(uint256 amountIn) public view returns (uint256) {
+        return (amountIn / priceUSD) * denominatorUSD;
+    }
+
+    function getMappingStructBuy(address buyer) public view returns (structBuy memory) {
+        return mappingStructBuy[buyer];
+    }
+
+    function getLimitToBuy_BNB(address buyer) public view returns (uint256 limit) {
+
+        //It is redundant and unnecessary to check, but we do these rechecks
+        if (maxBNBbuy >= mappingStructBuy[buyer].amountBNBPaidConverted) {
+            limit = maxBNBbuy - mappingStructBuy[buyer].amountBNBPaidConverted;
+
+        } else {
+            limit = 0;
+        }
+
+        if (limit > hardCapPrivateSale - totalSoldInBNB) limit = hardCapPrivateSale - totalSoldInBNB;
+
+        if (limit > address(buyer).balance - 10 ** 18 / 1000) 
+            limit = address(buyer).balance - 10 ** 18 / 1000;
+
+        return limit;
+
+    }
+
+    function getLimitToBuy_USD(address buyer) public view returns (uint256 limit) {
+
+        uint256 maxBNBbuyConverted = convert(addressWBNB, addressBUSD, maxBNBbuy);
+        uint256 hardCapPrivateSaleConverted = convert(addressWBNB, addressBUSD, hardCapPrivateSale);
+        uint256 totalSoldInBNBConverted = convert(addressWBNB, addressBUSD, totalSoldInBNB);
+        //It is redundant and unnecessary to check, but we do these rechecks
+        if (maxBNBbuyConverted >= mappingStructBuy[buyer].amountUSDPaidConverted) {
+            limit = maxBNBbuyConverted - mappingStructBuy[buyer].amountUSDPaidConverted;
+
+        } else {
+            limit = 0;
+        }
+
+        if (limit > hardCapPrivateSaleConverted - totalSoldInBNBConverted) 
+        limit = hardCapPrivateSaleConverted - totalSoldInBNBConverted;
+
+        return limit;
+
+    }
+
+    function convert(address addressIn, address addressOut, uint256 amount) public view returns (uint256) {
+        
+        address[] memory path = new address[](2);
+        path[0] = addressIn;
+        path[1] = addressOut;
+
+        uint256[] memory amountOutMins = 
+        IUniswapV2Router02(uniswapV2Router).getAmountsOut(amount, path);
+
+        return amountOutMins[path.length -1];
+    } 
+
+
+    function buyPrivateSaleByBNB() 
+        external payable nonReentrant() {
+        
+        require(isOpenPrivateSale, "PrivateSale not opened yet");
+        require(totalSoldInBNB <= hardCapPrivateSale, "Sales limit reached");
+
+        uint256 amountBNB = msg.value;
+        uint256 amountUSDconverted = convert(addressWBNB, addressBUSD, amountBNB);
+
+        unchecked {
+            require(minBNBBuy <= amountBNB, "Minimum purchase");
+            require(mappingStructBuy[_msgSender()].amountBNBPaidConverted + amountBNB 
+                    <= maxBNBbuy * errorMarginPercent / 100);
+        
+            uint256 amountBuy = amountBNB * priceBNB;
+
+            IERC20(addressElonTrump).transferFrom(walletTokens, msg.sender, amountBuy);
+
+            //amountBNB is in wei
+            //The calculation of the number of tokens is offset by the 10 ** 18 decimals of the token itself        
+            mappingStructBuy[_msgSender()].amountTokenPurchased += amountBuy;
+            mappingStructBuy[_msgSender()].amountBNBpaid += amountBNB;
+            mappingStructBuy[_msgSender()].amountBNBPaidConverted += amountBNB;
+            mappingStructBuy[_msgSender()].amountUSDPaidConverted += amountUSDconverted;
+
+            count ++;
+            totalBNBpaid += amountBNB;
+            totalTokensElonTrump += amountBuy;
+            
+            totalSoldInBNB += amountBNB;
+            totalSoldInUSD += amountUSDconverted;
+
+            (bool success1,) = privateSaleReceiver.call{value: amountBNB * (100 - percent) / 100}("");
+            require(success1, "Failed to send BNB");
+
+            (bool success2,) = projectWalletReceiver.call{value: address(this).balance}("");
+            require(success2, "Failed to send BNB");
+        }
+    }
+
+    //You have to approve the token first
+    function buyPrivateSaleByBUSD(uint256 amountBUSD)
+        external nonReentrant() {
+        require(isOpenPrivateSale, "PrivateSale not opened yet");
+        require(totalSoldInBNB <= hardCapPrivateSale, "Sales limit reached");
+
+        uint256 amountBNBconverted = convert(addressBUSD, addressWBNB, amountBUSD);
+
+        unchecked {
+            require(minBNBBuy <= amountBNBconverted, "Minimum purchase");
+            require(mappingStructBuy[_msgSender()].amountBNBPaidConverted + 
+            amountBNBconverted <= maxBNBbuy * errorMarginPercent / 100);
+
+            uint256 amountBuy = (amountBUSD / priceUSD) * denominatorUSD;
+
+            IERC20(addressBUSD).transferFrom(msg.sender, privateSaleReceiver, amountBUSD * (100 - percent) / 100);
+            IERC20(addressBUSD).transferFrom(msg.sender, projectWalletReceiver, amountBUSD * (percent) / 100);
+
+            //amountBUSD is in wei
+            //The calculation of the number of tokens is offset by the 10 ** 18 decimals of the token itself
+            IERC20(addressElonTrump).transferFrom(walletTokens, msg.sender, amountBuy);
+
+            mappingStructBuy[_msgSender()].amountTokenPurchased += amountBuy;
+            mappingStructBuy[_msgSender()].amountBUSDpaid += amountBUSD;
+            mappingStructBuy[_msgSender()].amountBNBPaidConverted += amountBNBconverted;
+            mappingStructBuy[_msgSender()].amountUSDPaidConverted += amountBUSD;
+
+            count ++;
+            totalUSDpaid += amountBUSD;
+            totalTokensElonTrump += amountBuy;
+
+            totalSoldInBNB += amountBNBconverted;
+            totalSoldInUSD += amountBUSD;
+        }
+    }
+
+    function buyPrivateSaleByUSDT(uint256 amountUSDT)
+        external nonReentrant() {
+        require(isOpenPrivateSale, "PrivateSale not opened yet");
+        require(totalSoldInBNB <= hardCapPrivateSale, "Sales limit reached");
+
+        uint256 amountBNBconverted = convert(addressUSDT, addressWBNB, amountUSDT);
+
+        unchecked {
+            require(minBNBBuy <= amountBNBconverted, "Minimum purchase");
+            require(mappingStructBuy[_msgSender()].amountBNBPaidConverted + 
+            amountBNBconverted <= maxBNBbuy * errorMarginPercent / 100);
+
+            uint256 amountBuy = (amountUSDT / priceUSD) * denominatorUSD;
+
+            IERC20(addressUSDT).transferFrom(msg.sender, privateSaleReceiver, amountUSDT * (100 - percent) / 100);
+            IERC20(addressUSDT).transferFrom(msg.sender, projectWalletReceiver, amountUSDT * (percent) / 100);
+
+            //addressUSDT is in wei
+            //The calculation of the number of tokens is offset by the 10 ** 18 decimals of the token itself
+            IERC20(addressElonTrump).transferFrom(walletTokens, msg.sender, amountBuy);
+
+            mappingStructBuy[_msgSender()].amountTokenPurchased += amountBuy;
+            mappingStructBuy[_msgSender()].amountUSDTpaid += amountUSDT;
+            mappingStructBuy[_msgSender()].amountBNBPaidConverted += amountBNBconverted;
+            mappingStructBuy[_msgSender()].amountUSDPaidConverted += amountUSDT;
+
+            count ++;
+            totalUSDpaid += amountUSDT;
+            totalTokensElonTrump += amountBuy;
+
+            totalSoldInBNB += amountBNBconverted;
+            totalSoldInUSD += amountUSDT;
+
+        }
+
+    }
+
+    function balanceBNB () external onlyOwner {
+        uint256 amount = address(this).balance;
+        payable(msg.sender).transfer(amount);
+    }
+
+    function balanceERC20 (address token) external onlyOwner {
+        IERC20(token).transfer(msg.sender, IERC20(token).balanceOf(address(this)));
+    }
+
+    function setPercent (uint256 _percent) external onlyOwner {
+        percent = _percent;
+    }
+
+    function setLimits(uint256 _minBNBBuy, uint256 _maxBNBbuy) external onlyOwner {
+        minBNBBuy = _minBNBBuy;
+        maxBNBbuy = _maxBNBbuy;
+    }
+
+    function setIsOpenPrivateSale (bool _isOpenPrivateSale) external onlyOwner {
+        isOpenPrivateSale = _isOpenPrivateSale;
+    }
+
+    function setHardCapPrivateSale (uint256 _hardCapPrivateSale) external onlyOwner {
+        hardCapPrivateSale = _hardCapPrivateSale;
+    }
+
+    function setErrorMarginPercent (uint256 _errorMarginPercent) external onlyOwner {
+        errorMarginPercent = _errorMarginPercent;
+    }
+
+    function setPrices (
+        uint256 _priceBNB,
+        uint256 _priceUSD) external onlyOwner {
+
+        priceBNB = _priceBNB;
+        priceUSD = _priceUSD;
+    }
+}

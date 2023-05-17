@@ -1,0 +1,606 @@
+
+// File: /contracts/AiStakev1.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+import "./interfaces/IWETH.sol";
+import "./interfaces/IUniswapRouterV2.sol";
+import "./interfaces/IMasterChefv3.sol";
+import "./interfaces/INonfungiblePositionManager.sol";
+import "./interfaces/IPancakeV3Factory.sol";
+import "./interfaces/ISwapRouter.sol";
+import "./interfaces/IERC721Receiver.sol";
+
+contract AiStakev1 is IERC721Receiver {
+  address public nftManager;
+  address public nftFactory;
+  address public v3SmartRouter;
+  address public v2Router;
+  address public v3MasterChef;
+  address public WETH;
+  address public reward;
+
+  int24 private constant MIN_TICK = -887272;
+  int24 private constant MAX_TICK = -MIN_TICK;
+
+  // token0 -> token1 -> fee -> nftId
+  mapping (address => mapping(address => mapping(uint24 => uint256))) public stakePools;
+
+  struct V3Path {
+    address tokenIn;
+    address tokenOut;
+    uint24 fee;
+  }
+
+  struct stakeInfo {
+    uint256 amount; // Staked amount based on BUSD
+    uint256 debt;   // total debt before last updated
+    uint256 updatedAt;
+  }
+  uint256 public totalUSD;
+  uint128 public totalLiquidity;
+  uint256 public totalClaimed;
+  uint256 public totalDebt;
+  uint256 public updatedAt;
+  mapping (address => stakeInfo) public userInfo;
+  uint256 public activeTokenId;
+
+  event Stake(address account, uint256 usdAmount, uint256 tokenId, uint128 liquidity, uint256 timestamp);
+  event Unstake(address account, uint256 usdAmount, uint256 tokenId, uint128 liquidity, uint256 timestamp);
+  event ERC721Recv(address operator, address from, uint256 tokenId, bytes data);
+  event ClaimAi(address account, uint256 reward);
+
+  constructor (
+    address _nftManager,
+    address _nftFactory,
+    address _v3SmartRouter,
+    address _v2Router,
+    address _v3MasterChef,
+    address _WETH,
+    address _reward
+  ) {
+    nftManager = _nftManager;
+    nftFactory = _nftFactory;
+    v3SmartRouter = _v3SmartRouter;
+    v2Router = _v2Router;
+    v3MasterChef = _v3MasterChef;
+    WETH = _WETH;
+    reward = _reward;
+  }
+
+  function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) public virtual override returns (bytes4) {
+    emit ERC721Recv(operator, from, tokenId, data);
+    return this.onERC721Received.selector;
+  }
+
+  function getReward(address account) public view returns(uint256) {
+    uint256 totalReward = IERC20(reward).balanceOf(address(this));
+    totalReward += IMasterChefv3(v3MasterChef).pendingCake(activeTokenId);
+    uint256 accountL = userInfo[account].updatedAt != 0 ?
+        userInfo[account].debt + userInfo[account].amount * (block.timestamp - userInfo[account].updatedAt)
+      :
+        0;
+    uint256 totalL = updatedAt != 0 ?
+        totalDebt + totalUSD * (block.timestamp - updatedAt) - totalClaimed
+      :
+        0;
+    return totalL == 0 ? 0 : totalReward * accountL / totalL;
+  }
+
+  function claim(address account) public returns(uint256) {
+    uint256 rewardAmount = getReward(account);
+    if (rewardAmount > 0) {
+      IMasterChefv3(v3MasterChef).harvest(activeTokenId, address(this));
+      uint256 claimedL = userInfo[account].debt + userInfo[account].amount * (block.timestamp - userInfo[account].updatedAt);
+      userInfo[account].debt = 0;
+      userInfo[account].updatedAt = block.timestamp;
+
+      totalDebt += totalUSD * (block.timestamp - updatedAt);
+      updatedAt = block.timestamp;
+      totalClaimed += claimedL;
+      IERC20(reward).transfer(account, rewardAmount);
+    }
+    emit ClaimAi(account, rewardAmount);
+    return rewardAmount;
+  }
+
+  function stake(
+    address tokenIn,
+    uint256 amountIn,
+    address[] memory v2Path,
+    address token0,
+    address token1,
+    uint24 fee,
+    V3Path[] memory v3Path
+  ) public payable returns(uint256) {
+    if (tokenIn != address(0)) {  // If address is not null, send this amount to contract.
+      IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+    }
+    else {
+      IWETH(WETH).deposit{value: msg.value}();
+    }
+
+    (uint256 tid, uint128 liquidity, uint256 usdAmount) = _stake(tokenIn, amountIn, v2Path, token0, token1, fee, v3Path);
+    if (activeTokenId == 0) {
+      activeTokenId = tid;
+    }
+
+    _chaingeLogInfo(msg.sender, liquidity, usdAmount, true);
+    emit Stake(msg.sender, usdAmount, stakePools[token0][token1][fee], liquidity, block.timestamp);
+    return usdAmount;
+  }
+
+  function _stake(
+    address tokenIn,
+    uint256 amountIn,
+    address[] memory v2Path,
+    address token0,
+    address token1,
+    uint24 fee,
+    V3Path[] memory v3Path
+  ) internal returns(uint256, uint128, uint256) {
+    uint256[2] memory var1;
+    var1[0] = v3Path.length;
+    var1[1] = amountIn;
+    for (uint256 x=0; x<var1[0]; x++) {
+      var1[1] = _swapExactInputSingle(v3Path[x].tokenIn, v3Path[x].tokenOut, v3Path[x].fee, var1[1]);
+    }
+
+    uint256[] memory toAddLpAmount = new uint256[](2);
+    if ((var1[0] > 0 && v3Path[var1[0]-1].tokenOut == token0) || (var1[0] == 0 && tokenIn == token0)) {
+      toAddLpAmount[0] = var1[1] / 2;
+      toAddLpAmount[1] = _swapExactInputSingle(token0, token1, fee, var1[1] - toAddLpAmount[0]);
+    }
+    else {
+      toAddLpAmount[1] = var1[1] / 2;
+      toAddLpAmount[0] = _swapExactInputSingle(token1, token0, fee, var1[1] - toAddLpAmount[1]);
+    }
+    
+    uint128 liquidity = 0;
+    uint256 tid = 0;
+    if (stakePools[token0][token1][fee] == 0) {
+      (tid, liquidity, ,) = _mintNewPosition(token0, token1, fee, toAddLpAmount[0], toAddLpAmount[1]); // process liquidity amount later
+    }
+    else {
+      (liquidity, ,) = _increaseLiquidity(stakePools[token0][token1][fee], toAddLpAmount[0], toAddLpAmount[1]);
+    }
+
+    if (v2Path.length > 1) {
+      uint256[] memory amounts = IUniswapRouterV2(v2Router).getAmountsOut(amountIn, v2Path);
+      return (tid, liquidity, amounts[amounts.length-1]);
+    }
+    else {
+      return (tid, liquidity, amountIn);
+    }
+  }
+
+  function _chaingeLogInfo(address account, uint128 liquidity, uint256 amountUsd, bool isAdd) internal {
+    if (updatedAt != 0) {
+      totalDebt += totalUSD * (block.timestamp - updatedAt);
+    }
+    if (isAdd) {
+      totalUSD += amountUsd;
+      totalLiquidity += liquidity;
+    }
+    else {
+      totalUSD = totalUSD >= amountUsd ? totalUSD - amountUsd : 0;
+      totalLiquidity = totalLiquidity >= liquidity ? totalLiquidity - liquidity : 0;
+    }
+    updatedAt = block.timestamp;
+
+    if (userInfo[account].updatedAt != 0) {
+      userInfo[account].debt += userInfo[account].amount * (block.timestamp - userInfo[account].updatedAt);
+    }
+    if (isAdd) {
+      userInfo[account].amount += amountUsd;
+    }
+    else {
+      userInfo[account].amount = userInfo[account].amount >= amountUsd ? userInfo[account].amount - amountUsd : 0;
+    }
+    userInfo[account].updatedAt = block.timestamp;
+  }
+
+  function unstake(uint256 tokenId, uint256 usdAmount, address tokenOut, V3Path[] memory v3Path) public {
+    require(usdAmount <= userInfo[msg.sender].amount, "AiStake: exceed balance");
+    uint256 swappedAmount = 0;
+    uint128 _liquidity = uint128(usdAmount * totalLiquidity / totalUSD);
+    address outAddress = tokenOut == address(0) ? WETH : tokenOut;
+    (swappedAmount, _liquidity) = _unstake(tokenId, _liquidity, outAddress, v3Path);
+    
+    if (tokenOut == address(0)) {
+      IWETH(WETH).withdraw(swappedAmount);
+      (bool success, ) = msg.sender.call{value: swappedAmount}("");
+      require(success, "AiStake: transfer eth failed");
+    }
+    else {
+      IERC20(tokenOut).transfer(msg.sender, swappedAmount);
+    }
+
+    ( , , address token0, address token1, uint24 fee, , , , , , , ) = INonfungiblePositionManager(nftManager).positions(tokenId);
+    emit Unstake(msg.sender, usdAmount, stakePools[token0][token1][fee], _liquidity, block.timestamp);
+    _chaingeLogInfo(msg.sender, _liquidity, usdAmount, false);
+    claim(msg.sender);
+  }
+
+  function movePool(
+    address tokenOut,
+    V3Path[] memory v3Path,
+    address[] memory nV2Path,
+    address nToken0,
+    address nToken1,
+    uint24 nFee,
+    V3Path[] memory nV3Path
+  ) public {
+    uint256 swappedAmount = 0;
+    (swappedAmount, ) = _unstake(activeTokenId, totalLiquidity, tokenOut, v3Path);
+
+    (uint256 tid, uint128 liquidity2,) = _stake(tokenOut, swappedAmount, nV2Path, nToken0, nToken1, nFee, nV3Path);
+    activeTokenId = tid;
+    totalLiquidity = liquidity2;
+  }
+
+  function _unstake(
+    uint256 tokenId,
+    uint128 _liquidity,
+    address tokenOut,
+    V3Path[] memory v3Path
+  ) internal returns(uint256, uint128) {
+    ( , , address token0, address token1, uint24 fee, , , uint128 liquidity, , , , ) = INonfungiblePositionManager(nftManager).positions(tokenId);
+    uint256[2] memory amounts;
+    IMasterChefv3(v3MasterChef).harvest(tokenId, address(this));
+    if (_liquidity >= liquidity) {
+      _liquidity = liquidity - 1;
+    }
+    (amounts[0], amounts[1]) = _decreaseLiquidity(tokenId, _liquidity);
+    INonfungiblePositionManagerStruct.CollectParams memory params = INonfungiblePositionManagerStruct
+      .CollectParams({
+        tokenId: tokenId,
+        recipient: address(this),
+        amount0Max: type(uint128).max,
+        amount1Max: type(uint128).max
+      });
+    (amounts[0], amounts[1]) = IMasterChefv3(v3MasterChef).collect(params);
+
+    uint256 v3PathLen = v3Path.length;
+    uint256 swappedAmount = 0;
+    if (tokenOut == token0) {
+      swappedAmount = _swapExactInputSingle(token1, token0, fee, amounts[1]);
+      swappedAmount += amounts[0];
+    }
+    else {
+      swappedAmount = _swapExactInputSingle(token0, token1, fee, amounts[0]);
+      swappedAmount += amounts[1];
+    }
+    if (v3PathLen > 0) {
+      for (uint256 x=0; x<v3PathLen; x++) {
+        swappedAmount = _swapExactInputSingle(v3Path[x].tokenIn, v3Path[x].tokenOut, v3Path[x].fee, swappedAmount);
+      }
+    }
+    return (swappedAmount, _liquidity);
+  }
+
+  function _swapExactInputSingle(
+    address tokenIn,
+    address tokenOut,
+    uint24 poolFee,
+    uint256 amountIn
+  ) internal returns (uint256) {
+    _approveTokenIfNeeded(tokenIn, v3SmartRouter, amountIn);
+    ISwapRouter.ExactInputSingleParams memory params = ISwapRouter
+      .ExactInputSingleParams({
+        tokenIn: tokenIn,
+        tokenOut: tokenOut,
+        fee: poolFee,
+        recipient: address(this),
+        amountIn: amountIn,
+        amountOutMinimum: 0,
+        sqrtPriceLimitX96: 0
+      });
+
+    return ISwapRouter(v3SmartRouter).exactInputSingle{value:0}(params);
+  }
+
+  function _mintNewPosition(
+    address token0,
+    address token1,
+    uint24 fee,
+    uint amount0ToAdd,
+    uint amount1ToAdd
+  ) internal returns (uint tokenId, uint128 liquidity, uint amount0, uint amount1) {
+    _approveTokenIfNeeded(token0, nftManager, amount0ToAdd);
+    _approveTokenIfNeeded(token1, nftManager, amount1ToAdd);
+
+    int24 tickSpacing = IPancakeV3Factory(nftFactory).feeAmountTickSpacing(fee);
+
+    INonfungiblePositionManager.MintParams
+      memory params = INonfungiblePositionManager.MintParams({
+        token0: token0,
+        token1: token1,
+        fee: fee,
+        tickLower: (MIN_TICK / tickSpacing) * tickSpacing,
+        tickUpper: (MAX_TICK / tickSpacing) * tickSpacing,
+        amount0Desired: amount0ToAdd,
+        amount1Desired: amount1ToAdd,
+        amount0Min: 0,
+        amount1Min: 0,
+        recipient: address(this),
+        deadline: block.timestamp
+      });
+
+    (tokenId, liquidity, amount0, amount1) = INonfungiblePositionManager(nftManager).mint(params);
+    INonfungiblePositionManager(nftManager).safeTransferFrom(address(this), v3MasterChef, tokenId);
+    stakePools[token0][token1][fee] = tokenId;
+
+    if (amount0 < amount0ToAdd) {
+      IERC20(token0).transfer(msg.sender, amount0ToAdd - amount0);
+    }
+    if (amount1 < amount1ToAdd) {
+      IERC20(token1).transfer(msg.sender, amount1ToAdd - amount1);
+    }
+  }
+
+  function _increaseLiquidity(
+    uint tokenId,
+    uint amount0ToAdd,
+    uint amount1ToAdd
+  ) internal returns (uint128 liquidity, uint amount0, uint amount1) {
+    ( , , address token0, address token1, , , , , , , , ) = INonfungiblePositionManager(nftManager).positions(tokenId);
+
+    _approveTokenIfNeeded(token0, v3MasterChef, amount0ToAdd);
+    _approveTokenIfNeeded(token1, v3MasterChef, amount1ToAdd);
+
+    INonfungiblePositionManagerStruct.IncreaseLiquidityParams memory params = INonfungiblePositionManagerStruct
+      .IncreaseLiquidityParams({
+        tokenId: tokenId,
+        amount0Desired: amount0ToAdd,
+        amount1Desired: amount1ToAdd,
+        amount0Min: 0,
+        amount1Min: 0,
+        deadline: block.timestamp
+      });
+
+    (liquidity, amount0, amount1) = IMasterChefv3(v3MasterChef).increaseLiquidity(params);
+  }
+
+  function _decreaseLiquidity(
+    uint tokenId,
+    uint128 liquidity
+  ) internal returns (uint amount0, uint amount1) {
+    INonfungiblePositionManagerStruct.DecreaseLiquidityParams
+      memory params = INonfungiblePositionManagerStruct
+        .DecreaseLiquidityParams({
+          tokenId: tokenId,
+          liquidity: liquidity,
+          amount0Min: 0,
+          amount1Min: 0,
+          deadline: block.timestamp
+        });
+
+    (amount0, amount1) = IMasterChefv3(v3MasterChef).decreaseLiquidity(params);
+  }
+
+  function _approveTokenIfNeeded(address token, address spender, uint256 amount) private {
+    if (IERC20(token).allowance(address(this), spender) < amount) {
+      IERC20(token).approve(spender, amount);
+    }
+  }
+}
+
+// File: /contracts/interfaces/IWETH.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+import "./IERC20.sol";
+
+interface IWETH is IERC20 {
+  function deposit() external payable;
+  function withdraw(uint amount) external;
+}
+
+
+// File: /contracts/interfaces/IUniswapRouterV2.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+interface IUniswapRouterV2 {
+  function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+// File: /contracts/interfaces/ISwapRouter.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+interface ISwapRouter {
+  struct ExactInputSingleParams {
+    address tokenIn;
+    address tokenOut;
+    uint24 fee;
+    address recipient;
+    uint256 amountIn;
+    uint256 amountOutMinimum;
+    uint160 sqrtPriceLimitX96;
+  }
+
+  function exactInputSingle(
+    ExactInputSingleParams calldata params
+  ) external payable returns (uint256 amountOut);
+}
+
+// File: /contracts/interfaces/IPancakeV3Factory.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+interface IPancakeV3Factory {
+  function feeAmountTickSpacing(uint24 fee) external view returns (int24);
+}
+
+// File: /contracts/interfaces/INonfungiblePositionManagerStruct.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+interface INonfungiblePositionManagerStruct {
+  struct IncreaseLiquidityParams {
+    uint256 tokenId;
+    uint256 amount0Desired;
+    uint256 amount1Desired;
+    uint256 amount0Min;
+    uint256 amount1Min;
+    uint256 deadline;
+  }
+
+  struct DecreaseLiquidityParams {
+    uint256 tokenId;
+    uint128 liquidity;
+    uint256 amount0Min;
+    uint256 amount1Min;
+    uint256 deadline;
+  }
+
+  struct CollectParams {
+    uint256 tokenId;
+    address recipient;
+    uint128 amount0Max;
+    uint128 amount1Max;
+  }
+}
+
+// File: /contracts/interfaces/INonfungiblePositionManager.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+interface INonfungiblePositionManager {
+  function positions(
+    uint256 tokenId
+  ) external view returns (
+    uint96 nonce,
+    address operator,
+    address token0,
+    address token1,
+    uint24 fee,
+    int24 tickLower,
+    int24 tickUpper,
+    uint128 liquidity,
+    uint256 feeGrowthInside0LastX128,
+    uint256 feeGrowthInside1LastX128,
+    uint128 tokensOwed0,
+    uint128 tokensOwed1
+  );
+
+  struct MintParams {
+    address token0;
+    address token1;
+    uint24 fee;
+    int24 tickLower;
+    int24 tickUpper;
+    uint256 amount0Desired;
+    uint256 amount1Desired;
+    uint256 amount0Min;
+    uint256 amount1Min;
+    address recipient;
+    uint256 deadline;
+  }
+
+  function mint(
+    MintParams calldata params
+  ) external payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
+
+  struct IncreaseLiquidityParams {
+    uint256 tokenId;
+    uint256 amount0Desired;
+    uint256 amount1Desired;
+    uint256 amount0Min;
+    uint256 amount1Min;
+    uint256 deadline;
+  }
+
+  function increaseLiquidity(
+    IncreaseLiquidityParams calldata params
+  ) external payable returns (uint128 liquidity, uint256 amount0, uint256 amount1);
+
+  struct DecreaseLiquidityParams {
+    uint256 tokenId;
+    uint128 liquidity;
+    uint256 amount0Min;
+    uint256 amount1Min;
+    uint256 deadline;
+  }
+
+  function decreaseLiquidity(
+    DecreaseLiquidityParams calldata params
+  ) external payable returns (uint256 amount0, uint256 amount1);
+
+  struct CollectParams {
+    uint256 tokenId;
+    address recipient;
+    uint128 amount0Max;
+    uint128 amount1Max;
+  }
+
+  function collect(CollectParams calldata params) external payable returns (uint256 amount0, uint256 amount1);
+
+  function safeTransferFrom(
+    address from,
+    address to,
+    uint256 tokenId
+  ) external;
+}
+
+// File: /contracts/interfaces/IMasterChefv3.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+import "./INonfungiblePositionManagerStruct.sol";
+
+interface IMasterChefv3 is INonfungiblePositionManagerStruct {
+  function decreaseLiquidity(
+    DecreaseLiquidityParams memory params
+  ) external payable returns (uint256 amount0, uint256 amount1);
+  
+  function increaseLiquidity(
+    IncreaseLiquidityParams memory params
+  ) external payable returns (uint128 liquidity, uint256 amount0, uint256 amount1);
+
+  function collect(CollectParams calldata params) external payable returns (uint256 amount0, uint256 amount1);
+
+  function withdraw(uint256 _tokenId, address _to) external returns (uint256 reward);
+
+  function harvest(uint256 _tokenId, address _to) external returns (uint256 reward);
+
+  function pendingCake(uint256 _tokenId) external view returns (uint256 reward);
+}
+
+// File: /contracts/interfaces/IERC721Receiver.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+interface IERC721Receiver {
+  function onERC721Received(
+    address operator,
+    address from,
+    uint256 tokenId,
+    bytes calldata data
+  ) external returns (bytes4);
+}
+
+// File: /contracts/interfaces/IERC20.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+interface IERC20 {
+  function totalSupply() external view returns (uint256);
+  function balanceOf(address account) external view returns (uint256);
+  function transfer(address recipient, uint256 amount) external returns (bool);
+
+  function allowance(
+    address owner,
+    address spender
+  ) external view returns (uint256);
+
+  function approve(address spender, uint256 amount) external returns (bool);
+
+  function transferFrom(
+    address sender,
+    address recipient,
+    uint256 amount
+  ) external returns (bool);
+}

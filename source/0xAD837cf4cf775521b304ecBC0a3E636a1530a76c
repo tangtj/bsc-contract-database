@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+contract FafaCoin {
+    string public name;
+    string public symbol;
+    uint256 public totalSupply;
+    uint256 public decimals;
+    uint256 public stakingDuration;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public isStaking;
+    mapping(address => uint256) public stakingTime;
+    mapping(address => uint256) public stakingBalance;
+    mapping(address => uint256) public rewardsBalance;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Staked(address indexed staker, uint256 amount);
+    event Withdrawn(address indexed staker, uint256 amount);
+    event RewardPaid(address indexed staker, uint256 amount);
+    event Airdropped(address indexed recipient, uint256 amount);
+    event Sale(address indexed seller, uint256 amount);
+
+    constructor(string memory _name, string memory _symbol, uint256 _totalSupply, uint256 _decimals, uint256 _stakingDuration) {
+        name = _name;
+        symbol = _symbol;
+        totalSupply = _totalSupply;
+        decimals = _decimals;
+        stakingDuration = _stakingDuration;
+
+        balanceOf[msg.sender] = totalSupply;
+        emit Transfer(address(0), msg.sender, totalSupply);
+    }
+
+    function transfer(address _to, uint256 _value) public returns (bool success) {
+        require(_to != address(0), "Cannot transfer to zero address");
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+
+        balanceOf[msg.sender] -= _value;
+        balanceOf[_to] += _value;
+
+        emit Transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    function approve(address _spender, uint256 _value) public returns (bool success) {
+        require(_spender != address(0), "Cannot approve zero address");
+
+        allowance[msg.sender][_spender] = _value;
+
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+        require(_to != address(0), "Cannot transfer to zero address");
+        require(balanceOf[_from] >= _value, "Insufficient balance");
+        require(allowance[_from][msg.sender] >= _value, "Insufficient allowance");
+
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += _value;
+        allowance[_from][msg.sender] -= _value;
+
+        emit Transfer(_from, _to, _value);
+        return true;
+    }
+
+    function stake(uint256 _amount) public {
+        require(_amount > 0, "Cannot stake zero amount");
+        require(balanceOf[msg.sender] >= _amount, "Insufficient balance");
+
+        if (isStaking[msg.sender]) {
+            uint256 reward = calculateReward(msg.sender);
+            if (reward > 0) {
+                rewardsBalance[msg.sender] += reward;
+                emit RewardPaid(msg.sender, reward);
+            }
+            uint256 stakedTime = block.timestamp - stakingTime[msg.sender];
+            if (stakedTime >= stakingDuration) {
+                withdraw();
+            }
+        }
+
+        balanceOf[msg.sender] -= _amount;
+        stakingBalance[msg.sender] += _amount;
+        isStaking[msg.sender] = true;
+        stakingTime[msg.sender] = block.timestamp;
+
+        emit Staked(msg.sender, _amount);
+    }
+
+    function withdraw() public {
+        require(isStaking[msg.sender], "Not staking");
+
+        uint256 reward = calculateReward(msg.sender);
+        uint256 totalAmount = stakingBalance[msg.sender] + reward;
+
+        balanceOf[msg.sender] += totalAmount;
+        stakingBalance[msg.sender] = 0;
+        isStaking[msg.sender] = false;
+        rewardsBalance[msg.sender] = 0;
+
+        emit Withdrawn(msg.sender, totalAmount);
+    }
+
+    function calculateReward(address _staker) public view returns (uint256) {
+        if (!isStaking[_staker]) {
+            return 0;
+        }
+
+        uint256 stakedTime = block.timestamp - stakingTime[_staker];
+        uint256 reward = stakingBalance[_staker] * stakedTime * 1e12 / (stakingDuration * 1e18);
+        uint256 mintingReward = totalSupply * 1e8 / 1e14; // mint 0.00001% of total supply as reward
+        uint256 totalReward = reward + mintingReward;
+
+        return totalReward;
+    }
+
+    function mint() public {
+        uint256 mintingReward = totalSupply * 1e8 / 1e14; // mint 0.00001% of total supply as reward
+        balanceOf[msg.sender] += mintingReward;
+        totalSupply += mintingReward;
+
+        emit Transfer(address(0), msg.sender, mintingReward);
+    }
+
+    function airdrop(address[] memory _recipients, uint256 _amount) public payable {
+        require(msg.value == _recipients.length * 0.001 ether, "Invalid fee");
+
+        for (uint256 i = 0; i < _recipients.length; i++) {
+            address recipient = _recipients[i];
+            require(recipient != address(0), "Cannot airdrop to zero address");
+
+            balanceOf[recipient] += _amount;
+
+            emit Airdropped(recipient, _amount);
+        }
+    }
+
+    function sell(uint256 _amount) public {
+        require(_amount > 0, "Cannot sell zero amount");
+        require(balanceOf[msg.sender] >= _amount, "Insufficient balance");
+
+        balanceOf[msg.sender] -= _amount;
+        totalSupply -= _amount;
+
+        uint256 bnbAmount = _amount * 1e9; // sell at price of 0.000000001 BNB per token
+        payable(msg.sender).transfer(bnbAmount);
+
+        emit Transfer(msg.sender, address(0), _amount);
+        emit Sale(msg.sender, _amount);
+    }
+}
