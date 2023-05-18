@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: MIT
+
+/**
+ * This is a payout contract for the Sensei Wars Utility.
+ *
+ * There's nothing to buy here. this isnt something you as an investor will interact with
+ * this is purely for the sensei team to handle how we payout to winnners of the coin war.
+ *
+ * Sensei war is an event which pits two contracts against each other. The project with the
+ * most claimed rewards in a given timeframe will win the award. The winner of the coin war will
+ * have a buy into their chart made by the sensei team. The resulting tokens will be sent to this
+ * contract and then we will do the payout. The payout will take the full number of tokens and divide
+ * them equally between the addresses we pass in. These addresses will be holders of Sesnei that have
+ * this winning coin as their reward token.
+ *
+ * Telegram: https://t.me/senseitokenbsc
+ * Twitter: https://twitter.com/senseitokenbsc
+ * Website: https://www.senseitoken.com/
+ */
+
+pragma solidity ^0.8.16;
+pragma abicoder v2;
+
+/**
+ * BEP20 standard interface.
+ */
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function decimals() external view returns (uint8);
+    function symbol() external view returns (string memory);
+    function name() external view returns (string memory);
+    function getOwner() external view returns (address);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations.
+ *
+ * NOTE: `SafeMath` is generally not needed starting with Solidity 0.8, since the compiler
+ * now has built in overflow checking.
+ */
+library SafeMath {
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator.
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+}
+
+abstract contract Context {
+    //function _msgSender() internal view virtual returns (address payable) {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+}
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+contract Ownable is Context {
+    address private _owner;
+    address private _previousOwner;
+    uint256 private _lockTime;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor () {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract SenseiWarsAirdropper is Ownable {
+
+    using SafeMath for uint256;
+
+    address[] public paidOutToAddresses;
+
+    event DropperEvent(address winner, uint256 balance, uint256 numbersPaidOut, uint256 paidOutEach);
+    event DropEvent(address what, address paidTo, uint256 amount);
+
+    /* Airdrop */
+    function senseiWarsWinnersPayout(address[] calldata winners, IBEP20 winningContract) external onlyOwner() {
+
+        require(winningContract.balanceOf(address(this)) > 0, "This token isnt in the CA");
+        require(winners.length < 501,"GAS Error: max airdrop limit is 500 addresses");
+
+        uint256 totalAmount = winningContract.balanceOf(address(this));
+        uint256 amountPerWinner = totalAmount.div(winners.length);
+
+        winningContract.approve(address(this), totalAmount);
+
+        // now, somehow i magically do an airdrop for these tokens ....
+        for(uint n = 0;n<winners.length;n++) {
+            address loopWinner = winners[n];
+            winningContract.transferFrom(address(this), loopWinner, amountPerWinner);
+            emit DropEvent(address(winningContract), loopWinner, amountPerWinner);
+        }
+
+        paidOutToAddresses.push(address(winningContract));
+
+        emit DropperEvent(address(winningContract), totalAmount, winners.length, amountPerWinner);
+    }
+
+    function claimRemaining(IBEP20 token) public onlyOwner() {
+        uint256 balance = token.balanceOf(address(this));
+        require(balance > 0, "No remaining tokens to claim");
+        token.transfer(msg.sender, balance);
+    }
+    
+}

@@ -1,0 +1,537 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address who) external view returns (uint256);
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+    function transfer(address to, uint256 value) external returns (bool);
+    function approve(address spender, uint256 value) external returns (bool);
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+interface IERC20MAT {
+    function burn(uint256 amount) external;
+    function balanceOf(address who) external view returns (uint256);
+    function transfer(address to, uint256 value) external returns (bool);
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+}
+
+abstract contract ReentrancyGuard {
+
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() private {
+        // On the first call to nonReentrant, _status will be _NOT_ENTERED
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+    }
+
+    function _nonReentrantAfter() private {
+        _status = _NOT_ENTERED;
+    }
+
+    function _reentrancyGuardEntered() internal view returns (bool) {
+        return _status == _ENTERED;
+    }
+}
+
+interface IDexRouter {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;   
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor ()  {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+
+}
+
+contract AiPE is IERC20, Ownable, ReentrancyGuard {
+
+    string private _name = "AiPE Matrix Ai";
+    string private _symbol = "AiPE";
+    uint8 private _decimals = 18;
+
+    uint256 public burnRate; 
+    uint256 public sellTax;
+    uint256 public denominator;
+
+    IDexRouter public dexRouter;
+
+    IERC20MAT public MAT;
+
+    uint private _totalSupply;
+
+    address DEAD = 0x000000000000000000000000000000000000dEaD;
+    address ZERO = 0x0000000000000000000000000000000000000000;
+
+    mapping(address => uint) private _balances;
+    mapping(address => mapping(address => uint)) private _allowances;
+    mapping (address => bool) public isExcludedFromFee;
+    mapping (address => bool) public isMarketPair;
+
+    uint256 public minimumTokensBeforeSwap = 2 * 10**17;
+
+    bool inSwapAndLiquify;
+    bool public swapAndLiquifyEnabled = true;
+
+    modifier lockTheSwap {
+        inSwapAndLiquify = true;
+        _;
+        inSwapAndLiquify = false;
+    }
+
+    event TokensBurned(address indexed user, uint256 amount);
+    event TokensMinted(address indexed user, uint256 amount);
+
+    event SwapAndLiquifyEnabledUpdated(bool enabled);
+
+    constructor(uint _burnRate, uint _sellTax, uint256 _deno, address _mat, address _router) {
+        burnRate = _burnRate;                   //set 10^9
+        sellTax = _sellTax;
+        denominator = _deno;
+        MAT = IERC20MAT(_mat);                  // Mainnet : 0xf4Cd17a6e635Db60C1Eec068F077e54d97bEaADB
+        dexRouter = IDexRouter(_router);        // Mainnet : 0x10ED43C718714eb63d5aA57B78B54704E256024E
+        isExcludedFromFee[msg.sender] = true;
+        isExcludedFromFee[address(this)] = true;
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return _balances[account];
+    }
+    
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function totalCirculationSupply() public view returns (uint256) {
+        return _totalSupply - _balances[DEAD] - _balances[ZERO];
+    }
+
+    function transfer(address to, uint256 amount) public returns (bool) {
+        address owner = msg.sender;
+        _transfer(owner, to, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public returns (bool) {
+        address spender = msg.sender;
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        address owner = msg.sender;
+        _approve(owner, spender, amount);
+        return true;
+    }
+
+     function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        address owner = msg.sender;
+        _approve(owner, spender, allowance(owner, spender) + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        address owner = msg.sender;
+        uint256 currentAllowance = allowance(owner, spender);
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        unchecked {
+            _approve(owner, spender, currentAllowance - subtractedValue);
+        }
+
+        return true;
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) private returns (bool) {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+
+        uint256 fromBalance = _balances[from];
+        require(fromBalance >= amount, "ERC20: transfer amount exceeds balance");
+
+        if(inSwapAndLiquify)
+        { 
+            return _basicTransfer(from, to, amount); 
+        }
+        else
+        {  
+            uint256 contractTokenBalance = balanceOf(address(this));
+            bool overMinimumTokenBalance = contractTokenBalance >= minimumTokensBeforeSwap;
+            
+            if (overMinimumTokenBalance && !inSwapAndLiquify && !isMarketPair[from] && swapAndLiquifyEnabled) 
+            {
+                swapAndLiquify(contractTokenBalance);
+            }
+
+            _beforeTokenTransfer(from, to, amount);
+
+            _balances[from] = fromBalance - amount;
+
+            uint256 finalAmount = shouldNotTakeFee(from,to) ? amount : takeFee(from, to, amount);
+            
+            _balances[to] += finalAmount;
+
+            emit Transfer(from, to, finalAmount);
+
+            _afterTokenTransfer(from, to, finalAmount);
+
+            return true;
+        }
+    }
+    
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _spendAllowance(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(currentAllowance >= amount, "ERC20: insufficient allowance");
+            unchecked {
+                _approve(owner, spender, currentAllowance - amount);
+            }
+        }
+    }
+
+    function burn(uint256 amount) public {
+        _burn(msg.sender, amount);
+    }
+
+   
+    function burnFrom(address account, uint256 amount) public {
+        address spender = msg.sender;
+        _spendAllowance(account, spender, amount);
+        _burn(account, amount);
+    }
+
+    function shouldNotTakeFee(address sender, address recipient) internal view returns (bool) {
+        if(isExcludedFromFee[sender] || isExcludedFromFee[recipient]) {
+            return true;
+        }
+        else {
+            return false;
+        }
+    }
+
+    function takeFee(address sender, address recipient, uint256 amount) internal returns (uint256) {
+        
+        uint feeAmount;
+
+        unchecked {
+
+            if(isMarketPair[recipient]) { //sell
+                feeAmount = amount * (sellTax) / (denominator);
+            }
+
+            if(feeAmount > 0) {
+                _balances[address(this)] = _balances[address(this)] + feeAmount;
+                emit Transfer(sender, address(this), feeAmount);
+            }
+
+            return amount - feeAmount;
+        }
+        
+    }
+
+    function _basicTransfer(address sender, address recipient, uint256 amount) internal returns (bool) {
+        _beforeTokenTransfer(sender, recipient, amount);
+        _balances[sender] = _balances[sender] - amount;
+        _balances[recipient] = _balances[recipient] + amount;
+        emit Transfer(sender, recipient, amount);
+        _afterTokenTransfer(sender, recipient, amount);
+        return true;
+    }
+
+    function burnAndMint(uint256 amount) external nonReentrant {
+        require(amount > 0, "Amount must be greater than 0");
+
+        uint256 tokensToMint = (amount * burnRate) / 1e18;
+
+        MAT.transferFrom(msg.sender, address(this), amount);
+        MAT.burn(amount);
+
+        _mint(msg.sender, tokensToMint);
+
+        emit TokensBurned(msg.sender, amount);
+        emit TokensMinted(msg.sender, tokensToMint);
+    }
+    
+    function internalSwap(uint value) internal {
+
+        uint matRecieved = swapNativeForToken(value);
+
+        uint256 tokensToMint = (matRecieved * burnRate) / 1e18;
+
+        MAT.burn(matRecieved);
+
+        _mint(msg.sender, tokensToMint);
+
+        emit TokensBurned(msg.sender, matRecieved);
+        emit TokensMinted(msg.sender, tokensToMint);
+
+    }
+
+    function swapAndLiquify(uint amount) private lockTheSwap {
+        uint rETH = swapTokensForEth(amount);
+        uint rMat = swapNativeForToken(rETH);
+        MAT.burn(rMat);
+    }
+
+    function mintToken(uint _amount) external onlyOwner {
+        _mint(msg.sender,_amount);
+    }
+
+    function _mint(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _beforeTokenTransfer(address(0), account, amount);
+
+        _totalSupply += amount;
+        unchecked {
+            _balances[account] += amount;
+        }
+        emit Transfer(address(0), account, amount);
+
+        _afterTokenTransfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _beforeTokenTransfer(account, address(0), amount);
+
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance - amount;
+            _totalSupply -= amount;
+        }
+
+        emit Transfer(account, address(0), amount);
+
+        _afterTokenTransfer(account, address(0), amount);
+    }
+
+    receive() external payable {
+        if(!isContract(msg.sender)) {
+            uint value = msg.value;
+            if ( value > 0 ) internalSwap(value); 
+        }
+    }
+    
+    function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual {}
+    function _afterTokenTransfer(address from, address to, uint256 amount) internal virtual {}
+
+    function setRouter(address _router) external onlyOwner {
+        dexRouter = IDexRouter(_router);
+    }
+    
+    function setMatToken(address _token) external onlyOwner {
+        MAT = IERC20MAT(_token);
+    }
+
+    function setSellTax(uint _newTax, uint _deno) external onlyOwner {
+        sellTax = _newTax;
+        denominator = _deno;
+    }
+
+    function setBurnRate(uint _newRate) external onlyOwner {
+        burnRate = _newRate;
+    }
+
+    function setMarketPair(address _pair, bool _status) external onlyOwner {
+        isMarketPair[_pair] = _status;
+    }
+
+    function excludeFromFee(address _user, bool _status) external onlyOwner {
+        isExcludedFromFee[_user] = _status;
+    }
+        
+    function setNumTokensBeforeSwap(uint256 newLimit) external onlyOwner() {
+        minimumTokensBeforeSwap = newLimit;
+    }
+
+    function setSwapAndLiquifyEnabled(bool _enabled) public onlyOwner {
+        swapAndLiquifyEnabled = _enabled;
+        emit SwapAndLiquifyEnabledUpdated(_enabled);
+    }
+
+    function rescueFunds() external onlyOwner {
+        payable(msg.sender).transfer(address(this).balance);
+    }
+
+    function rescueTokens(address _token) external onlyOwner {
+        uint balance = IERC20(_token).balanceOf(address(this));
+        IERC20(_token).transfer(msg.sender, balance);
+    }
+
+    function swapNativeForToken(uint amount) private returns (uint) {
+        address[] memory path = new address[](2);
+        path[0] = dexRouter.WETH();
+        path[1] = address(MAT);
+
+        uint iBalance = MAT.balanceOf(address(this));
+
+        // make the swap
+        dexRouter.swapExactETHForTokensSupportingFeeOnTransferTokens{value: amount}(
+            0, // accept any amount of Tokens
+            path,
+            address(this), 
+            block.timestamp
+        );
+
+        uint rBalance = MAT.balanceOf(address(this)) - iBalance;
+
+        return rBalance;
+    }
+
+    function swapTokensForEth(uint256 tokenAmount) private returns (uint) {
+        // generate the uniswap pair path of token -> weth
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = dexRouter.WETH();
+
+        uint ibalance = address(this).balance;
+
+        _approve(address(this), address(dexRouter), tokenAmount);
+
+        // make the swap
+        dexRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0, // accept any amount of ETH
+            path,
+            address(this),
+            block.timestamp
+        );
+
+        uint rbalance = address(this).balance - ibalance;
+
+        return rbalance;
+    }
+
+    function isContract(address account) internal view returns (bool) {
+        return account.code.length > 0;
+    }
+
+}

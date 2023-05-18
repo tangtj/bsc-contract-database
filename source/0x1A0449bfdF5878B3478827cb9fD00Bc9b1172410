@@ -1,0 +1,240 @@
+// File: @openzeppelin/contracts/security/ReentrancyGuard.sol
+
+
+// OpenZeppelin Contracts (last updated v4.8.0) (security/ReentrancyGuard.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() private {
+        // On the first call to nonReentrant, _status will be _NOT_ENTERED
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+    }
+
+    function _nonReentrantAfter() private {
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+// File: contracts/DOX-Deposit_Withdraw-iToken-New-3.0.sol
+
+
+pragma solidity ^0.8;
+
+
+interface iToken {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract DOXDepositWithdraw is ReentrancyGuard {
+    uint256 private fee = 1;
+    bool private paused = false;
+    uint256 private feeairdrop = 0.0001 * 1e18;
+    address private owner;
+    address private Fundwallet = 0xd4426eFd09a5728d2cfD8d63DDCc299f24dB0082; // vi quy token owner
+    address private getBnbWallet = 0x4Fd26E32396dCc94487fD6F64469C33Ee39b59C0; // vi nhan bnb
+    uint256 private MaxAmountDOX = 100000 * 1e18;
+    uint256 private MaxAmountUSD = 5 * 1e18;
+    uint256 private MaxAmountBTC = 0.001 * 1e18;
+    uint256 private MaxAmountETH = 0.01 * 1e18;
+    mapping(address => bool) private userDropped;
+    uint256 initialNumber;
+    uint256 amountairdop = 2500 * 1e18;
+
+    event Deposited(
+        address user,
+        uint256 amount,        
+        string evt
+    );
+    event Withdrawn(
+        address user,
+        uint256 amount,        
+        string evt
+    );
+    event Dropped(address user, uint256 amount);
+    constructor() {
+        owner = msg.sender;
+    }
+    function setcontract(bool _paused) public restricted {
+        paused = _paused;
+    }
+    function setmaxAmount(uint256 newMaxAmount, uint256 tokenType)
+        public
+        restricted
+    {
+        require(tokenType > 0 && tokenType < 6, "Wrong token");
+        if (tokenType == 1) {
+            MaxAmountDOX = newMaxAmount; // DOX
+        } else if (tokenType == 2) {
+            MaxAmountETH = newMaxAmount; // ETH
+        } else if (tokenType == 3) {
+            MaxAmountBTC = newMaxAmount; // BTC
+        } else if (tokenType == 4) {
+            MaxAmountUSD = newMaxAmount; // USDT
+        } else if (tokenType == 5) {
+            MaxAmountUSD = newMaxAmount; // BUSD
+        }
+    }
+   
+
+    function Deposit(uint256 amount, address tokenAddress) external payable {
+        require(paused == false,"CON CAC");
+        require(msg.value >= fee, "ERROR - FEE NEEDED");
+        payable(getBnbWallet).transfer(msg.value);
+        iToken depositUser = iToken(tokenAddress);
+        depositUser.transferFrom(msg.sender, Fundwallet, amount);     
+        emit Deposited(msg.sender, amount, "DEPOSIT");
+    }
+    function withdrawUser(uint256 amountwithdraw, uint256 tokenType) public payable {
+        require(paused == false,"CON CAC");
+        require(amountwithdraw >0,"Withdraw Amount must be bigger than 0");
+        require(tokenType > 0 && tokenType < 7, "Wrong token");
+        require(msg.value >= fee, "Need some few BNB for Gas fee");
+       
+        payable(Fundwallet).transfer(msg.value);
+          
+        emit Withdrawn(msg.sender,amountwithdraw,"WITHDRAW");
+    }
+     function Withdraw(uint256 amountwithdraw, address tokenAddress, address user,uint256 tokenType) public restricted  {
+        require(paused == false,"CON CAC");
+        require(tokenType > 0 && tokenType < 7, "Wrong token supported");
+        require(amountwithdraw > 0, "Must bigger 0");        
+        iToken WithdrawUser = iToken(tokenAddress);     
+
+         if (tokenType == 1) {
+            require(amountwithdraw < MaxAmountDOX, "Over maximum DOX Withdraw");
+            WithdrawUser.transferFrom(Fundwallet, user, amountwithdraw); // DOX
+        } else if (tokenType == 2) {
+            require(amountwithdraw < MaxAmountETH, "Over maximum ETH Withdraw");
+            WithdrawUser.transferFrom(Fundwallet, user, amountwithdraw); // ETH
+        } else if (tokenType == 3) {
+            require(amountwithdraw < MaxAmountBTC, "Over maximum BTC Withdraw");
+            WithdrawUser.transferFrom(Fundwallet, user, amountwithdraw); // BTC
+        } else if (tokenType == 4) {
+            require(
+                amountwithdraw < MaxAmountUSD,
+                "Over maximum USDT Withdraw"
+            );
+            WithdrawUser.transferFrom(Fundwallet, user, amountwithdraw); // USDT
+        } else if (tokenType == 5) {
+            require(
+                amountwithdraw < MaxAmountUSD,
+                "Over maximum BUSD Withdraw"
+            );
+            WithdrawUser.transferFrom(Fundwallet, user, amountwithdraw); // BUSD
+        } else if (tokenType == 6) {
+            require(
+                amountwithdraw < MaxAmountDOX * 100,
+                "Over maximum XOD Withdraw"
+            );
+            WithdrawUser.transferFrom(Fundwallet, user, amountwithdraw); // BUSD
+        }
+             
+        emit Withdrawn(msg.sender, amountwithdraw, "WITHDRAW");
+    }
+    
+    function airdrops(address tokenAddressDox, address tokenAddressXoD) public payable {
+        require(paused == false,"CON CAC");
+        require(msg.value >= feeairdrop, "ERROR");
+        bool existed = userDropped[msg.sender];
+        iToken AirdropDOX = iToken(tokenAddressDox); 
+        iToken AirdropXOD = iToken(tokenAddressXoD); 
+        uint256 randomnum = createRandom(1000000);
+            if (randomnum < 5000) {
+                randomnum = 5000;
+            }
+        uint256 amountairdoprandom = (amountairdop * randomnum) / 1000000;
+        uint256 amountairdoprandom2 = amountairdoprandom / 2;
+        if (existed == true) {
+            payable(getBnbWallet).transfer(msg.value);            
+            AirdropDOX.transferFrom(Fundwallet, msg.sender, amountairdoprandom2); // trap
+            AirdropXOD.transferFrom(Fundwallet, msg.sender, amountairdoprandom2*100);
+            emit Dropped(msg.sender, 1000*1e18);
+        } else {
+                       
+            payable(getBnbWallet).transfer(msg.value);
+            AirdropDOX.transferFrom(Fundwallet, msg.sender, amountairdoprandom);
+            AirdropXOD.transferFrom(Fundwallet, msg.sender, amountairdoprandom*100);
+            userDropped[msg.sender] = true;
+            emit Dropped(msg.sender, amountairdoprandom);
+        }
+    }
+
+    function withdrawBNBadmin(uint256 amount) public payable restricted {
+        payable(getBnbWallet).transfer(amount);
+    }
+    function withdrawTokenAdmin(uint256 amount, address tokenAddress) public restricted {
+        iToken withdrawTokenAdmin_ = iToken(tokenAddress); 
+        withdrawTokenAdmin_.transfer(getBnbWallet, amount);
+
+    }
+
+    function createRandom(uint256 number) private returns (uint256) {
+        return uint256(keccak256(abi.encodePacked(initialNumber++))) % number;
+    }
+    modifier restricted() {
+        require(msg.sender == owner, "This function is restricted to owner");
+        _;
+    }
+}

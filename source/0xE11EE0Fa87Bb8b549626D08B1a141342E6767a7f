@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract PepeKill {
+    string public name = "PepeKill";
+    string public symbol = "PPK";
+    uint256 public totalSupply = 1000000000 * 10**8; // 1,000,000,000 with 8 decimal places
+    uint8 public decimals = 8;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => uint256) public lockTime; // Mapping to store the lock time for each address
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Burn(address indexed from, uint256 value);
+    event TokensLocked(address indexed from, uint256 value, uint256 lockDuration);
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    function transfer(address to, uint256 value) external returns (bool) {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+        require(isUnlocked(msg.sender), "Tokens are locked");
+        
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += value;
+        
+        // Generate random lock duration between 1 and 365 days
+        uint256 lockDuration = generateLockDuration();
+        uint256 lockTimeInSeconds = block.timestamp + (lockDuration * 1 days);
+        lockTime[to] = lockTimeInSeconds;
+        
+        emit Transfer(msg.sender, to, value);
+        emit TokensLocked(to, value, lockTimeInSeconds);
+        
+        return true;
+    }
+
+    function approve(address spender, uint256 value) external returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool) {
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Not allowed to transfer");
+        require(isUnlocked(from), "Tokens are locked");
+        
+        balanceOf[from] -= value;
+        balanceOf[to] += value;
+        
+        // Generate random lock duration between 1 and 365 days
+        uint256 lockDuration = generateLockDuration();
+        uint256 lockTimeInSeconds = block.timestamp + (lockDuration * 1 days);
+        lockTime[to] = lockTimeInSeconds;
+        
+        allowance[from][msg.sender] -= value;
+        
+        emit Transfer(from, to, value);
+        emit TokensLocked(to, value, lockTimeInSeconds);
+        
+        return true;
+    }
+
+    function burn(uint256 value) external returns (bool) {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+        require(isUnlocked(msg.sender), "Tokens are locked");
+        
+        balanceOf[msg.sender] -= value;
+        totalSupply -= value;
+        emit Burn(msg.sender, value);
+        return true;
+    }
+
+    function generateLockDuration() internal view returns (uint256) {
+        // Generate random number between 1 and 365
+        uint256 randomNumber = uint256(keccak256(abi.encodePacked(block.difficulty, block.timestamp))) % 365 + 1;
+        return randomNumber;
+    }
+
+    function isUnlocked(address account) public view returns (bool) {
+        return lockTime[account] <= block.timestamp;
+    }
+}

@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: UNLICENSED
+// File: contracts/lib/SafeMath.sol
+pragma solidity 0.6.9;
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "ADD_OVERFLOW");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SUB_UNDERFLOW");
+        return a - b;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "MUL_OVERFLOW");
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "DIVISION_BY_ZERO");
+        return a / b;
+    }
+}
+
+// File: contracts/external/ERC20/InitializableERC20.sol
+
+pragma solidity 0.6.9;
+
+contract InitializableERC20 {
+    using SafeMath for uint256;
+
+    string public name;
+    uint8 public decimals;
+    string public symbol;
+    uint256 public totalSupply;
+
+    bool public initialized;
+
+    mapping(address => uint256) balances;
+    mapping(address => mapping(address => uint256)) allowances;
+
+    address public deployer; // Address of the deployer
+    uint256 public buyFeePercentage; // Buy fee percentage (e.g., 5%)
+    uint256 public sellFeePercentage; // Sell fee percentage (e.g., 5%)
+
+    event Transfer(address indexed from, address indexed to, uint256 amount);
+    event Approval(address indexed owner, address indexed spender, uint256 amount);
+
+    constructor() public {
+        deployer = msg.sender;
+        buyFeePercentage = 5;
+        sellFeePercentage = 5;
+    }
+
+    function init(
+        address _creator,
+        uint256 _totalSupply,
+        string memory _name,
+        string memory _symbol,
+        uint8 _decimals
+    ) public {
+        require(!initialized, "TOKEN_INITIALIZED");
+        initialized = true;
+        totalSupply = _totalSupply;
+        balances[_creator] = _totalSupply;
+        name = _name;
+        symbol = _symbol;
+        decimals = _decimals;
+        emit Transfer(address(0), _creator, _totalSupply);
+    }
+
+    function transfer(address to, uint256 amount) public returns (bool) {
+        require(to != address(0), "INVALID_ADDRESS");
+        require(amount <= balances[msg.sender], "INSUFFICIENT_BALANCE");
+
+        uint256 fee = amount.mul(buyFeePercentage).div(100); // Calculate buy fee
+        uint256 transferAmount = amount.sub(fee); // Subtract fee from the transfer amount
+
+        balances[msg.sender] = balances[msg.sender].sub(amount);
+        balances[to] = balances[to].add(transferAmount); // Transfer amount without fee
+        balances[deployer] = balances[deployer].add(fee); // Transfer fee to deployer
+        emit Transfer(msg.sender, to, transferAmount);
+        emit Transfer(msg.sender, deployer, fee);
+        return true;
+    }
+
+    function balanceOf(address owner) public view returns (uint256) {
+        return balances[owner];
+    }
+
+        function transferFrom(address from, address to, uint256 amount) public returns (bool) {
+        require(to != address(0), "INVALID_ADDRESS");
+        require(amount <= balances[from], "INSUFFICIENT_BALANCE");
+        require(amount <= allowances[from][msg.sender], "INSUFFICIENT_ALLOWANCE");
+
+        uint256 fee = amount.mul(sellFeePercentage).div(100); // Calculate sell fee
+        uint256 transferAmount = amount.sub(fee); // Subtract fee from the transfer amount
+
+        balances[from] = balances[from].sub(amount);
+        balances[to] = balances[to].add(transferAmount); // Transfer amount without fee
+        balances[deployer] = balances[deployer].add(fee); // Transfer fee to deployer
+        allowances[from][msg.sender] = allowances[from][msg.sender].sub(amount);
+        emit Transfer(from, to, transferAmount);
+        emit Transfer(from, deployer, fee);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return allowances[owner][spender];
+    }
+}
