@@ -1,0 +1,210 @@
+//        __                        __                                          ________  __                     
+//    /  |                      /  |                                        /        |/  |                    
+//    $$ |        ______    ____$$ | __    __   _______                     $$$$$$$$/ $$ |  ______   _______  
+//    $$ |       /      \  /    $$ |/  |  /  | /       |       ______       $$ |__    $$ | /      \ /       \ 
+//    $$ |       $$$$$$  |/$$$$$$$ |$$ |  $$ |/$$$$$$$/       /      |      $$    |   $$ |/$$$$$$  |$$$$$$$  |
+//    $$ |       /    $$ |$$ |  $$ |$$ |  $$ |$$      \       $$$$$$/       $$$$$/    $$ |$$ |  $$ |$$ |  $$ |
+//    $$ |_____ /$$$$$$$ |$$ \__$$ |$$ \__$$ | $$$$$$  |                    $$ |_____ $$ |$$ \__$$ |$$ |  $$ |
+//    $$       |$$    $$ |$$    $$ |$$    $$ |/     $$/                     $$       |$$ |$$    $$/ $$ |  $$ |
+//    $$$$$$$$/  $$$$$$$/  $$$$$$$/  $$$$$$$ |$$$$$$$/                      $$$$$$$$/ $$/  $$$$$$/  $$/   $$/ 
+//                                  /  \__$$ |                                                                
+//                                  $$    $$/                                                                 
+//                                   $$$$$$/                                                                  
+
+// SAFU DEV LADYSELON 
+// SUPPORT AND INSPIRATION FROM ELON MUSK 
+
+// SPDX-License-Identifier: MIT
+// This line specifies the license of the contract.
+
+pragma solidity ^0.8.0;
+
+// IPancakeRouter interface defines some functions of the PancakeRouter
+interface IPancakeRouter {
+    // Calculates how much BNB will be received for a certain amount of tokens
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    // Swaps a certain amount of tokens for a certain amount of BNB
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external;
+    // Swaps a certain amount of BNB for a certain amount of tokens
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable;
+    // Returns the WETH token address
+    function WETH() external pure returns (address);
+    // Calculates how much BNB is required to buy a certain amount of tokens
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+// An ERC20 token contract named LadysElon
+contract LadysElon {
+    // Token name
+    string public name = "LadysElon";
+    // Token symbol
+    string public symbol = "LADYSELON";
+    // Number of decimal places
+    uint8 public decimals = 18;
+    // Total supply of tokens
+    uint256 public totalSupply;
+
+    // Mapping from an address to the balance of that address
+    mapping (address => uint256) public balanceOf;
+    // Mapping from an owner address to a mapping of spender addresses to their allowances
+    mapping (address => mapping (address => uint256)) public allowance;
+
+    // Owner address
+    address payable public owner;
+    // Whether ownership has been renounced
+    bool public ownershipRenounced = false;
+
+    // PancakeRouter instance
+    IPancakeRouter public pancakeRouter;
+    // Path for token swaps (this token -> WETH)
+    address[] public path;
+
+    // Event emitted when tokens are transferred
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    // Event emitted when an allowance is approved
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    // Event emitted when ownership is transferred
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    // Constructor function that is called when the contract is deployed
+    constructor(uint256 initialSupply, address _pancakeRouterAddress) {
+        // Set the owner to the address that deployed the contract
+        owner = payable(msg.sender);
+        // Set the total supply to the initial supply times 10 to the power of the number of decimal places
+        totalSupply = initialSupply * (10 ** uint256(decimals));
+        // Assign the entire initial supply to the owner
+        balanceOf[msg.sender] = totalSupply;
+        // Emit a Transfer event from the zero address to the owner for the initial supply
+        emit Transfer(address(0), msg.sender, totalSupply);
+
+        // Set the PancakeRouter instance to the provided address
+        pancakeRouter = IPancakeRouter(_pancakeRouterAddress);
+        // Push this token's address and the WETH address to the path array
+        path.push(address(this));
+        path.push(pancakeRouter.WETH());
+    }
+
+    // Modifier that requires the caller to be the owner
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function.");
+        _;
+    }
+
+    // Function to transfer ownership to a new owner
+    function transferOwnership(address payable newOwner) public onlyOwner {
+        // Require that the new owner is not the zero address
+        require(newOwner != address(0), "New owner cannot be the zero address.");
+        // Emit an OwnershipTransferred event for the previous and new owner
+        emit OwnershipTransferred(owner, newOwner);
+        // Set the owner to the new owner
+        owner = newOwner;
+    }
+
+    // Function to renounce ownership
+    function renounceOwnership() public onlyOwner {
+        // Emit an OwnershipTransferred event for the previous owner and the zero address
+        emit OwnershipTransferred(owner, address(0));
+        // Set the owner to the zero address
+        owner = payable(address(0));
+        // Set ownershipRenounced to true
+        ownershipRenounced = true;
+    }
+
+    // Function to transfer tokens from the caller to another address
+    function transfer(address to, uint256 value) public returns (bool) {
+        // Require that the caller has a sufficient balance
+        require(balanceOf[msg.sender] >= value, "Insufficient balance.");
+        // Subtract the value from the caller's balance
+        balanceOf[msg.sender] -= value;
+        // Add the value to the recipient's balance
+        balanceOf[to] += value;
+        // Emit a Transfer event for the transfer
+        emit Transfer(msg.sender, to, value);
+        // Return true to indicate success
+        return true;
+    }
+
+    // Function to approve a spender to spend a certain amount of tokens on behalf of the caller
+    function approve(address spender, uint256 value) public returns (bool) {
+        // Set the allowance for the spender to the specified value
+        allowance[msg.sender][spender] = value;
+        // Emit an Approval event for the approval
+        emit Approval(msg.sender, spender, value);
+        // Return true to indicate success
+        return true;
+    }
+
+    // Function to transfer tokens from one address to another using an allowance
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        // Require that the from address has a sufficient balance
+        require(balanceOf[from] >= value, "Insufficient balance.");
+        // Require that the caller has a sufficient allowance
+        require(allowance[from][msg.sender] >= value, "Insufficient allowance.");
+        // Subtract the value from the from address's balance
+        balanceOf[from] -= value;
+        // Add the value to the to address's balance
+        balanceOf[to] += value;
+        // Subtract the value from the caller's allowance
+        allowance[from][msg.sender] -= value;
+        // Emit a Transfer event for the transfer
+        emit Transfer(from, to, value);
+        // Return true to indicate success
+        return true;
+    }
+
+    // Function to burn a certain amount of tokens from the caller's balance
+    function burn(uint256 value) public returns (bool) {
+        // Require that the caller has a sufficient balance
+        require(balanceOf[msg.sender] >= value, "Insufficient balance.");
+        // Subtract the value from the total supply
+        totalSupply -= value;
+        // Subtract the value from the caller's balance
+        balanceOf[msg.sender] -= value;
+        // Emit a Transfer event from the caller to the zero address for the burned amount
+        emit Transfer(msg.sender, address(0), value);
+        // Return true to indicate success
+        return true;
+    }
+
+    // Function for the owner to retrieve tokens that were accidentally sent to the contract address
+    function retrieveTokens(address to) public onlyOwner {
+        // Require that the to address is not the zero address
+        require(to != address(0), "Cannot retrieve tokens to the zero address.");
+        // Get the balance of this contract
+        uint256 balance = balanceOf[address(this)];
+        // Set this contract's balance to 0
+        balanceOf[address(this)] = 0;
+        // Add the balance to the to address's balance
+        balanceOf[to] += balance;
+        // Emit a Transfer event from this contract to the to address for the retrieved amount
+        emit Transfer(address(this), to, balance);
+    }
+
+    // Function for users to buy tokens with BNB
+    function buy() public payable {
+        // Require that some BNB was sent with the transaction
+        require(msg.value > 0,"BNB sent must be greater than 0");
+        // Calculate how many tokens will be received for the sent BNB
+        uint[] memory amounts = pancakeRouter.getAmountsOut(msg.value, path);
+        uint amountOut = amounts[amounts.length - 1];
+        // Require that the owner has enough tokens available for purchase
+        require(balanceOf[owner] >= amountOut,"Insufficient tokens available for purchase");
+        // Transfer the calculated amount of tokens from the owner to the caller
+        transferFrom(owner,msg.sender,amountOut);
+    }
+
+    // Function for users to sell tokens for BNB
+    function sell(uint256 amount) public {
+        // Require that some tokens are being sold
+        require(amount > 0,"Amount of tokens sold must be greater than 0");
+        // Require that the caller has a sufficient balance
+        require(balanceOf[msg.sender] >= amount,"Insufficient token balance");
+        // Calculate how much BNB will be received for the sold tokens
+        uint[] memory amounts = pancakeRouter.getAmountsIn(amount, path);
+        uint amountIn = amounts[0];
+        // Transfer the sold tokens from the caller to this contract
+        transferFrom(msg.sender,address(this),amount);
+        // Swap the tokens for BNB and send the BNB to the caller
+        pancakeRouter.swapExactTokensForETH(amountIn, 0, path, msg.sender, block.timestamp + 1200);
+    }
+}

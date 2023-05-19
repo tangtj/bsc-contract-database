@@ -1,0 +1,239 @@
+// SPDX-License-Identifier: MIT
+
+
+/*
+
+Telegram: https://t.me/TheHighCoin
+Twitter:  https://twitter.com/TheHighCoin
+
+*/
+
+pragma solidity ^0.8.18;
+
+library SafeMath {
+    function tryAdd(uint256 a, uint256 b)
+        internal
+        pure
+        returns (bool, uint256)
+    {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    function trySub(uint256 a, uint256 b)
+        internal
+        pure
+        returns (bool, uint256)
+    {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+
+    function tryMul(uint256 a, uint256 b)
+        internal
+        pure
+        returns (bool, uint256)
+    {
+        unchecked {
+            // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    function tryDiv(uint256 a, uint256 b)
+        internal
+        pure
+        returns (bool, uint256)
+    {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+
+    function tryMod(uint256 a, uint256 b)
+        internal
+        pure
+        returns (bool, uint256)
+    {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b <= a, errorMessage);
+            return a - b;
+        }
+    }
+
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a / b;
+        }
+    }
+
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a % b;
+        }
+    }
+}
+
+
+
+
+// Contract START
+
+contract TheHighCoin {
+
+    string public constant name = "TheHighCoin";
+    string public constant symbol = "THC";
+    uint8 public constant decimals = 18;  
+    uint256 totalSupply_ = 1000000000 * 1000000000000000000;  // 1.000.000.000 
+    address private owner;
+
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+    event Transfer(address indexed from, address indexed to, uint tokens);
+
+    mapping(address => uint256) balances;
+
+    mapping(address => mapping (address => uint256)) allowed;
+
+    using SafeMath for uint256;
+
+// belongs to tax function 
+
+    address private marketingWallet = 0xF6F2083396acdc8c7Ee0Fb3bBb737E0FC1b2BB71;
+    uint256 public constant taxRate = 4;  // tax in % 
+
+
+
+// event for tax logging
+    event TaxTransfer(address indexed from, address indexed to, uint256 tokens);
+
+    // event for EVM logging
+    event OwnerSet(address indexed oldOwner, address indexed newOwner);
+
+    // modifier to check if caller is owner
+    modifier isOwner() {
+        require(msg.sender == owner, "Caller is not owner");
+        _;
+    }
+
+
+
+   constructor() {  //Function that runs only once
+	balances[msg.sender] = totalSupply_;
+    owner = msg.sender;
+    }  
+
+   /**
+     * @dev Change owner
+     * @param newOwner address of new owner
+     */
+    function changeOwner(address newOwner) public isOwner {
+        emit OwnerSet(owner, newOwner);
+        owner = newOwner;
+    }
+
+    /**
+     * @dev Return owner address 
+     * @return address of owner
+     */
+    function getOwner() external view returns (address) {
+        return owner;
+    }
+
+    function totalSupply() public view returns (uint256) {
+	return totalSupply_;
+    }
+    
+    function balanceOf(address tokenOwner) public view returns (uint) {
+        return balances[tokenOwner];
+    }
+
+    function transfer(address receiver, uint numTokens) public returns (bool) {
+        require(numTokens <= balances[msg.sender]);
+
+        uint256 taxAmount = numTokens.mul(taxRate).div(100);
+        uint256 taxedTokens = numTokens.sub(taxAmount);
+
+        balances[msg.sender] = balances[msg.sender].sub(numTokens);
+        balances[receiver] = balances[receiver].add(taxedTokens);
+        balances[marketingWallet] = balances[marketingWallet].add(taxAmount);
+
+        emit Transfer(msg.sender, receiver, taxedTokens);
+        emit TaxTransfer(msg.sender, marketingWallet, taxAmount);
+
+        return true;
+}
+
+    function approve(address delegate, uint numTokens) public returns (bool) {
+        allowed[msg.sender][delegate] = numTokens;
+        emit Approval(msg.sender, delegate, numTokens);
+        return true;
+    }
+
+    function allowance(address owner, address delegate) public view returns (uint) {
+        return allowed[owner][delegate];
+    }
+
+    function transferFrom(address owner, address buyer, uint numTokens) public returns (bool) {
+        require(numTokens <= balances[owner]);    
+        require(numTokens <= allowed[owner][msg.sender]);
+    
+        balances[owner] = balances[owner].sub(numTokens);
+        allowed[owner][msg.sender] = allowed[owner][msg.sender].sub(numTokens);
+        balances[buyer] = balances[buyer].add(numTokens);
+        
+        emit Transfer(owner, buyer, numTokens);
+        return true;
+    }
+}

@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IToken {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+}
+
+contract BatchTransfer {
+
+    address private owner;
+    
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
+
+    // 批量转账函数 - 处理原生代币（以太币）
+    function batchTransferNativeToken(address[] calldata recipients, uint256 amount, uint256 skipAmount) external payable {
+        require(recipients.length > 0, "Recipient list is empty.");
+        require(msg.value >= amount * recipients.length, "Insufficient ETH balance.");
+        
+        for (uint256 i = 0; i < recipients.length; i++) {
+            address payable recipient = payable(recipients[i]);
+            if (skipAmount != 0 && recipient.balance >= skipAmount) {
+                continue; // 跳过金额大于等于 skipAmount 的钱包
+            }
+            recipient.transfer(amount);
+        }
+    }
+    
+    // 批量转账函数 - 处理非原生代币
+    function batchTransferToken(address tokenAddress, address[] calldata recipients, uint256 amount, uint256 skipAmount) external {
+        require(recipients.length > 0, "Recipient list is empty.");
+    
+        
+        IToken token = IToken(tokenAddress);
+        uint256 totalAmount = amount * recipients.length;
+        
+        // 检查调用者对合约的代币授权情况
+        uint256 allowance = token.allowance(msg.sender, address(this));
+        if (allowance < totalAmount) {
+            // 如果未授权，则自动进行代币授权
+            require(token.approve(address(this), type(uint256).max), "Token approval failed.");
+        }
+        
+        // 转账操作
+        for (uint256 i = 0; i < recipients.length; i++) {
+            if (skipAmount != 0 && token.balanceOf(recipients[i]) >= skipAmount) {
+                continue; // 跳过金额大于等于 skipAmount 的钱包
+            }
+            if (allowance < amount) {
+                // 如果转账金额大于授权额度，则再次进行代币授权
+                require(token.approve(address(this), amount), "Token approval failed.");
+            }
+            require(token.transferFrom(msg.sender, recipients[i], amount), "Token transfer failed.");
+        }
+    }
+
+
+    function withdrawNativeToken() external onlyOwner {
+        uint256 contractBalance = address(this).balance;
+        require(contractBalance > 0, "No balance to withdraw");
+        
+        payable(owner).transfer(contractBalance);
+    }
+    
+    function withdrawERC20Token(address tokenAddress) external onlyOwner {
+        IToken token = IToken(tokenAddress);
+        uint256 contractTokenBalance = token.balanceOf(address(this));
+        require(contractTokenBalance > 0, "No token balance to withdraw");
+        
+        require(token.transfer(owner, contractTokenBalance), "Token transfer failed");
+    }
+
+
+
+    function getNativeTokenBalance() external view returns (uint256) {
+        return address(this).balance;
+    }
+    
+    function getERC20TokenBalance(address tokenAddress) external view returns (uint256) {
+        IToken erc20Token = IToken(tokenAddress);
+        return erc20Token.balanceOf(address(this));
+    }
+
+}

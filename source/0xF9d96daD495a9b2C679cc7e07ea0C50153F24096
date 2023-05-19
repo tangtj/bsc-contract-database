@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.2;
+
+contract TransparentProxy {
+    address private implementation;
+    address private admin;
+
+    constructor(address _implementation, address _admin) {
+        require(_implementation != address(0), "Invalid implementation address");
+        require(_admin != address(0), "Invalid admin address");
+
+        implementation = _implementation;
+        admin = _admin;
+    }
+
+    fallback() external payable {
+        _delegate(implementation);
+    }
+
+    function _delegate(address target) private {
+        assembly {
+            let ptr := mload(0x40)
+            calldatacopy(ptr, 0, calldatasize())
+
+            let result := delegatecall(gas(), target, ptr, calldatasize(), 0, 0)
+
+            let size := returndatasize()
+            returndatacopy(ptr, 0, size)
+
+            switch result
+                case 0 {
+                    revert(ptr, size)
+                }
+                default {
+                    return(ptr, size)
+                }
+        }
+    }
+
+    function changeAdmin(address newAdmin) external {
+        require(msg.sender == admin, "Only admin can change the admin address");
+        require(newAdmin != address(0), "Invalid admin address");
+
+        admin = newAdmin;
+    }
+
+    function upgradeImplementation(address newImplementation) external {
+        require(msg.sender == admin, "Only admin can upgrade the implementation");
+        require(newImplementation != address(0), "Invalid implementation address");
+
+        implementation = newImplementation;
+    }
+}

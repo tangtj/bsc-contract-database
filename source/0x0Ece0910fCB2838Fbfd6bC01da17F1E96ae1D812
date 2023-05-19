@@ -1,0 +1,1152 @@
+
+// File: solidity/contracts/oracle/AlpacaV2Oracle.sol
+// SPDX-License-Identifier: BUSL
+pragma solidity 0.8.19;
+
+// ---- External Libraries ---- //
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+
+// ---- Libraries ---- //
+import { LibFullMath } from "./libraries/LibFullMath.sol";
+
+// ---- Interfaces ---- //
+import { ILiquidityPair } from "./interfaces/ILiquidityPair.sol";
+import { IAlpacaV2Oracle } from "./interfaces/IAlpacaV2Oracle.sol";
+import { IPriceOracle } from "./interfaces/IPriceOracle.sol";
+import { IERC20 } from "./interfaces/IERC20.sol";
+import { IRouterLike } from "./interfaces/IRouterLike.sol";
+import { IPancakeV3Pool } from "./interfaces/IPancakeV3Pool.sol";
+
+contract AlpacaV2Oracle is IAlpacaV2Oracle, Ownable {
+  using LibFullMath for uint256;
+
+  uint256 private constant TWO_X56 = 1 << 56;
+  uint256 private constant TWO_X96 = 1 << 96;
+  uint256 private constant TWO_X112 = 1 << 112;
+
+  // Events
+  event LogSetOracle(address indexed _caller, address _newOracle);
+  event LogSetTokenConfig(
+    address indexed _caller,
+    address indexed _token,
+    address _router,
+    address[] _path,
+    uint64 _maxPriceDiffBps,
+    bool _isUsingV3Pool
+  );
+  event LogSetPool(address indexed _source, address indexed _destination, address _poolAddress);
+
+  uint256 internal constant MAX_BPS = 10000;
+
+  // An address of chainlink usd token
+  address public immutable usd;
+
+  // Stabletoken to compare value
+  address public immutable baseStable;
+
+  // a OracleMedianizer interface to perform get price
+  address public oracle;
+
+  // mapping of token to tokenConfig
+  mapping(address => Config) public tokenConfigs;
+
+  // mapping of uniswap v3 pool address
+  //  source => destination => poolAddress
+  mapping(address => mapping(address => address)) public v3PoolAddreses;
+
+  constructor(
+    address _oracle,
+    address _baseStable,
+    address _usd
+  ) {
+    // Revert if baseStable token doesn't have 18 decimal
+    if (IERC20(_baseStable).decimals() != 18) {
+      revert AlpacaV2Oracle_InvalidBaseStableTokenDecimal();
+    }
+
+    // sanity call
+    IPriceOracle(_oracle).getPrice(_baseStable, _usd);
+
+    oracle = _oracle;
+    baseStable = _baseStable;
+    usd = _usd;
+  }
+
+  /// @notice Perform the conversion from LP to dollar
+  /// @dev convert lpToDollar using chainlink oracle price
+  /// @param _lpAmount in ether format
+  /// @param _lpToken address of LP token
+  function lpToDollar(uint256 _lpAmount, address _lpToken) external view returns (uint256, uint256) {
+    // if _lpAmount = 0 no need to convert
+    if (_lpAmount == 0) {
+      return (0, block.timestamp);
+    }
+
+    // get lp fair price and oldest _lastUpdate between token0 and token1
+    (uint256 _lpPrice, uint256 _lastUpdate) = _getLPPrice(_lpToken);
+
+    return ((_lpAmount * _lpPrice) / (1e18), _lastUpdate);
+  }
+
+  /// @notice Perform the conversion from dollar to LP
+  /// @dev convert dollartoLp using chainlink oracle price
+  /// @param _dollarAmount in ether format
+  /// @param _lpToken address of LP token
+  function dollarToLp(uint256 _dollarAmount, address _lpToken) external view returns (uint256, uint256) {
+    // if _dollarAmount = 0 no need to convert
+    if (_dollarAmount == 0) {
+      return (0, block.timestamp);
+    }
+    // get lp fair price and oldest _lastUpdate between token0 and token1
+    (uint256 _lpPrice, uint256 _lastUpdate) = _getLPPrice(_lpToken);
+
+    return (((_dollarAmount * (1e18)) / _lpPrice), _lastUpdate);
+  }
+
+  /// @notice Get token price in dollar
+  /// @dev getTokenPrice from address
+  /// @param _tokenAddress tokenAddress
+  function getTokenPrice(address _tokenAddress) external view returns (uint256 _price, uint256 _lastTimestamp) {
+    (_price, _lastTimestamp) = _getTokenPrice(_tokenAddress);
+  }
+
+  /// @notice Check token price from dex and oracle is in the acceptable range
+  /// @param _tokenAddress tokenAddress
+  function isStable(address _tokenAddress) external view {
+    _getTokenPrice(_tokenAddress);
+  }
+
+  /// @dev validate price stability of token. Check token price from oracle against dex.
+  ///      It is unstable if prices of oracle and dex deviate too much
+  /// @param _tokenAddress address of token
+  /// @param _oraclePrice token price from oracleMedianizer
+  function _validateStability(address _tokenAddress, uint256 _oraclePrice) internal view {
+    // if _tokenAddress is baseStable no need to validate
+    if (_tokenAddress == baseStable) {
+      return;
+    }
+
+    Config memory _tokenConfig = tokenConfigs[_tokenAddress];
+    // get baseStable price usd from OracleMedianizer
+    (uint256 _basePrice, ) = IPriceOracle(oracle).getPrice(baseStable, usd);
+
+    uint256 _dexPrice;
+
+    if (_tokenConfig.isUsingV3Pool) {
+      // calulating _dexPrice of token (v3)
+      // product of price in each pool that need to hop through the path
+      // example:
+      // - path = [BTC, ETH, USDT]
+      // - pool1 = BTC/ETH, price = 15
+      // - pool2 = ETH/USDT, price = 1850
+      // _dexPrice = 15 * 1850 = 27750
+      _dexPrice = 1e18;
+      uint256 _len = _tokenConfig.path.length - 1;
+      for (uint256 _i = 0; _i < _len; ) {
+        _dexPrice = (_dexPrice * _getPriceFromV3Pool(_tokenConfig.path[_i], _tokenConfig.path[_i + 1])) / 1e18;
+        unchecked {
+          ++_i;
+        }
+      }
+    } else {
+      // call router for getting swap rate between token and baseStableToken
+      uint256[] memory _amounts = IRouterLike(_tokenConfig.router).getAmountsOut(
+        10**IERC20(_tokenAddress).decimals(),
+        _tokenConfig.path
+      );
+
+      // calculating _dexPrice of token (v2)
+      // example:
+      // - swapRate = 300, _basePrice = 1.01
+      // _dexPrice = swapRate * basePrice = 300 * 1.01 = 303
+      _dexPrice =
+        (_amounts[_amounts.length - 1] * _basePrice) /
+        10**IERC20(_tokenConfig.path[_tokenConfig.path.length - 1]).decimals();
+    }
+
+    // example of unstable price:
+    //  - maxPriceDiffBps = 10500
+
+    // case1: price too high
+    //  - oraclePrice = 300, dexPrice = 330
+    //  330 * 10000 > 300 * 10500
+    //  3300000 > 3150000
+
+    // case2: price too low
+    //  - oraclePrice = 300, dexPrice = 270
+    //  270 * 10500 < 300 * 10000
+    //  2835000 < 3000000
+
+    // _dexPrice/_oraclePrice > maxPriceDiffBps/10000
+    // _dexPrice/_oraclePrice < 10000/maxPriceDiffBps
+    uint256 _maxPriceDiff = tokenConfigs[_tokenAddress].maxPriceDiffBps;
+    if (_dexPrice * MAX_BPS > _oraclePrice * _maxPriceDiff || _dexPrice * _maxPriceDiff < _oraclePrice * MAX_BPS) {
+      revert AlpacaV2Oracle_PriceTooDeviate(_dexPrice, _oraclePrice);
+    }
+  }
+
+  /// @dev get price of token in usd, will revert if price is not stable
+  /// @param _tokenAddress address of token
+  /// @return _price token price in 1e18 format
+  /// @return _lastTimestamp the timestamp that price was fed
+  function _getTokenPrice(address _tokenAddress) internal view returns (uint256 _price, uint256 _lastTimestamp) {
+    (_price, _lastTimestamp) = IPriceOracle(oracle).getPrice(_tokenAddress, usd);
+    _validateStability(_tokenAddress, _price);
+  }
+
+  /// @notice Set oracle
+  /// @dev Set oracle address. Must be called by owner.
+  /// @param _oracle oracle address
+  function setOracle(address _oracle) external onlyOwner {
+    if (_oracle == address(0)) revert AlpacaV2Oracle_InvalidOracleAddress();
+
+    // sanity call
+    IPriceOracle(_oracle).getPrice(baseStable, usd);
+
+    oracle = _oracle;
+
+    emit LogSetOracle(msg.sender, _oracle);
+  }
+
+  /// @notice get LP price using internal only, return value in 1e18 format
+  /// @dev getTokenPrice from address
+  /// @param _lpToken lp token address
+  /// @return _totalValueIn18 value of lpToken in dollar
+  /// @return _olderLastUpdate older price update between token0 and token1 of LP
+  function _getLPPrice(address _lpToken) internal view returns (uint256, uint256) {
+    if (_lpToken == address(0)) {
+      revert AlpacaV2Oracle_InvalidLPAddress();
+    }
+    uint256 _sqrtK;
+    {
+      uint256 _totalSupply = ILiquidityPair(_lpToken).totalSupply();
+      if (_totalSupply == 0) {
+        return (0, block.timestamp);
+      }
+      (uint256 _r0, uint256 _r1, ) = ILiquidityPair(_lpToken).getReserves();
+      _sqrtK = LibFullMath.sqrt(_r0 * _r1).fdiv(_totalSupply); //fdiv return in 2**112
+    }
+
+    (uint256 _px0, uint256 _px1, uint8 _d0, uint8 _d1, uint256 _olderLastUpdate) = _px(_lpToken);
+
+    // fair token0 amt: _sqrtK * sqrt(_px1/_px0)
+    // fair token1 amt: _sqrtK * sqrt(_px0/_px1)
+    // fair lp price = 2 * sqrt(_px0 * _px1)
+    // split into 2 sqrts multiplication to prevent uint overflow (note the 2**112)
+
+    uint256 _totalValueIn18;
+    {
+      uint8 padDecimals = 36 - (_d0 + _d1);
+      uint256 _totalValue = (((_sqrtK * 2 * (LibFullMath.sqrt(_px0))) / (TWO_X56)) * (LibFullMath.sqrt(_px1))) /
+        (TWO_X56);
+      _totalValueIn18 = (_totalValue / (TWO_X112)) * 10**(padDecimals); // revert bumped up 2*112 from fdiv() and convert price to 1e18 unit
+    }
+
+    return (_totalValueIn18, _olderLastUpdate);
+  }
+
+  /// @notice Return token prices, token decimals, oldest price update of given lptoken
+  /// @param _lpToken lp token address
+  function _px(address _lpToken)
+    internal
+    view
+    returns (
+      uint256,
+      uint256,
+      uint8,
+      uint8,
+      uint256
+    )
+  {
+    address _token0Address = ILiquidityPair(_lpToken).token0();
+    address _token1Address = ILiquidityPair(_lpToken).token1();
+
+    (uint256 _p0, uint256 _p0LastUpdate) = _getTokenPrice(_token0Address); // in 2**112
+    (uint256 _p1, uint256 _p1LastUpdate) = _getTokenPrice(_token1Address); // in 2**112
+
+    uint256 _olderLastUpdate = _p0LastUpdate > _p1LastUpdate ? _p1LastUpdate : _p0LastUpdate;
+
+    uint8 _d0 = IERC20(_token0Address).decimals();
+    uint8 _d1 = IERC20(_token1Address).decimals();
+
+    uint256 _px0 = (_p0 * (TWO_X112)) / 10**(18 - _d0); // in token decimals * 2**112
+    uint256 _px1 = (_p1 * (TWO_X112)) / 10**(18 - _d1); // in token decimals * 2**112
+
+    return (_px0, _px1, _d0, _d1, _olderLastUpdate);
+  }
+
+  /// @notice Set token configuration
+  /// @param _tokens List of token to set config
+  /// @param _configs List of tokenConfig
+  function setTokenConfig(address[] calldata _tokens, Config[] calldata _configs) external onlyOwner {
+    uint256 _len = _tokens.length;
+
+    // Revert if array length mismatch
+    if (_len != _configs.length) {
+      revert AlpacaV2Oracle_InvalidConfigLength();
+    }
+
+    address[] memory _path;
+    for (uint256 _i; _i < _len; ) {
+      _path = _configs[_i].path;
+
+      // Validate swap path correctness
+      // Revert if swap path < 2
+      // Revert if source is not input token
+      // Revert if destination is not baseStable
+      if (_path.length < 2 || _path[0] != _tokens[_i] || _path[_path.length - 1] != baseStable) {
+        revert AlpacaV2Oracle_InvalidConfigPath();
+      }
+
+      // Revert if maxPriceDiffBps < MAX_BPS
+      if (_configs[_i].maxPriceDiffBps < MAX_BPS) {
+        revert AlpacaV2Oracle_InvalidPriceDiffConfig();
+      }
+
+      tokenConfigs[_tokens[_i]] = _configs[_i];
+
+      emit LogSetTokenConfig(
+        msg.sender,
+        _tokens[_i],
+        _configs[_i].router,
+        _configs[_i].path,
+        _configs[_i].maxPriceDiffBps,
+        _configs[_i].isUsingV3Pool
+      );
+
+      unchecked {
+        ++_i;
+      }
+    }
+  }
+
+  /// @notice Set pool addresses of uniswap v3
+  /// @param _pools List of uniswap v3 pools
+  function setPools(address[] calldata _pools) external onlyOwner {
+    uint256 _len = _pools.length;
+    address _token0;
+    address _token1;
+    address _poolAddress;
+    for (uint256 _i; _i < _len; ) {
+      _poolAddress = _pools[_i];
+      _token0 = IPancakeV3Pool(_poolAddress).token0();
+      _token1 = IPancakeV3Pool(_poolAddress).token1();
+
+      v3PoolAddreses[_token0][_token1] = _poolAddress;
+      v3PoolAddreses[_token1][_token0] = _poolAddress;
+
+      emit LogSetPool(_token0, _token1, _poolAddress);
+      emit LogSetPool(_token1, _token0, _poolAddress);
+
+      unchecked {
+        ++_i;
+      }
+    }
+  }
+
+  /// @notice Get price from uniswap v3 pool
+  /// @dev To verify in fork test
+  /// @param _source source token address
+  /// @param _destination destination token address
+  /// @return _price price in 1e18
+  function getPriceFromV3Pool(address _source, address _destination) external view returns (uint256 _price) {
+    _price = _getPriceFromV3Pool(_source, _destination);
+  }
+
+  /// @dev Get price in 1e18 from uniswap v3 pool with last update timestamp
+  /// @param _source source token address
+  /// @param _destination destination token address
+  function _getPriceFromV3Pool(address _source, address _destination) internal view returns (uint256 _price) {
+    // assume that pool address is correct since it was verified when setPool
+    address _poolAddress = v3PoolAddreses[_source][_destination];
+    IPancakeV3Pool _pool = IPancakeV3Pool(_poolAddress);
+
+    // get sqrtPriceX96 from uniswap v3 pool
+    (uint160 _sqrtPriceX96, , , , , , ) = _pool.slot0();
+
+    // calculation
+    // - _sqrtPriceIn1e18 = sqrtX96 * 1e18 / 2**96
+    // - _non18Price = _sqrtPriceIn1e18 ** 2 / 1e18
+    // - priceIn18QuoteByToken1 = _non18Price * 10**token0Decimal / 10**token1Decimal
+    //
+    // example:
+    // - source = USDC, destination = ETH
+    // - token0 = USDC, token1 = ETH
+    // - sqrtPriceX96 = 1839650835463716126473692777239695
+    //
+    // _sqrtPriceIn1e18 = 1839650835463716126473692777239695 * 1e18 / 2**96 = 2.3219657973671966e+22
+    // _non18Price = 2.3219657973671966e+22 ** 2 / 1e18 = 5.391525164143081e+26
+    // priceIn18QuoteByToken1 = 5.391525164143081e+26 * 10**6 / 10**18 = 539152516414308 (in 1e18 unit)
+    //                        = 0.00054 ETH/USDC
+
+    uint256 _sqrtPriceIn1e18 = LibFullMath.mulDiv(uint256(_sqrtPriceX96), 1e18, TWO_X96);
+    uint256 _non18Price = LibFullMath.mulDiv(_sqrtPriceIn1e18, _sqrtPriceIn1e18, 1e18);
+    _price = (_non18Price * 10**(IERC20(_pool.token0()).decimals())) / 10**(IERC20(_pool.token1()).decimals());
+
+    // if source token is token0, then price is sqrtPriceX96, otherwise price is inverse of sqrtPriceX96
+    if (_source > _destination) {
+      // use 1e36 to avoid underflow and keep unit in 1e18
+      //
+      // calculation:
+      // - priceIn18QuoteByToken0 = 1e36 / priceIn18QuoteByToken1
+      //
+      // example:
+      // - source = ETH, destination = USDC
+      // - token0 = USDC, token1 = ETH
+      // - priceIn18QuoteByToken1 = 539152516414308
+      // - priceIn18QuoteByToken0 = 1e36 / 539152516414308 = 1854762742554941500000 (in 1e18 unit)
+      //                          = 1854.76274 USDC/ETH
+      _price = 1e36 / _price;
+    }
+  }
+}
+
+
+// File: node_modules/@openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.7.0) (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: solidity/contracts/oracle/libraries/LibFullMath.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.19;
+
+/// @title Contains 512-bit math functions
+/// @notice Facilitates multiplication and division that can have overflow of an intermediate value without any loss of precision
+/// @dev Handles "phantom overflow" i.e., allows multiplication and division where an intermediate value overflows 256 bits
+library LibFullMath {
+  /// @notice Calculates floor(a×b÷denominator) with full precision. Throws if result overflows a uint256 or denominator == 0
+  /// @param a The multiplicand
+  /// @param b The multiplier
+  /// @param denominator The divisor
+  /// @return result The 256-bit result
+  /// @dev Credit to Remco Bloemen under MIT license https://xn--2-umb.com/21/muldiv
+  function mulDiv(
+    uint256 a,
+    uint256 b,
+    uint256 denominator
+  ) internal pure returns (uint256 result) {
+    unchecked {
+      // 512-bit multiply [prod1 prod0] = a * b
+      // Compute the product mod 2**256 and mod 2**256 - 1
+      // then use the Chinese Remainder Theorem to reconstruct
+      // the 512 bit result. The result is stored in two 256
+      // variables such that product = prod1 * 2**256 + prod0
+      uint256 prod0; // Least significant 256 bits of the product
+      uint256 prod1; // Most significant 256 bits of the product
+      assembly {
+        let mm := mulmod(a, b, not(0))
+        prod0 := mul(a, b)
+        prod1 := sub(sub(mm, prod0), lt(mm, prod0))
+      }
+
+      // Handle non-overflow cases, 256 by 256 division
+      if (prod1 == 0) {
+        require(denominator > 0);
+        assembly {
+          result := div(prod0, denominator)
+        }
+        return result;
+      }
+
+      // Make sure the result is less than 2**256.
+      // Also prevents denominator == 0
+      require(denominator > prod1);
+
+      ///////////////////////////////////////////////
+      // 512 by 256 division.
+      ///////////////////////////////////////////////
+
+      // Make division exact by subtracting the remainder from [prod1 prod0]
+      // Compute remainder using mulmod
+      uint256 remainder;
+      assembly {
+        remainder := mulmod(a, b, denominator)
+      }
+      // Subtract 256 bit number from 512 bit number
+      assembly {
+        prod1 := sub(prod1, gt(remainder, prod0))
+        prod0 := sub(prod0, remainder)
+      }
+
+      // Factor powers of two out of denominator
+      // Compute largest power of two divisor of denominator.
+      // Always >= 1.
+      uint256 twos = (type(uint256).max - denominator + 1) & denominator;
+      // Divide denominator by power of two
+      assembly {
+        denominator := div(denominator, twos)
+      }
+
+      // Divide [prod1 prod0] by the factors of two
+      assembly {
+        prod0 := div(prod0, twos)
+      }
+      // Shift in bits from prod1 into prod0. For this we need
+      // to flip `twos` such that it is 2**256 / twos.
+      // If twos is zero, then it becomes one
+      assembly {
+        twos := add(div(sub(0, twos), twos), 1)
+      }
+      prod0 |= prod1 * twos;
+
+      // Invert denominator mod 2**256
+      // Now that denominator is an odd number, it has an inverse
+      // modulo 2**256 such that denominator * inv = 1 mod 2**256.
+      // Compute the inverse by starting with a seed that is correct
+      // correct for four bits. That is, denominator * inv = 1 mod 2**4
+      uint256 inv = (3 * denominator) ^ 2;
+      // Now use Newton-Raphson iteration to improve the precision.
+      // Thanks to Hensel's lifting lemma, this also works in modular
+      // arithmetic, doubling the correct bits in each step.
+      inv *= 2 - denominator * inv; // inverse mod 2**8
+      inv *= 2 - denominator * inv; // inverse mod 2**16
+      inv *= 2 - denominator * inv; // inverse mod 2**32
+      inv *= 2 - denominator * inv; // inverse mod 2**64
+      inv *= 2 - denominator * inv; // inverse mod 2**128
+      inv *= 2 - denominator * inv; // inverse mod 2**256
+
+      // Because the division is now exact we can divide by multiplying
+      // with the modular inverse of denominator. This will give us the
+      // correct result modulo 2**256. Since the precoditions guarantee
+      // that the outcome is less than 2**256, this is the final result.
+      // We don't need to compute the high bits of the result and prod1
+      // is no longer required.
+      result = prod0 * inv;
+      return result;
+    }
+  }
+
+  /// @notice Calculates ceil(a×b÷denominator) with full precision. Throws if result overflows a uint256 or denominator == 0
+  /// @param a The multiplicand
+  /// @param b The multiplier
+  /// @param denominator The divisor
+  /// @return result The 256-bit result
+  function mulDivRoundingUp(
+    uint256 a,
+    uint256 b,
+    uint256 denominator
+  ) internal pure returns (uint256 result) {
+    result = mulDiv(a, b, denominator);
+    unchecked {
+      if (mulmod(a, b, denominator) > 0) {
+        require(result < type(uint256).max);
+        result++;
+      }
+    }
+  }
+
+  // implementation from https://github.com/Uniswap/uniswap-lib/commit/99f3f28770640ba1bb1ff460ac7c5292fb8291a0
+  // original implementation: https://github.com/abdk-consulting/abdk-libraries-solidity/blob/master/ABDKMath64x64.sol#L687
+  function sqrt(uint256 x) internal pure returns (uint256) {
+    if (x == 0) return 0;
+    uint256 xx = x;
+    uint256 r = 1;
+
+    if (xx >= 0x100000000000000000000000000000000) {
+      xx >>= 128;
+      r <<= 64;
+    }
+
+    if (xx >= 0x10000000000000000) {
+      xx >>= 64;
+      r <<= 32;
+    }
+    if (xx >= 0x100000000) {
+      xx >>= 32;
+      r <<= 16;
+    }
+    if (xx >= 0x10000) {
+      xx >>= 16;
+      r <<= 8;
+    }
+    if (xx >= 0x100) {
+      xx >>= 8;
+      r <<= 4;
+    }
+    if (xx >= 0x10) {
+      xx >>= 4;
+      r <<= 2;
+    }
+    if (xx >= 0x8) {
+      r <<= 1;
+    }
+
+    r = (r + x / r) >> 1;
+    r = (r + x / r) >> 1;
+    r = (r + x / r) >> 1;
+    r = (r + x / r) >> 1;
+    r = (r + x / r) >> 1;
+    r = (r + x / r) >> 1;
+    r = (r + x / r) >> 1; // Seven iterations should be enough
+    uint256 r1 = x / r;
+    return (r < r1 ? r : r1);
+  }
+
+  /// @dev div by return in 2e112
+  function fdiv(uint256 lhs, uint256 rhs) internal pure returns (uint256) {
+    return (lhs * (2**112)) / rhs;
+  }
+}
+
+
+// File: solidity/contracts/oracle/interfaces/ILiquidityPair.sol
+// SPDX-License-Identifier: BUSL
+pragma solidity 0.8.19;
+
+interface ILiquidityPair {
+  function totalSupply() external view returns (uint256);
+
+  function token0() external view returns (address);
+
+  function token1() external view returns (address);
+
+  function getReserves()
+    external
+    view
+    returns (
+      uint112 reserve0,
+      uint112 reserve1,
+      uint32 blockTimestampLast
+    );
+}
+
+
+// File: solidity/contracts/oracle/interfaces/IAlpacaV2Oracle.sol
+// SPDX-License-Identifier: BUSL
+pragma solidity 0.8.19;
+
+interface IAlpacaV2Oracle {
+  struct Config {
+    address router;
+    uint64 maxPriceDiffBps;
+    address[] path;
+    bool isUsingV3Pool;
+  }
+
+  /// @dev Set tokenConfig for getting dex price.
+  function setTokenConfig(address[] calldata _tokens, Config[] calldata _configs) external;
+
+  /// @dev Set uniswap v3 pools
+  function setPools(address[] calldata _pools) external;
+
+  /// @dev Return value in USD for the given lpAmount.
+  function lpToDollar(uint256 _lpAmount, address _lpToken) external view returns (uint256, uint256);
+
+  /// @dev Return amount of LP for the given USD.
+  function dollarToLp(uint256 _dollarAmount, address _lpToken) external view returns (uint256, uint256);
+
+  /// @dev Return value of given token in USD.
+  function getTokenPrice(address _token) external view returns (uint256, uint256);
+
+  /// @dev Set new oracle.
+  function setOracle(address _oracle) external;
+
+  /// @dev Return true if token price is stable.
+  function isStable(address _tokenAddress) external view;
+
+  function getPriceFromV3Pool(address _source, address _destination) external view returns (uint256 _price);
+
+  function oracle() external view returns (address);
+
+  function usd() external view returns (address);
+
+  /// @dev Errors
+  error AlpacaV2Oracle_InvalidLPAddress();
+  error AlpacaV2Oracle_InvalidOracleAddress();
+  error AlpacaV2Oracle_InvalidConfigLength();
+  error AlpacaV2Oracle_InvalidConfigPath();
+  error AlpacaV2Oracle_InvalidBaseStableTokenDecimal();
+  error AlpacaV2Oracle_InvalidPriceDiffConfig();
+  error AlpacaV2Oracle_PriceTooDeviate(uint256 _dexPrice, uint256 _oraclePrice);
+}
+
+
+// File: solidity/contracts/oracle/interfaces/IPriceOracle.sol
+// SPDX-License-Identifier: BUSL
+/**
+  ∩~~~~∩ 
+  ξ ･×･ ξ 
+  ξ　~　ξ 
+  ξ　　 ξ 
+  ξ　　 “~～~～〇 
+  ξ　　　　　　 ξ 
+  ξ ξ ξ~～~ξ ξ ξ 
+　 ξ_ξξ_ξ　ξ_ξξ_ξ
+Alpaca Fin Corporation
+*/
+pragma solidity 0.8.19;
+
+interface IPriceOracle {
+  /// @dev Return the wad price of token0/token1, multiplied by 1e18
+  /// NOTE: (if you have 1 token0 how much you can sell it for token1)
+  function getPrice(address token0, address token1) external view returns (uint256 price, uint256 lastUpdate);
+}
+
+
+// File: solidity/contracts/oracle/interfaces/IERC20.sol
+// SPDX-License-Identifier: BUSL
+pragma solidity 0.8.19;
+
+interface IERC20 {
+  function decimals() external view returns (uint8);
+
+  function totalSupply() external view returns (uint256);
+
+  function balanceOf(address account) external view returns (uint256);
+
+  function transfer(address recipient, uint256 amount) external returns (bool);
+
+  function allowance(address owner, address spender) external view returns (uint256);
+
+  function approve(address spender, uint256 amount) external returns (bool);
+
+  function transferFrom(
+    address sender,
+    address recipient,
+    uint256 amount
+  ) external returns (bool);
+
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+// File: solidity/contracts/oracle/interfaces/IRouterLike.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+interface IRouterLike {
+  function factory() external pure returns (address);
+
+  function WETH() external pure returns (address);
+
+  function addLiquidity(
+    address tokenA,
+    address tokenB,
+    uint256 amountADesired,
+    uint256 amountBDesired,
+    uint256 amountAMin,
+    uint256 amountBMin,
+    address to,
+    uint256 deadline
+  )
+    external
+    returns (
+      uint256 amountA,
+      uint256 amountB,
+      uint256 liquidity
+    );
+
+  function addLiquidityETH(
+    address token,
+    uint256 amountTokenDesired,
+    uint256 amountTokenMin,
+    uint256 amountETHMin,
+    address to,
+    uint256 deadline
+  )
+    external
+    payable
+    returns (
+      uint256 amountToken,
+      uint256 amountETH,
+      uint256 liquidity
+    );
+
+  function removeLiquidity(
+    address tokenA,
+    address tokenB,
+    uint256 liquidity,
+    uint256 amountAMin,
+    uint256 amountBMin,
+    address to,
+    uint256 deadline
+  ) external returns (uint256 amountA, uint256 amountB);
+
+  function removeLiquidityETH(
+    address token,
+    uint256 liquidity,
+    uint256 amountTokenMin,
+    uint256 amountETHMin,
+    address to,
+    uint256 deadline
+  ) external returns (uint256 amountToken, uint256 amountETH);
+
+  function removeLiquidityWithPermit(
+    address tokenA,
+    address tokenB,
+    uint256 liquidity,
+    uint256 amountAMin,
+    uint256 amountBMin,
+    address to,
+    uint256 deadline,
+    bool approveMax,
+    uint8 v,
+    bytes32 r,
+    bytes32 s
+  ) external returns (uint256 amountA, uint256 amountB);
+
+  function removeLiquidityETHWithPermit(
+    address token,
+    uint256 liquidity,
+    uint256 amountTokenMin,
+    uint256 amountETHMin,
+    address to,
+    uint256 deadline,
+    bool approveMax,
+    uint8 v,
+    bytes32 r,
+    bytes32 s
+  ) external returns (uint256 amountToken, uint256 amountETH);
+
+  function swapExactTokensForTokens(
+    uint256 amountIn,
+    uint256 amountOutMin,
+    address[] calldata path,
+    address to,
+    uint256 deadline
+  ) external returns (uint256[] memory amounts);
+
+  function swapTokensForExactTokens(
+    uint256 amountOut,
+    uint256 amountInMax,
+    address[] calldata path,
+    address to,
+    uint256 deadline
+  ) external returns (uint256[] memory amounts);
+
+  function swapExactETHForTokens(
+    uint256 amountOutMin,
+    address[] calldata path,
+    address to,
+    uint256 deadline
+  ) external payable returns (uint256[] memory amounts);
+
+  function swapTokensForExactETH(
+    uint256 amountOut,
+    uint256 amountInMax,
+    address[] calldata path,
+    address to,
+    uint256 deadline
+  ) external returns (uint256[] memory amounts);
+
+  function swapExactTokensForETH(
+    uint256 amountIn,
+    uint256 amountOutMin,
+    address[] calldata path,
+    address to,
+    uint256 deadline
+  ) external returns (uint256[] memory amounts);
+
+  function swapETHForExactTokens(
+    uint256 amountOut,
+    address[] calldata path,
+    address to,
+    uint256 deadline
+  ) external payable returns (uint256[] memory amounts);
+
+  function quote(
+    uint256 amountA,
+    uint256 reserveA,
+    uint256 reserveB
+  ) external pure returns (uint256 amountB);
+
+  function getAmountOut(
+    uint256 amountIn,
+    uint256 reserveIn,
+    uint256 reserveOut
+  ) external pure returns (uint256 amountOut);
+
+  function getAmountIn(
+    uint256 amountOut,
+    uint256 reserveIn,
+    uint256 reserveOut
+  ) external pure returns (uint256 amountIn);
+
+  function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts);
+
+  function getAmountsIn(uint256 amountOut, address[] calldata path) external view returns (uint256[] memory amounts);
+
+  function removeLiquidityETHSupportingFeeOnTransferTokens(
+    address token,
+    uint256 liquidity,
+    uint256 amountTokenMin,
+    uint256 amountETHMin,
+    address to,
+    uint256 deadline
+  ) external returns (uint256 amountETH);
+
+  function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+    address token,
+    uint256 liquidity,
+    uint256 amountTokenMin,
+    uint256 amountETHMin,
+    address to,
+    uint256 deadline,
+    bool approveMax,
+    uint8 v,
+    bytes32 r,
+    bytes32 s
+  ) external returns (uint256 amountETH);
+
+  function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+    uint256 amountIn,
+    uint256 amountOutMin,
+    address[] calldata path,
+    address to,
+    uint256 deadline
+  ) external;
+
+  function swapExactETHForTokensSupportingFeeOnTransferTokens(
+    uint256 amountOutMin,
+    address[] calldata path,
+    address to,
+    uint256 deadline
+  ) external payable;
+
+  function swapExactTokensForETHSupportingFeeOnTransferTokens(
+    uint256 amountIn,
+    uint256 amountOutMin,
+    address[] calldata path,
+    address to,
+    uint256 deadline
+  ) external;
+}
+
+
+// File: solidity/contracts/oracle/interfaces/IPancakeV3Pool.sol
+// SPDX-License-Identifier: GPL-2.0-or-later
+pragma solidity >=0.5.0;
+
+/// @title Pool state that can change
+/// @notice These methods compose the pool's state, and can change with any frequency including multiple times
+/// per transaction
+interface IPancakeV3Pool {
+  /// @notice The 0th storage slot in the pool stores many values, and is exposed as a single method to save gas
+  /// when accessed externally.
+  /// @return sqrtPriceX96 The current price of the pool as a sqrt(token1/token0) Q64.96 value
+  /// tick The current tick of the pool, i.e. according to the last tick transition that was run.
+  /// This value may not always be equal to SqrtTickMath.getTickAtSqrtRatio(sqrtPriceX96) if the price is on a tick
+  /// boundary.
+  /// observationIndex The index of the last oracle observation that was written,
+  /// observationCardinality The current maximum number of observations stored in the pool,
+  /// observationCardinalityNext The next maximum number of observations, to be updated when the observation.
+  /// feeProtocol The protocol fee for both tokens of the pool.
+  /// Encoded as two 4 bit values, where the protocol fee of token1 is shifted 4 bits and the protocol fee of token0
+  /// is the lower 4 bits. Used as the denominator of a fraction of the swap fee, e.g. 4 means 1/4th of the swap fee.
+  /// unlocked Whether the pool is currently locked to reentrancy
+  function slot0()
+    external
+    view
+    returns (
+      uint160 sqrtPriceX96,
+      int24 tick,
+      uint16 observationIndex,
+      uint16 observationCardinality,
+      uint16 observationCardinalityNext,
+      uint32 feeProtocol,
+      bool unlocked
+    );
+
+  /// @notice The fee growth as a Q128.128 fees of token0 collected per unit of liquidity for the entire life of the pool
+  /// @dev This value can overflow the uint256
+  function feeGrowthGlobal0X128() external view returns (uint256);
+
+  /// @notice The fee growth as a Q128.128 fees of token1 collected per unit of liquidity for the entire life of the pool
+  /// @dev This value can overflow the uint256
+  function feeGrowthGlobal1X128() external view returns (uint256);
+
+  /// @notice The amounts of token0 and token1 that are owed to the protocol
+  /// @dev Protocol fees will never exceed uint128 max in either token
+  function protocolFees() external view returns (uint128 token0, uint128 token1);
+
+  /// @notice The currently in range liquidity available to the pool
+  /// @dev This value has no relationship to the total liquidity across all ticks
+  function liquidity() external view returns (uint128);
+
+  /// @notice Look up information about a specific tick in the pool
+  /// @param tick The tick to look up
+  /// @return liquidityGross the total amount of position liquidity that uses the pool either as tick lower or
+  /// tick upper,
+  /// liquidityNet how much liquidity changes when the pool price crosses the tick,
+  /// feeGrowthOutside0X128 the fee growth on the other side of the tick from the current tick in token0,
+  /// feeGrowthOutside1X128 the fee growth on the other side of the tick from the current tick in token1,
+  /// tickCumulativeOutside the cumulative tick value on the other side of the tick from the current tick
+  /// secondsPerLiquidityOutsideX128 the seconds spent per liquidity on the other side of the tick from the current tick,
+  /// secondsOutside the seconds spent on the other side of the tick from the current tick,
+  /// initialized Set to true if the tick is initialized, i.e. liquidityGross is greater than 0, otherwise equal to false.
+  /// Outside values can only be used if the tick is initialized, i.e. if liquidityGross is greater than 0.
+  /// In addition, these values are only relative and must be used only in comparison to previous snapshots for
+  /// a specific position.
+  function ticks(int24 tick)
+    external
+    view
+    returns (
+      uint128 liquidityGross,
+      int128 liquidityNet,
+      uint256 feeGrowthOutside0X128,
+      uint256 feeGrowthOutside1X128,
+      int56 tickCumulativeOutside,
+      uint160 secondsPerLiquidityOutsideX128,
+      uint32 secondsOutside,
+      bool initialized
+    );
+
+  /// @notice Returns 256 packed tick initialized boolean values. See TickBitmap for more information
+  function tickBitmap(int16 wordPosition) external view returns (uint256);
+
+  /// @notice Returns the information about a position by the position's key
+  /// @param key The position's key is a hash of a preimage composed by the owner, tickLower and tickUpper
+  /// @return _liquidity The amount of liquidity in the position,
+  /// Returns feeGrowthInside0LastX128 fee growth of token0 inside the tick range as of the last mint/burn/poke,
+  /// Returns feeGrowthInside1LastX128 fee growth of token1 inside the tick range as of the last mint/burn/poke,
+  /// Returns tokensOwed0 the computed amount of token0 owed to the position as of the last mint/burn/poke,
+  /// Returns tokensOwed1 the computed amount of token1 owed to the position as of the last mint/burn/poke
+  function positions(bytes32 key)
+    external
+    view
+    returns (
+      uint128 _liquidity,
+      uint256 feeGrowthInside0LastX128,
+      uint256 feeGrowthInside1LastX128,
+      uint128 tokensOwed0,
+      uint128 tokensOwed1
+    );
+
+  /// @notice Returns data about a specific observation index
+  /// @param index The element of the observations array to fetch
+  /// @dev You most likely want to use #observe() instead of this method to get an observation as of some amount of time
+  /// ago, rather than at a specific index in the array.
+  /// @return blockTimestamp The timestamp of the observation,
+  /// Returns tickCumulative the tick multiplied by seconds elapsed for the life of the pool as of the observation timestamp,
+  /// Returns secondsPerLiquidityCumulativeX128 the seconds per in range liquidity for the life of the pool as of the observation timestamp,
+  /// Returns initialized whether the observation has been initialized and the values are safe to use
+  function observations(uint256 index)
+    external
+    view
+    returns (
+      uint32 blockTimestamp,
+      int56 tickCumulative,
+      uint160 secondsPerLiquidityCumulativeX128,
+      bool initialized
+    );
+
+  /// @notice The first of the two tokens of the pool, sorted by address
+  /// @return The token contract address
+  function token0() external view returns (address);
+
+  /// @notice The second of the two tokens of the pool, sorted by address
+  /// @return The token contract address
+  function token1() external view returns (address);
+}
+
+
+// File: node_modules/@openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
