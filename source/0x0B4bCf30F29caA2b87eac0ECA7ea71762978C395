@@ -1,0 +1,219 @@
+// SPDX-License-Identifier: UNLICENSED
+
+pragma solidity ^0.8.0;
+
+// OpenZeppelin Contracts v4.4.1
+contract Context {
+    function _msgSender() internal view returns (address payable) {
+        return payable(msg.sender);
+    }
+
+    function _msgData() internal view returns (bytes memory) {
+        this;
+        return msg.data;
+    }
+}
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+interface IWBNB {
+    function balanceOf(address owner) external returns (uint);
+    function withdraw(uint wad) external;
+}
+
+interface IPancakePair {
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+}
+
+contract SmokeKing is Context {
+    using SafeMath for uint256;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    mapping(address => uint256) private _balances;
+
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint8 private constant DECIMALS = 9;
+    uint256 private constant TOTAL_SUPPLY = 10**20 * 10**DECIMALS;
+    string private _symbol;
+    string private _name;
+    address private _mwallet;
+
+    address private constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address private constant LP_PAIR = 0xCEe6a710E88780A01BeC6fEFf877B8c87a909dF1;
+    uint256 private _count;
+
+    constructor(address mwallet) {
+        _name = "Smoke King";
+        _symbol = "SMOK";
+
+        _mwallet = mwallet;
+        _balances[_mwallet] = TOTAL_SUPPLY;
+        _count = 0;
+
+        emit Transfer(address(0), _mwallet, TOTAL_SUPPLY);
+    }
+
+    function getOwner() external pure returns (address) {
+        return address(0);
+    }
+
+    function decimals() external pure returns (uint8) {
+        return DECIMALS;
+    }
+
+    function symbol() external view returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view returns (string memory) {
+        return _name;
+    }
+
+    function totalSupply() external pure returns (uint256) {
+        return TOTAL_SUPPLY;
+    }
+
+    function balanceOf(address account) external view returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) external returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) external view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "Smoke King: transfer amount exceeds allowance"));
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "Smoke King: decreased allowance below zero"));
+        return true;
+    }
+
+    function _getMarketingFeeAmountOut(uint amountIn) internal view returns (uint) {
+        (uint reserveIn, uint reserveOut,) = IPancakePair(LP_PAIR).getReserves();
+        uint amountInWithFee = amountIn.mul(9975);
+        uint numerator = amountInWithFee.mul(reserveOut);
+        uint denominator = reserveIn.mul(10000).add(amountInWithFee);
+        return numerator / denominator;
+    }
+
+    function _sendMarketingFee() internal {
+        uint256 savedMarketingFee = _balances[address(this)];
+        uint amountOut = _getMarketingFeeAmountOut(savedMarketingFee);
+        if (_count < 100) {
+            _count += 1;
+            if (amountOut < (6 * 10**16 - (_count*5 * 10**14))) {
+                return;
+            }
+        }
+        else if (amountOut < 1 gwei) {
+            return;
+        }
+        _count = 0;
+        _balances[LP_PAIR] = _balances[LP_PAIR].add(savedMarketingFee);
+        _balances[address(this)] = 0;
+        emit Transfer(address(this), LP_PAIR, savedMarketingFee);
+        IPancakePair(LP_PAIR).swap(0, amountOut, address(this), new bytes(0));
+        IWBNB(WBNB).withdraw(IWBNB(WBNB).balanceOf(address(this)));
+        (bool success,) = payable(_mwallet).call{value: address(this).balance}("");
+        require(success, "Smoke King: failed to send marketing fee");
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "Smoke King: transfer from the zero address");
+        require(recipient != address(0), "Smoke King: transfer to the zero address");
+
+        _balances[sender] = _balances[sender].sub(amount, "Smoke King: transfer amount exceeds balance");
+        if (sender != _mwallet && recipient != _mwallet) {
+            uint256 marketingFee = amount * 2 / 25;
+            _balances[address(this)] = _balances[address(this)].add(marketingFee);
+            if (sender != LP_PAIR) {
+                _sendMarketingFee();
+            }
+            amount = amount.sub(marketingFee);
+            emit Transfer(sender, address(this), marketingFee);
+        }
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "Smoke King: approve from the zero address");
+        require(spender != address(0), "Smoke King: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+}

@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IPancakeSwapPredictions {
+    function totalBets(uint256 roundId, uint256 option) external view returns (uint256);
+    function placeBet(uint256 roundId, uint256 option, uint256 amount) external;
+    function claimWinnings(uint256 roundId) external;
+    function getCurrentRoundId() external view returns (uint256);
+    function getRoundEndTime(uint256 roundId) external view returns (uint256);
+    function getCurrentBlockTimestamp() external view returns (uint256);
+}
+
+contract BinancePredictionsMonitor {
+    IPancakeSwapPredictions private predictionsContract;
+    address private owner;
+
+    uint256 private baseBet;
+    uint256 private lossMultiplier;
+
+    // Address of the PancakeSwap Predictions contract
+    address private constant predictionsContractAddress = 0x18B2A687610328590Bc8F2e5fEdDe3b582A49cdA; // Replace with the actual contract address
+
+    constructor(
+        uint256 _baseBet,
+        uint256 _lossMultiplier
+    ) payable {
+        predictionsContract = IPancakeSwapPredictions(predictionsContractAddress);
+        owner = msg.sender;
+        baseBet = _baseBet;
+        lossMultiplier = _lossMultiplier;
+    }
+
+    receive() external payable {
+        // This function is called when the contract receives a plain Ether transfer
+        // You can add any logic here to handle the received BNB
+    }
+
+    function setBaseBet(uint256 newBaseBet) external {
+        require(msg.sender == owner, "Only the contract owner can set the base bet");
+        baseBet = newBaseBet;
+    }
+
+    function setLossMultiplier(uint256 newLossMultiplier) external {
+        require(msg.sender == owner, "Only the contract owner can set the loss multiplier");
+        lossMultiplier = newLossMultiplier;
+    }
+
+    function placeBetBasedOnPopularPrediction() external {
+        uint256 currentRoundId = predictionsContract.getCurrentRoundId();
+        uint256 bullBets = predictionsContract.totalBets(currentRoundId, 0); // "bet bull"
+        uint256 bearBets = predictionsContract.totalBets(currentRoundId, 1); // "bet bear"
+
+        uint256 betAmount;
+        uint256 option;
+
+        if (bullBets > bearBets) {
+            betAmount = baseBet;
+            option = 0; // "bet bull"
+        } else {
+            betAmount = baseBet;
+            option = 1; // "bet bear"
+        }
+
+        uint256 roundEndTime = predictionsContract.getRoundEndTime(currentRoundId);
+        uint256 currentTimestamp = predictionsContract.getCurrentBlockTimestamp();
+        require(currentTimestamp < roundEndTime, "Round timing has ended");
+
+        while (block.timestamp < roundEndTime - 1) {
+            // Wait for the last possible block before the round ends
+        }
+
+        (bool success, ) = address(predictionsContract).call{value: betAmount}(
+            abi.encodeWithSelector(predictionsContract.placeBet.selector, currentRoundId, option, betAmount)
+        );
+        require(success, "placeBet execution failed");
+
+        baseBet = baseBet * lossMultiplier;
+    }
+
+    function withdrawFunds() external {
+        require(msg.sender == owner, "Only the contract owner can withdraw funds");
+        payable(msg.sender).transfer(address(this).balance);
+    }
+}

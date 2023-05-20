@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract ForeverToken {
+    string public constant name = "FOREVER TOKEN";
+    string public constant symbol = "FVT";
+    uint8 public constant decimals = 18;
+    uint256 public totalSupply = 40000000000 * 10**decimals;
+
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) private allowances;
+
+    address public constant taxAddress = 0x9404946e04553b51fE15aa723529C5296FD2c857;
+    uint256 public constant autoburnTaxPercentage = 1;
+    uint256 public constant redistributionTaxPercentage = 2;
+    uint256 public constant taxDivisor = 100;
+
+    bool private autoburnEnabled = true;
+    uint256 private autoburnThreshold = 5000000000 * 10**decimals;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        balances[msg.sender] = totalSupply;
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        require(recipient != address(0), "Invalid recipient address");
+        require(amount <= balances[msg.sender], "Insufficient balance");
+
+        uint256 autoburnTax = 0;
+        if (autoburnEnabled && totalSupply > autoburnThreshold) {
+            autoburnTax = (amount * autoburnTaxPercentage) / taxDivisor;
+            if (totalSupply - autoburnTax < autoburnThreshold) {
+                autoburnTax = totalSupply - autoburnThreshold;
+            }
+            totalSupply -= autoburnTax;
+        }
+
+        uint256 redistributionTax = (amount * redistributionTaxPercentage) / taxDivisor;
+        uint256 taxedAmount = amount - autoburnTax - redistributionTax;
+
+        balances[msg.sender] -= amount;
+        balances[recipient] += taxedAmount;
+        balances[taxAddress] += redistributionTax;
+
+        emit Transfer(msg.sender, recipient, taxedAmount);
+        emit Transfer(msg.sender, taxAddress, redistributionTax);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        require(spender != address(0), "Invalid spender address");
+
+        allowances[msg.sender][spender] = amount;
+
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+        require(sender != address(0), "Invalid sender address");
+        require(recipient != address(0), "Invalid recipient address");
+        require(amount <= balances[sender], "Insufficient balance");
+        require(amount <= allowances[sender][msg.sender], "Insufficient allowance");
+
+        uint256 autoburnTax = 0;
+        if (autoburnEnabled && totalSupply > autoburnThreshold) {
+            autoburnTax = (amount * autoburnTaxPercentage) / taxDivisor;
+            if (totalSupply - autoburnTax < autoburnThreshold) {
+                autoburnTax = totalSupply - autoburnThreshold;
+            }
+            totalSupply -= autoburnTax;
+        }
+
+        uint256 redistributionTax = (amount * redistributionTaxPercentage) / taxDivisor;
+        uint256 taxedAmount = amount - autoburnTax - redistributionTax;
+
+        balances[sender] -= amount;
+        balances[recipient] += taxedAmount;
+        balances[taxAddress] += redistributionTax;
+        allowances[sender][msg.sender] -= amount;
+
+        emit Transfer(sender, recipient, taxedAmount);
+        emit Transfer(sender, taxAddress, redistributionTax);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return allowances[owner][spender];
+    }
+}

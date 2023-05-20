@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract RifaCoin {
+    string public name = "RifaCoin";
+    string public symbol = "RFC";
+    uint256 public totalSupply = 1000000000 * 10**18; // 1 bilhão de tokens
+    uint8 public decimals = 18;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => bool) public lockedAccounts;
+    mapping(address => uint256) public lastBonusClaimed;
+    mapping(address => uint256) public lastDistributionClaimed;
+    mapping(address => uint256) public lastTransferTimestamp;
+
+    address public owner = 0xA1E77E46783B28D7684DE0413F6E6c80d3a406FF;
+    uint256 public maxWalletBalance = 1000000 * 10**18; // 1 milhão de tokens
+    uint256 public minTransferInterval = 300; // 300 segundos (5 minutos)
+
+    uint256 public buyFeePercent = 5;
+    uint256 public sellFeePercent = 5;
+    uint256 public dailyBonusPercent = 1;
+    uint256 public bonusThreshold = 1000 * 10**18; // 1000 tokens
+    uint256 public monthlyBonusPercent = 3;
+    uint256 public bonusDistributionInterval = 30 days;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Buy(address indexed buyer, uint256 amount, uint256 value);
+    event Sell(address indexed seller, uint256 amount, uint256 value);
+    event LockAccount(address indexed account);
+    event UnlockAccount(address indexed account);
+
+    constructor() {
+        balanceOf[owner] = totalSupply;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can call this function");
+        _;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal {
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(!lockedAccounts[from], "Sender's account is locked");
+        require(!lockedAccounts[to], "Recipient's account is locked");
+        require(value > 0, "Invalid transfer amount");
+        require(
+            block.timestamp - lastTransferTimestamp[from] >= minTransferInterval,
+            "Transfer interval not reached"
+        );
+
+        balanceOf[from] -= value;
+        balanceOf[to] += value;
+        lastTransferTimestamp[from] = block.timestamp;
+
+        emit Transfer(from, to, value);
+    }
+
+    function transfer(address to, uint256 value) external {
+        _transfer(msg.sender, to, value);
+    }
+
+    function buy() external payable {
+        uint256 amount = msg.value * 10**18 / getCurrentTokenPrice();
+        _transfer(owner, msg.sender, amount);
+
+        emit Buy(msg.sender, amount, msg.value);
+    }
+
+    function sell(uint256 amount) external {
+        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
+        require(!lockedAccounts[msg.sender], "Sender's account is locked");
+        require(amount > 0, "Invalid sell amount");
+        require(
+            block.timestamp - lastTransferTimestamp[msg.sender] >= minTransferInterval,
+            "Transfer interval not reached"
+        );
+
+        uint256 value = amount * getCurrentTokenPrice() / 10**18;
+        (bool success, ) = msg.sender.call{value: value}("");
+        require(success, "Failed to send BNB");
+
+        _transfer(msg.sender, owner, amount);
+        emit Sell(msg.sender, amount, value);
+    }
+
+    function getCurrentTokenPrice() public view returns (uint256) {
+        return address(this).balance / (totalSupply - balanceOf[owner]);
+    }
+
+    function claimDailyBonus() external {
+        require(balanceOf[msg.sender] >= bonusThreshold, "Insufficient balance for bonus");
+        require(
+            block.timestamp - lastBonusClaimed[msg.sender] >= 1 days,
+            "Bonus already claimed today"
+        );
+
+        uint256 bonusAmount = balanceOf[msg.sender] * dailyBonusPercent / 100;
+        balanceOf[msg.sender] += bonusAmount;
+        lastBonusClaimed[msg.sender] = block.timestamp;
+
+        emit Transfer(address(this), msg.sender, bonusAmount);
+    }
+
+    function claimMonthlyBonus() external {
+        require(balanceOf[msg.sender] >= bonusThreshold, "Insufficient balance for bonus");
+        require(
+            block.timestamp - lastDistributionClaimed[msg.sender] >= bonusDistributionInterval,
+            "Bonus distribution interval not reached"
+        );
+
+        uint256 bonusAmount = balanceOf[msg.sender] * monthlyBonusPercent / 100;
+        balanceOf[msg.sender] += bonusAmount;
+        lastDistributionClaimed[msg.sender] = block.timestamp;
+
+        emit Transfer(address(this), msg.sender, bonusAmount);
+    }
+
+    function lockAccount(address account) external onlyOwner {
+        require(!lockedAccounts[account], "Account is already locked");
+
+        lockedAccounts[account] = true;
+        emit LockAccount(account);
+    }
+
+    function unlockAccount(address account) external onlyOwner {
+        require(lockedAccounts[account], "Account is already unlocked");
+
+        lockedAccounts[account] = false;
+        emit UnlockAccount(account);
+    }
+}
