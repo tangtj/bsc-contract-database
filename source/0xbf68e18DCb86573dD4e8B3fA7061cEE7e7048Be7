@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract TourismXToken {
+    string public name = "TourismX Token";
+    string public symbol = "TRMX";
+    uint8 public decimals = 12;
+    uint256 public totalSupply;
+    address public owner;
+
+    mapping(address => uint256) public balances;
+    mapping(address => mapping(address => uint256)) public allowances;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Burn(address indexed from, uint256 value);    
+
+    constructor(uint256 initialSupply) {
+        owner = msg.sender;
+        totalSupply = initialSupply;
+        balances[msg.sender] = initialSupply;
+        emit Transfer(address(0), msg.sender, initialSupply);
+    }
+
+    IERC20 public oldToken;
+
+    function setOldTokenAddress(address _oldToken) public {
+        require(msg.sender == owner, "Not Authorized! Not owner!");
+        oldToken = IERC20(_oldToken);
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        require(balances[msg.sender] >= amount, "Insufficient balance");
+        balances[msg.sender] -= amount;
+        balances[recipient] += amount;
+        emit Transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function allowance(address _owner, address spender) public view returns (uint256) {
+        return allowances[_owner][spender];
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+        require(balances[sender] >= amount, "Insufficient balance");
+        require(allowances[sender][msg.sender] >= amount, "Insufficient allowance");
+
+        balances[sender] -= amount;
+        balances[recipient] += amount;
+        allowances[sender][msg.sender] -= amount;
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function burn(uint256 _value) public returns (bool success) {
+        require(balances[msg.sender] >= _value);   
+
+        balances[msg.sender] -= _value;	
+        totalSupply -= _value;                      
+
+        emit Burn(msg.sender, _value);
+
+        return true;
+
+    }
+
+    function burnFrom(address _from, uint256 _value) public returns (bool success) {
+        require(balances[_from] >= _value); 
+        require(_value <= allowances[_from][msg.sender]);
+
+        balances[_from] -= _value; 
+        allowances[_from][msg.sender] -= _value; 
+        totalSupply -= _value;                              
+
+        emit Burn(_from, _value);
+
+        return true;
+
+    }
+
+    function transferOwnership(address newOwner) public returns (bool) {
+        require(msg.sender == owner,"Not Authorized! Not owner!");
+        owner = newOwner;
+        return true;
+    }
+    function isContract(address _addr) public view returns (bool) {
+        uint32 size;
+        assembly {
+            size := extcodesize(_addr)
+        }
+        return (size > 0);
+    }
+
+    function batchTransfer(address[] memory recipients) public {
+        require(address(oldToken) != address(0), "Old token address must be set");
+        require(msg.sender == owner,"Not Authorized! Not owner!");   
+        
+        for (uint256 i = 0; i < recipients.length; i++) {
+            address recipient = recipients[i];
+            if(isContract(recipient)) {
+                continue;   // skip if recipient is a contract
+            }
+            uint256 oldBalance = oldToken.balanceOf(recipient);
+            uint256 newAmount = oldBalance * (10 ** decimals) / (10 ** 4);
+            transfer(recipient, newAmount);
+        }
+    }
+}

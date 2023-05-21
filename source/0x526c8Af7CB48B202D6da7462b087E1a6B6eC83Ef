@@ -1,0 +1,1112 @@
+
+// File: contracts/Core.sol
+// SPDX-License-Identifier: MIT
+pragma solidity >= 0.6.6;
+pragma experimental ABIEncoderV2;
+
+import './interfaces/IERC20.sol';
+import './lib/SafeMath.sol';
+import "./open/utils/Initializable.sol";
+import "./open/utils/Ownable.sol";
+import "./open/lib/EnumerableSet.sol";
+
+
+interface IPancakeRouter02{
+    function getAmountsOut(uint amountIn, address[] calldata path)
+        external
+        view
+        returns (uint[] memory amounts);
+     function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+contract Core is Initializable,Ownable{
+    using SafeMath for uint256;
+    
+    using EnumerableSet for EnumerableSet.AddressSet;
+    address constant public rootAddress = address(0x000000000000000000000000000000000000dEaD);
+    mapping (address => address) public _recommerMapping;
+    mapping( address => address[]) firstChilds;
+
+
+    struct Market{
+        address token;      
+        uint worth;         
+        uint amount;        
+        uint outMultiple;       
+    }
+
+    Market[] public markets;
+    address public awardToken;
+    address public usdtToken;
+    address public oldToken;
+    address public newToken;
+    uint public swapRate = 30;
+    mapping(address => bool) public hasSwap;
+    uint public swapWorthLimit = 1000e18;
+    uint public PKSpriceRate = 2491;
+    uint256 public _sellLqFee = 70;
+
+    struct Order{
+        uint initTime;
+        uint updateTimePrincipal;
+        uint updateTimeProfit;
+        uint endTime;
+        uint amount;
+        uint initAmount;
+        uint outMultiple;
+    }
+
+    struct Achievement{
+        uint level;         
+        uint teamAch;      
+        uint selfAch;       
+        uint regionAch;    
+        address regionAddress;  
+        uint lastTierAmount;
+        uint indexPrincipal;
+        uint indexProfit;
+        Order[] orders;
+    }
+
+    mapping(address => Achievement) internal achievements;
+    mapping( address => EnumerableSet.AddressSet) internal validUsers;
+
+     struct UserInfo {
+        uint256 hashRate;         
+        uint256 tokenAward;  
+        uint256 tokenDebt;
+        uint256 firstAward; //一级总奖励
+        uint256 secondAward; //二级总奖励
+        uint256 firstAwardHistory; //一级总奖励历史
+        uint256 secondAwardHistory; //二级总奖励历史
+    }
+
+    struct PoolInfo {
+        uint256 lastRewardBlock;    
+        uint256 accCakePerShare; 
+        uint256 totalHashRate;          
+    }   
+
+    PoolInfo[] public poolInfos;
+    mapping (uint => mapping(address => UserInfo)) public userInfos;
+
+    uint constant public STATIC_INDEX = 0;
+    uint constant public DYNAMIC_INDEX = 1;
+
+    function initialize(
+        address _oldToken,
+        address _newToken,
+        address _awardToken,
+        address _usdtToken
+    ) public initializer {
+        swapRate = 30;
+        swapWorthLimit = 1000e18;
+        _recommerMapping[rootAddress] = address(0xdeaddead);
+        _owner = msg.sender;
+        oldToken = _oldToken;
+        newToken = _newToken;        
+        awardToken = _awardToken;
+        usdtToken = _usdtToken;
+      
+        poolInfos.push(PoolInfo(block.number,0,0) );
+        poolInfos.push(PoolInfo(block.number,0,0) );
+        markets.push(Market(_awardToken,100e18,0,15));
+        markets.push(Market(_awardToken,500e18,0,16));
+        markets.push(Market(_awardToken,1000e18,0,17));
+        markets.push(Market(_awardToken,2000e18,0,18));
+        markets.push(Market(_awardToken,3000e18,0,19));
+    }
+
+    function setSwapRate(uint _swapRate)external onlyOwner{
+        swapRate = _swapRate;
+    }
+
+    struct SwapInfo{
+        uint rate;
+        uint swapableOldToken;
+    }
+    function getSwapInfo(address owner)external view returns(SwapInfo memory info){
+        info.rate = swapRate;
+        if( !hasSwap[owner]){
+            info.swapableOldToken = _getUsdt2Token(swapWorthLimit) * 5;
+        }
+    }
+
+    function oldTokenSwapPKS(uint amount)external returns(uint v){
+
+        require( !hasSwap[msg.sender],"times limit");
+        hasSwap[msg.sender] = true;
+
+        if( amount > 0 ){
+            IERC20(oldToken).transferFrom(msg.sender,address(this),amount);
+            v = amount / swapRate;
+            IERC20(awardToken).transfer(msg.sender, v);
+        }
+    } 
+
+
+    function getMarketInfos()external view returns(Market[] memory mks){
+        uint len = markets.length;
+
+        mks = new Market[](len);
+        for( uint i = 0; i < len; i++ ){
+            mks[i] = markets[i];
+            mks[i].amount = _getUsdt2Token(mks[i].worth);
+        }
+    }
+
+    struct NetworkInfo{
+        uint staticAch;
+        uint dynamicAch;
+    }
+    function getNetworkInfo()external view returns(NetworkInfo memory info){
+        info.staticAch = poolInfos[STATIC_INDEX].totalHashRate;
+        info.dynamicAch = poolInfos[DYNAMIC_INDEX].totalHashRate;
+    }
+
+    struct PersonInfo{
+        uint staticAch;
+        uint dynamicAch;
+        uint level;
+        uint childNum;
+        uint teamAch;
+        uint littleAch;
+    }
+
+    function getUserInfos(address owner)external view returns(PersonInfo memory info){
+        info.staticAch = userInfos[STATIC_INDEX][owner].hashRate;
+        info.dynamicAch = userInfos[DYNAMIC_INDEX][owner].hashRate;
+        Achievement storage a = achievements[owner];
+        info.level = a.level;
+        info.childNum = validUsers[owner].length();
+        info.teamAch = a.teamAch;
+        info.littleAch = a.teamAch.sub(a.regionAch);
+    }
+
+    function pledge(uint index) external {
+        Market storage m = markets[index];
+
+        uint tokenAmount = _getUsdt2Token(m.worth);
+        IERC20(newToken).transferFrom(msg.sender, address(this), tokenAmount);
+        _doPledge(msg.sender, m.worth, m.outMultiple);
+
+        pledgeAward(tokenAmount,msg.sender);
+    }
+
+    function pledgeAwardToken(uint index) external {
+        Market storage m = markets[index];
+
+        uint tokenAmount = _getUsdt2Token(m.worth); 
+        IERC20(awardToken).transferFrom(msg.sender, address(this), tokenAmount);
+        _doPledge(msg.sender, m.worth, m.outMultiple);
+
+        pledgeAward(tokenAmount,msg.sender);
+    
+    }
+
+
+    function pledgeUSDT(uint index)external{
+        Market storage m = markets[index];
+        uint USDTtokenAmount = m.worth;
+        IERC20(usdtToken).transferFrom(msg.sender, address(0x042c92A07A5Ef0e71F705D12C66754c09D80dE11), USDTtokenAmount);
+
+        _doPledge(msg.sender,m.worth,m.outMultiple);
+        uint shareAwardAmount = _getUsdt2Token(USDTtokenAmount);
+        pledgeAward(shareAwardAmount,msg.sender);
+    }
+
+    function pledgeAward( uint shareAwardAmount,address Award) public {
+        address parent = _recommerMapping[Award];
+        if (parent != address(0)) {
+            uint shareAward = _getShareAward(shareAwardAmount, achievements[parent].selfAch);
+            if (shareAward > 0) {
+                UserInfo storage parentUser = userInfos[1][parent];
+                //tokenAward只做挖矿奖励
+                //parentUser.tokenAward += shareAward;
+                //一级总奖励累加
+                parentUser.firstAward += shareAward;
+                parentUser.firstAwardHistory += shareAward;
+            }
+
+            address secondParent = _recommerMapping[parent];
+            if (secondParent != address(0) ) {
+                uint secondShareAward = _getSecondShareAward(shareAwardAmount, achievements[secondParent].selfAch);
+                if (secondShareAward > 0) {
+                    UserInfo storage secondParentUser = userInfos[1][secondParent];
+                    //tokenAward只做挖矿奖励
+                    //secondParentUser.tokenAward += secondShareAward;
+                    //二级总奖励累加
+                    secondParentUser.secondAward += secondShareAward;
+                    secondParentUser.secondAwardHistory += secondShareAward;
+                }
+            }
+        }
+    }
+
+    function _getShareAward(uint value,uint selfAch)private pure returns(uint v){
+        if( selfAch >= 100e18) return value * 15 / 100;
+        return 0;
+    }
+
+    function _getSecondShareAward(uint value,uint selfAch)private pure returns(uint v){
+        if( selfAch >= 100e18) return value * 10 / 100;
+        return 0;
+    }
+
+    //质押 静态
+    function _doPledge(address owner,uint worth,uint outMultiple)private{
+        
+        require(worth > 0,"invalid");
+
+        deposit(STATIC_INDEX,owner, worth);
+
+        Achievement storage ach = achievements[owner];
+
+        uint time = getCurrentTime();
+        ach.orders.push(
+            Order(
+                time,
+                time,
+                time,
+                time + 100 days,
+                worth * outMultiple / 10,
+                worth,
+                outMultiple
+            )
+        );
+        //业绩刷新
+        ach.selfAch += worth;
+        _addAch(owner,ach,worth);
+        
+        //更新自身等级
+        _updateLevel(ach);
+    }
+    //计算业绩  动态
+    function _addAch(address owner,Achievement storage user,uint value)internal{
+
+        address[] memory farthers = getForefathers(owner,10);
+
+        uint lg = user.teamAch + user.selfAch - user.lastTierAmount;
+        address regionAddress = owner;
+
+        for( uint i = 0; i < 10; i++ ){
+
+            address farther = farthers[i];
+
+            if( farther == address(0)) break;
+
+            Achievement storage fa = achievements[farther];
+
+            fa.teamAch += value;
+            if( i ==  9){
+                fa.lastTierAmount += value;
+            }
+
+            if( lg > fa.regionAch ){
+                fa.regionAch = lg;
+                fa.regionAddress = regionAddress;
+            }
+            
+            _updateLevel(fa);
+
+            uint dhr = _getDynamicHashRate(fa.level,value);
+            if( i < 3){
+                EnumerableSet.AddressSet storage set = validUsers[farther];
+                dhr += _getShareValue(value,set.length(),fa.selfAch,i);
+
+                if( i == 0 && !set.contains(owner)){
+                    set.add(owner);
+                }
+            }
+            if( dhr > 0){
+                deposit(DYNAMIC_INDEX,farther, dhr);
+            }
+
+            lg = fa.teamAch + fa.selfAch - fa.lastTierAmount;
+            regionAddress = farther;
+        }
+    }
+
+    function _getDynamicHashRate(uint level,uint value)private pure returns(uint){
+        if( level >= 5 ) return value * 50 / 100;
+        if( level >= 4 ) return value * 40 / 100;
+        if( level >= 3 ) return value * 30 / 100;
+        if( level >= 2 ) return value * 20 / 100;
+        if( level >= 1 ) return value * 10 / 100;
+        return 0;
+    }
+
+
+    function _getShareValue(uint value,uint childNum,uint selfAch,uint i)private pure returns(uint){
+        if( i == 2 && childNum >= 6 && selfAch >= 500e18) return value * 30 / 100;    //6 1000e18
+        if( i == 1 && childNum >= 3 && selfAch >= 300e18) return value * 50 / 100;     //3 500e18
+        if( i == 0 && childNum >= 1 && selfAch >= 100e18) return value * 100 / 100;
+        return 0;
+    }
+
+    function _updateLevel(Achievement storage ach)private{
+        uint oldLevel = ach.level;
+        uint newLevel = _getLevel(ach);
+        if( newLevel != oldLevel){
+            ach.level = newLevel;
+        }
+    }
+
+    function _getLevel(Achievement storage ach)internal view returns(uint){
+        if( ach.selfAch == 0 ) return 0;
+
+        uint littleRegion = ach.teamAch - ach.regionAch;
+        uint selfAch = ach.selfAch;
+
+        if( selfAch >= 10000e18 && littleRegion >= 1000000e18){   //
+            return 5;
+        }
+        if( selfAch >= 5000e18  && littleRegion >= 300000e18){   //
+            return 4;
+        }
+        if( selfAch >= 1000e18  && littleRegion >= 100000e18){     //
+            return 3;
+        }
+        if( selfAch >= 500e18  && littleRegion >= 30000e18){     //
+            return 2;
+        }
+        if( selfAch >= 100e18  && littleRegion >= 10000e18){     //
+            return 1;
+        }
+        return 0;
+    }
+
+    function drawPrincipal()external returns(uint v1,uint v2){
+
+        Achievement storage user = achievements[msg.sender];
+
+        Order[] storage orders = user.orders;
+        uint index = user.indexPrincipal;
+
+        uint time = getCurrentTime();
+        uint remHashRate = 0;
+        for( uint i = index; i < orders.length; i++ ){
+            Order storage order = orders[i];
+
+            uint updateTimePrincipal = order.updateTimePrincipal;
+            uint t = time > order.endTime ? order.endTime : time;
+            if( t > updateTimePrincipal ){
+
+                uint l = t - updateTimePrincipal;
+
+                if( l > 0 ){
+                    v1 += l *( order.amount / (100 * 86400) ) * 10 / order.outMultiple;
+                }
+                updateTimePrincipal = t;
+
+                if( updateTimePrincipal >= order.endTime){
+                    remHashRate += order.initAmount;
+                    index = i + 1;
+                }
+                order.updateTimePrincipal = updateTimePrincipal;
+            }
+        }
+
+        if( index > user.indexPrincipal ){
+            user.indexPrincipal = index;
+        }
+
+        if( v1 > 0 ){
+            uint fee = v1 * 2 / 100;
+            v1 = v1.sub(fee);
+            v2 = _getUsdt2Token(v1);
+        }
+
+        if( v2 > 0 ){
+            IERC20(awardToken).transfer(msg.sender, v2);
+        }
+
+        if( remHashRate > 0){
+            //扣除算力
+            _clearZeroAch(msg.sender,remHashRate);
+        }
+    }
+
+    function drawProfit()external returns(uint v1,uint v2){
+
+        Achievement storage user = achievements[msg.sender];
+
+        Order[] storage orders = user.orders;
+        uint index = user.indexProfit;
+
+        uint time = getCurrentTime();
+        for( uint i = index; i < orders.length; i++ ){
+            Order storage order = orders[i];
+
+            uint updateTimeProfit = order.updateTimeProfit;
+            uint t = time > order.endTime ? order.endTime : time;
+            if( t > updateTimeProfit ){
+
+                uint l = t - updateTimeProfit;
+
+                if( l > 0 ){
+                    v1 += l *( order.amount / (100 * 86400) ) * (order.outMultiple.sub(10) ) / order.outMultiple;
+                }
+                updateTimeProfit = t;
+
+                if( updateTimeProfit >= order.endTime){
+                    index = i + 1;
+                }
+                order.updateTimeProfit = updateTimeProfit;
+            }
+        }
+
+        if( index > user.indexProfit ){
+            user.indexProfit = index;
+        }
+
+        if( v1 > 0 ){
+            v2 = _getUsdt2Token(v1);
+        }
+
+        if( v2 > 0 ){
+            IERC20(awardToken).transfer(msg.sender, v2);
+        }
+
+    }
+
+    function draw()external returns(uint v1,uint v2){
+        v1 = drawHashRateAward(0,msg.sender);
+        v2 = drawHashRateAward(1,msg.sender);        
+        uint v = v1 + v2;
+        if( v > 0 ){
+            IERC20(awardToken).transfer(msg.sender,v);
+        }
+    }
+
+    function getCurrentTime()private view returns(uint){
+        return block.timestamp + userInfos[0][address(0)].hashRate;
+    }
+
+    function getOffset()external view returns(uint){
+        return userInfos[0][address(0)].hashRate;
+    }
+
+    function changeOffset(bool isAdd,uint offset)external{
+        if( isAdd){
+            userInfos[0][address(0)].hashRate += offset;
+        }else{
+            uint o = userInfos[0][address(0)].hashRate;
+            require(o >= offset);
+            userInfos[0][address(0)].hashRate -= offset;
+        }
+    }
+
+    function _clearZeroAch(address owner,uint amount)private{
+
+        Achievement storage ach = achievements[owner];
+        ach.selfAch = ach.selfAch.sub(amount);
+
+        withdraw(STATIC_INDEX,owner, amount);
+
+        if( ach.selfAch == 0){
+            address parent = _recommerMapping[owner];
+
+            EnumerableSet.AddressSet storage set = validUsers[parent];
+            if( set.contains(owner)){
+                set.remove(owner);
+            }
+
+            uint hashRate = userInfos[DYNAMIC_INDEX][owner].hashRate;
+            withdraw(DYNAMIC_INDEX, owner, hashRate);
+        }
+
+        _subAch(owner,amount);  //业绩递减更新
+        _updateLevel(ach);    //更新自身星级
+    }
+
+    function setSwapTokensaddress(address _swapTokens) public onlyOwner {
+        newToken = _swapTokens;
+    }
+    function setPKSprice(uint _swapTokens) public onlyOwner {
+        PKSpriceRate = _swapTokens;
+    }
+
+    //1U 换 新PKS 
+    function _getUsdt2Token(uint amount)internal view returns(uint){
+        uint usdtSwapToken = amount * PKSpriceRate;
+        return usdtSwapToken;
+    }
+
+    function _getToken2Usdt(uint tokenAmount)internal view returns(uint){
+        uint PKSprice = tokenAmount / PKSpriceRate;
+        return PKSprice;
+    }
+
+    //获取新PKS 的价格
+    function Token2Usdt(uint tokenAmount) internal view returns(uint){
+        uint PKSprice = tokenAmount / PKSpriceRate;
+        return PKSprice;
+    }
+
+    function token2Usdt(uint tokenAmount)external view returns(uint){
+        return _getToken2Usdt(tokenAmount);
+    }
+
+    function usdt2Token(uint usdtAmount)external view returns(uint){
+        return _getUsdt2Token(usdtAmount);
+    }
+   
+    function _subAch(address owner,uint value)internal{
+        address[] memory farthers = getForefathers(owner,10);
+        address regionAddress = owner;
+        for( uint i = 0; i < 10; i++ ){
+
+            address farther = farthers[i];
+
+            if( farther == address(0)) break;
+
+            Achievement storage fa = achievements[farther];
+
+            fa.teamAch = fa.teamAch.sub(value);
+            
+            if( i == 9){
+                fa.lastTierAmount = fa.lastTierAmount.sub(value);
+            }
+
+            if( fa.regionAddress == regionAddress ){
+                fa.regionAch = fa.regionAch.sub(value);
+
+                if( fa.teamAch == 0){
+                    fa.regionAddress = address(0);
+                }else if( fa.regionAch * 100 / fa.teamAch < 50 ){
+                    _updateAch(farther,fa);
+                    _updateLevel(fa);
+                }
+            }
+            regionAddress = farther;
+        }
+    }
+
+    function _updateAch(address owner,Achievement storage fa)private{
+        EnumerableSet.AddressSet storage set = validUsers[owner];
+
+        uint len = set.length();
+        address oldRegionAddress = fa.regionAddress;
+        uint oldLg = fa.regionAch;
+
+        for(uint i = 0; i < len; i++){
+            address child = set.at(i);
+            Achievement storage a = achievements[child];
+            uint lg = a.teamAch + a.selfAch - a.lastTierAmount;
+
+            if( lg > oldLg){
+                oldLg = lg;
+                oldRegionAddress = child;
+            }
+        }
+
+        if( oldLg > fa.regionAch){
+            fa.regionAch = oldLg;
+            fa.regionAddress = oldRegionAddress;
+        }
+    }
+
+    function addRelationEx(address recommer) external returns (bool) {
+        require(recommer != msg.sender,"your_self");
+        require(_recommerMapping[msg.sender] == address(0x0),"binded");
+        require(recommer == rootAddress || _recommerMapping[recommer] != address(0x0),"p_not_bind");
+        _recommerMapping[msg.sender] = recommer;
+        firstChilds[recommer].push(msg.sender);
+        return true;
+    }
+
+    function getForefathers(address owner,uint num) private view returns(address[] memory fathers){
+        fathers = new address[](num);
+        address parent  = owner;
+        for( uint i = 0; i < num; i++){
+            parent = _recommerMapping[parent];
+            if( parent == rootAddress || parent == address(0) ) break;
+            fathers[i] = parent;
+        }
+    }
+
+    function _isContract(address a) internal view returns(bool){
+        uint256 size;
+        assembly {size := extcodesize(a)}
+        return size > 0;
+    }
+
+    function updatePool(uint id) internal {
+        PoolInfo storage poolInfo = poolInfos[id];
+        uint number = block.number;
+        uint lastRewardBlock  = poolInfo.lastRewardBlock;
+        if (number  <= lastRewardBlock) {
+            return;
+        }
+        uint256 lpSupply = poolInfo.totalHashRate;
+        if (lpSupply == 0) {
+            poolInfo.lastRewardBlock = number;
+            return;
+        }
+        uint256 multiplier = number.sub(lastRewardBlock);
+
+        poolInfo.accCakePerShare = poolInfo.accCakePerShare.add(multiplier.mul(1e40).div(lpSupply));
+        poolInfo.lastRewardBlock = number;
+    }
+
+    function deposit(uint id,address owner,uint256 _amount) private {
+        PoolInfo storage poolInfo = poolInfos[id];
+        UserInfo storage user = userInfos[id][owner];
+
+        updatePool(id);
+
+        uint hashRate = user.hashRate;
+        uint accCakePerShare = poolInfo.accCakePerShare;
+        if (hashRate > 0) {
+            uint cake =hashRate *( hashRate / (100 * 86400) ); 
+            uint256 pending = cake.mul(accCakePerShare).div(1e40).sub(user.tokenDebt);
+            if(pending > 0) {
+                user.tokenAward += pending;
+            }
+        }
+        if (_amount > 0) {
+            user.hashRate = hashRate.add(_amount);
+            poolInfo.totalHashRate += _amount;
+            hashRate += _amount;
+            uint cake =hashRate *( hashRate / (100 * 86400) ); 
+            user.tokenDebt = cake.mul(accCakePerShare).div(1e40);
+        }
+    }
+
+    function withdraw(uint id,address owner,uint amount) private {
+        PoolInfo storage poolInfo = poolInfos[id];
+
+        UserInfo storage user = userInfos[id][owner];
+        uint hashRate = user.hashRate;
+
+        if( hashRate == 0 || amount == 0) return;
+
+        amount = hashRate >= amount ? amount : hashRate;
+       
+        updatePool(id);
+        uint cake =hashRate *( hashRate / (100 * 86400) ); 
+        uint256 pending = cake.mul(poolInfo.accCakePerShare).div(1e40).sub(user.tokenDebt);
+        if(pending > 0) {
+            user.tokenAward += pending;
+        }
+
+        hashRate -= amount;
+
+        user.hashRate = hashRate;
+        poolInfo.totalHashRate = poolInfo.totalHashRate.sub((amount));
+        
+        cake =hashRate *( hashRate / (100 * 86400) ); 
+        user.tokenDebt = cake.mul(poolInfo.accCakePerShare).div(1e40);
+    }
+
+    function drawHashRateAward(uint id,address owner)private returns(uint tokenAmount){
+        PoolInfo storage poolInfo = poolInfos[id];
+        UserInfo storage user = userInfos[id][owner];
+
+        updatePool(id);
+
+        uint hashRate = user.hashRate;
+        if(hashRate > 0) {
+
+            uint cake =hashRate *( hashRate / (100 * 86400) / 2); 
+            uint256 pending = cake.mul(poolInfo.accCakePerShare).div(1e40).sub(user.tokenDebt);
+            if( pending > 0){
+                user.tokenAward += pending;
+            }
+            user.tokenDebt = cake.mul(poolInfo.accCakePerShare).div(1e40);
+        }
+
+        tokenAmount = user.tokenAward;
+        if( tokenAmount > 0 ){
+            user.tokenAward = 0;
+        }
+    }
+
+    //出金
+    function AwardTokenSwapUSDT(uint amount) public {
+        IERC20(awardToken).transferFrom(msg.sender,address(this),amount);
+        uint Sell = amount * _sellLqFee / 1000;
+        uint usdtSwapToken = (amount - Sell) / PKSpriceRate;
+        IERC20(usdtToken).transfer(msg.sender,usdtSwapToken);
+    }
+    //入金
+    function USDT2newtokenSwap(uint amount) public {
+        IERC20(usdtToken).transferFrom(msg.sender,address(0x042c92A07A5Ef0e71F705D12C66754c09D80dE11),amount);
+        uint usdtSwapToken = amount * PKSpriceRate;
+        IERC20(newToken).transfer(msg.sender,usdtSwapToken);
+    }
+
+    //邀请提现
+    function InviteWithdraw() public{
+        uint256 AwardToken;
+        uint len = markets.length;
+        for( uint i = 0; i < len; i++ ){
+            UserInfo storage user = userInfos[i][msg.sender];
+            AwardToken += user.firstAward;
+            AwardToken += user.secondAward;
+            user.firstAward = 0;
+            user.secondAward = 0;
+        }
+        IERC20(awardToken).transfer(msg.sender,AwardToken);
+    }
+    
+    function getChilds(address myAddress) public view returns(address[] memory childs){
+        childs = firstChilds[myAddress];
+    }
+}
+
+// File: contracts/interfaces/IERC20.sol
+
+pragma solidity >=0.5.0;
+
+interface IERC20 {
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+
+    function approve(address spender, uint value) external returns (bool);
+    function transfer(address to, uint value) external returns (bool);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+}
+
+// File: contracts/lib/SafeMath.sol
+pragma solidity >=0.5.0;
+
+library SafeMath {
+    
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+   
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+   
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+   
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+   
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+   
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+// File: contracts/open/lib/EnumerableSet.sol
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity >=0.5.0;
+
+
+library EnumerableSet {
+   
+    struct Set {
+        bytes32[] _values;
+        mapping (bytes32 => uint256) _indexes;
+    }
+
+    function _add(Set storage set, bytes32 value) private returns (bool) {
+        if (!_contains(set, value)) {
+            set._values.push(value);
+            set._indexes[value] = set._values.length;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    function _remove(Set storage set, bytes32 value) private returns (bool) {
+        
+        uint256 valueIndex = set._indexes[value];
+
+        if (valueIndex != 0) { // Equivalent to contains(set, value)
+            
+            uint256 toDeleteIndex = valueIndex - 1;
+            uint256 lastIndex = set._values.length - 1;
+
+    
+            bytes32 lastvalue = set._values[lastIndex];
+
+            set._values[toDeleteIndex] = lastvalue;
+            // Update the index for the moved value
+            set._indexes[lastvalue] = toDeleteIndex + 1; // All indexes are 1-based
+
+            set._values.pop();
+
+            delete set._indexes[value];
+
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    
+    function _contains(Set storage set, bytes32 value) private view returns (bool) {
+        return set._indexes[value] != 0;
+    }
+
+    function _indexOf(Set storage set, bytes32 value) private view returns(uint){
+        return set._indexes[value];
+    }
+
+    
+    function _length(Set storage set) private view returns (uint256) {
+        return set._values.length;
+    }
+
+   
+    function _at(Set storage set, uint256 index) private view returns (bytes32) {
+        require(set._values.length > index, "EnumerableSet: index out of bounds");
+        return set._values[index];
+    }
+
+    struct Bytes32Set {
+        Set _inner;
+    }
+
+    
+    function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+        return _add(set._inner, value);
+    }
+
+
+    function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+        return _remove(set._inner, value);
+    }
+
+    
+    function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+        return _contains(set._inner, value);
+    }
+
+   
+    function length(Bytes32Set storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+   
+    function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+        return _at(set._inner, index);
+    }
+
+    struct AddressSet {
+        Set _inner;
+    }
+
+    
+    function add(AddressSet storage set, address value) internal returns (bool) {
+        return _add(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+
+    function remove(AddressSet storage set, address value) internal returns (bool) {
+        return _remove(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+   
+    function contains(AddressSet storage set, address value) internal view returns (bool) {
+        return _contains(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+   
+    function length(AddressSet storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+   
+    function at(AddressSet storage set, uint256 index) internal view returns (address) {
+        return address(uint160(uint256(_at(set._inner, index))));
+    }
+
+    struct UintSet {
+        Set _inner;
+    }
+
+    
+    function add(UintSet storage set, uint256 value) internal returns (bool) {
+        return _add(set._inner, bytes32(value));
+    }
+
+    
+    function remove(UintSet storage set, uint256 value) internal returns (bool) {
+        return _remove(set._inner, bytes32(value));
+    }
+
+    
+    function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+        return _contains(set._inner, bytes32(value));
+    }
+
+     function indexOf(UintSet storage set, uint256 value) internal view returns (uint) {
+        return _indexOf(set._inner, bytes32(value));
+    }
+    
+    function length(UintSet storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+   
+    function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+        return uint256(_at(set._inner, index));
+    }
+}
+
+// File: contracts/open/utils/Context.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.5.0;
+
+contract Context {
+    // Empty internal constructor, to prevent people from mistakenly deploying
+    // an instance of this contract, which should be used via inheritance.
+    constructor() internal {}
+
+    function _msgSender() internal view returns (address payable) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view returns (bytes memory) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+
+// File: contracts/open/utils/Initializable.sol
+pragma solidity >=0.5.0;
+
+contract Initializable {
+
+    /**
+     * @dev Indicates that the contract has been initialized.
+     */
+    bool private _initialized;
+
+    /**
+     * @dev Indicates that the contract is in the process of being initialized.
+     */
+    bool private _initializing;
+
+    /**
+     * @dev Modifier to protect an initializer function from being invoked twice.
+     */
+
+     //|| _isConstructor()
+    modifier initializer() {
+        require(_initializing  || !_initialized, "Initializable: contract is already initialized");
+
+        bool isTopLevelCall = !_initializing;
+        if (isTopLevelCall) {
+            _initializing = true;
+            _initialized = true;
+        }
+
+        _;
+
+        if (isTopLevelCall) {
+            _initializing = false;
+        }
+    }
+
+    function _isConstructor() private view returns (bool) {
+        address self = address(this);
+        uint256 cs;
+        assembly { cs := extcodesize(self) }
+        return cs == 0;
+    }
+}
+
+
+// File: contracts/open/utils/Ownable.sol
+pragma solidity >=0.5.0;
+
+import "./Context.sol";
+
+contract Ownable is Context {
+    
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+   
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), 'Ownable: caller is not the owner');
+        _;
+    }
+
+   
+    function renounceOwnership() public onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+   
+    function transferOwnership(address newOwner) public onlyOwner {
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal {
+        require(newOwner != address(0), 'Ownable: new owner is the zero address');
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}

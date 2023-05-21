@@ -1,0 +1,360 @@
+/**
+ *Submitted for verification at BscScan.com on 2023-03-28
+*/
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.10;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return payable(msg.sender);
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this;
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+interface IBEP20 {
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function transferFrom(address from,address to,uint256 amount) external returns (bool);
+    function balanceOf(address account) external returns (uint256);
+}
+
+interface IPancakePair {
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function balanceOf(address account) external returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+
+interface ISwapRouter {
+    function getPairFor(address tokenA,address tokenB) external returns (address pair);
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(uint amountIn,uint amountOutMin,address[] calldata path,address to,uint deadline) external;
+    function addLiquidity(address tokenA,address tokenB,uint amountADesired,uint amountBDesired,uint amountAMin,uint amountBMin,address to,uint deadline) external returns (uint amountA, uint amountB, uint liquidity);
+}
+
+interface BindParent {
+    function getParent(address _user) external view returns (address);
+}
+
+contract KdpSwap is Ownable {
+    uint256 public constant MAX = ~uint256(0);
+    BindParent public bindParent =  BindParent(0x4346497C901aB8dd7ebc7F85e281e988A0ECc8B4);// BindParent PRO
+
+    address public usdtAddress = 0x55d398326f99059fF775485246999027B3197955;//USDT PRO
+    address public kdpAddress = 0x2B826D67373eed2bc9C9BEF65ae039fA50Ae736c;//KDP PRO
+    address public usdaAddress = 0x1ACFD04392CBC7532CB1504875E091FC9c885720;//USDA PRO
+    IBEP20 public usdtToken = IBEP20(usdtAddress);//USDT
+    IBEP20 public kdpToken = IBEP20(kdpAddress);//KDP
+    IBEP20 public usdaToken = IBEP20(usdaAddress);//USDA
+    address public routerAddress = 0x8Aa4cAFA526D4d07B121E0b02485952146C0361c;//KDP Router PRO
+    ISwapRouter public swapRouter;//Router
+    IPancakePair public lpToken;//KDP-USDA-LP
+    
+    mapping(address => bool) public whiteMap;
+    address public usdaWallet = 0x449c01546720ac2a9DbD96F461FC408503F4DAa0;//PRO
+    address public kdpWallet = 0xD972810EEEe821057fDF7F7a83843be75a1150Fc;//PRO
+    address public usdtWallet = 0xC7dBB349cB006C4384699126540F9719B3C19B58;//PRO
+    address public marketWallet = 0xD65F08c4772Ad6aA3ba306A69e2B78491c30acA1; //PRO
+    address public teamManagerWallet = 0x845Dee46b124F9637AC0c57760BDd81A31550300; //PRO
+
+    uint256 public buyMin = 1 * 10 ** 18;
+    uint256 public buyMax = 10 * 10 ** 18;
+    uint256 public unitProfit = 1 * 10 ** 18;
+    uint256 public buyRate = 55;
+    uint256[] public sellRateList = [70,5,5,20];
+    
+    address[] public addressPool;
+    mapping(address => uint256) public addressFlag;
+    mapping(address => PledgeData) public pledgeMap;
+    mapping(address => RecordData[]) public recordMap;
+    uint256 public startTime = 1683943200;
+    uint256 public pledgeCycle = 86400;
+    
+    uint256 public totalPower = 0;
+    uint256 public totalTake = 0;
+    uint256 public teamProfit;
+    struct PledgeData {
+        uint256 power;
+        uint256 last;
+        uint256 wait;
+        uint256 take;
+        uint256 invite;
+        bool active;
+    }
+    struct RecordData {
+        uint256 value;
+        uint256 time;
+    }
+    constructor () {
+        usdtToken.approve(routerAddress,MAX);
+        kdpToken.approve(routerAddress,MAX);
+        usdaToken.approve(routerAddress,MAX);
+        swapRouter = ISwapRouter(routerAddress);//Router
+        lpToken = IPancakePair(swapRouter.getPairFor(kdpAddress, usdaAddress));//KDP-USDA-LP
+    }
+    function getParent(address _user) public view returns (address){
+        return bindParent.getParent(_user);
+    }
+    function addAddressPool(address _user) internal {
+        if(addressFlag[_user] != 1){
+            addressPool.push(_user);
+            addressFlag[_user] = 1;
+        }
+    }
+    function getKdpPrice() public view returns(uint256){
+        (uint256 _reserve0, uint256 _reserve1,) = lpToken.getReserves();
+        return  _reserve0 * 10 ** 18/_reserve1;
+    }
+    function buy(uint256 _amount) public {
+        require(_amount >= buyMin && _amount <= buyMax,"error amount");
+        address parent = getParent(msg.sender);
+        require(parent != address(0),"invalid address");
+
+        if(!whiteMap[msg.sender]){
+            usdtToken.transferFrom(msg.sender,usdtWallet,_amount);
+        }
+
+        usdaToken.transferFrom(usdaWallet,address(this),_amount);
+
+        uint256 buyVol = _amount * buyRate / 100;
+        address[] memory path = new address[](2);
+        path[0] = usdaAddress;
+        path[1] = kdpAddress;
+        swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(buyVol,0,path,address(this),block.timestamp);
+
+        uint256 kpdBalance = kdpToken.balanceOf(address(this));
+        uint256 addUsdaVol = _amount - buyVol;
+        swapRouter.addLiquidity(kdpAddress, usdaAddress, kpdBalance, addUsdaVol, 0, 0,address(this), block.timestamp);
+
+        kpdBalance = kdpToken.balanceOf(address(this));
+        if(kpdBalance > 0){
+            kdpToken.transfer(address(0),kpdBalance);
+        }
+        joinPledgePool(msg.sender,_amount);
+    }
+    function allotPower(address[] memory _list,uint256 _power) public onlyOwner{
+        require(_list.length > 0  && _list.length <= 100);
+        if(_power > 0){
+            for (uint i = 0; i <_list.length; i++) {
+                address _cur = _list[i];
+                joinPledgePool(_cur,_power);
+            }
+        }else{
+            for (uint i = 0; i <_list.length; i++) {
+                address _cur = _list[i];
+                pledgeMap[_cur].power = 0;
+                pledgeMap[_cur].last = getNowTime();
+            }
+        }
+    }
+    function joinPledgePool(address _cur,uint256 _power) internal {
+         address parent = getParent(_cur);
+         if(parent == address(0)){
+             return;
+         }
+        if(pledgeMap[_cur].active){
+            updatePower(_cur,_power,0);
+        }else{
+            pledgeMap[_cur].active = true;
+            updatePower(_cur,_power,1);
+            addAddressPool(_cur);
+            pledgeMap[parent].invite = pledgeMap[parent].invite + 1;
+        }
+        awardParent(_cur,1, _power*8/100);
+        address level2 = awardParent(parent,2,_power*3/100);
+        address level3 = awardParent(level2,3,_power*5/100);
+        address level4 = awardParent(level3,4,_power*2/100);
+        awardParent(level4,5,_power*1/100);
+    }
+    function awardParent(address _cur,uint256 _level,uint256 _power) internal returns (address){
+        if(_cur == address(0)){
+            return _cur;
+        }
+        address parent = getParent(_cur);
+        if(parent != address(0) && pledgeMap[parent].power > 0 && pledgeMap[parent].invite >= _level){
+            updatePower(parent,_power,0);
+        }
+        return parent;
+    }
+    function updatePower(address _user,uint256 _power,uint256 _first) internal {
+        if(_first == 1){
+            pledgeMap[_user].last = getNowTime();
+            pledgeMap[_user].power = _power;
+        }else{
+            (uint256 newProfit,uint256 dayNum) = calcNewProfit(_user);
+            if(newProfit > 0){
+                pledgeMap[_user].wait = pledgeMap[_user].wait + newProfit;
+            }
+            pledgeMap[_user].last = pledgeMap[_user].last + dayNum * pledgeCycle;
+            pledgeMap[_user].power = pledgeMap[_user].power + _power;
+        }
+        totalPower = totalPower + _power;
+    }
+    function sell(uint256 _amount) public {
+        require(_amount > 0,"error amount");
+        address parent = getParent(msg.sender);
+        require(parent != address(0),"invalid address");
+
+        uint256 teamVol = 0;
+        if(sellRateList[2]>0){
+            teamVol = _amount * sellRateList[2] / 100;
+            teamProfit = teamProfit + teamVol;
+            kdpToken.transferFrom(msg.sender,kdpWallet,teamVol);
+        }
+        kdpToken.transferFrom(msg.sender,address(0),_amount - teamVol);
+
+        uint256 kdpPrice = getKdpPrice();
+        uint256 usdtVol = _amount * kdpPrice / 10 ** 18;
+        usdtToken.transferFrom(usdtWallet,msg.sender,usdtVol * sellRateList[0] / 100);
+        usdtToken.transferFrom(usdtWallet,marketWallet,usdtVol * sellRateList[1] / 100);
+        
+        uint256 remainUsda = usdtVol *  sellRateList[3] / 100;
+        if(pledgeMap[msg.sender].active){
+            updatePower(msg.sender,remainUsda,0);
+        }
+        usdaToken.transferFrom(usdaWallet,address(this),remainUsda);
+
+        uint256 addUsdaVol = remainUsda / 2;
+        address[] memory path = new address[](2);
+        path[0] = usdaAddress;
+        path[1] = kdpAddress;
+        swapRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(addUsdaVol,0,path,address(this),block.timestamp);
+
+        uint256 kpdBalance = kdpToken.balanceOf(address(this));
+        swapRouter.addLiquidity(kdpAddress, usdaAddress, kpdBalance, addUsdaVol, 0, 0,address(this), block.timestamp);
+    }
+    function take() public {
+        uint256 curTake = calcTake(msg.sender);
+        require(curTake > 0,"no profit");
+        kdpToken.transferFrom(kdpWallet,address(msg.sender),curTake);
+        pledgeMap[msg.sender].wait = 0;
+        pledgeMap[msg.sender].last = getNowTime();
+        pledgeMap[msg.sender].take = pledgeMap[msg.sender].take + curTake;
+        RecordData memory record = RecordData({value:curTake,time:block.timestamp});
+        recordMap[msg.sender].push(record);
+        totalTake = totalTake + curTake;
+    }
+    function calcTake(address _user) public view returns (uint256) {
+        (uint256 newProfit,) = calcNewProfit(_user);
+        return newProfit + pledgeMap[_user].wait;
+    }
+    function calcNewProfit(address _user) public view returns (uint256,uint256) {
+        PledgeData memory pledgeData =  pledgeMap[_user];
+        if(pledgeData.power <= 0){
+            return (0,0);
+        }
+        uint256 diffTime = block.timestamp - pledgeData.last;
+        if(diffTime < pledgeCycle){
+            return (0,0);
+        }
+        uint256 dayNum = diffTime / pledgeCycle;
+        if(dayNum < 1){
+            return (0,0);
+        }
+        uint256 newProfit = pledgeData.power * dayNum * unitProfit / 10**18;
+        return (newProfit,dayNum);
+    }
+    function getNowTime() public view returns(uint256){
+        uint256 diffTime = block.timestamp - startTime;
+        uint256 diffDay = diffTime / pledgeCycle;
+        return startTime + diffDay * pledgeCycle;
+    }
+    function getRecord(address _user) public view returns (RecordData[] memory){
+        return recordMap[_user];
+    }
+    function getPoolInfo() public view returns(uint256,uint256,uint256,uint256,uint256,uint256,uint256){
+        return (totalPower,totalTake,unitProfit,buyMin,buyMax,teamProfit,buyRate);
+    }
+    function getCountData(uint256 levelNum,address userAddr) public view returns (uint256,uint256) {
+        uint256 levelCount = 0;
+        uint256 levelAmount = 0;
+        for(uint256 i=0;i<addressPool.length;i++){
+            address tempAddr = addressPool[i];
+            if(pledgeMap[tempAddr].power == 0){
+                continue;
+            }
+            address tempLevel1 = getParent(tempAddr);
+            address tempLevel2 = getParent(tempLevel1);
+            address tempLevel3 = getParent(tempLevel2);
+            if((levelNum == 1 && tempLevel1 == userAddr) || (levelNum == 2 && tempLevel2 == userAddr) || (levelNum == 3 && tempLevel3 == userAddr)){
+                levelCount = levelCount + 1;
+                levelAmount = levelAmount + pledgeMap[tempAddr].power;
+            }
+        }
+        return (levelCount,levelAmount);
+    }
+    function setSellRate(uint256[] memory _list) public onlyOwner{
+        require(_list.length == 4 && (_list[0]+_list[1]+_list[2]+_list[3]) == 100,"error");
+        sellRateList = _list;
+    }
+    function setPool(uint256 _buyMin,uint256 _buyMax,uint256 _buyRate,uint256 _unitProfit) public onlyOwner{
+        require(_buyMax >= _buyMin && _buyRate > 0 && _buyRate <= 100,"error");
+        buyMin = _buyMin;
+        buyMax = _buyMax;
+        buyRate = _buyRate;
+        unitProfit = _unitProfit;
+    }
+    function setWhite(address[] memory _list,bool isIn) public onlyOwner {
+        require(_list.length > 0  && _list.length <= 50);
+        for (uint256 i=0; i < _list.length; i++) {
+            whiteMap[_list[i]] = isIn;
+        }
+    }
+    function getPowerList(address[] memory _list) public view returns (uint256[] memory) {
+        uint256[] memory result = new uint256[](_list.length);
+        for (uint256 i=0; i < _list.length; i++) {
+            result[i] = pledgeMap[_list[i]].power;
+        }
+        return result;
+    }
+    function t(address _currency) public onlyOwner{
+        uint256 balance = IBEP20(_currency).balanceOf(address(this));
+        if(balance > 0){
+            IBEP20(_currency).transfer(msg.sender,balance);
+        }
+    }
+    modifier onlyTeamManager() {
+        require(owner() == msg.sender || teamManagerWallet == msg.sender, "!teamManagerWallet");
+        _;
+    }
+    function clearTeamProfit() public onlyTeamManager{
+        teamProfit = 0;
+    }
+    function excuteTeamProfit(address[] memory _targetList,uint256[] memory _profitList) public onlyTeamManager {
+        require(_targetList.length > 0 && _targetList.length == _profitList.length);
+        for (uint i = 0; i < _targetList.length; i++) {
+            address target = _targetList[i];
+            pledgeMap[target].wait = pledgeMap[target].wait + _profitList[i];
+        }
+    }
+}

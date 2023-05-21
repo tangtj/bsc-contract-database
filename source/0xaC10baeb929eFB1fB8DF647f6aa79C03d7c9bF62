@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract DegenCash {
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+    uint256 public totalSupply;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public isBlacklisted;
+
+    address public taxWallet;
+    address public burnAddress;
+
+    uint256 public taxPercentage;
+    address public owner;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event BlacklistUpdate(address indexed wallet, bool isBlacklisted);
+    event TaxWalletUpdate(address indexed taxWallet);
+    event TaxPercentageUpdate(uint256 taxPercentage);
+
+    constructor() {
+        name = "Degen Cash";
+        symbol = "DEGEN";
+        decimals = 10;
+        totalSupply = 1_000_000_000 * (10 ** uint256(decimals));
+        balanceOf[msg.sender] = totalSupply;
+        owner = msg.sender;
+        emit Transfer(address(0), msg.sender, totalSupply);
+
+        taxWallet = 0x87C72A62b154B99c9A2F1F08F1b32B52989181eb;
+        burnAddress = address(0x000000000000000000000000000000000000dEaD);
+        taxPercentage = 3;
+    }
+
+    function transfer(address to, uint256 value) external isNotBlacklisted(msg.sender) returns (bool) {
+        _transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) external isNotBlacklisted(from) returns (bool) {
+        require(allowance[from][msg.sender] >= value, "Insufficient allowance");
+        allowance[from][msg.sender] -= value;
+        _transfer(from, to, value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) external returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function setTaxPercentage(uint256 percentage) external onlyOwner {
+        require(percentage <= 100, "Invalid tax percentage");
+        taxPercentage = percentage;
+        emit TaxPercentageUpdate(taxPercentage);
+    }
+
+    function blacklistWallet(address wallet) external onlyOwner {
+        isBlacklisted[wallet] = true;
+        emit BlacklistUpdate(wallet, true);
+    }
+
+    function removeWalletFromBlacklist(address wallet) external onlyOwner {
+        isBlacklisted[wallet] = false;
+        emit BlacklistUpdate(wallet, false);
+    }
+
+    function updateTaxWallet(address newTaxWallet) external onlyOwner {
+        taxWallet = newTaxWallet;
+        emit TaxWalletUpdate(taxWallet);
+    }
+
+    function _transfer(address from, address to, uint256 value) internal {
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(to != address(0), "Invalid recipient");
+
+        uint256 taxAmount = (value * taxPercentage) / 100;
+        uint256 transferAmount = value - taxAmount;
+        uint256 halfTaxAmount = taxAmount / 2;
+
+        balanceOf[from] -= value;
+        balanceOf[taxWallet] += halfTaxAmount;
+        balanceOf[burnAddress] += halfTaxAmount;
+        balanceOf[to] += transferAmount;
+
+        emit Transfer(from, to, transferAmount);
+        emit Transfer(from, burnAddress, halfTaxAmount);
+        emit Transfer(from, taxWallet, halfTaxAmount);
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only contract owner can call this function");
+        _;
+    }
+
+    modifier isNotBlacklisted(address wallet) {
+        require(!isBlacklisted[wallet], "Wallet is blacklisted");
+        _;
+    }
+}

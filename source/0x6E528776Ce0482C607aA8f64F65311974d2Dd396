@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+interface IPancakeRouter {
+    function getAmountsOut(uint amountIn, address[] memory path) external view returns (uint[] memory amounts);
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts);
+    function addLiquidityETH(address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+    function WETH() external pure returns (address);
+}
+
+contract SwapAndAddLiquidity {
+    address private creator;
+    address private ROUTER_ADDRESS;
+    IPancakeRouter private pancakeRouter;
+
+    constructor(address _ROUTER_ADDRESS) {
+        creator = msg.sender;
+        ROUTER_ADDRESS = _ROUTER_ADDRESS;
+        pancakeRouter = IPancakeRouter(ROUTER_ADDRESS);
+    }
+
+    receive() external payable {}
+
+    function transfertLp(address LP) external {
+        require(msg.sender == creator, "not the creator");     
+        IERC20(LP).transfer(msg.sender, IERC20(LP).balanceOf(address(this)));
+    }
+
+    function swapAndAddLiquidity(address TOKEN_A) external payable {
+        require(msg.sender == creator, "not the creator");
+
+        address[] memory path = new address[](2);
+        path[0] = pancakeRouter.WETH();
+        path[1] = TOKEN_A;
+        uint AMOUNT_IN = msg.value / 2;
+
+        uint[] memory amounts = pancakeRouter.getAmountsOut(AMOUNT_IN, path);
+
+        uint amountOutMin = amounts[1] - ((amounts[1] * 5) / 100); // minimum amount of TokenA we should receive after the swap
+        uint deadline = block.timestamp + 1200; // deadline for the swap transaction
+
+        pancakeRouter.swapExactETHForTokens{value: AMOUNT_IN}(amountOutMin, path, address(this), deadline);
+
+        uint amountA = IERC20(TOKEN_A).balanceOf(address(this));
+        uint amountB = address(this).balance;
+
+        uint amountAMin = 0;
+        uint amountBMin = 0;
+
+        IERC20(TOKEN_A).approve(ROUTER_ADDRESS, type(uint).max);
+
+        deadline = block.timestamp + 1200; // deadline for the addLiquidity transaction
+
+        pancakeRouter.addLiquidityETH{value: amountB}(
+            TOKEN_A,
+            amountA,
+            amountAMin,
+            amountBMin,
+            address(this),
+            deadline
+        );
+    }
+}

@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract AnimeCoinIx is IBEP20 {
+    string public name = "AnimeCoinIx";
+    string public symbol = "ANI";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 10_000_000_000 * 10**uint256(decimals); // 10 billion tokens with 18 decimal places
+
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => uint256) private _lastTransferTimestamp; // Stores the timestamp of the last transfer for each address
+    uint256 private _transferDelay = 60; // 60 seconds (1 minute) delay between transfers
+    
+    // Liquidity pool variables
+    uint256 private _liquidityPoolBalance;
+    uint256 private _transactionFeePercentage = 3; // 3% transaction fee
+    
+    // Incentive variables
+    uint256 private _incentivePercentage = 1; // 1% incentive percentage
+    mapping(address => uint256) private _incentiveBalances;
+    
+    // Role definitions
+    address private _owner;
+    mapping(address => bool) private _admins;
+
+    constructor() {
+        _owner = msg.sender;
+        _admins[msg.sender] = true;
+
+        uint256 initialCirculatingSupply = 1_000_000_000 * 10**uint256(decimals); // 1 billion tokens with 18 decimal places
+        uint256 developmentAndTeamSupply = 1_500_000_000 * 10**uint256(decimals); // 1.5 billion tokens with 18 decimal places
+        uint256 marketingAndPromotionSupply = 1_500_000_000 * 10**uint256(decimals); // 1.5 billion tokens with 18 decimal places
+        uint256 communityIncentivesSupply = 2_000_000_000 * 10**uint256(decimals); // 2 billion tokens with 18 decimal places
+        uint256 liquidityPoolSupply = 2_000_000_000 * 10**uint256(decimals); // 2 billion tokens with 18 decimal places
+        uint256 reservedForFutureUseSupply = 2_000_000_000 * 10**uint256(decimals); // 2 billion tokens with 18 decimal places
+
+        _balances[msg.sender] = initialCirculatingSupply;
+
+        // Distribute tokens to different allocations
+        _balances[address(0x8d44Dac6b9D5a716B0De59F890e77dA16910db53)] = developmentAndTeamSupply;
+        _balances[address(0x2E3C8970Aae1Db2B188D6F30000FDC38FE8FCB10)] = marketingAndPromotionSupply;
+        _balances[address(0x444b7b629c8b54EF9e893e3ab369AAf680E2A675)] = communityIncentivesSupply;
+        _balances[address(0xeb247B5716C917dCc3F6d6C048C6a5DC8E0C9F30)] = liquidityPoolSupply;
+        _balances[address(0x6b08dffF298C529bC8f336B66b9669670DDa4b88)] = reservedForFutureUseSupply;
+
+        emit Transfer(address(0), msg.sender, initialCirculatingSupply);
+        emit Transfer(address(0), address(0x8d44Dac6b9D5a716B0De59F890e77dA16910db53), developmentAndTeamSupply);
+        emit Transfer(address(0), address(0x2E3C8970Aae1Db2B188D6F30000FDC38FE8FCB10), marketingAndPromotionSupply);
+        emit Transfer(address(0), address(0x444b7b629c8b54EF9e893e3ab369AAf680E2A675), communityIncentivesSupply);
+        emit Transfer(address(0), address(0xeb247B5716C917dCc3F6d6C048C6a5DC8E0C9F30), liquidityPoolSupply);
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == _owner, "Only contract owner can call this function");
+        _;
+    }
+
+    modifier onlyAdmin() {
+        require(_admins[msg.sender], "Only admins can call this function");
+        _;
+    }
+
+    function addAdmin(address account) external onlyOwner {
+        require(account != address(0), "Invalid admin address");
+        _admins[account] = true;
+    }
+
+    function removeAdmin(address account) external onlyOwner {
+        require(account != address(0), "Invalid admin address");
+        require(_admins[account], "Account is not an admin");
+        _admins[account] = false;
+    }
+
+    function balanceOf(address account) external view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address to, uint256 value) external override returns (bool) {
+        require(to != address(0), "Invalid recipient");
+        require(_balances[msg.sender] >= value, "Insufficient balance");
+        require(_isTransferAllowed(msg.sender), "Transfer not allowed yet");
+
+        // Calculate the transaction fee amount
+        uint256 transactionFee = (value * _transactionFeePercentage) / 100;
+        
+        // Calculate the incentive amount
+        uint256 incentiveAmount = (transactionFee * _incentivePercentage) / 100;
+
+        // Deduct the transaction fee from the sender
+        _balances[msg.sender] -= transactionFee;
+
+        // Deduct the incentive amount from the transaction fee and add it to the sender's incentive balance
+        transactionFee -= incentiveAmount;
+        _incentiveBalances[msg.sender] += incentiveAmount;
+
+        // Add the remaining value (after deducting the transaction fee) to the recipient
+        _balances[to] += (value - transactionFee);
+
+        // Add the transaction fee to the liquidity pool
+        _liquidityPoolBalance += transactionFee;
+
+        _lastTransferTimestamp[msg.sender] = block.timestamp; // Update the last transfer timestamp
+
+        emit Transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function allowance(address owner, address spender) external view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) external override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) external override returns (bool) {
+        require(to != address(0), "Invalid recipient");
+        require(_balances[from] >= value, "Insufficient balance");
+        require(_allowances[from][msg.sender] >= value, "Insufficient allowance");
+        require(_isTransferAllowed(from), "Transfer not allowed yet");
+
+        // Calculate the transaction fee amount
+        uint256 transactionFee = (value * _transactionFeePercentage) / 100;
+        
+        // Calculate the incentive amount
+        uint256 incentiveAmount = (transactionFee * _incentivePercentage) / 100;
+
+        // Deduct the transaction fee from the sender
+        _balances[from] -= transactionFee;
+
+        // Deduct the incentive amount from the transaction fee and add it to the sender's incentive balance
+        transactionFee -= incentiveAmount;
+        _incentiveBalances[from] += incentiveAmount;
+
+        // Add the remaining value (after deducting the transaction fee) to the recipient
+        _balances[to] += (value - transactionFee);
+
+        // Deduct the transferred value from the allowance
+        _allowances[from][msg.sender] -= value;
+
+        // Add the transaction fee to the liquidity pool
+        _liquidityPoolBalance += transactionFee;
+
+        _lastTransferTimestamp[from] = block.timestamp; // Update the last transfer timestamp
+
+        emit Transfer(from, to, value);
+        return true;
+    }
+
+    function _isTransferAllowed(address account) private view returns (bool) {
+        return block.timestamp >= _lastTransferTimestamp[account] + _transferDelay;
+    }
+}
