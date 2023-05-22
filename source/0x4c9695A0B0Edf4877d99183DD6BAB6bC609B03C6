@@ -1,0 +1,281 @@
+pragma solidity >=0.6.0 <0.8.0;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+      
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () internal {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+    
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+
+interface ISwapFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+contract AppleData is Ownable {  
+    address public feeTo;             //apple ERC20 fee account
+    address public marketAddress;     //get lp, then take fee to market
+    address public sellMarketAddress; //sell token, then take fee to market
+    address public receiver;          //receive apple and usdt, than add apple-usdt LP
+
+    address public usdt;
+    address public wbnb;  
+    address public appleToken;//apple ERC20
+
+    address public pancakeFactory;
+    address public appleFactory;
+    address public appleRouter;
+
+    address public lpProxy;
+    address public lpMine;
+    address public idoNodeMine;
+    address public inviteReward;
+
+    address public superNode;
+
+    address public invite;
+
+    address public appleUsdtPair;
+
+    uint256 public lpRatioOneDay;//get 0.6% lp from swap pool per day
+    uint256 public lpMineRatio;
+    uint256 public inviteRewardRatio;
+    uint256 public superNodeRatio;
+    uint256 public idoNodeRatio;
+    uint256 public marketRatio;
+
+    uint256 public sellForOwnerRatio;// sell token ratio for owner
+    uint256 public sellForLpRatio;
+    uint256 public sellForMarketRatio;
+    
+    bool public isNotifyLp;//on off notifyRemoveLiquidityAndReward
+
+    bool public isOnAllowContract;//on off apple ERC20 contract address
+    mapping (address => bool) private _isAllowContract;
+
+    mapping (address => bool) private _isExcludedFromFee;
+    mapping(address => bool) private _isOtherSwapPair;
+
+    constructor(address superNode_, address feeTo_, address marketAddress_, address sellMarketAddress_, address receiver_, address usdtAddress_, 
+        address wbnbAddress_, address pancakeFactory_, address invite_) public {
+        superNode = superNode_;
+        feeTo = feeTo_;
+        marketAddress = marketAddress_;
+        sellMarketAddress = sellMarketAddress_;
+        receiver = receiver_;
+        _isExcludedFromFee[receiver] = true;
+
+        usdt = usdtAddress_;
+        wbnb = wbnbAddress_;
+        pancakeFactory = pancakeFactory_;
+        invite = invite_;
+
+        lpRatioOneDay = 6;// 6/1000
+
+        lpMineRatio = 60;
+        inviteRewardRatio = 20;
+        superNodeRatio = 5;
+        idoNodeRatio = 8;
+        marketRatio = 7;
+
+        sellForOwnerRatio = 75;
+        sellForLpRatio = 20;
+        sellForMarketRatio = 5;
+
+        isNotifyLp = false;
+        isOnAllowContract = true;
+    }
+
+    function initAppleAddress(address appleToken_, address lpProxy_, address lpMine_, address idoNodeMine_, 
+             address inviteReward_, address appleFactory_, address appleRouter_) public onlyOwner {
+        appleToken = appleToken_;
+        lpProxy = lpProxy_;
+        _isExcludedFromFee[lpProxy] = true;
+
+        lpMine = lpMine_;
+        idoNodeMine = idoNodeMine_;
+        inviteReward = inviteReward_;
+
+        appleFactory = appleFactory_;
+        appleRouter = appleRouter_;
+        appleUsdtPair = ISwapFactory(appleFactory).createPair(appleToken, usdt);
+
+        _isAllowContract[appleUsdtPair] = true;
+        _isAllowContract[lpProxy] = true;
+        _isAllowContract[lpMine] = true;
+        _isAllowContract[idoNodeMine] = true;
+    }        
+
+    function setFeeTo(address feeTo_) public onlyOwner {
+        feeTo = feeTo_;
+    }
+
+    function setMarketAddress(address marketAddress_) public onlyOwner {
+        marketAddress = marketAddress_;
+    }
+
+    function setSellMarketAddress(address sellMarketAddress_) public onlyOwner {
+        sellMarketAddress = sellMarketAddress_;
+    }
+
+    function setReceiver(address receiver_) public onlyOwner {
+        receiver = receiver_;
+        _isExcludedFromFee[receiver] = true;
+    }
+
+    function setUsdtAddress(address usdtAddress_) public onlyOwner {
+        usdt = usdtAddress_;
+    }
+    function setWbnbAddress(address wbnbAddress_) public onlyOwner {
+        wbnb = wbnbAddress_;
+    }
+    function setAppleToken(address appleToken_) public onlyOwner {
+        appleToken = appleToken_;
+    }
+
+
+    function setPancakeFactory(address pancakeFactory_) public onlyOwner {
+        pancakeFactory = pancakeFactory_;
+    }
+    function setAppleFactory(address appleFactory_) public onlyOwner {
+        appleFactory = appleFactory_;
+    }
+    function setAppleRouter(address appleRouter_) public onlyOwner {
+        appleRouter = appleRouter_;
+    }
+
+    function setLpProxy(address lpProxy_) public onlyOwner {
+        lpProxy = lpProxy_;
+        _isExcludedFromFee[lpProxy] = true;
+    }
+    function setLpMine(address lpMine_) public onlyOwner {
+        lpMine = lpMine_;
+    }
+    function setIdoNodeMine(address idoNodeMine_) public onlyOwner {
+        idoNodeMine = idoNodeMine_;
+    }
+    function setInviteReward(address inviteReward_) public onlyOwner {
+        inviteReward = inviteReward_;
+    }
+
+    function setSuperNode(address superNode_) public onlyOwner {
+        superNode = superNode_;
+    }
+
+    function setInvite(address invite_) public onlyOwner {
+        invite = invite_;
+    }
+
+
+    function setLpRatioOneDay(uint256 lpRatioOneDay_) public onlyOwner {
+        require(lpRatioOneDay_ <= 100, "lpRatioOneDay must less than 100");
+        lpRatioOneDay = lpRatioOneDay_;
+    }
+
+    function setLpRewardRatio(uint256 lpMineRatio_, uint256 inviteRewardRatio_, uint256 superNodeRatio_,
+        uint256 idoNodeRatio_, uint256 marketRatio_) public onlyOwner {
+        uint256 totalRatio = lpMineRatio_ + inviteRewardRatio_ + superNodeRatio_ + idoNodeRatio_ + marketRatio_;
+        require(totalRatio == 100, "totalRatio must equal to 100");
+        require(inviteRewardRatio_ + superNodeRatio_ <= 50, "inviteRewardRatio and superNodeRatio must less than 50");
+
+        lpMineRatio = lpMineRatio_;
+        inviteRewardRatio = inviteRewardRatio_;
+        superNodeRatio = superNodeRatio_;
+        idoNodeRatio = idoNodeRatio_;
+        marketRatio = marketRatio_;
+    }
+
+    function setSellRatio(uint256 sellForOwnerRatio_, uint256 sellForLpRatio_, uint256 sellForMarketRatio_) public onlyOwner {
+        uint256 totalRatio = sellForOwnerRatio_ + sellForLpRatio_ + sellForMarketRatio_;
+        require(totalRatio == 100, "totalRatio must equal to 100");
+
+        sellForOwnerRatio = sellForOwnerRatio_;
+        sellForLpRatio = sellForLpRatio_;
+        sellForMarketRatio = sellForMarketRatio_;
+    }
+
+    function setIsNotifyLp(bool isNotifyLp_) public onlyOwner {
+        isNotifyLp = isNotifyLp_;
+    }
+
+    function setIsOnAllowContract(bool isOnAllowContract_) public onlyOwner {
+        isOnAllowContract = isOnAllowContract_;
+    }
+
+    function addAllowContract(address account) public onlyOwner {
+        _isAllowContract[account] = true;
+    }
+
+    function removeAllowContract(address account) public onlyOwner {
+        _isAllowContract[account] = false;
+    }
+
+    function isAllowContract(address from, address to) public view returns (bool) {
+        return _isAllowContract[from] || _isAllowContract[to];
+    }
+
+    //set no fee
+    function excludeFromTokenFee(address account) public onlyOwner {
+        _isExcludedFromFee[account] = true;
+    }
+
+    //set fee
+    function includeInTokenFee(address account) public onlyOwner {
+        _isExcludedFromFee[account] = false;
+    }
+
+    //true->no fee; false->fee
+    function isExcludedFromFee(address from, address to) public view returns (bool) {
+        return _isExcludedFromFee[from] || _isExcludedFromFee[to];
+    }
+
+    //add other swap pair
+    function addSwapPair(address pair) public onlyOwner {
+        _isOtherSwapPair[pair] = true;
+    }
+
+    function deleteSwapPair(address pair) public onlyOwner {
+        _isOtherSwapPair[pair] = false;
+    }
+
+    function isOtherSwapPair(address pair) public view returns (bool) {
+        return _isOtherSwapPair[pair];
+    }
+
+}

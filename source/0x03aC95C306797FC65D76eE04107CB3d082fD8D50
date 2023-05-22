@@ -1,0 +1,119 @@
+
+// File: contracts/Taoli.sol
+// SPDX-License-Identifier: SimPL-2.0
+pragma solidity ^0.8.9;
+import "./interface.sol";
+
+contract Taoli {
+    mapping (string => address) COINS;
+
+    function balanceOf(address coin, address account) public view returns (uint256) {
+        return IERC20(coin).balanceOf(account);
+    }
+
+    function getBalancesByAddress(address account, address[] memory coins) public view returns (uint[] memory) {
+        uint[] memory result = new uint[](coins.length);
+        for(uint i=0; i<coins.length; i++){
+            result[i] = this.balanceOf(coins[i], account);
+        }
+        return result;
+    }
+
+    function getReserves(address pair) public view returns (uint112, uint112) {
+        uint112 reserve0;
+        uint112 reserve1;
+        (reserve0, reserve1, ) = UniswapPair(pair).getReserves();
+        return (reserve0, reserve1);
+    }
+
+    function getReservesByAddress(address[] memory pairs) public view returns (uint[] memory) {
+        uint[] memory result = new uint[](pairs.length * 2);
+        for(uint i=0; i<pairs.length; i++){
+            (result[i * 2], result[i *2 + 1]) = this.getReserves(pairs[i]);
+        }
+        return result;
+    }
+
+    function skim(address pair) public {
+        UniswapPair(pair).skim(address(0x1e70222C0BeAD73864a9C4dDde682056DD8F9543));
+    }
+
+    function getSkim(address pair) public view returns (uint256, uint256) {
+        try UniswapPair(pair).getReserves() returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast) {
+            address _token0 = UniswapPair(pair).token0();
+            address _token1 = UniswapPair(pair).token1(); 
+            uint256 result0 = this.balanceOf(_token0, pair) - reserve0;
+            uint256 result1 = this.balanceOf(_token1, pair) - reserve1;
+            return (result0, result1);
+        } catch {
+            return (0, 0);
+        }
+    }
+
+    function getSkimByAddress(address[] memory pairs) public view returns (uint[] memory) {
+        uint[] memory result = new uint[](pairs.length * 2);
+        for(uint i=0; i<pairs.length; i++){
+            (result[i * 2], result[i *2 + 1]) = this.getSkim(pairs[i]);
+        }
+        return result;
+    }
+
+    function getUniswapVersion(address pair) public view returns (uint8) {
+        // Check for Uniswap V2
+        try UniswapPair(pair).getReserves() returns (uint112, uint112, uint32) {
+            return 2;
+        } catch {}
+
+        // Check for Uniswap V3
+        try UniswapPair(pair).fee() returns (uint24) {
+            return 3;
+        } catch {}
+
+        return 0;
+    }
+
+    function getPairDetails(address pair) public view returns (address, string memory, uint8, address, string memory, uint8, uint8) {
+        address token0 = UniswapPair(pair).token0();
+        address token1 = UniswapPair(pair).token1();
+
+        string memory symbol0 = IERC20(token0).symbol();
+        string memory symbol1 = IERC20(token1).symbol();
+
+        uint8 version = this.getUniswapVersion(pair);
+
+        return (token0, symbol0, IERC20(token0).decimals(), token1, symbol1, IERC20(token1).decimals(), version);
+    }
+}
+
+
+
+// File: contracts/interface.sol
+// SPDX-License-Identifier: SimPL-2.0
+pragma solidity ^0.8.9;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address account) external view
+        returns (uint256);
+    function decimals() external view returns (uint8);
+    function symbol() external view returns (string memory);
+}
+
+interface UniswapRoute {
+    function factory() external view returns (address);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+interface UniswapFactory {
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+    function allPairs(uint) external view returns (address pair);
+}
+
+interface UniswapPair {
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function fee() external view returns (uint24);
+    function skim(address to) external;
+}

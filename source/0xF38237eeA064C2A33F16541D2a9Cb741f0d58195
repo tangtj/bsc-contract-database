@@ -1,0 +1,111 @@
+# @version ^0.2.7
+from vyper.interfaces import ERC20
+implements: ERC20
+
+name: public(String[64])
+symbol: public(String[32])
+
+decimals: public(uint256)
+_totalSupply: uint256
+multiplier: decimal
+
+balances: HashMap[address, uint256]
+allowance: public(HashMap[address, HashMap[address, uint256]])
+
+owner: public(address)
+policy: public(address)
+
+event Transfer:
+    src: indexed(address)
+    dst: indexed(address)
+    value: uint256
+
+event Approval:
+    src: indexed(address)
+    dst: indexed(address)
+    value: uint256
+
+event Rebase:
+    value: uint256
+
+event TransferPolicy:
+    src: indexed(address)
+
+event TransferOwnership:
+    dst: indexed(address)
+    src: indexed(address)
+
+@external
+def __init__(_name: String[64], _symbol: String[32], _decimals: uint256, initial: uint256, _policy: address):
+    self.name = _name
+    self.symbol = _symbol
+    self.decimals = _decimals
+    initialSupply: uint256 = initial * 10 ** _decimals
+    self.balances[msg.sender] = initialSupply
+    self._totalSupply = initialSupply
+    self.multiplier = 1.0
+    self.policy = _policy
+    log Transfer(ZERO_ADDRESS, msg.sender, initialSupply)
+
+@internal
+@view
+def _debased(_value: uint256) -> uint256:
+    value: decimal = convert(_value, decimal)
+    return convert(value / self.multiplier, uint256)
+
+@internal
+@view
+def _rebased(_value: uint256) -> uint256:
+    value: decimal = convert(_value, decimal)
+    return convert(value * self.multiplier, uint256)
+
+@external
+@view
+def totalSupply() -> uint256:
+    return self._rebased(self._totalSupply)
+
+@external
+@view
+def balanceOf(src: address) -> uint256:
+    return self._rebased(self.balances[src])
+
+@external
+def transfer(dst: address, _value: uint256) -> bool:
+    debased: uint256 = self._debased(_value)
+    self.balances[msg.sender] -= debased
+    self.balances[dst] += debased
+    log Transfer(msg.sender, dst, _value)
+    return True
+
+@external
+def transferFrom(src: address, dst: address, _value: uint256) -> bool:
+    debased: uint256 = self._debased(_value)
+    self.allowance[src][msg.sender] -= debased
+    self.balances[src] -= debased
+    self.balances[dst] += debased
+    log Transfer(src, dst, _value)
+    return True
+
+@external
+def approve(dst: address, _value: uint256) -> bool:
+    self.allowance[msg.sender][dst] = _value
+    log Approval(msg.sender, dst, _value)
+    return True
+
+@external
+def rebase(_multiplier: decimal):
+    assert msg.sender == self.policy, "!policy"
+    self.multiplier = _multiplier
+    log Rebase(convert(_multiplier, uint256))
+
+@external
+def changePolicy(_policy: address):
+    assert msg.sender == self.owner, "!owner"
+    self.policy = _policy
+    log TransferPolicy(_policy)
+
+@external
+def transferOwnership(dst: address):
+    assert msg.sender == self.owner, "!owner"
+    self.owner = dst
+    log TransferOwnership(msg.sender, dst)
