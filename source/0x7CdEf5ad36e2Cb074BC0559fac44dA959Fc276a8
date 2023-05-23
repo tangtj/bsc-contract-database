@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+
+contract ZipZap {
+    string public name;
+    string public symbol;
+    uint256 public decimals;
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event RewardClaimed(address indexed account, uint256 amount);
+
+    uint256 private constant REWARD_PER_TOKEN = 1;
+    address private constant FEE_WALLET = 0x854D2006D6E2Ae4c3D0Fa93c6C3ba6b4e0629a78;
+    uint256 private constant FEE_PERCENTAGE = 3;
+
+    mapping(address => uint256) public rewardBalance;
+
+    constructor() {
+        name = "ZipZap";
+        symbol = "ZIN";
+        decimals = 18;
+        totalSupply = 980000000000 * 10**decimals;
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    function transfer(address to, uint256 value) external {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+        uint256 feeAmount = (value * FEE_PERCENTAGE) / 100;
+        uint256 transferAmount = value - feeAmount;
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += transferAmount;
+        balanceOf[FEE_WALLET] += feeAmount;
+        emit Transfer(msg.sender, to, transferAmount);
+        emit Transfer(msg.sender, FEE_WALLET, feeAmount);
+    }
+
+    function approve(address spender, uint256 value) external returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) external returns (bool) {
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Not allowed to transfer");
+        uint256 feeAmount = (value * FEE_PERCENTAGE) / 100;
+        uint256 transferAmount = value - feeAmount;
+        balanceOf[from] -= value;
+        balanceOf[to] += transferAmount;
+        balanceOf[FEE_WALLET] += feeAmount;
+        allowance[from][msg.sender] -= value;
+        emit Transfer(from, to, transferAmount);
+        emit Transfer(from, FEE_WALLET, feeAmount);
+        return true;
+    }
+
+    function claimReward() external {
+        uint256 reward = calculateReward(msg.sender);
+        require(reward > 0, "No reward available");
+        rewardBalance[msg.sender] -= reward;
+        balanceOf[msg.sender] += reward;
+        emit RewardClaimed(msg.sender, reward);
+    }
+
+    function calculateReward(address account) public view returns (uint256) {
+        uint256 rewardPerToken = REWARD_PER_TOKEN * balanceOf[account];
+        return rewardPerToken - rewardBalance[account];
+    }
+}

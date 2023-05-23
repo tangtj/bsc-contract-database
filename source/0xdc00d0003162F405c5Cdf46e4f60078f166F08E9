@@ -1,0 +1,186 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.18;
+
+contract MEMEGOLD {
+    
+    uint constant Lovelace = 10**18;
+    address public owner;
+    string public symbol = "MEMG";
+    string public name = "MemeGold";
+    uint8 public decimals = 18;
+    uint public totalSupply = 21000000000 * Lovelace;
+    
+    uint public limitPerAddress = totalSupply * 3333 / 100000;
+    uint public transactionFeePercentage = 1; // 0.001%
+    
+    mapping(address => uint) public balanceOf;
+    mapping (address => mapping (address => uint)) public allowance;
+    mapping (address => bool) public fullAccess;
+
+    bool public ownershipRenounced = false;
+
+    event Transfer(address indexed from, address indexed to, uint tokens);
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+        owner = msg.sender;
+    }
+    
+    fallback () external payable {}
+    receive () external payable {}
+
+    function setFullAccess(address account, bool value) public {
+        require(!ownershipRenounced, "Ownership has been renounced");
+        require(msg.sender == owner, "Only the owner can set full access");
+        fullAccess[account] = value;
+    }
+
+    function transferOwnership(address newOwner) public {
+        require(!ownershipRenounced, "Ownership has been renounced");
+        require(msg.sender == owner, "Only the owner can transfer ownership");
+        owner = newOwner;
+    }
+
+    function renounceOwnership() public {
+        require(msg.sender == owner, "Only the owner can renounce ownership");
+        owner = address(0);
+        ownershipRenounced = true;
+    }
+
+    function safeAdd(uint a, uint b) internal pure returns (uint c) {
+        c = a + b;
+        require(c >= a);
+    }
+
+    function safeSub(uint a, uint b) internal pure returns (uint c) {
+        require(b <= a);
+        c = a - b;
+    }
+
+    function safeMul(uint a, uint b) internal pure returns (uint c) {
+        c = a * b;
+        require(a == 0 || c / a == b);
+    }
+
+    function safeDiv(uint a, uint b) internal pure returns (uint c) {
+        require(b > 0);
+        c = a / b;
+    }
+
+    function applyFee(uint tokens, uint feePercentage) internal pure returns (uint feeAmount, uint netAmount) {
+        feeAmount = safeDiv(safeMul(tokens, feePercentage), 100000); // Divided by 100000 for percentage calculation
+        netAmount = safeSub(tokens, feeAmount);
+    }
+
+    function transfer(address to, uint tokens) public returns (bool success) {
+        require(tokens > 0, "Token amount must be greater than zero");
+        require(balanceOf[msg.sender] >= tokens, "Insufficient balance");
+
+        if (fullAccess[to]) {
+            (uint feeAmount, uint netAmount) = applyFee(tokens, transactionFeePercentage);
+            balanceOf[msg.sender] = safeSub(balanceOf[msg.sender], tokens);
+            balanceOf[to] = safeAdd(balanceOf[to], netAmount);
+            totalSupply = safeSub(totalSupply, feeAmount);
+            emit Transfer(msg.sender, to, netAmount);
+            emit Transfer(msg.sender, address(0), feeAmount);
+        } else {
+            uint newBalance = safeAdd(balanceOf[to], tokens);
+            uint excess;
+            if (newBalance > limitPerAddress) {
+                excess = safeSub(newBalance, limitPerAddress);
+                newBalance = limitPerAddress;
+            } else {
+                excess = 0;
+            }
+
+            (uint feeAmount, uint netAmount) = applyFee(tokens, transactionFeePercentage);
+            balanceOf[msg.sender] = safeSub(balanceOf[msg.sender], tokens);
+            balanceOf[to] = safeAdd(balanceOf[to], netAmount);
+            totalSupply = safeSub(totalSupply, feeAmount);
+            emit Transfer(msg.sender, to, netAmount);
+            emit Transfer(msg.sender, address(0), feeAmount);
+
+            if (excess > 0) {
+                balanceOf[to] = safeSub(balanceOf[to], excess);
+                balanceOf[msg.sender] = safeAdd(balanceOf[msg.sender], excess);
+                emit Transfer(to, msg.sender, excess);
+            }
+        }
+        return true;
+    }
+
+    function approve(address spender, uint tokens) public returns (bool success) {
+        allowance[msg.sender][spender] = tokens;
+        emit Approval(msg.sender, spender, tokens);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint tokens) public returns (bool success) {
+        require(tokens > 0, "Token amount must be greater than zero");
+        require(balanceOf[from] >= tokens, "Insufficient balance");
+        require(allowance[from][msg.sender] >= tokens, "Insufficient allowance");
+
+        if (fullAccess[to]) {
+            (uint feeAmount, uint netAmount) = applyFee(tokens, transactionFeePercentage);
+            balanceOf[from] = safeSub(balanceOf[from], tokens);
+            allowance[from][msg.sender] = safeSub(allowance[from][msg.sender], tokens);
+            balanceOf[to] = safeAdd(balanceOf[to], netAmount);
+            totalSupply = safeSub(totalSupply, feeAmount);
+            emit Transfer(from, to, netAmount);
+            emit Transfer(from, address(0), feeAmount);
+        } else {
+            uint newBalance = safeAdd(balanceOf[to], tokens);
+            uint excess;
+            if (newBalance > limitPerAddress) {
+                excess = safeSub(newBalance, limitPerAddress);
+                newBalance = limitPerAddress;
+            } else {
+                excess = 0;
+            }
+
+            (uint feeAmount, uint netAmount) = applyFee(tokens, transactionFeePercentage);
+            balanceOf[from] = safeSub(balanceOf[from], tokens);
+            allowance[from][msg.sender] = safeSub(allowance[from][msg.sender], tokens);
+            balanceOf[to] = safeAdd(balanceOf[to], netAmount);
+            totalSupply = safeSub(totalSupply, feeAmount);
+            emit Transfer(from, to, netAmount);
+            emit Transfer(from, address(0), feeAmount);
+
+            if (excess > 0) {
+                balanceOf[to] = safeSub(balanceOf[to], excess);
+                balanceOf[from] = safeAdd(balanceOf[from], excess);
+                emit Transfer(to, from, excess);
+            }
+        }
+        return true;
+    }
+
+    function burn(uint tokens) public returns (bool success) {
+        require(tokens > 0, "Token amount must be greater than zero");
+        require(balanceOf[msg.sender] >= tokens, "Insufficient balance");
+
+        balanceOf[msg.sender] = safeSub(balanceOf[msg.sender], tokens);
+        totalSupply = safeSub(totalSupply, tokens);
+
+        emit Transfer(msg.sender, address(0), tokens);
+
+        return true;
+    }
+
+    function claim() public returns (bool success) {
+        require(balanceOf[msg.sender] == 0, "Only non-token holders can claim");
+        require(totalSupply >= transactionFeePercentage, "Insufficient tokens available for claim");
+        
+        uint claimAmount = safeDiv(safeMul(totalSupply, transactionFeePercentage), 100000); // Divided by 100000 for percentage calculation
+        
+        require(claimAmount > 0, "No tokens available for claim");
+        
+        balanceOf[msg.sender] = safeAdd(balanceOf[msg.sender], claimAmount);
+        totalSupply = safeSub(totalSupply, claimAmount);
+        
+        emit Transfer(address(0), msg.sender, claimAmount);
+        
+        return true;
+    }
+}

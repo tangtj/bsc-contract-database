@@ -1,0 +1,230 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.5.8;
+
+interface TokenLike {
+    function transferFrom(address,address,uint) external;
+    function transfer(address,uint) external;
+    function balanceOf(address) external view returns (uint);
+    function allowance(address,address) external view returns (uint);
+}
+interface NFTLike {
+    function discount(address) external view returns (uint);
+    function ownerOf(uint256) external view returns (address);
+    function transferFrom(address,address,uint) external;
+    function getApproved(uint256 tokenId) external view returns (address operator);
+    function isApprovedForAll(address owner, address operator) external view returns (bool);
+}
+
+contract NftDex {
+
+    mapping (address => uint) public wards;
+    function rely(address usr) external  auth { wards[usr] = 1; }
+    function deny(address usr) external  auth { wards[usr] = 0; }
+    modifier auth {
+        require(wards[msg.sender] == 1, "NftDex/not-authorized");
+        _;
+    }
+
+    struct Nftotc {
+        uint256 OrderNumber;       
+        uint256 what;       
+        address nft;        
+        uint256 tokenid;    
+        uint256 quantity;   
+        address pro;        
+        uint256 price;      
+        uint256 expiration;     
+        address poster;     
+        address taker;         
+    }
+
+    mapping (uint256 => Nftotc)                         public nftotc;           
+    uint256                                             public order;            
+    NFTLike                                             public vip;              
+    bool                                                public startvip;         
+    bool                                                public live = true;     
+    uint256                                             public rati = 200;            
+    uint256                                             public swaporder;        
+    mapping (address => mapping (uint256 => uint256[])) public nftid;           
+    mapping (address => uint256[])                      public nftlist;  
+    mapping (address => uint256[])                      public posts; 
+    mapping (address => uint256[])                      public takers; 
+
+           
+    
+    constructor() {
+        wards[msg.sender] = 1;
+    }
+    
+    function setglobal(uint256 what, uint256 data, address ust) external auth{
+        if(what == 1) vip = NFTLike(ust);
+        else if(what == 2) rati = data;
+        else if(what == 3) live = !live;
+        else if(what == 4) startvip =!startvip;
+        else revert("NftDex/file-unrecognized-param");
+    }
+
+    
+    function WithAss(address pro,address ust) external  auth {
+        uint256 wad = TokenLike(pro).balanceOf(address(this));
+        TokenLike(pro).transfer(ust, wad);
+    }
+
+    function postOrder(uint256 what,address nftConstructor, uint256 tokenid, uint256 quantity,address pro, uint256 price,uint256 expiration) external  {
+        require(live, "NftDex/not-live");
+        uint wad = TokenLike(pro).balanceOf(msg.sender);
+        order += 1;
+        Nftotc memory merc = nftotc[order]; 
+            merc.OrderNumber = order;
+            merc.what = what;
+            merc.nft = nftConstructor;
+            merc.tokenid = tokenid;
+            merc.quantity = quantity;
+            merc.pro = pro;
+            merc.price = price;
+            merc.expiration = expiration;
+            merc.poster = msg.sender;
+        nftotc[order] = merc;
+        posts[msg.sender].push(order);
+        nftid[nftConstructor][tokenid].push(order);
+        nftlist[nftConstructor].push(order);
+    }
+    
+    function editOrder(uint256 i, uint256 what, uint256 data) external  {
+        Nftotc storage merc = nftotc[i];
+        require(merc.poster == msg.sender, "NftDex/not-mercher");
+        if(what == 1) merc.price = data;
+        else if(what == 2) merc.quantity = data;
+        else if(what == 3) merc.expiration = data;
+        else revert("NftDex/file-unrecognized-param");
+    }
+    
+    function taker(uint256 i) external  {
+        require(live, "NftDex/not-live");
+        Nftotc storage merc = nftotc[i];
+        require(merc.expiration > block.timestamp, "NftDex/2");
+        if(merc.what ==1) require(NFTLike(merc.nft).ownerOf(merc.tokenid) == merc.poster, "NftDex/3");
+        else require(TokenLike(merc.pro).balanceOf(merc.poster) >= merc.price, "NftDex/3");
+        uint256 free =  merc.price*rati/10000;
+        swaporder += 1;
+        takers[msg.sender].push(swaporder);
+        merc.taker = msg.sender;
+        if(merc.what ==1) {
+            if (startvip){
+                uint dis = vip.discount(merc.poster);
+                free = free*(10000-dis)/10000;
+            }
+            TokenLike(merc.pro).transferFrom(msg.sender, address(this), merc.price);
+            TokenLike(merc.pro).transfer(merc.poster, merc.price-free);
+            NFTLike(merc.nft).transferFrom(merc.poster, msg.sender, merc.tokenid);
+        }else {
+            if (startvip){
+                uint dis = vip.discount(msg.sender);
+                free = free*(10000-dis)/10000;
+            }
+            TokenLike(merc.pro).transferFrom(merc.poster, address(this), merc.price);
+            TokenLike(merc.pro).transfer(msg.sender, merc.price-free);
+            NFTLike(merc.nft).transferFrom(msg.sender, merc.poster, merc.tokenid);
+        }
+    } 
+    function getPosts(address usr,address ust,uint256 what) public view returns (Nftotc[] memory){
+        uint256 length = posts[usr].length;
+        Nftotc[] memory nftdex = new Nftotc[](length);
+        uint256 j;
+        for(uint i=0;i<length;++i){
+            Nftotc memory merc = nftotc[posts[usr][i]];
+            if((what == 0 || merc.what == what) && (merc.nft ==address(0) || merc.nft == ust)){
+                nftdex[j] = merc;
+                j +=1;
+            }
+        }
+        Nftotc[] memory nftdex1 = new Nftotc[](j);
+        for(uint i=0;i<j;++i){
+            nftdex1[i] = nftdex[i];
+            }
+        return nftdex1;
+    } 
+    function getTakers(address usr,address ust,uint256 what) public view returns (Nftotc[] memory){
+        uint256 length = takers[usr].length;
+        Nftotc[] memory nftdex = new Nftotc[](length);
+        uint256 j;
+        for(uint i=0;i<length;++i){
+            Nftotc memory merc = nftotc[takers[usr][i]];
+            if((what == 0 || merc.what == what) && (merc.nft ==address(0) || merc.nft == ust)){
+                nftdex[j] = merc;
+                j +=1;
+            }
+        }
+        Nftotc[] memory nftdex1 = new Nftotc[](j);
+        for(uint i=0;i<j;++i){
+            nftdex1[i] = nftdex[i];
+            }
+        return nftdex1;
+    }
+    function getnftlist(address ust,uint256 what) public view returns (Nftotc[] memory){
+        uint256 length = nftlist[ust].length;
+        Nftotc[] memory nftdex = new Nftotc[](length);
+        uint256 j;
+        for(uint i=0;i<length;++i){
+            uint256 _order = nftlist[ust][i];
+            Nftotc memory merc = nftotc[_order];
+            if(merc.what == what && isEffective(_order)) {
+               nftdex[j] = merc;
+               j +=1;
+            }
+        }
+        Nftotc[] memory nftdex1 = new Nftotc[](j);
+        for(uint i=0;i<j;++i){
+            nftdex1[i] = nftdex[i];
+            }
+        return nftdex1;
+    }
+    function getnftid(address ust,uint256 tokenid,uint256 what) public view returns (Nftotc[] memory){
+        uint256 length = nftid[ust][tokenid].length;
+        Nftotc[] memory nftdex = new Nftotc[](length);
+        uint256 j;
+        for(uint i=0;i<length;++i){
+            uint256 _order = nftid[ust][tokenid][i];
+            Nftotc memory merc = nftotc[_order];
+            if(merc.what == what && isEffective(_order)) {
+               nftdex[j] = merc;
+               j +=1;
+            }
+        }
+        Nftotc[] memory nftdex1 = new Nftotc[](j);
+        for(uint i=0;i<j;++i){
+            nftdex1[i] = nftdex[i];
+            }
+        return nftdex1;
+    }
+    function getnftidforhistory(address ust,uint256 tokenid,uint256 what) public view returns (Nftotc[] memory){
+        uint256 length = nftid[ust][tokenid].length;
+        Nftotc[] memory nftdex = new Nftotc[](length);
+        uint256 j;
+        for(uint i=0;i<length;++i){
+            uint256 _order = nftid[ust][tokenid][i];
+            Nftotc memory merc = nftotc[_order];
+            if(merc.what == what) {
+               nftdex[j] = merc;
+               j +=1;
+            }
+        }
+        Nftotc[] memory nftdex1 = new Nftotc[](j);
+        for(uint i=0;i<j;++i){
+            nftdex1[i] = nftdex[i];
+            }
+        return nftdex1;
+    }
+    function isEffective(uint256 i) public view returns (bool effective){
+        Nftotc memory merc = nftotc[i];
+        bool isExist;
+        if(merc.what==1 && NFTLike(merc.nft).ownerOf(merc.tokenid) == merc.poster &&
+            (NFTLike(merc.nft).getApproved(merc.tokenid)== address(this) || 
+            NFTLike(merc.nft).isApprovedForAll(merc.poster,address(this)))) isExist = true;
+        if(merc.what==2 && TokenLike(merc.pro).balanceOf(merc.poster) >= merc.price &&
+            TokenLike(merc.pro).allowance(merc.poster,address(this)) >= merc.price) isExist = true;
+        if(isExist &&  merc.quantity !=0 && merc.price !=0 && merc.expiration > block.timestamp && 
+            merc.taker == address(0)) effective = true;
+        else effective = false;
+    }
+}

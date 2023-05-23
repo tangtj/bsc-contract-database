@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+contract DiceGame {
+    address private owner;
+    uint256 private storedCommitment;
+    uint256 private totalBets;
+    uint256 private constant MAX_ROLL = 6;
+    uint256 private MIN_BET = 0.1 ether;
+
+    struct Bet {
+        address player;
+        uint256 amount;
+    }
+
+    mapping(uint256 => Bet[]) private bets;
+
+    event DiceRolled(address player, uint256 seed, uint256 result, uint256 payout);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can access this function");
+        _;
+    }
+
+    function rollDice(uint256 seed) external payable {
+        require(msg.value >= MIN_BET, "Minimum bet not met");
+        require(seed != 0, "Seed must not be zero");
+
+        // Store the commitment for later verification
+        storedCommitment = uint256(keccak256(abi.encode(seed)));
+
+        // Perform the dice roll
+        uint256 diceResult = (seed % MAX_ROLL) + 1;
+
+        // Distribute the payouts to the winners
+        uint256 totalPayout = distributePayouts(diceResult);
+
+        // Emit the dice roll event
+        emit DiceRolled(msg.sender, seed, diceResult, totalPayout);
+    }
+
+   function revealSeed(uint256 seed) external view {
+    require(uint256(keccak256(abi.encode(seed))) == storedCommitment, "Invalid seed");
+
+    // Rest of the function implementation for seed revelation
+    // ...
+}
+
+
+    function distributePayouts(uint256 diceResult) private returns (uint256) {
+        uint256 totalPayout = 0;
+
+        Bet[] storage winningBets = bets[diceResult];
+
+        for (uint256 i = 0; i < winningBets.length; i++) {
+            Bet storage bet = winningBets[i];
+            uint256 payout = (bet.amount * MAX_ROLL) / winningBets.length;
+
+            totalPayout += payout;
+
+            // Transfer the payout to the player
+            payable(bet.player).transfer(payout);
+        }
+
+        delete bets[diceResult];
+
+        return totalPayout;
+    }
+
+    function placeBet(uint256 diceResult) external payable {
+        require(msg.value >= MIN_BET, "Minimum bet not met");
+        require(diceResult >= 1 && diceResult <= MAX_ROLL, "Invalid dice result");
+
+        bets[diceResult].push(Bet(msg.sender, msg.value));
+
+        totalBets += 1;
+    }
+
+    function getBetsCount(uint256 diceResult) external view returns (uint256) {
+        return bets[diceResult].length;
+    }
+
+    function getTotalBets() external view returns (uint256) {
+        return totalBets;
+    }
+
+    function withdrawFunds() external {
+        require(totalBets == 0, "Cannot withdraw funds while there are active bets");
+        uint256 balance = address(this).balance;
+        payable(msg.sender).transfer(balance);
+    }
+
+    function getContractBalance() external view onlyOwner returns (uint256) {
+        return address(this).balance;
+    }
+
+    function setMinBet(uint256 newMinBet) external onlyOwner {
+        MIN_BET = newMinBet;
+    }
+
+    function getOwner() external view returns (address) {
+        return owner;
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Invalid address");
+        owner = newOwner;
+    }
+}
