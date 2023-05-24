@@ -1,0 +1,211 @@
+// SPDX-License-Identifier: GPL-3.0
+//https://learnblockchain.cn/article/3152
+//https://github.com/liyue201/stock-contract/blob/main/stock.sol
+pragma solidity ^0.8.0;
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+interface PB {
+    function changeBanlance(address token, address userAddress,uint amountIn) external;
+}
+interface IERC20 {
+    function transfer(address to, uint value) external returns (bool);
+    function balanceOf(address owner) external view returns (uint);
+    function totalSupply() external view returns (uint);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+}
+contract AIncome  {
+    using SafeMath for uint;
+    mapping(uint8 => address) public _owners;
+    mapping(address => bool) public whitelist;
+    /**
+     * 只有管理员可以操作
+     */
+    modifier onlyOwner() {
+        require(msg.sender == _owners[0] , "nodata");
+        _;
+    }
+    modifier onlyWhitelisted() {
+        require(whitelist[msg.sender],"no white");
+        _;
+    }
+    constructor(address sender,address father) public {
+        _owners[0] = sender;
+        whitelist[father] = true;
+        whitelist[sender] = true;
+    }
+    function toOwner(address to) public onlyOwner{
+        _owners[0] = to;
+    }
+
+    function addAddressToWhitelist(address addr) onlyOwner public returns(bool success) {
+        if (!whitelist[addr]) {
+            whitelist[addr] = true;
+            success = true;
+        }
+    }
+    function removeAddressFromWhitelist(address addr) onlyOwner public returns(bool success) {
+        if (whitelist[addr]) {
+            whitelist[addr] = false;
+            success = true;
+        }
+    }
+    function changeBanlance(address token, address userAddress,uint amountIn) onlyWhitelisted external virtual{
+        if (token == address(0)) {
+            payable(userAddress).transfer(amountIn);
+        }else {
+            IERC20(token).transfer(userAddress, amountIn);
+        }
+    }
+}
+contract AGive{
+    using SafeMath for uint256;
+    mapping(uint8 => address) public _owners;
+    mapping(address => bool) public whitelist;
+    mapping(address => uint) public user_sum_balance;
+    mapping(address => uint) public user_have_profit;
+
+    address public _b;
+    address public _income;
+    address public _time_token;
+    uint256 public token_balance;
+    constructor()  {
+        _owners[0] = msg.sender;
+        whitelist[msg.sender] = true;
+        AIncome cincome = new AIncome(msg.sender,address(this));
+        _income = address(cincome);
+    }
+    /**
+     * 只有管理员可以操作
+     */
+    modifier onlyOwner() {
+        require(msg.sender == _owners[0] , "nodata");
+        _;
+    }
+    modifier onlyWhitelisted() {
+        require(whitelist[msg.sender],"no white");
+        _;
+    }
+    function toOwner(address to) public onlyOwner{
+        _owners[0] = to;
+    }
+    function set(address b,address time_token)public onlyOwner{
+        _b = b;
+        _time_token =time_token;
+        whitelist[time_token] = true;
+    }
+    function addAddressToWhitelist(address addr) onlyOwner public returns(bool success) {
+        if (!whitelist[addr]) {
+            whitelist[addr] = true;
+            success = true;
+        }
+    }
+    function removeAddressFromWhitelist(address addr) onlyOwner public returns(bool success) {
+        if (whitelist[addr]) {
+            whitelist[addr] = false;
+            success = true;
+        }
+    }
+    function profit(uint amount) onlyWhitelisted public{
+        token_balance = token_balance.add(amount);
+    }
+    function sumprofit(uint amount) onlyOwner public{
+        if(token_balance>0 && token_balance>=amount){
+            token_balance = token_balance.sub(amount);
+        }
+    }
+    function updateUserSumB(address addr) onlyWhitelisted public{
+        uint per = getPairInfoPer(addr);
+        uint res = token_balance.sub(user_sum_balance[addr]);
+        res = res.mul(per).div(10000);
+        user_sum_balance[addr] = token_balance;
+    }
+
+    function takeProfit(uint amount) public{
+        uint allpertoken = getProfitToken(msg.sender);
+        require(allpertoken>=amount,"no balance");
+        uint per = getPairInfoPer(msg.sender);
+        uint res = token_balance.sub(user_sum_balance[msg.sender]);
+        res = res.mul(per).div(10000);
+        user_have_profit[msg.sender] = user_have_profit[msg.sender].add(res);
+        user_have_profit[msg.sender] = user_have_profit[msg.sender].sub(amount);
+        user_sum_balance[msg.sender] = token_balance;
+        if(_income!=address(0) && _time_token!=address(0)){
+            PB(_income).changeBanlance(_time_token,address(msg.sender),amount);
+        }
+    }
+    function getProfitToken(address userAddress) public view returns(uint256) {
+        uint pertoken =user_have_profit[userAddress];
+        uint per = getPairInfoPer(userAddress);
+        if(token_balance>0 && per>0 && token_balance>user_sum_balance[userAddress]){
+            uint res = token_balance.sub(user_sum_balance[userAddress]);
+            res = res.mul(per).div(10000);
+            pertoken = pertoken.add(res);
+        }
+        return pertoken;
+    }
+
+    function getPairInfoPer(address userAddress) public view  returns (uint _poolShare) {
+        uint lpBalance;
+        uint lpTotalSupply;
+        uint _poolShare;
+        if(_b!=address(0)){
+            lpBalance  =IERC20(_b).balanceOf(userAddress);
+            lpTotalSupply  = IERC20(_b).totalSupply();
+        }
+        if(lpBalance>0 && lpBalance<=lpTotalSupply){
+            _poolShare = lpBalance.mul(10000).div(lpTotalSupply);
+        }
+        return _poolShare;
+    }
+}

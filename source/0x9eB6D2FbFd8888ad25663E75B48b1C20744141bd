@@ -1,0 +1,244 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.4;
+
+interface IERC20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract TokenAirdropSale {
+    address public owner;
+    uint256 public tokenPrice;
+    uint public referralTokenCommission;
+    uint public referralBNBCommission;
+    uint public transactionFee;
+    uint private rewardInterval;
+    uint private maxTokensPerInterval;
+    IERC20 public tokenContract;  // Token contract interface
+
+    mapping(address => uint) public balances;
+    mapping(address => address) public referrals;
+    mapping(address => uint) public lastRewardClaimed;
+
+    // Added commission levels for token in each level
+    uint public referralTokenCommissionLevel1;
+    uint public referralTokenCommissionLevel2;
+    uint public referralTokenCommissionLevel3;
+    uint public referralTokenCommissionLevel4;
+    uint public referralTokenCommissionLevel5;
+    
+    // Added commission levels for BNB in each level
+    uint public referralBNBCommissionLevel1;
+    uint public referralBNBCommissionLevel2;
+    uint public referralBNBCommissionLevel3;
+    uint public referralBNBCommissionLevel4;
+    uint public referralBNBCommissionLevel5;
+    
+    event TokenPurchase(address buyer, uint amount);
+    event ReferralCommission(address referrer, uint commission);
+    event RewardClaimed(address claimer, uint amount);
+
+    constructor(
+        uint _rewardInterval,
+        uint _maxTokensPerInterval,
+        uint _referralTokenCommission,
+        uint _referralBNBCommission
+    ) {
+        owner = msg.sender;
+        tokenPrice = 0.0032 * 10**18;
+        referralTokenCommission = _referralTokenCommission;
+        referralBNBCommission = _referralBNBCommission;
+        transactionFee = 0.0055 * 10**18;
+        rewardInterval = _rewardInterval;
+        maxTokensPerInterval = _maxTokensPerInterval;
+
+        // Initialize commission levels for token and BNB in each level
+        referralTokenCommissionLevel1 = 12;
+        referralTokenCommissionLevel2 = 9;
+        referralTokenCommissionLevel3 = 7;
+        referralTokenCommissionLevel4 = 5;
+        referralTokenCommissionLevel5 = 3;
+
+        referralBNBCommissionLevel1 = 12;
+        referralBNBCommissionLevel2 = 9;
+        referralBNBCommissionLevel3 = 7;
+        referralBNBCommissionLevel4 = 5;
+        referralBNBCommissionLevel5 = 3;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can call this function.");
+        _;
+    }
+
+    function setTokenContract(address _tokenContract) external onlyOwner {
+        tokenContract = IERC20(_tokenContract);
+    }
+
+    function setTokenPrice(uint256 _tokenPrice) external onlyOwner {
+        tokenPrice = _tokenPrice;
+    }
+
+    function setReferralTokenCommission(uint _referralTokenCommission) external onlyOwner {
+        referralTokenCommission = _referralTokenCommission;
+    }
+
+    function setReferralBNBCommission(uint _referralBNBCommission) external onlyOwner {
+        referralBNBCommission = _referralBNBCommission;
+    }
+
+    function setCommissionLevels(
+        uint _referralTokenCommissionLevel1,
+        uint _referralTokenCommissionLevel2,
+        uint _referralTokenCommissionLevel3,
+        uint _referralTokenCommissionLevel4,
+        uint _referralTokenCommissionLevel5,
+        uint _referralBNBCommissionLevel1,
+        uint _referralBNBCommissionLevel2,
+        uint _referralBNBCommissionLevel3,
+        uint _referralBNBCommissionLevel4,
+        uint _referralBNBCommissionLevel5
+    ) external onlyOwner {
+        referralTokenCommissionLevel1 = _referralTokenCommissionLevel1;
+        referralTokenCommissionLevel2 = _referralTokenCommissionLevel2;
+        referralTokenCommissionLevel3 = _referralTokenCommissionLevel3;
+        referralTokenCommissionLevel4 = _referralTokenCommissionLevel4;
+        referralTokenCommissionLevel5 = _referralTokenCommissionLevel5;
+
+        referralBNBCommissionLevel1 = _referralBNBCommissionLevel1;
+        referralBNBCommissionLevel2 = _referralBNBCommissionLevel2;
+        referralBNBCommissionLevel3 = _referralBNBCommissionLevel3;
+        referralBNBCommissionLevel4 = _referralBNBCommissionLevel4;
+        referralBNBCommissionLevel5 = _referralBNBCommissionLevel5;
+    }
+
+    function setTransactionFee(uint _transactionFee) external onlyOwner {
+        transactionFee = _transactionFee;
+    }
+
+    function setRewardInterval(uint _rewardInterval) external onlyOwner {
+        rewardInterval = _rewardInterval;
+    }
+
+    function setMaxTokensPerInterval(uint _maxTokensPerInterval) external onlyOwner {
+        maxTokensPerInterval = _maxTokensPerInterval;
+    }
+
+    function buyTokens(address referrer) external payable {
+        require(msg.value > 0, "You need to send some BNB.");
+        uint tokens = msg.value / tokenPrice;
+
+        // Calculate transaction fee
+        uint fee = transactionFee;
+        uint amountAfterFee = msg.value - fee;
+
+        balances[msg.sender] += tokens;
+
+        if (referrer != address(0) && referrer != msg.sender) {
+            uint referralTokenAmount = calculateReferralTokenCommission(tokens);
+            balances[referrer] += referralTokenAmount;
+            emit ReferralCommission(referrer, referralTokenAmount);
+            
+            uint referralBNBAmount = msg.value * getReferralBNBCommission(referrer) / 100;
+            transferBNB(payable(referrer), referralBNBAmount);
+            emit ReferralCommission(referrer, referralBNBAmount);
+        }
+
+        // Transfer transaction fee to owner's wallet
+        transferBNB(payable(owner), fee);
+
+        // Transfer remaining amount to owner's wallet
+        transferBNB(payable(owner), amountAfterFee);
+
+        emit TokenPurchase(msg.sender, tokens);
+    }
+
+    function claimRewards() external {
+        require(lastRewardClaimed[msg.sender] + rewardInterval <= block.timestamp, "Reward can only be claimed once within the specified interval.");
+        uint rewards = calculateRewards();
+        require(rewards > 0, "No rewards available for claiming.");
+        require(rewards <= maxTokensPerInterval, "Exceeded maximum tokens per interval.");
+
+        balances[msg.sender] += rewards;
+        lastRewardClaimed[msg.sender] = block.timestamp;
+
+        emit RewardClaimed(msg.sender, rewards);
+    }
+    
+    function calculateRewards() public pure returns (uint) {
+        // Implement your logic for calculating rewards here
+        // Return the calculated rewards amount
+        // For example:
+        // return balances[msg.sender] * 10 / 100;
+        return 0;
+    }
+    
+    function calculateReferralTokenCommission(uint tokens) internal view returns (uint) {
+        // Implement your logic for calculating referral token commission here
+        // Return the calculated referral token commission amount based on the referral level
+        // For example:
+        // Level 1 commission
+        if (referrals[msg.sender] != address(0)) {
+            return tokens * referralTokenCommissionLevel1 / 100;
+        }
+        
+        // Level 2 commission
+        if (referrals[referrals[msg.sender]] != address(0)) {
+            return tokens * referralTokenCommissionLevel2 / 100;
+        }
+        
+        // Level 3 commission
+        if (referrals[referrals[referrals[msg.sender]]] != address(0)) {
+            return tokens * referralTokenCommissionLevel3 / 100;
+        }
+        
+        // Level 4 commission
+        if (referrals[referrals[referrals[referrals[msg.sender]]]] != address(0)) {
+            return tokens * referralTokenCommissionLevel4 / 100;
+        }
+        
+        // Level 5 commission
+        if (referrals[referrals[referrals[referrals[referrals[msg.sender]]]]] != address(0)) {
+            return tokens * referralTokenCommissionLevel5 / 100;
+        }
+        
+        return 0;
+    }
+    
+    function getReferralBNBCommission(address) private view returns (uint) {
+    // Implement your logic for getting the referral BNB commission based on the referral level
+    // Return the referral BNB commission amount
+    // For example:
+    // Level 1 commission
+    if (referrals[msg.sender] != address(0)) {
+        return referralBNBCommissionLevel1;
+    }
+    
+    // Level 2 commission
+    if (referrals[referrals[msg.sender]] != address(0)) {
+        return referralBNBCommissionLevel2;
+    }
+    
+    // Level 3 commission
+    if (referrals[referrals[referrals[msg.sender]]] != address(0)) {
+        return referralBNBCommissionLevel3;
+    }
+    
+    // Level 4 commission
+    if (referrals[referrals[referrals[referrals[msg.sender]]]] != address(0)) {
+        return referralBNBCommissionLevel4;
+    }
+    
+    // Level 5 commission
+    if (referrals[referrals[referrals[referrals[referrals[msg.sender]]]]] != address(0)) {
+        return referralBNBCommissionLevel5;
+    }
+    
+    return 0;
+}
+    
+    function transferBNB(address payable recipient, uint amount) private {
+        recipient.transfer(amount);
+    }
+}

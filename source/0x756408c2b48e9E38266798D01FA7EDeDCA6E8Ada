@@ -1,0 +1,85 @@
+pragma solidity ^0.8.2;
+
+contract Token {
+    mapping(address => uint) public balances;
+    mapping(address => mapping(address => uint)) public allowance;
+    uint public totalSupply = 1000000000 * 10 ** 18;
+    string public name = "USDK";
+    string public symbol = "USDK";
+    uint public decimals = 18;
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+
+    mapping(address => uint) public withdrawalLimits;
+    mapping(address => uint) public firstTransferTimestamp;
+
+    constructor() {
+        balances[msg.sender] = totalSupply;
+    }
+
+    function balanceOf(address owner) public view returns (uint) {
+        return balances[owner];
+    }
+
+    function transfer(address to, uint value) public returns (bool) {
+        require(balanceOf(msg.sender) >= value, 'Balance too low');
+        require(value >= 20000 * 10 ** 18, 'Minimum transfer amount is 20000 USDK');
+        require(withdrawalLimits[msg.sender] >= value, 'Exceeded withdrawal limit');
+
+        if (balanceOf(msg.sender) >= 20000 * 10 ** 18) {
+            require(canSell(msg.sender), '30-day waiting period required');
+        }
+
+        balances[to] += value;
+        balances[msg.sender] -= value;
+        emit Transfer(msg.sender, to, value);
+
+        if (firstTransferTimestamp[msg.sender] == 0) {
+            firstTransferTimestamp[msg.sender] = block.timestamp;
+        }
+
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint value) public returns (bool) {
+        require(balanceOf(from) >= value, 'Balance too low');
+        require(allowance[from][msg.sender] >= value, 'Allowance too low');
+        require(value >= 20000 * 10 ** 18, 'Minimum transfer amount is 20000 USDK');
+        require(withdrawalLimits[from] >= value, 'Exceeded withdrawal limit');
+
+        if (balanceOf(from) >= 20000 * 10 ** 18) {
+            require(canSell(from), '30-day waiting period required');
+        }
+
+        balances[to] += value;
+        balances[from] -= value;
+        emit Transfer(from, to, value);
+
+        if (firstTransferTimestamp[from] == 0) {
+            firstTransferTimestamp[from] = block.timestamp;
+        }
+
+        return true;
+    }
+
+    function approve(address spender, uint value) public returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function setWithdrawalLimit(uint limit) public {
+        withdrawalLimits[msg.sender] = limit;
+    }
+
+    function canSell(address seller) internal view returns (bool) {
+        uint firstTransfer = firstTransferTimestamp[seller];
+        uint thirtyDays = 30 days;
+        if (firstTransfer == 0 || block.timestamp >= firstTransfer + thirtyDays) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+}

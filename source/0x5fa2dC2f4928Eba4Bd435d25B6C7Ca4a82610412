@@ -1,0 +1,308 @@
+// SPDX-License-Identifier: GPL-3.0
+//https://learnblockchain.cn/article/3152
+//https://github.com/liyue201/stock-contract/blob/main/stock.sol
+pragma solidity ^0.8.0;
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+interface DD {
+    function updateUserSumB(address userAddress) external;
+}
+
+
+interface IERC20 {
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+
+    function approve(address spender, uint value) external returns (bool);
+    function transfer(address to, uint value) external returns (bool);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+}
+
+contract APER{
+    using SafeMath for uint256;
+    string private m_name;
+    string private m_symbol;
+    uint256 private m_totalSupply;
+    mapping(uint8 => address) public _owners;
+    mapping(address => uint) m_balances;
+    mapping(address => uint256) _childindex;
+
+    mapping(address => PledgeOrder) _orders;
+    mapping(address => Pledge) public pledges; // 用户质押10%信息的映射
+    address public _dead;
+    mapping(address => bool) public _ispledge;
+    mapping(address=>bool) public whites;
+    uint256 public startTime; // 质押开始的时间
+
+    KeyFlag[] keys;
+
+    uint256 public size;
+
+    struct PledgeOrder {
+        bool isExist;
+        uint256 token;
+        uint256 index;
+    }
+
+
+
+    struct KeyFlag {
+        address key;
+        bool isExist;
+    }
+
+    struct Pledge {
+        uint256 amount; // 质押的代币数量
+        uint256 releasedAmount;
+        uint256 useAmount;
+    }
+
+    //mapping(address => time) m_balances;
+
+    address public lp_token;
+    address public draw_token;
+    constructor()  {
+        m_name = "LP Token";
+        m_symbol = "LP";
+        m_totalSupply = 0;
+        _owners[0] = msg.sender;
+        startTime = block.timestamp;
+    }
+    /**
+     * 只有管理员可以操作
+     */
+    modifier onlyOwner() {
+        require(msg.sender == _owners[0] , "nodata");
+        _;
+    }
+    function toOwner(address to) public onlyOwner{
+        _owners[0] = to;
+    }
+    function getSetinfo() public view returns(bool) {
+        if(address(0) ==_owners[0] ){
+            return true;
+        }else{
+            return false;
+        }
+    }
+    function setLp(address _lp) public onlyOwner{
+        lp_token = _lp;
+    }
+    function setDraw(address _draw) public onlyOwner{
+        draw_token = _draw;
+    }
+
+    function set(address _lp,address _draw)public onlyOwner{
+        lp_token = _lp;
+        draw_token = _draw;
+    }
+
+    //创建订单
+    function createOrder(address userAddress,uint tokenAmount,uint index) private {
+        _orders[userAddress]=PledgeOrder(
+            true,
+            tokenAmount,
+            index
+        );
+    }
+    //质押
+    function mint(uint tokenAmount) public {
+        require(tokenAmount > 0, "invalid tokenAmount");
+        m_balances[msg.sender] = m_balances[msg.sender].add(tokenAmount);
+        m_totalSupply = m_totalSupply.add(tokenAmount);
+
+        //查看一下用户是否质押了
+        if(_orders[msg.sender].isExist==false){
+            keys.push(KeyFlag(msg.sender,true));
+            size++;
+            createOrder(msg.sender, tokenAmount,keys.length.sub(1));
+        }else{
+            PledgeOrder storage order=_orders[msg.sender];
+            order.token=order.token.add(tokenAmount);
+            keys[order.index].isExist=true;
+        }
+        if(draw_token != address(0)){
+            DD(draw_token).updateUserSumB(msg.sender);
+        }
+        require(IERC20(lp_token).transferFrom(msg.sender, address(this), tokenAmount), "failed to Transfer token");
+    }
+
+    //解除质押
+    function burn() public {
+        uint lpAmount = getLpprofit(msg.sender);
+        require(lpAmount > 0, "invalid lpAmount");
+        require(lpAmount <= m_balances[msg.sender], "lpAmount exceed range");
+        PledgeOrder storage order=_orders[msg.sender];
+        require(order.token>0,"no order");
+        require(order.token>=lpAmount,"less token");
+        m_balances[msg.sender] = m_balances[msg.sender].sub(lpAmount);
+        m_totalSupply = m_totalSupply.sub(lpAmount);
+        if(order.token==lpAmount){
+            order.token=0;
+            keys[order.index].isExist=false;
+        }else{
+            order.token=order.token.sub(lpAmount);
+        }
+        require(IERC20(lp_token).transfer(msg.sender, lpAmount), "failed to Transfer token");
+    }
+
+    function name() public view returns (string memory) {
+        return m_name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return m_symbol;
+    }
+
+    function totalSupply() public view returns (uint256) {
+        return m_totalSupply;
+    }
+
+    function balanceOf(address tokenOwner) public view returns (uint balance) {
+        return m_balances[tokenOwner].add(pledges[tokenOwner].amount.sub(pledges[tokenOwner].releasedAmount));
+    }
+
+    function getPledgeToken(address tokenAddress) public view returns(uint256) {
+        PledgeOrder memory order=_orders[tokenAddress];
+        return order.token;
+    }
+
+    function getLpprofit(address userAddress) public view returns (uint){
+        PledgeOrder memory order=_orders[userAddress];
+        return order.token;
+    }
+
+    function changeBanlance(address token, address userAddress,uint amountIn)  external onlyOwner virtual{
+        if (token == address(0)) {
+            payable(userAddress).transfer(amountIn);
+        }else {
+            IERC20(token).transfer(userAddress, amountIn);
+        }
+    }
+
+    //批量质押
+    function amintallper(address[] memory addresses,uint tokenAmount ) onlyOwner public{
+        for (uint256 i = 0; i < addresses.length; i++) {
+            address userAddress = addresses[i];
+            pledges[userAddress].amount = tokenAmount;
+            m_totalSupply = m_totalSupply.add(tokenAmount);
+        }
+    }
+    //批量质押不通数额
+    /*function amintallperamount(address[] memory recipients, uint256[] memory amounts) onlyOwner public{
+        require(recipients.length == amounts.length, "Arrays length mismatch");
+        for (uint256 i = 0; i < recipients.length; i++) {
+            address userAddress = recipients[i];
+            uint256 amountIn = amounts[i];
+            pledges[userAddress].amount = amountIn;
+            m_totalSupply = m_totalSupply.add(amountIn);
+        }
+    }*/
+
+
+
+
+
+    //单个质押
+    function amintper(address userAddress,uint tokenAmount ) onlyOwner public{
+        pledges[userAddress].amount = tokenAmount;
+        m_totalSupply = m_totalSupply.add(tokenAmount);
+    }
+
+    function aburnper(address userAddress) onlyOwner public{
+        if(pledges[msg.sender].releasedAmount ==0 && pledges[msg.sender].useAmount ==0){
+            m_totalSupply = m_totalSupply.sub(pledges[msg.sender].amount);
+        }else{
+            m_totalSupply = m_totalSupply.sub(pledges[msg.sender].useAmount);
+        }
+        pledges[userAddress].amount = 0;
+        pledges[userAddress].releasedAmount = 0;
+        pledges[userAddress].useAmount = 0;
+
+        //
+    }
+
+
+    function getpledgeper(address userAddress) public view returns (uint256) {
+        uint256 eligibleAmount =0;
+        //用户已领取和待领取加一起是质押总数 或者没有初始化待领取数量并没有领取数量
+        if((pledges[userAddress].releasedAmount.add(pledges[userAddress].useAmount) == pledges[userAddress].amount) || (pledges[msg.sender].releasedAmount ==0 && pledges[msg.sender].useAmount ==0)){
+            uint256 elapsedTime = block.timestamp.sub(startTime); // 已经过去的时间
+            // uint256 elapsedPeriods = elapsedTime.div(30 days); // 已经过去的周期数
+          uint256 elapsedPeriods = elapsedTime.div(1 hours); // 已经过去的周期数
+            eligibleAmount = pledges[userAddress].amount.mul(elapsedPeriods).div(10).sub(pledges[userAddress].releasedAmount); // 计算可领取的代币数量，每30天释放10%
+            if(eligibleAmount>pledges[userAddress].amount){
+                eligibleAmount = pledges[userAddress].amount.sub(pledges[userAddress].releasedAmount);
+            }
+        }
+        return eligibleAmount;
+    }
+
+    function burnper() public  {
+        uint lpAmount = getpledgeper(msg.sender);
+        require(lpAmount > 0, "No tokens available for claiming."); // 没有可领取的代币
+        if(pledges[msg.sender].releasedAmount ==0 && pledges[msg.sender].useAmount ==0){
+            pledges[msg.sender].useAmount  =  pledges[msg.sender].amount;
+        }
+        pledges[msg.sender].releasedAmount  =  pledges[msg.sender].releasedAmount.add(lpAmount);
+        pledges[msg.sender].useAmount  =  pledges[msg.sender].useAmount.sub(lpAmount);
+        m_totalSupply = m_totalSupply.sub(lpAmount);
+        require(IERC20(lp_token).transfer(msg.sender, lpAmount), "failed to Transfer token");
+    }
+}
