@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: RRCCoin
+pragma solidity ^0.8.19;
+
+interface IBEP20 {
+    function transfer(address to, uint256 value) external returns (bool);
+    function approve(address spender, uint256 value) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+contract RRCExchange {
+    IBEP20 public USDTToken;
+    IBEP20 public RRCToken;
+    IBEP20 public token1;
+    IBEP20 public token2;
+    address public owner;
+    uint256 RRCBuyPrice;
+    uint256 RRCSellPrice;
+    uint256 newAmount;
+
+    struct ExchangeInfo {
+        bool isBuy;
+        address wallet;
+        uint256 usdAmount;
+        uint256 rrcAmount;
+        uint256 rrcPrice;
+        uint256 timestamp;
+    }
+
+    ExchangeInfo[] public exchangeHistory;
+    
+    constructor() {
+        USDTToken = IBEP20(0x55d398326f99059fF775485246999027B3197955);
+        RRCToken = IBEP20(0xE9f716A0859B76F1cd9d64a518EAa32215eF3f90);
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner {
+        require(msg.sender == owner, "Only the contract owner can call this function.");
+        _;
+    }
+
+    function setOwner(address newOwner) public onlyOwner {
+        owner = newOwner;
+    }
+
+    receive() external payable {}
+
+    event Exchange(address indexed sender, uint256 amount);
+
+    function exchange(string memory _currencySymbol, uint256 _amount) public payable {
+        require(bytes(_currencySymbol).length > 0, "Token name cannot be empty");
+        require(( keccak256(bytes(_currencySymbol)) == keccak256(bytes("USDT")) && address(USDTToken) != address(0)) || ( keccak256(bytes(_currencySymbol)) == keccak256(bytes("RRC")) && address(RRCToken) != address(0)), "Invalid token name");
+        if (keccak256(bytes(_currencySymbol)) == keccak256(bytes("USDT"))) {
+            token1 = USDTToken;
+            token2 = RRCToken;
+            // Amount to transfer
+            newAmount = (_amount / RRCBuyPrice) * 10**18;
+            // History
+            ExchangeInfo memory exchangeInfo = ExchangeInfo({
+                isBuy: true,
+                wallet: msg.sender,
+                usdAmount: _amount,
+                rrcAmount: newAmount,
+                rrcPrice: RRCBuyPrice,
+                timestamp: block.timestamp
+            });
+            exchangeHistory.push(exchangeInfo);
+        }
+        if (keccak256(bytes(_currencySymbol)) == keccak256(bytes("RRC"))) {
+            token1 = RRCToken;
+            token2 = USDTToken;
+            // Amount to transfer
+            newAmount = (_amount * RRCSellPrice) / 10**18;
+            // History
+            ExchangeInfo memory exchangeInfo = ExchangeInfo({
+                isBuy: false,
+                wallet: msg.sender,
+                usdAmount: newAmount,
+                rrcAmount: _amount,
+                rrcPrice: RRCSellPrice,
+                timestamp: block.timestamp
+            });
+            exchangeHistory.push(exchangeInfo);
+        }
+
+        //Check
+        require(_amount > 0, "Amount must be greater than 0");
+        require(token1.allowance(msg.sender, address(this)) >= _amount, "Token allowance not enough");
+        require(token1.balanceOf(msg.sender) >= _amount, "Insufficient token balance");
+        require(token2.balanceOf(address(this)) >= newAmount, "Insufficient token balance");
+
+        //Deposit
+        token1.transferFrom(msg.sender, address(this), _amount);
+
+        // Withdraw
+        token2.transfer(msg.sender, newAmount);
+
+        emit Exchange(msg.sender, _amount);
+    }
+
+    function setRRCBuyPrice(uint256 _price) public onlyOwner {
+        require(_price >= RRCSellPrice, "Buy price must be greater than sell price.");
+        RRCBuyPrice = _price;
+    }
+
+    function setRRCSellPrice(uint256 _price) public onlyOwner {
+        require(_price <= RRCBuyPrice, "Buy price must be greater than sell price.");
+        RRCSellPrice = _price;
+    }
+
+    function depositUSDT(uint256 amount) public onlyOwner {
+        require(USDTToken.transferFrom(msg.sender, address(this), amount), "USDT deposit failed");
+    }
+
+    function depositRRC(uint256 amount) public onlyOwner {
+        require(RRCToken.transferFrom(msg.sender, address(this), amount), "RRC deposit failed");
+    }
+
+    function withdrawUSDT(uint256 _amount) public onlyOwner {
+        require(USDTToken.transfer(msg.sender, _amount), "USDT withdrawal failed");
+    }
+
+    function withdrawRRC(uint256 _amount) public onlyOwner {
+        require(RRCToken.transfer(msg.sender, _amount), "RRC withdrawal failed");
+    }
+
+    function getUSDTBalance() public view returns (uint256) {
+        return USDTToken.balanceOf(address(this));
+    }
+
+    function getRRCBalance() public view returns (uint256) {
+        return RRCToken.balanceOf(address(this));
+    }
+
+    function getRRCBuyPrice() public view returns (uint256) {
+        return RRCBuyPrice;
+    }
+
+    function getRRCSellPrice() public view returns (uint256) {
+        return RRCSellPrice;
+    }
+
+    function getExchangeHistory() public view returns (ExchangeInfo[] memory) {
+        return exchangeHistory;
+    }
+
+    function getExchangeForAddress(address walletAddress) public view returns (ExchangeInfo[] memory) {
+        uint256[] memory exchangeIndexes = new uint256[](exchangeHistory.length);
+        uint256 exchangeCount = 0;
+        for (uint256 i = 0; i < exchangeHistory.length; i++) {
+            if (exchangeHistory[i].wallet == walletAddress) {
+                exchangeIndexes[exchangeCount] = i;
+                exchangeCount++;
+            }
+        }
+        ExchangeInfo[] memory result = new ExchangeInfo[](exchangeCount);
+        for (uint256 i = 0; i < exchangeCount; i++) {
+            result[i] = exchangeHistory[exchangeIndexes[i]];
+        }
+        return result;
+    }
+}

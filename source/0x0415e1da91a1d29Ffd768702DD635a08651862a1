@@ -1,0 +1,449 @@
+
+// File: @chainlink/contracts/src/v0.8/interfaces/LinkTokenInterface.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface LinkTokenInterface {
+  function allowance(address owner, address spender) external view returns (uint256 remaining);
+
+  function approve(address spender, uint256 value) external returns (bool success);
+
+  function balanceOf(address owner) external view returns (uint256 balance);
+
+  function decimals() external view returns (uint8 decimalPlaces);
+
+  function decreaseApproval(address spender, uint256 addedValue) external returns (bool success);
+
+  function increaseApproval(address spender, uint256 subtractedValue) external;
+
+  function name() external view returns (string memory tokenName);
+
+  function symbol() external view returns (string memory tokenSymbol);
+
+  function totalSupply() external view returns (uint256 totalTokensIssued);
+
+  function transfer(address to, uint256 value) external returns (bool success);
+
+  function transferAndCall(
+    address to,
+    uint256 value,
+    bytes calldata data
+  ) external returns (bool success);
+
+  function transferFrom(
+    address from,
+    address to,
+    uint256 value
+  ) external returns (bool success);
+}
+
+
+// File: @chainlink/contracts/src/v0.8/interfaces/VRFV2WrapperInterface.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface VRFV2WrapperInterface {
+  /**
+   * @return the request ID of the most recent VRF V2 request made by this wrapper. This should only
+   * be relied option within the same transaction that the request was made.
+   */
+  function lastRequestId() external view returns (uint256);
+
+  /**
+   * @notice Calculates the price of a VRF request with the given callbackGasLimit at the current
+   * @notice block.
+   *
+   * @dev This function relies on the transaction gas price which is not automatically set during
+   * @dev simulation. To estimate the price at a specific gas price, use the estimatePrice function.
+   *
+   * @param _callbackGasLimit is the gas limit used to estimate the price.
+   */
+  function calculateRequestPrice(uint32 _callbackGasLimit) external view returns (uint256);
+
+  /**
+   * @notice Estimates the price of a VRF request with a specific gas limit and gas price.
+   *
+   * @dev This is a convenience function that can be called in simulation to better understand
+   * @dev pricing.
+   *
+   * @param _callbackGasLimit is the gas limit used to estimate the price.
+   * @param _requestGasPriceWei is the gas price in wei used for the estimation.
+   */
+  function estimateRequestPrice(uint32 _callbackGasLimit, uint256 _requestGasPriceWei) external view returns (uint256);
+}
+
+
+// File: @chainlink/contracts/src/v0.8/VRFV2WrapperConsumerBase.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "./interfaces/LinkTokenInterface.sol";
+import "./interfaces/VRFV2WrapperInterface.sol";
+
+/** *******************************************************************************
+ * @notice Interface for contracts using VRF randomness through the VRF V2 wrapper
+ * ********************************************************************************
+ * @dev PURPOSE
+ *
+ * @dev Create VRF V2 requests without the need for subscription management. Rather than creating
+ * @dev and funding a VRF V2 subscription, a user can use this wrapper to create one off requests,
+ * @dev paying up front rather than at fulfillment.
+ *
+ * @dev Since the price is determined using the gas price of the request transaction rather than
+ * @dev the fulfillment transaction, the wrapper charges an additional premium on callback gas
+ * @dev usage, in addition to some extra overhead costs associated with the VRFV2Wrapper contract.
+ * *****************************************************************************
+ * @dev USAGE
+ *
+ * @dev Calling contracts must inherit from VRFV2WrapperConsumerBase. The consumer must be funded
+ * @dev with enough LINK to make the request, otherwise requests will revert. To request randomness,
+ * @dev call the 'requestRandomness' function with the desired VRF parameters. This function handles
+ * @dev paying for the request based on the current pricing.
+ *
+ * @dev Consumers must implement the fullfillRandomWords function, which will be called during
+ * @dev fulfillment with the randomness result.
+ */
+abstract contract VRFV2WrapperConsumerBase {
+  LinkTokenInterface internal immutable LINK;
+  VRFV2WrapperInterface internal immutable VRF_V2_WRAPPER;
+
+  /**
+   * @param _link is the address of LinkToken
+   * @param _vrfV2Wrapper is the address of the VRFV2Wrapper contract
+   */
+  constructor(address _link, address _vrfV2Wrapper) {
+    LINK = LinkTokenInterface(_link);
+    VRF_V2_WRAPPER = VRFV2WrapperInterface(_vrfV2Wrapper);
+  }
+
+  /**
+   * @dev Requests randomness from the VRF V2 wrapper.
+   *
+   * @param _callbackGasLimit is the gas limit that should be used when calling the consumer's
+   *        fulfillRandomWords function.
+   * @param _requestConfirmations is the number of confirmations to wait before fulfilling the
+   *        request. A higher number of confirmations increases security by reducing the likelihood
+   *        that a chain re-org changes a published randomness outcome.
+   * @param _numWords is the number of random words to request.
+   *
+   * @return requestId is the VRF V2 request ID of the newly created randomness request.
+   */
+  function requestRandomness(
+    uint32 _callbackGasLimit,
+    uint16 _requestConfirmations,
+    uint32 _numWords
+  ) internal returns (uint256 requestId) {
+    LINK.transferAndCall(
+      address(VRF_V2_WRAPPER),
+      VRF_V2_WRAPPER.calculateRequestPrice(_callbackGasLimit),
+      abi.encode(_callbackGasLimit, _requestConfirmations, _numWords)
+    );
+    return VRF_V2_WRAPPER.lastRequestId();
+  }
+
+  /**
+   * @notice fulfillRandomWords handles the VRF V2 wrapper response. The consuming contract must
+   * @notice implement it.
+   *
+   * @param _requestId is the VRF V2 request ID.
+   * @param _randomWords is the randomness result.
+   */
+  function fulfillRandomWords(uint256 _requestId, uint256[] memory _randomWords) internal virtual;
+
+  function rawFulfillRandomWords(uint256 _requestId, uint256[] memory _randomWords) external {
+    require(msg.sender == address(VRF_V2_WRAPPER), "only VRF V2 wrapper can fulfill");
+    fulfillRandomWords(_requestId, _randomWords);
+  }
+}
+
+
+// File: contracts/CoinFlipChainLink.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+import '@chainlink/contracts/src/v0.8/VRFV2WrapperConsumerBase.sol';
+
+interface AggregatorV3Interface {
+    function latestRoundData()
+        external
+        view
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
+}
+
+// IBankRoll protocol interface
+interface IBankRoll {
+    function sendWinAmount(address user, uint256 amount, address _token) external;
+
+    function tokenBalance(address _token) external returns (uint256);
+
+    function balanceOfBNBInBankRoll() external returns (uint256);
+}
+
+// IERC20 Interface
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+// CoinflipChainLink contract
+contract CoinFlipChainLink is VRFV2WrapperConsumerBase {
+    // Enum Representing Heads or Tails
+    enum CoinFlipValues {
+        HEADS,
+        TAILS
+    }
+    // Enum Representing BNB or PSYOP
+    enum BetTypeValues {
+        BNB,
+        PSYOP
+    }
+    struct CoinFlipGame {
+        uint256 betAmount;
+        uint256 seed;
+        address user;
+        BetTypeValues betType;
+        CoinFlipValues prediction;
+        uint8 result;
+    }
+    uint256 houseCutNum = 3;
+    uint256 houseCutDenom = 100;
+    uint256 private _reEntancyStatus = 1; //Non_Entered
+
+    address public owner;
+    address public psyopbetToken;
+    address public houseCut;
+    address public bankRoll;
+    address public vrfFeeWallet;
+    address public linkToken;
+    address public chainlinkVRFWrapper;
+    address public LINK_BNB_FEED;
+    uint16 public number_of_confirmations = 3;
+    uint32 callbackGasLimit = 120000;
+    // Stores each game to the user
+    mapping(uint256 => CoinFlipGame) public coinFlipGames;
+    mapping(BetTypeValues => mapping(uint256 => bool)) public flipAmounts;
+    mapping(address => uint256[]) public userToGames;
+
+    // Events
+    event FlipRequest(uint256 requestId, address indexed user);
+    event FlipResult(
+        address user,
+        uint256 id,
+        BetTypeValues indexed _betType,
+        uint256 indexed betAmount,
+        uint256 seed,
+        CoinFlipValues indexed prediction,
+        CoinFlipValues result
+    );
+    event FlipAmountsSet(BetTypeValues indexed _betType, uint256[] amounts, bool isAccepted);
+    event NoOFConfirmationsSet(uint16 number_of_confirmations);
+    event BankRollSet(address _bankRoller, address owner);
+    event HouseCutAddressSet(address _houseCut, address owner);
+    event VrfFeeWalletSet(address _vrfFeewallet, address owner);
+    event HouseCutFeeSet(uint256 _houseCutNum, uint256 _houseCutDenom, address owner);
+    event CallBackGasLimitSet(uint32 _callBackGasLimit, address owner);
+    event OwnershipTransferred(address indexed newOwner, address indexed previousOwner);
+    event EtherWithdrawn(address indexed owner, uint256 indexed amount);
+    event EtherDeposited(address indexed from, uint256 indexed amount);
+    event EtherTransferred(address indexed _to, uint256 amount);
+
+    error BetAmoundExceedsRequiredPrecentOfBankRoll(uint256 betAmount);
+    error InvalidBetAmount(uint256 betAmount);
+    error ArrayLengthCantBeZero();
+    error NotEnoughEtherSent(uint256 etherSent);
+    error CallerNotAuthorizedForRefund();
+    error NothingToWithdraw();
+    error ETHTransferFailed(address _to, uint256 _amount);
+    error CallerIsNotOwner(address _owner);
+    error ReEntrantCall();
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) {
+            revert CallerIsNotOwner(owner);
+        }
+        _;
+    }
+
+    modifier nonReentrant() {
+        if (_reEntancyStatus == 2) {
+            revert ReEntrantCall();
+        }
+        _reEntancyStatus = 2; //Entered
+        _;
+        _reEntancyStatus = 1;
+    }
+
+    //Link Token, Wrapper Address
+    constructor(
+        address _psyopbetToken,
+        address _houseCut,
+        address _bankRoll,
+        address _vrfFeeWallet,
+        address _linkToken,
+        address _chainlinkVRFWrapper,
+        address _LINK_BNB_FEED
+    ) VRFV2WrapperConsumerBase(_linkToken, _chainlinkVRFWrapper) {
+        psyopbetToken = _psyopbetToken;
+        linkToken = _linkToken;
+        chainlinkVRFWrapper = _chainlinkVRFWrapper;
+        houseCut = _houseCut;
+        bankRoll = _bankRoll;
+        vrfFeeWallet = _vrfFeeWallet;
+        LINK_BNB_FEED = _LINK_BNB_FEED;
+        owner = msg.sender;
+    }
+
+    receive() external payable {
+        emit EtherDeposited(msg.sender, msg.value);
+    }
+
+    function flip(
+        uint256 betAmount,
+        CoinFlipValues _coinFlipValue,
+        BetTypeValues _betType
+    ) external payable nonReentrant {
+        if (!flipAmounts[_betType][betAmount]) {
+            revert InvalidBetAmount(betAmount);
+        }
+        uint256 houseCutFee = (betAmount * houseCutNum) / houseCutDenom;
+        uint256 houseCutAndBetAmount = betAmount + houseCutFee;
+        uint256 id;
+        if (uint8(_betType) == 0) {
+            if (betAmount > IBankRoll(bankRoll).balanceOfBNBInBankRoll() / 10) {
+                revert BetAmoundExceedsRequiredPrecentOfBankRoll(betAmount);
+            }
+            // uint256 vrfFeeInLink = VRFV2WrapperInterface(0x699d428ee890d55D56d5FC6e26290f3247A762bd)
+            //     .calculateRequestPrice(callbackGasLimit);
+            uint256 vrfFeeInLink = VRF_V2_WRAPPER.calculateRequestPrice(callbackGasLimit);
+            //answer:PRICE OF LINK IN BNB; LINK BNB FEED ADDRESS
+            (, int256 answer, , , ) = AggregatorV3Interface(LINK_BNB_FEED).latestRoundData();
+            uint256 vrfFee = (uint256(answer) * vrfFeeInLink) / 1e18;
+            // Check if User Sent Enough ETH for Bet Amount and House Cut
+            if (msg.value < houseCutAndBetAmount + vrfFee) {
+                revert NotEnoughEtherSent(msg.value);
+            }
+            //Refund Any Excess VRF Fee taken If Any
+            _transferAmountFromContract(msg.sender, msg.value - (vrfFee + houseCutAndBetAmount), address(0));
+            //Transfer VRF Fee to VRFWallet
+            _transferAmountFromContract(vrfFeeWallet, vrfFee, address(0));
+            // Take House Cut and Send it to the HouseCut Address
+            _transferAmountFromContract(houseCut, houseCutFee, address(0));
+        } else {
+            if (betAmount > IBankRoll(bankRoll).tokenBalance(psyopbetToken) / 10) {
+                revert BetAmoundExceedsRequiredPrecentOfBankRoll(betAmount);
+            }
+            // Transfer HouseCutFee to HouseCut Address
+            IERC20(psyopbetToken).transferFrom(msg.sender, houseCut, houseCutFee);
+            // Transfer BetAmount to Current Contract
+            IERC20(psyopbetToken).transferFrom(msg.sender, address(this), betAmount);
+        }
+
+        //CallBackGasLimit, NumberOfConfirmations, NoOfRandomWords
+        id = requestRandomness(callbackGasLimit, number_of_confirmations, 1);
+        userToGames[msg.sender].push(id);
+        coinFlipGames[id] = CoinFlipGame(betAmount, 0, msg.sender, _betType, _coinFlipValue, 0);
+        emit FlipRequest(id, msg.sender);
+    }
+
+    // Callback function called by the randomizer contract when the random value is generated
+    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override nonReentrant {
+        CoinFlipGame memory game = coinFlipGames[requestId];
+        game.seed = randomWords[0];
+        CoinFlipValues result = (randomWords[0] % 2 == 0) ? CoinFlipValues.HEADS : CoinFlipValues.TAILS;
+        game.result = uint8(result);
+        coinFlipGames[requestId] = game;
+        address _token = uint8(game.betType) == 0 ? address(0) : psyopbetToken;
+        if (game.prediction == result) {
+            // If User Wins, Double the Amount of His Bet
+            IBankRoll(bankRoll).sendWinAmount(game.user, game.betAmount, _token);
+            _transferAmountFromContract(game.user, game.betAmount, _token);
+        } else {
+            // If User Loses, Send his Bet to BankRoll
+            _transferAmountFromContract(bankRoll, game.betAmount, _token);
+        }
+
+        emit FlipResult(game.user, requestId, game.betType, game.betAmount, randomWords[0], game.prediction, result);
+    }
+
+    function setFlipAmounts(BetTypeValues _betType, uint256[] calldata amounts, bool isAccepted) external onlyOwner {
+        if (amounts.length == 0) {
+            revert ArrayLengthCantBeZero();
+        }
+        for (uint256 i = 0; i < amounts.length; ) {
+            flipAmounts[_betType][amounts[i]] = isAccepted;
+            unchecked {
+                ++i;
+            }
+        }
+
+        emit FlipAmountsSet(_betType, amounts, isAccepted);
+    }
+
+    function setNoOfConfirmations(uint16 _number_of_confirmations) external onlyOwner {
+        number_of_confirmations = _number_of_confirmations;
+        emit NoOFConfirmationsSet(_number_of_confirmations);
+    }
+
+    function setHouseCutAddress(address _houseCut) external onlyOwner {
+        houseCut = _houseCut;
+        emit HouseCutAddressSet(_houseCut, owner);
+    }
+
+    function setVRFFeeWallet(address _vrfFeeWallet) external onlyOwner {
+        vrfFeeWallet = _vrfFeeWallet;
+        emit VrfFeeWalletSet(_vrfFeeWallet, owner);
+    }
+
+    function setHouseCutFee(uint256 _houseCutNum, uint256 _houseCutDenom) external onlyOwner {
+        houseCutNum = _houseCutNum;
+        houseCutDenom = _houseCutDenom;
+        emit HouseCutFeeSet(_houseCutNum, _houseCutDenom, owner);
+    }
+
+    function setCallBackGasLimit(uint32 _callbackGasLimit) external onlyOwner {
+        callbackGasLimit = _callbackGasLimit;
+        emit CallBackGasLimitSet(_callbackGasLimit, owner);
+    }
+
+    function setBankRollAddress(address _bankRoll) external onlyOwner {
+        bankRoll = _bankRoll;
+        emit BankRollSet(_bankRoll, owner);
+    }
+
+    function transferOwnership(address _newOwner) external onlyOwner {
+        address oldOwner = owner;
+        owner = _newOwner;
+        emit OwnershipTransferred(_newOwner, oldOwner);
+    }
+
+    /// Withdraw any IERC20 tokens accumulated in this contract
+    function withdrawTokens(address _token, uint256 _amount) external onlyOwner nonReentrant {
+        require(_token != address(0), 'Cannot withdraw from Address 0');
+        _transferAmountFromContract(msg.sender, _amount, _token);
+    }
+
+    // Withdraw Ether If any From the Contract
+    function withdrawEther(uint256 amount) external onlyOwner nonReentrant {
+        _transferAmountFromContract(owner, amount, address(0));
+        emit EtherWithdrawn(owner, amount);
+    }
+
+    // Transfer Ether From the Contract
+    function _transferAmountFromContract(address to, uint256 amount, address _token) internal {
+        if (amount != 0) {
+            if (_token == address(0)) {
+                (bool sent, ) = payable(to).call{value: amount}('');
+                if (!sent) {
+                    revert ETHTransferFailed(to, amount);
+                } else {
+                    emit EtherTransferred(to, amount);
+                }
+            } else {
+                IERC20(_token).transfer(to, amount);
+            }
+        }
+    }
+}
+

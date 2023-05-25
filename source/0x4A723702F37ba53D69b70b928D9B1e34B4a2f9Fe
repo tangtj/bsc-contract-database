@@ -1,0 +1,3288 @@
+
+// File: contracts/interfaces/IBiswapPair.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+
+interface IBiswapPair {
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    function name() external pure returns (string memory);
+    function symbol() external pure returns (string memory);
+    function decimals() external pure returns (uint8);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+
+    function approve(address spender, uint value) external returns (bool);
+    function transfer(address to, uint value) external returns (bool);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+    function nonces(address owner) external view returns (uint);
+
+    function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+
+    event Mint(address indexed sender, uint amount0, uint amount1);
+    event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+    event Swap(
+        address indexed sender,
+        uint amount0In,
+        uint amount1In,
+        uint amount0Out,
+        uint amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint);
+    function factory() external view returns (address);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function price0CumulativeLast() external view returns (uint);
+    function price1CumulativeLast() external view returns (uint);
+    function kLast() external view returns (uint);
+    function swapFee() external view returns (uint32);
+    function devFee() external view returns (uint32);
+
+    function mint(address to) external returns (uint liquidity);
+    function burn(address to) external returns (uint amount0, uint amount1);
+    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+    function skim(address to) external;
+    function sync() external;
+
+    function initialize(address, address) external;
+    function setSwapFee(uint32) external;
+    function setDevFee(uint32) external;
+}
+
+// File: contracts/libraries/AmountMath.sol
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity ^0.8.4;
+
+import "./MulDivMath.sol";
+import "./TwoPower.sol";
+import "./LogPowMath.sol";
+
+library AmountMath {
+
+    function getAmountY(
+        uint128 liquidity,
+        uint160 sqrtPriceL_96,
+        uint160 sqrtPriceR_96,
+        uint160 sqrtRate_96,
+        bool upper
+    ) internal pure returns (uint256 amount) {
+        uint160 numerator = sqrtPriceR_96 - sqrtPriceL_96;
+        uint160 denominator = sqrtRate_96 - uint160(TwoPower.Pow96);
+        if (!upper) {
+            amount = MulDivMath.mulDivFloor(liquidity, numerator, denominator);
+        } else {
+            amount = MulDivMath.mulDivCeil(liquidity, numerator, denominator);
+        }
+    }
+
+    function getAmountX(
+        uint128 liquidity,
+        int24 leftPt,
+        int24 rightPt,
+        uint160 sqrtPriceR_96,
+        uint160 sqrtRate_96,
+        bool upper
+    ) internal pure returns (uint256 amount) {
+        // rightPt - (leftPt - 1), pc = leftPt - 1
+        uint160 sqrtPricePrPl_96 = LogPowMath.getSqrtPrice(rightPt - leftPt);
+        // 1. sqrtPriceR_96 * 2^96 < 2^256
+        // 2. sqrtRate_96 > 2^96, so sqrtPricePrM1_96 < sqrtPriceR_96 < 2^160
+        uint160 sqrtPricePrM1_96 = uint160(uint256(sqrtPriceR_96) * TwoPower.Pow96 / sqrtRate_96);
+
+        uint160 numerator = sqrtPricePrPl_96 - uint160(TwoPower.Pow96);
+        uint160 denominator = sqrtPriceR_96 - sqrtPricePrM1_96;
+        if (!upper) {
+            amount = MulDivMath.mulDivFloor(liquidity, numerator, denominator);
+        } else {
+            amount = MulDivMath.mulDivCeil(liquidity, numerator, denominator);
+        }
+    }
+
+    function getAmountYUnitLiquidity_96(
+        uint160 sqrtPriceL_96,
+        uint160 sqrtPriceR_96,
+        uint160 sqrtRate_96
+    ) internal pure returns (uint256 amount_96) {
+        uint160 numerator = sqrtPriceR_96 - sqrtPriceL_96;
+        uint160 denominator = sqrtRate_96 - uint160(TwoPower.pow96);
+        amount_96 = MulDivMath.mulDivCeil(TwoPower.pow96, numerator, denominator);
+    }
+
+    function getAmountXUnitLiquidity_96(
+        int24 leftPt,
+        int24 rightPt,
+        uint160 sqrtPriceR_96,
+        uint160 sqrtRate_96
+    ) internal pure returns (uint256 amount_96) {
+        // rightPt - (leftPt - 1), pc = leftPt - 1
+        uint160 sqrtPricePrPc_96 = LogPowMath.getSqrtPrice(rightPt - leftPt + 1);
+        uint160 sqrtPricePrPd_96 = LogPowMath.getSqrtPrice(rightPt + 1);
+
+        uint160 numerator = sqrtPricePrPc_96 - sqrtRate_96;
+        uint160 denominator = sqrtPricePrPd_96 - sqrtPriceR_96;
+        amount_96 = MulDivMath.mulDivCeil(TwoPower.pow96, numerator, denominator);
+    }
+
+}
+
+// File: contracts/libraries/BytesLib.sol
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * @title Solidity Bytes Arrays Utils
+ * @author Gonçalo Sá <goncalo.sa@consensys.net>
+ *
+ * @dev Bytes tightly packed arrays utility library for ethereum contracts written in Solidity.
+ *      The library lets you concatenate, slice and type cast bytes arrays both in memory and storage.
+ */
+pragma solidity ^0.8.4;
+
+library BytesLib {
+
+    function slice(
+        bytes memory _bytes,
+        uint256 _start,
+        uint256 _length
+    ) internal pure returns (bytes memory) {
+        require(_length + 31 >= _length, 'slice_overflow');
+        require(_start + _length >= _start, 'slice_overflow');
+        require(_bytes.length >= _start + _length, 'slice_outOfBounds');
+
+        bytes memory tempBytes;
+
+        assembly {
+            switch iszero(_length)
+            case 0 {
+            // Get a location of some free memory and store it in tempBytes as
+            // Solidity does for memory variables.
+                tempBytes := mload(0x40)
+
+            // The first word of the slice result is potentially a partial
+            // word read from the original array. To read it, we calculate
+            // the length of that partial word and start copying that many
+            // bytes into the array. The first word we copy will start with
+            // data we don't care about, but the last `lengthmod` bytes will
+            // land at the beginning of the contents of the new array. When
+            // we're done copying, we overwrite the full first word with
+            // the actual length of the slice.
+                let lengthmod := and(_length, 31)
+
+            // The multiplication in the next line is necessary
+            // because when slicing multiples of 32 bytes (lengthmod == 0)
+            // the following copy loop was copying the origin's length
+            // and then ending prematurely not copying everything it should.
+                let mc := add(add(tempBytes, lengthmod), mul(0x20, iszero(lengthmod)))
+                let end := add(mc, _length)
+
+                for {
+                // The multiplication in the next line has the same exact purpose
+                // as the one above.
+                    let cc := add(add(add(_bytes, lengthmod), mul(0x20, iszero(lengthmod))), _start)
+                } lt(mc, end) {
+                    mc := add(mc, 0x20)
+                    cc := add(cc, 0x20)
+                } {
+                    mstore(mc, mload(cc))
+                }
+
+                mstore(tempBytes, _length)
+
+            //update free-memory pointer
+            //allocating the array padded to 32 bytes like the compiler does now
+                mstore(0x40, and(add(mc, 31), not(31)))
+            }
+            //if we want a zero-length slice let's just return a zero-length array
+            default {
+                tempBytes := mload(0x40)
+            //zero out the 32 bytes slice we are about to return
+            //we need to do it because Solidity does not garbage collect
+                mstore(tempBytes, 0)
+
+                mstore(0x40, add(tempBytes, 0x20))
+            }
+        }
+
+        return tempBytes;
+    }
+
+    function toAddress(bytes memory _bytes, uint256 _start) internal pure returns (address) {
+        require(_start + 20 >= _start, 'toAddress_overflow');
+        require(_bytes.length >= _start + 20, 'toAddress_outOfBounds');
+        address tempAddress;
+
+        assembly {
+            tempAddress := div(mload(add(add(_bytes, 0x20), _start)), 0x1000000000000000000000000)
+        }
+
+        return tempAddress;
+    }
+
+    function toUint24(bytes memory _bytes, uint256 _start) internal pure returns (uint24) {
+        require(_start + 3 >= _start, 'toUint24_overflow');
+        require(_bytes.length >= _start + 3, 'toUint24_outOfBounds');
+        uint24 tempUint;
+
+        assembly {
+            tempUint := mload(add(add(_bytes, 0x3), _start))
+        }
+
+        return tempUint;
+    }
+
+    function toUint16(bytes memory _bytes, uint256 _start) internal pure returns (uint16) {
+        require(_start + 2 >= _start, 'toUint16_overflow');
+        require(_bytes.length >= _start + 2, 'toUint16_outOfBounds');
+        uint16 tempUint;
+
+        assembly {
+            tempUint := mload(add(add(_bytes, 0x2), _start))
+        }
+
+        return tempUint;
+    }
+
+}
+
+// File: contracts/libraries/Converter.sol
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity ^0.8.4;
+
+library Converter {
+
+    function toUint128(uint256 a) internal pure returns (uint128 b){
+        b = uint128(a);
+        require(a == b, 'C128');
+    }
+
+}
+
+// File: contracts/libraries/LogPowMath.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+
+library LogPowMath {
+
+    int24 internal constant MIN_POINT = -887272;
+
+    int24 internal constant MAX_POINT = -MIN_POINT;
+
+    uint160 internal constant MIN_SQRT_PRICE = 4295128739;
+
+    uint160 internal constant MAX_SQRT_PRICE = 1461446703485210103287273052203988822378723970342;
+
+    /// @notice sqrt(1.0001^point) in form oy 96-bit fix point num
+    function getSqrtPrice(int24 point) internal pure returns (uint160 sqrtPrice_96) {
+        uint256 absIdx = point < 0 ? uint256(-int256(point)) : uint256(int256(point));
+        require(absIdx <= uint256(int256(MAX_POINT)), 'T');
+
+        uint256 value = absIdx & 0x1 != 0 ? 0xfffcb933bd6fad37aa2d162d1a594001 : 0x100000000000000000000000000000000;
+        if (absIdx & 0x2 != 0) value = (value * 0xfff97272373d413259a46990580e213a) >> 128;
+        if (absIdx & 0x4 != 0) value = (value * 0xfff2e50f5f656932ef12357cf3c7fdcc) >> 128;
+        if (absIdx & 0x8 != 0) value = (value * 0xffe5caca7e10e4e61c3624eaa0941cd0) >> 128;
+        if (absIdx & 0x10 != 0) value = (value * 0xffcb9843d60f6159c9db58835c926644) >> 128;
+        if (absIdx & 0x20 != 0) value = (value * 0xff973b41fa98c081472e6896dfb254c0) >> 128;
+        if (absIdx & 0x40 != 0) value = (value * 0xff2ea16466c96a3843ec78b326b52861) >> 128;
+        if (absIdx & 0x80 != 0) value = (value * 0xfe5dee046a99a2a811c461f1969c3053) >> 128;
+        if (absIdx & 0x100 != 0) value = (value * 0xfcbe86c7900a88aedcffc83b479aa3a4) >> 128;
+        if (absIdx & 0x200 != 0) value = (value * 0xf987a7253ac413176f2b074cf7815e54) >> 128;
+        if (absIdx & 0x400 != 0) value = (value * 0xf3392b0822b70005940c7a398e4b70f3) >> 128;
+        if (absIdx & 0x800 != 0) value = (value * 0xe7159475a2c29b7443b29c7fa6e889d9) >> 128;
+        if (absIdx & 0x1000 != 0) value = (value * 0xd097f3bdfd2022b8845ad8f792aa5825) >> 128;
+        if (absIdx & 0x2000 != 0) value = (value * 0xa9f746462d870fdf8a65dc1f90e061e5) >> 128;
+        if (absIdx & 0x4000 != 0) value = (value * 0x70d869a156d2a1b890bb3df62baf32f7) >> 128;
+        if (absIdx & 0x8000 != 0) value = (value * 0x31be135f97d08fd981231505542fcfa6) >> 128;
+        if (absIdx & 0x10000 != 0) value = (value * 0x9aa508b5b7a84e1c677de54f3e99bc9) >> 128;
+        if (absIdx & 0x20000 != 0) value = (value * 0x5d6af8dedb81196699c329225ee604) >> 128;
+        if (absIdx & 0x40000 != 0) value = (value * 0x2216e584f5fa1ea926041bedfe98) >> 128;
+        if (absIdx & 0x80000 != 0) value = (value * 0x48a170391f7dc42444e8fa2) >> 128;
+
+        if (point > 0) value = type(uint256).max / value;
+
+        sqrtPrice_96 = uint160((value >> 32) + (value % (1 << 32) == 0 ? 0 : 1));
+    }
+
+    // floor(log1.0001(sqrtPrice_96))
+    function getLogSqrtPriceFloor(uint160 sqrtPrice_96) internal pure returns (int24 logValue) {
+        // second inequality must be < because the price can nevex reach the price at the max tick
+        require(sqrtPrice_96 >= MIN_SQRT_PRICE && sqrtPrice_96 < MAX_SQRT_PRICE, 'R');
+        uint256 sqrtPrice_128 = uint256(sqrtPrice_96) << 32;
+
+        uint256 x = sqrtPrice_128;
+        uint256 m = 0;
+
+        assembly {
+            let y := shl(7, gt(x, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(6, gt(x, 0xFFFFFFFFFFFFFFFF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(5, gt(x, 0xFFFFFFFF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(4, gt(x, 0xFFFF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(3, gt(x, 0xFF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(2, gt(x, 0xF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(1, gt(x, 0x3))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := gt(x, 0x1)
+            m := or(m, y)
+        }
+
+        if (m >= 128) x = sqrtPrice_128 >> (m - 127);
+        else x = sqrtPrice_128 << (127 - m);
+
+        int256 l2 = (int256(m) - 128) << 64;
+
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(63, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(62, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(61, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(60, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(59, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(58, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(57, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(56, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(55, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(54, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(53, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(52, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(51, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(50, y))
+        }
+
+        int256 ls10001 = l2 * 255738958999603826347141;
+
+        int24 logFloor = int24((ls10001 - 3402992956809132418596140100660247210) >> 128);
+        int24 logUpper = int24((ls10001 + 291339464771989622907027621153398088495) >> 128);
+
+        logValue = logFloor == logUpper ? logFloor : getSqrtPrice(logUpper) <= sqrtPrice_96 ? logUpper : logFloor;
+    }
+
+    function getLogSqrtPriceFU(uint160 sqrtPrice_96) internal pure returns (int24 logFloor, int24 logUpper) {
+        // second inequality must be < because the price can nevex reach the price at the max tick
+        require(sqrtPrice_96 >= MIN_SQRT_PRICE && sqrtPrice_96 < MAX_SQRT_PRICE, 'R');
+        uint256 sqrtPrice_128 = uint256(sqrtPrice_96) << 32;
+
+        uint256 x = sqrtPrice_128;
+        uint256 m = 0;
+
+        assembly {
+            let y := shl(7, gt(x, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(6, gt(x, 0xFFFFFFFFFFFFFFFF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(5, gt(x, 0xFFFFFFFF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(4, gt(x, 0xFFFF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(3, gt(x, 0xFF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(2, gt(x, 0xF))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := shl(1, gt(x, 0x3))
+            m := or(m, y)
+            x := shr(y, x)
+        }
+        assembly {
+            let y := gt(x, 0x1)
+            m := or(m, y)
+        }
+
+        if (m >= 128) x = sqrtPrice_128 >> (m - 127);
+        else x = sqrtPrice_128 << (127 - m);
+
+        int256 l2 = (int256(m) - 128) << 64;
+
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(63, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(62, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(61, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(60, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(59, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(58, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(57, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(56, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(55, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(54, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(53, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(52, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(51, y))
+            x := shr(y, x)
+        }
+        assembly {
+            x := shr(127, mul(x, x))
+            let y := shr(128, x)
+            l2 := or(l2, shl(50, y))
+        }
+
+        int256 ls10001 = l2 * 255738958999603826347141;
+
+        logFloor = int24((ls10001 - 3402992956809132418596140100660247210) >> 128);
+        logUpper = int24((ls10001 + 291339464771989622907027621153398088495) >> 128);
+    }
+    
+}
+
+
+// File: contracts/libraries/MaxMinMath.sol
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity ^0.8.4;
+
+library MaxMinMath {
+
+    function max(int24 a, int24 b) internal pure returns (int24) {
+        if (a > b) {
+            return a;
+        }
+        return b;
+    }
+
+    function min(int24 a, int24 b) internal pure returns (int24) {
+        if (a < b) {
+            return a;
+        }
+        return b;
+    }
+
+    function min(uint128 a, uint128 b) internal pure returns (uint128) {
+        if (a < b) {
+            return a;
+        }
+        return b;
+    }
+
+    function min256(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a < b) {
+            return a;
+        }
+        return b;
+    }
+    
+}
+
+// File: contracts/libraries/MulDivMath.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+library MulDivMath {
+
+    // compute res = floor(a * b / c), assuming res < 2^256
+    function mulDivFloor(
+        uint256 a,
+        uint256 b,
+        uint256 c
+    ) internal pure returns (uint256 res) {
+        
+        // let prodMod2_256 = a * b % 2^256
+        uint256 prodMod2_256; 
+        // let prodDiv2_256 = a * b / 2^256
+        uint256 prodDiv2_256;
+        assembly {
+            let prodModM1 := mulmod(a, b, not(0))
+            prodMod2_256 := mul(a, b)
+            prodDiv2_256 := sub(sub(prodModM1, prodMod2_256), lt(prodModM1, prodMod2_256))
+        }
+
+        if (prodDiv2_256 == 0) {
+            require(c > 0);
+            assembly {
+                res := div(prodMod2_256, c)
+            }
+            return res;
+        }
+
+        // we should ensure that a * b /c < 2^256 before calling
+        require(c > prodDiv2_256);
+
+        uint256 resMod;
+        assembly {
+            resMod := mulmod(a, b, c)
+            // a * b - resMod
+            prodDiv2_256 := sub(prodDiv2_256, gt(resMod, prodMod2_256))
+            prodMod2_256 := sub(prodMod2_256, resMod)
+
+            // compute lowbit of c
+            let lowbit := not(c)
+            lowbit := add(lowbit, 1)
+            lowbit := and(lowbit, c)
+
+            // c / lowbit
+            c := div(c, lowbit)
+            // a * b / lowbit
+            prodMod2_256 := div(prodMod2_256, lowbit)
+            lowbit := add(div(sub(0, lowbit), lowbit), 1)
+            prodDiv2_256 := mul(prodDiv2_256, lowbit)
+            prodMod2_256 := or(prodMod2_256, prodDiv2_256)
+
+            // get inv of c
+            // cInv * c = 1 (mod 2^4)
+            let cInv := xor(mul(3, c), 2)
+            cInv := mul(cInv, sub(2, mul(c, cInv))) // shift to 2^8
+            cInv := mul(cInv, sub(2, mul(c, cInv))) // shift to 2^16
+            cInv := mul(cInv, sub(2, mul(c, cInv))) // shift to 2^32
+            cInv := mul(cInv, sub(2, mul(c, cInv))) // shift to 2^64
+            cInv := mul(cInv, sub(2, mul(c, cInv))) // shift to 2^128
+            cInv := mul(cInv, sub(2, mul(c, cInv))) // shift to 2^256
+
+            // a * b / c = prodMod2_256 * cInv (mod 2^256)
+            res := mul(prodMod2_256, cInv)
+        }
+    }
+
+    // compute res = ceil(a * b / c), assuming res < 2^256
+    function mulDivCeil(
+        uint256 a,
+        uint256 b,
+        uint256 c
+    ) internal pure returns (uint256 res) {
+        res = mulDivFloor(a, b, c);
+        if (mulmod(a, b, c) > 0) {
+            require(res < type(uint256).max);
+            res++;
+        }
+    }
+    
+}
+
+
+// File: contracts/libraries/Path.sol
+// SPDX-License-Identifier: GPL-2.0-or-later
+pragma solidity ^0.8.4;
+
+import "./BytesLib.sol";
+
+/// @title Functions for manipulating path data for multihop swaps
+library Path {
+
+    using BytesLib for bytes;
+
+    /// @dev The length of the bytes encoded address
+    uint256 private constant ADDR_SIZE = 20;
+    /// @dev The length of the bytes encoded fee
+    uint256 private constant FEE_SIZE = 2;
+
+    /// @dev The offset of a single token address and pool fee
+    uint256 private constant NEXT_OFFSET = ADDR_SIZE + FEE_SIZE;
+    /// @dev The offset of an encoded pool key
+    uint256 private constant POP_OFFSET = NEXT_OFFSET + ADDR_SIZE;
+    /// @dev The minimum length of an encoding that contains 2 or more pools
+    uint256 private constant MULTIPLE_POOLS_MIN_LENGTH = POP_OFFSET + NEXT_OFFSET;
+
+    /// @notice Returns true iff the path contains two or more pools
+    /// @param path The encoded swap path
+    /// @return True if path contains two or more pools, otherwise false
+    function hasMultiplePools(bytes memory path) internal pure returns (bool) {
+        return path.length >= MULTIPLE_POOLS_MIN_LENGTH;
+    }
+
+    /// @notice Returns the number of pools in the path
+    /// @param path The encoded swap path
+    /// @return The number of pools in the path
+    function numPools(bytes memory path) internal pure returns (uint256) {
+        // Ignore the first token address. From then on every fee and token offset indicates a pool.
+        return ((path.length - ADDR_SIZE) / NEXT_OFFSET);
+    }
+
+    /// @notice Decodes the first pool in path
+    /// @param path The bytes encoded swap path
+    /// @return tokenA The first token of the given pool
+    /// @return tokenB The second token of the given pool
+    /// @return fee The fee level of the pool
+    function decodeFirstPool(bytes memory path)
+        internal
+        pure
+        returns (
+            address tokenA,
+            address tokenB,
+            uint16 fee
+        )
+    {
+        tokenA = path.toAddress(0);
+        fee = path.toUint16(ADDR_SIZE);
+        tokenB = path.toAddress(NEXT_OFFSET);
+    }
+
+    /// @notice Gets the segment corresponding to the first pool in the path
+    /// @param path The bytes encoded swap path
+    /// @return The segment containing all data necessary to target the first pool in the path
+    function getFirstPool(bytes memory path) internal pure returns (bytes memory) {
+        return path.slice(0, POP_OFFSET);
+    }
+
+    /// @notice Skips a token + fee element from the buffer and returns the remainder
+    /// @param path The swap path
+    /// @return The remaining token + fee elements in the path
+    function skipToken(bytes memory path) internal pure returns (bytes memory) {
+        return path.slice(NEXT_OFFSET, path.length - NEXT_OFFSET);
+    }
+
+}
+
+
+// File: contracts/libraries/State.sol
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity ^0.8.4;
+
+struct State {
+    // a 96 fixpoint number describe the sqrt value of current price(tokenX/tokenY)
+    uint160 sqrtPrice_96;
+    // The current point of the pool, 1.0001 ^ currentPoint = price
+    int24 currentPoint;
+    // The index of the last oracle observation that was written,
+    uint16 observationCurrentIndex;
+    // The current maximum number of observations stored in the pool,
+    uint16 observationQueueLen;
+    // The next maximum number of observations, to be updated when the observation.
+    uint16 observationNextQueueLen;
+    // whether the pool is locked (only used for checking reentrance)
+    bool locked;
+    //Sum Vote fee * Liquidity
+    uint240 feeTimesL;
+    //current fee
+    uint16 fee;
+    // total liquidity on the currentPoint (currX * sqrtPrice + currY / sqrtPrice)
+    uint128 liquidity;
+    // liquidity of tokenX, liquidity of tokenY is liquidity - liquidityX
+    uint128 liquidityX;
+}
+
+//Gas save Struct for event
+struct StateEvent {
+    int24 currentPoint;
+    uint16 fee;
+    uint128 liquidity;
+    uint128 liquidityX;
+}
+
+interface IState{
+    function state() external view
+    returns(
+        State memory
+    );
+
+}
+
+
+// File: contracts/libraries/SwapMathX2Y.sol
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity ^0.8.4;
+
+import "./MulDivMath.sol";
+import "./TwoPower.sol";
+import "./AmountMath.sol";
+import "./State.sol";
+import "./MaxMinMath.sol";
+import "./Converter.sol";
+
+library SwapMathX2Y {
+
+    // group returned values of x2YRange to avoid stake too deep
+    struct RangeRetState {
+        // whether user run out of amountX
+        bool finished;
+        // actual cost of tokenX to buy tokenY
+        uint128 costX;
+        // amount of acquired tokenY
+        uint256 acquireY;
+        // final point after this swap
+        int24 finalPt;
+        // sqrt price on final point
+        uint160 sqrtFinalPrice_96;
+        // liquidity of tokenX at finalPt
+        uint128 liquidityX;
+    }
+
+    function x2YAtPrice(
+        uint128 amountX,
+        uint160 sqrtPrice_96,
+        uint128 currY
+    ) internal pure returns (uint128 costX, uint128 acquireY) {
+        uint256 l = MulDivMath.mulDivFloor(amountX, sqrtPrice_96, TwoPower.Pow96);
+        acquireY = Converter.toUint128(MulDivMath.mulDivFloor(l, sqrtPrice_96, TwoPower.Pow96));
+        if (acquireY > currY) {
+            acquireY = currY;
+        }
+        l = MulDivMath.mulDivCeil(acquireY, TwoPower.Pow96, sqrtPrice_96);
+        uint256 cost = MulDivMath.mulDivCeil(l, TwoPower.Pow96, sqrtPrice_96);
+        // costX <= amountX <= uint128.max
+        costX = uint128(cost);
+    }
+
+    function mulDivCeil(uint256 a, uint256 b, uint256 c) internal pure returns (uint256) {
+        uint256 v = a * b;
+        if (v % c == 0) {
+            return v / c;
+        }
+        return v / c + 1;
+    }
+
+    function x2YAtPriceLiquidity(
+        uint128 amountX,
+        uint160 sqrtPrice_96,
+        uint128 liquidity,
+        uint128 liquidityX
+    ) internal pure returns (uint128 costX, uint256 acquireY, uint128 newLiquidityX) {
+        uint256 liquidityY = uint256(liquidity - liquidityX);
+        uint256 maxTransformLiquidityX = MulDivMath.mulDivFloor(amountX, sqrtPrice_96, TwoPower.Pow96);
+        // transformLiquidityX <= liquidityY <= uint128.max
+        uint128 transformLiquidityX = uint128(MaxMinMath.min256(maxTransformLiquidityX, liquidityY));
+
+        // 1. transformLiquidityX * TwoPower.Pow96 < 2^128 * 2^96 < 2^224 < 2^256
+        // 2. transformLiquidityX <= floor(amountX * sqrtPrice_96 / TwoPower.Pow96)
+        // ceil(transformLiquidityX * sqrtPrice_96 / TwoPower.Pow96) <=
+        // ceil(floor(amountX * sqrtPrice_96 / TwoPower.Pow96) * sqrtPrice_96 / TwoPower.Pow96) <=
+        // ceil(amountX * sqrtPrice_96 / TwoPower.Pow96 * sqrtPrice_96 / TwoPower.Pow96) =
+        // ceil(amountX) = amountX <= uint128.max
+        costX = uint128(mulDivCeil(transformLiquidityX, TwoPower.Pow96, sqrtPrice_96));
+        acquireY = MulDivMath.mulDivFloor(transformLiquidityX, sqrtPrice_96, TwoPower.Pow96);
+        newLiquidityX = liquidityX + transformLiquidityX;
+    }
+
+    struct Range {
+        uint128 liquidity;
+        uint160 sqrtPriceL_96;
+        int24 leftPt;
+        uint160 sqrtPriceR_96;
+        int24 rightPt;
+        uint160 sqrtRate_96;
+    }
+
+    struct RangeCompRet {
+        uint128 costX;
+        uint256 acquireY;
+        bool completeLiquidity;
+        int24 locPt;
+        uint160 sqrtLoc_96;
+    }
+
+    /// @dev Move from rightPt to leftPt, the range is [leftPt, rightPt).
+    function x2YRangeComplete(
+        Range memory rg,
+        uint128 amountX
+    ) internal pure returns (
+        RangeCompRet memory ret
+    ) {
+        // rg.sqrtPriceR_96 * 2^96 < 2^160 * 2^96 = 2^256
+        uint160 sqrtPricePrM1_96 = uint160(mulDivCeil(rg.sqrtPriceR_96, TwoPower.Pow96, rg.sqrtRate_96));
+        uint160 sqrtPricePrMl_96 = LogPowMath.getSqrtPrice(rg.rightPt - rg.leftPt);
+        // rg.rightPt - rg.leftPt <= 256 * 100
+        // 1.0001 ** 25600 < 13
+        // 13 * 2^96 - 2^96 < 2^100
+        // rg.liquidity * (sqrtPricePrMl_96 - TwoPower.Pow96) < 2^228 < 2^256
+        uint256 maxX = mulDivCeil(rg.liquidity, sqrtPricePrMl_96 - TwoPower.Pow96, rg.sqrtPriceR_96 - sqrtPricePrM1_96);
+        if (maxX <= amountX) {
+            // maxX <= amountX <= uint128.max
+            ret.costX = uint128(maxX);
+            ret.acquireY = AmountMath.getAmountY(rg.liquidity, rg.sqrtPriceL_96, rg.sqrtPriceR_96, rg.sqrtRate_96, false);
+            ret.completeLiquidity = true;
+        } else {
+            // we should locate lowest price
+            // 1. amountX * (rg.sqrtPriceR_96 - sqrtPricePrM1_96)
+            // < maxX * (rg.sqrtPriceR_96 - sqrtPricePrM1_96)
+            // < rg.liquidity * (sqrtPricePrMl_96 - TwoPower.Pow96) + (rg.sqrtPriceR_96 - sqrtPricePrM1_96)
+            // < 2^228 + 2^160 < 2^256
+            // 2. sqrtValue_96 = amountX * (rg.sqrtPriceR_96 - sqrtPricePrM1_96) // rg.liquidity + 2^96
+            // <= amountX * (rg.sqrtPriceR_96 - sqrtPricePrM1_96) / rg.liquidity + 2^96
+            // <= (maxX - 1) * (rg.sqrtPriceR_96 - sqrtPricePrM1_96) / rg.liquidity + 2^96
+            // < rg.liquidity * (sqrtPricePrMl_96 - 2^96) / (rg.sqrtPriceR_96 - sqrtPricePrM1_96) * (rg.sqrtPriceR_96 - sqrtPricePrM1_96) / rg.liquidity + 2^96
+            // = sqrtPricePrMl_96 < 2^160
+            uint160 sqrtValue_96 = uint160(uint256(amountX) * (uint256(rg.sqrtPriceR_96) - sqrtPricePrM1_96) / uint256(rg.liquidity) + TwoPower.Pow96);
+
+            int24 logValue = LogPowMath.getLogSqrtPriceFloor(sqrtValue_96);
+
+            ret.locPt = rg.rightPt - logValue;
+
+            ret.locPt = MaxMinMath.min(ret.locPt, rg.rightPt);
+            ret.locPt = MaxMinMath.max(ret.locPt, rg.leftPt + 1);
+            ret.completeLiquidity = false;
+
+            if (ret.locPt == rg.rightPt) {
+                ret.costX = 0;
+                ret.acquireY = 0;
+                ret.locPt = ret.locPt - 1;
+                ret.sqrtLoc_96 = LogPowMath.getSqrtPrice(ret.locPt);
+            } else {
+                uint160 sqrtPricePrMloc_96 = LogPowMath.getSqrtPrice(rg.rightPt - ret.locPt);
+                // rg.rightPt - ret.locPt <= 256 * 100
+                // 1.0001 ** 25600 < 13
+                // 13 * 2^96 - 2^96 < 2^100
+                // rg.liquidity * (sqrtPricePrMloc_96 - TwoPower.Pow96) < 2^228 < 2^256
+                uint256 costX256 = mulDivCeil(rg.liquidity, sqrtPricePrMloc_96 - TwoPower.Pow96, rg.sqrtPriceR_96 - sqrtPricePrM1_96);
+                // ret.costX <= amountX <= uint128.max
+                ret.costX = uint128(MaxMinMath.min256(costX256, amountX));
+
+                ret.locPt = ret.locPt - 1;
+                ret.sqrtLoc_96 = LogPowMath.getSqrtPrice(ret.locPt);
+
+                uint160 sqrtLocA1_96 = uint160(
+                    uint256(ret.sqrtLoc_96) +
+                    uint256(ret.sqrtLoc_96) * (uint256(rg.sqrtRate_96) - TwoPower.Pow96) / TwoPower.Pow96
+                );
+                ret.acquireY = AmountMath.getAmountY(rg.liquidity, sqrtLocA1_96, rg.sqrtPriceR_96, rg.sqrtRate_96, false);
+            }
+        }
+    }
+
+    /// @notice Compute amount of tokens exchanged during swapX2Y and some amount values (currX, currY, allX) on final point
+    ///    after this swap.
+    /// @param currentState state values containing (currX, currY, allX) of start point
+    /// @param leftPt left most point during this swap
+    /// @param sqrtRate_96 sqrt(1.0001)
+    /// @param amountX max amount of tokenX user willing to pay
+    /// @return retState amount of token acquired and some values on final point
+    function x2YRange(
+        State memory currentState,
+        int24 leftPt,
+        uint160 sqrtRate_96,
+        uint128 amountX
+    ) internal pure returns (
+        RangeRetState memory retState
+    ) {
+        retState.costX = 0;
+        retState.acquireY = 0;
+        retState.finished = false;
+
+        bool currentHasY = (currentState.liquidityX < currentState.liquidity);
+        if (currentHasY && (currentState.liquidityX > 0 || leftPt == currentState.currentPoint)) {
+            (retState.costX, retState.acquireY, retState.liquidityX) = x2YAtPriceLiquidity(
+                amountX, currentState.sqrtPrice_96, currentState.liquidity, currentState.liquidityX
+            );
+            if (retState.liquidityX < currentState.liquidity ||  retState.costX >= amountX) {
+                // remaining x is not enough to down current price to price / 1.0001
+                // but x may remain, so we cannot simply use (costX == amountX)
+                retState.finished = true;
+                retState.finalPt = currentState.currentPoint;
+                retState.sqrtFinalPrice_96 = currentState.sqrtPrice_96;
+            } else {
+                amountX -= retState.costX;
+            }
+        } else if (currentHasY) { // all y
+            currentState.currentPoint = currentState.currentPoint + 1;
+            // sqrt(price) + sqrt(price) * (1.0001 - 1) == sqrt(price) * 1.0001
+            currentState.sqrtPrice_96 = uint160(
+                uint256(currentState.sqrtPrice_96) +
+                uint256(currentState.sqrtPrice_96) * (uint256(sqrtRate_96) - TwoPower.Pow96) / TwoPower.Pow96
+            );
+        } else {
+            retState.liquidityX = currentState.liquidityX;
+        }
+
+        if (retState.finished) {
+            return retState;
+        }
+
+        if (leftPt < currentState.currentPoint) {
+            uint160 sqrtPriceL_96 = LogPowMath.getSqrtPrice(leftPt);
+            RangeCompRet memory ret = x2YRangeComplete(
+                Range({
+                    liquidity: currentState.liquidity,
+                    sqrtPriceL_96: sqrtPriceL_96,
+                    leftPt: leftPt,
+                    sqrtPriceR_96: currentState.sqrtPrice_96,
+                    rightPt: currentState.currentPoint,
+                    sqrtRate_96: sqrtRate_96
+                }),
+                amountX
+            );
+            retState.costX += ret.costX;
+            amountX -= ret.costX;
+            retState.acquireY += ret.acquireY;
+            if (ret.completeLiquidity) {
+                retState.finished = (amountX == 0);
+                retState.finalPt = leftPt;
+                retState.sqrtFinalPrice_96 = sqrtPriceL_96;
+                retState.liquidityX = currentState.liquidity;
+            } else {
+                uint128 locCostX;
+                uint256 locAcquireY;
+                (locCostX, locAcquireY, retState.liquidityX) = x2YAtPriceLiquidity(amountX, ret.sqrtLoc_96, currentState.liquidity, 0);
+                retState.costX += locCostX;
+                retState.acquireY += locAcquireY;
+                retState.finished = true;
+                retState.sqrtFinalPrice_96 = ret.sqrtLoc_96;
+                retState.finalPt = ret.locPt;
+            }
+        } else {
+            // finishd must be false
+            // retState.finished == false;
+            // liquidityX has been set
+            retState.finalPt = currentState.currentPoint;
+            retState.sqrtFinalPrice_96 = currentState.sqrtPrice_96;
+        }
+    }
+
+}
+
+
+// File: contracts/libraries/SwapMathY2X.sol
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity ^0.8.4;
+
+import './MulDivMath.sol';
+import './TwoPower.sol';
+import './AmountMath.sol';
+import './State.sol';
+import './MaxMinMath.sol';
+import './Converter.sol';
+
+library SwapMathY2X {
+
+    struct RangeRetState {
+        // whether user has run out of tokenY
+        bool finished;
+        // actual cost of tokenY to buy tokenX
+        uint128 costY;
+        // actual amount of tokenX acquired
+        uint256 acquireX;
+        // final point after this swap
+        int24 finalPt;
+        // sqrt price on final point
+        uint160 sqrtFinalPrice_96;
+        // liquidity of tokenX at finalPt
+        // if finalPt is not rightPt, liquidityX is meaningless
+        uint128 liquidityX;
+    }
+    
+    function y2XAtPrice(
+        uint128 amountY,
+        uint160 sqrtPrice_96,
+        uint128 currX
+    ) internal pure returns (uint128 costY, uint128 acquireX) {
+        uint256 l = MulDivMath.mulDivFloor(amountY, TwoPower.Pow96, sqrtPrice_96);
+        // acquireX <= currX <= uint128.max
+        acquireX = uint128(MaxMinMath.min256(MulDivMath.mulDivFloor(l, TwoPower.Pow96, sqrtPrice_96), currX));
+        l = MulDivMath.mulDivCeil(acquireX, sqrtPrice_96, TwoPower.Pow96);
+        uint256 cost = MulDivMath.mulDivCeil(l, sqrtPrice_96, TwoPower.Pow96);
+        // costY = cost <= amountY <= uint128.max
+        costY = uint128(cost);
+    }
+
+    function y2XAtPriceLiquidity(
+        uint128 amountY,
+        uint160 sqrtPrice_96,
+        uint128 liquidityX
+    ) internal pure returns (uint128 costY, uint256 acquireX, uint128 newLiquidityX) {
+        // amountY * TwoPower.Pow96 < 2^128 * 2^96 = 2^224 < 2^256 
+        uint256 maxTransformLiquidityY = uint256(amountY) * TwoPower.Pow96 / sqrtPrice_96;
+        // transformLiquidityY <= liquidityX
+        uint128 transformLiquidityY = uint128(MaxMinMath.min256(maxTransformLiquidityY, liquidityX));
+        // costY <= amountY
+        costY = uint128(MulDivMath.mulDivCeil(transformLiquidityY, sqrtPrice_96, TwoPower.Pow96));
+        // transformLiquidityY * 2^96 < 2^224 < 2^256
+        acquireX = uint256(transformLiquidityY) * TwoPower.Pow96 / sqrtPrice_96;
+        newLiquidityX = liquidityX - transformLiquidityY;
+    }
+
+    struct Range {
+        uint128 liquidity;
+        uint160 sqrtPriceL_96;
+        int24 leftPt;
+        uint160 sqrtPriceR_96;
+        int24 rightPt;
+        uint160 sqrtRate_96;
+    }
+    struct RangeCompRet {
+        uint128 costY;
+        uint256 acquireX;
+        bool completeLiquidity;
+        int24 locPt;
+        uint160 sqrtLoc_96;
+    }
+
+    function y2XRangeComplete(
+        Range memory rg,
+        uint128 amountY
+    ) internal pure returns (
+        RangeCompRet memory ret
+    ) {
+        uint256 maxY = AmountMath.getAmountY(rg.liquidity, rg.sqrtPriceL_96, rg.sqrtPriceR_96, rg.sqrtRate_96, true);
+        if (maxY <= amountY) {
+            // ret.costY <= maxY <= uint128.max
+            ret.costY = uint128(maxY);
+            ret.acquireX = AmountMath.getAmountX(rg.liquidity, rg.leftPt, rg.rightPt, rg.sqrtPriceR_96, rg.sqrtRate_96, false);
+            // we complete this liquidity segment
+            ret.completeLiquidity = true;
+        } else {
+            // we should locate highest price
+            // uint160 is enough for muldiv and adding, because amountY < maxY
+            uint160 sqrtLoc_96 = uint160(MulDivMath.mulDivFloor(
+                amountY,
+                rg.sqrtRate_96 - TwoPower.Pow96,
+                rg.liquidity
+            ) + rg.sqrtPriceL_96);
+            ret.locPt = LogPowMath.getLogSqrtPriceFloor(sqrtLoc_96);
+
+            ret.locPt = MaxMinMath.max(rg.leftPt, ret.locPt);
+            ret.locPt = MaxMinMath.min(rg.rightPt - 1, ret.locPt);
+
+            ret.completeLiquidity = false;
+            ret.sqrtLoc_96 = LogPowMath.getSqrtPrice(ret.locPt);
+            if (ret.locPt == rg.leftPt) {
+                ret.costY = 0;
+                ret.acquireX = 0;
+                return ret;
+            }
+
+            uint256 costY256 = AmountMath.getAmountY(
+                rg.liquidity,
+                rg.sqrtPriceL_96,
+                ret.sqrtLoc_96,
+                rg.sqrtRate_96,
+                true
+            );
+            // ret.costY <= amountY <= uint128.max
+            ret.costY = uint128(MaxMinMath.min256(costY256, amountY));
+
+            // costY <= amountY even if the costY is the upperbound of the result
+            // because amountY is not a real and sqrtLoc_96 <= sqrtLoc256_96
+            ret.acquireX = AmountMath.getAmountX(
+                rg.liquidity,
+                rg.leftPt,
+                ret.locPt,
+                ret.sqrtLoc_96,
+                rg.sqrtRate_96,
+                false
+            );
+        
+        }
+    }
+
+    /// @notice Compute amount of tokens exchanged during swapY2X and some amount values (currX, currY, allX) on final point
+    ///    after this swap.
+    /// @param currentState state values containing (currX, currY, allX) of start point
+    /// @param rightPt right most point during this swap
+    /// @param sqrtRate_96 sqrt(1.0001)
+    /// @param amountY max amount of Y user willing to pay
+    /// @return retState amount of token acquired and some values on final point
+    function y2XRange(
+        State memory currentState,
+        int24 rightPt,
+        uint160 sqrtRate_96,
+        uint128 amountY
+    ) internal pure returns (
+        RangeRetState memory retState
+    ) {
+        retState.costY = 0;
+        retState.acquireX = 0;
+        retState.finished = false;
+        // first, if current point is not all x, we can not move right directly
+        bool startHasY = (currentState.liquidityX < currentState.liquidity);
+        if (startHasY) {
+            (retState.costY, retState.acquireX, retState.liquidityX) = y2XAtPriceLiquidity(
+                amountY, 
+                currentState.sqrtPrice_96,
+                currentState.liquidityX
+            );
+            if (retState.liquidityX > 0 || retState.costY >= amountY) {
+                // it means remaining y is not enough to rise current price to price*1.0001
+                // but y may remain, so we cannot simply use (costY == amountY)
+                retState.finished = true;
+                retState.finalPt = currentState.currentPoint;
+                retState.sqrtFinalPrice_96 = currentState.sqrtPrice_96;
+                return retState;
+            } else {
+                // y not run out
+                // not finsihed
+                amountY -= retState.costY;
+                currentState.currentPoint += 1;
+                if (currentState.currentPoint == rightPt) {
+                    retState.finalPt = currentState.currentPoint;
+                    // get fixed sqrt price to reduce accumulated error
+                    retState.sqrtFinalPrice_96 = LogPowMath.getSqrtPrice(rightPt);
+                    return retState;
+                }
+                // sqrt(price) + sqrt(price) * (1.0001 - 1) == sqrt(price) * 1.0001
+                currentState.sqrtPrice_96 = uint160(
+                    uint256(currentState.sqrtPrice_96) +
+                    uint256(currentState.sqrtPrice_96) * (uint256(sqrtRate_96) - TwoPower.Pow96) / TwoPower.Pow96
+                );
+            }
+        }
+
+        uint160 sqrtPriceR_96 = LogPowMath.getSqrtPrice(rightPt);
+
+        // (uint128 liquidCostY, uint256 liquidAcquireX, bool liquidComplete, int24 locPt, uint160 sqrtLoc_96)
+        RangeCompRet memory ret = y2XRangeComplete(
+            Range({
+                liquidity: currentState.liquidity,
+                sqrtPriceL_96: currentState.sqrtPrice_96,
+                leftPt: currentState.currentPoint,
+                sqrtPriceR_96: sqrtPriceR_96,
+                rightPt: rightPt,
+                sqrtRate_96: sqrtRate_96
+            }),
+            amountY
+        );
+
+        retState.costY += ret.costY;
+        amountY -= ret.costY;
+        retState.acquireX += ret.acquireX;
+        if (ret.completeLiquidity) {
+            retState.finished = (amountY == 0);
+            retState.finalPt = rightPt;
+            retState.sqrtFinalPrice_96 = sqrtPriceR_96;
+        } else {
+            // trade at locPt
+            uint128 locCostY;
+            uint256 locAcquireX;
+
+            (locCostY, locAcquireX, retState.liquidityX) = y2XAtPriceLiquidity(amountY, ret.sqrtLoc_96, currentState.liquidity);
+            
+            retState.costY += locCostY;
+            retState.acquireX += locAcquireX;
+            retState.finished = true;
+            retState.sqrtFinalPrice_96 = ret.sqrtLoc_96;
+            retState.finalPt = ret.locPt;
+        }
+    }
+
+}
+
+// File: contracts/libraries/TwoPower.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+library TwoPower {
+    uint256 internal constant Pow128 = 0x100000000000000000000000000000000;
+    uint256 internal constant pow128 = 0x100000000000000000000000000000000;
+    uint256 internal constant Pow96 = 0x1000000000000000000000000;
+    uint256 internal constant pow96 = 0x1000000000000000000000000;
+    uint8 internal constant RESOLUTION = 96;
+}
+
+// File: contracts/periphery/PathFinder.sol
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity ^0.8.4;
+
+// import "../interfaces/IBiswapPoolV3.sol";
+import "../interfaces/IBiswapPair.sol";
+import "../libraries/SwapMathX2Y.sol";
+import "../libraries/SwapMathY2X.sol";
+import "../libraries/State.sol";
+import "../libraries/LogPowMath.sol";
+import "../libraries/Path.sol";
+
+import 'hardhat/console.sol';
+
+interface IBiswapPoolV3{
+    function tokenX() external view returns(address);
+    function tokenY() external view returns(address);
+    function fee() external view returns(uint16);
+    function feeChargePercent() external view returns(uint24);
+}
+
+interface IQuoter{
+    function swapX2Y(address tokenX,address tokenY,uint16 fee,uint128 amount,int24 lowPt ) external view returns (uint256 amountX, uint256 amountY);
+    function swapY2X(address tokenX,address tokenY,uint16 fee,uint128 amount,int24 highPt) external view returns (uint256 amountX, uint256 amountY);
+    function swapAmountSingle(address tokenX,address tokenY,uint16 fee,uint128 amountIn) external returns (uint256 amountOut);
+}
+
+interface ISwapFeeReward{
+    struct SwapInfo {
+        uint amountOut;
+        uint price;
+        uint priceImpact;
+        uint tradeFee;
+        uint tradeFeeUSDT;
+        uint feeReturn;
+        uint feeReturnUSDT;
+        uint rbAmount;
+    }
+
+    function swapInfo(address account, address[] memory path, uint amountIn) external view returns (SwapInfo memory _swapInfo);
+    function getQuantity(address outputToken, uint outputAmount, address anchorToken) external view returns (uint);
+    function swap(address account, address input, address output, uint256 amount) external returns (bool);
+}
+
+interface IERC20{
+    function decimals() external view returns(uint8);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+    function balanceOf(address) external returns(uint);
+    function transfer(address, uint) external returns(bool);
+    function approve(address, uint) external returns(bool);
+}
+
+interface ISwap {
+    struct SwapAmountParams {
+        bytes path;
+        address recipient;
+        uint128 amount;
+        uint256 minAcquired;
+        uint256 deadline;
+    }
+
+    function swapAmount(SwapAmountParams calldata params)external payable returns (uint256 cost, uint256 acquire);
+}
+
+contract PathFinder {
+    using Path for bytes;
+    using BytesLib for bytes;
+
+    uint160 public constant sqrtRate_96 = 79228162514264337593543950336;
+
+    address public immutable factoryV2;
+    address public immutable factoryV3;
+    bytes32 public immutable INIT_CODE_HASH_V2;
+    bytes32 public immutable INIT_CODE_HASH_V3;
+    address public immutable quoter;
+    address public immutable swapContract;
+
+    address public constant swapFeeReward = 0x785E76678e04aD2aC481fcdbE9064b00Dd8651e3;
+    address public constant USDT = 0x55d398326f99059fF775485246999027B3197955;
+
+    constructor(
+        address _factoryV2,
+        address _factoryV3,
+        bytes32 _INIT_CODE_HASH_V2,
+        bytes32 _INIT_CODE_HASH_V3,
+        address _quoter,
+        address _swapContract
+    ){
+        factoryV2 = _factoryV2;
+        factoryV3 = _factoryV3;
+        INIT_CODE_HASH_V2 = _INIT_CODE_HASH_V2;
+        INIT_CODE_HASH_V3 = _INIT_CODE_HASH_V3;
+        quoter = _quoter;
+        swapContract = _swapContract;
+    }
+
+    function poolV3(address tokenX, address tokenY, uint16 fee) public view returns(IBiswapPoolV3) {
+        (address token0, address token1) = tokenX < tokenY ? (tokenX, tokenY) : (tokenY, tokenX);
+        return IBiswapPoolV3(address(uint160(uint(keccak256(abi.encodePacked(
+            hex'ff',
+            factoryV3,
+            keccak256(abi.encode(token0, token1, fee)),
+            INIT_CODE_HASH_V3
+        ))))));
+    }
+
+    function poolV2(address tokenX, address tokenY) internal view returns (IBiswapPair) {
+        (address token0, address token1) = tokenX < tokenY ? (tokenX, tokenY) : (tokenY, tokenX);
+        return IBiswapPair(address(uint160(uint(keccak256(abi.encodePacked(
+            hex'ff',
+            factoryV2,
+            keccak256(abi.encodePacked(token0, token1)),
+            INIT_CODE_HASH_V2
+        ))))));
+    }
+
+    function getAmountOutV2(uint amountIn, uint reserveIn, uint reserveOut, uint swapFee) internal pure returns (uint amountOut) {
+        require(amountIn > 0, 'BiswapLibrary: INSUFFICIENT_INPUT_AMOUNT'); //TODO change or del
+        require(reserveIn > 0 && reserveOut > 0, 'BiswapLibrary: INSUFFICIENT_LIQUIDITY'); //TODO change or del
+        uint amountInWithFee = amountIn * (1000 - swapFee);
+        uint numerator = amountInWithFee * reserveOut;
+        uint denominator = reserveIn * 1000 + amountInWithFee;
+        amountOut = numerator / denominator;
+    }
+
+    function getAmountsOutV2(uint amountIn, address tokenIn, address tokenOut) internal view returns (uint amountOut) {
+        require(amountIn > 0, 'BiswapLibrary: INSUFFICIENT_INPUT_AMOUNT'); //TODO change or del
+        (uint reserveIn, uint reserveOut) = getReservesV2(tokenIn, tokenOut);
+        amountOut = getAmountOutV2(amountIn, reserveIn, reserveOut, getSwapFeeV2(tokenIn, tokenOut));
+    }
+
+    function getReservesV2(address tokenX, address tokenY) internal view returns (uint reserveA, uint reserveB) {
+        (address token0,) = tokenX < tokenY ? (tokenX, tokenY) : (tokenY, tokenX);
+        (uint reserve0, uint reserve1,) = poolV2(tokenX, tokenY).getReserves();
+        (reserveA, reserveB) = tokenX == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
+    }
+
+    function getSwapFeeV2(address tokenX, address tokenY) internal view returns (uint swapFee) {
+        swapFee = poolV2(tokenX, tokenY).swapFee();
+    }
+
+    function getAmountOutV3(address tokenIn, address tokenOut, uint16 swapFee, uint128 amountIn) public view returns (uint amountOut) {
+        address[2] memory sortedTokens;
+        (sortedTokens[0], sortedTokens[1]) = sortTokens(tokenIn, tokenOut);
+         
+        bool isSwapX2Y = sortedTokens[0] == tokenIn;
+        IBiswapPoolV3 pool = poolV3(tokenIn, tokenOut, swapFee);
+
+        if(isSwapX2Y){
+            SwapMathX2Y.RangeRetState memory retState = SwapMathX2Y.x2YRange(IState(address(pool)).state(), -800000, sqrtRate_96, amountIn);
+            return retState.acquireY;
+        }else{
+            SwapMathY2X.RangeRetState memory retState = SwapMathY2X.y2XRange(IState(address(pool)).state(), 800000, sqrtRate_96, amountIn);
+            return retState.acquireX;
+        }
+    }
+
+    //staticCall only
+    function getAmountOutV3_quoter(uint128 amountIn, address tokenIn, address tokenOut, uint16 swapFee) public returns (uint amountOut, int24 newPoint) {
+        (address tokenX, address tokenY) = sortTokens(tokenIn, tokenOut);
+        bool success; 
+        bytes memory data;
+
+        if (tokenX == tokenIn){
+            (success, data) = quoter.call(abi.encodeWithSignature('swapX2Y(address,address,uint16,uint128,int24)', tokenX, tokenY, swapFee, amountIn, -800000));
+        }else{
+            (success, data) = quoter.call(abi.encodeWithSignature('swapY2X(address,address,uint16,uint128,int24)', tokenX, tokenY, swapFee, amountIn, 800000));
+        }
+        require(success, 'getAmountOutV3_quoter: fail to receive amount out');
+        (amountOut, newPoint) = abi.decode(data, (uint,int24));
+    }
+
+    function getAmountsOutV3(uint amountIn, address[] memory path, uint16[] memory swapFees) internal view returns (uint[] memory amounts) {
+        require(path.length >= 2, 'INVALID_PATH'); //TODO change or del
+        require(swapFees.length == path.length - 1, 'INVALID SWAP FEES LENGTH');
+        amounts = new uint[](path.length);
+        amounts[0] = amountIn;
+        for (uint i; i < path.length - 1; i++) {
+            amounts[i + 1] = getAmountOutV3(path[i], path[i+1], swapFees[i], uint128(amounts[i]));
+        }
+    }
+
+    //staticCall only
+    function getAmountsOut(uint128 amountIn, address[] memory path, uint16[] memory swapFees) public returns(uint[] memory amounts){
+        require(path.length >= 2, 'INVALID_PATH'); //TODO change or del
+        require(swapFees.length == path.length - 1, 'INVALID SWAP FEES LENGTH');
+        amounts = new uint[](path.length);
+        amounts[0] = amountIn;
+        for (uint i; i < path.length - 1; i++) {
+            if(swapFees[i] == 0) amounts[i + 1] = getAmountsOutV2(amounts[i], path[i], path[i+1]);
+            if(swapFees[i] >  0) (amounts[i + 1],) = getAmountOutV3_quoter(uint128(amounts[i]), path[i], path[i+1], swapFees[i]);
+        }
+    }
+
+    function sortTokens(address tokenA, address tokenB) public pure returns (address token0, address token1) {
+        require(tokenA != tokenB, 'V3Utilities: IDENTICAL_ADDRESSES');
+        (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        require(token0 != address(0), 'V3Utilities: ZERO_ADDRESS');
+    }   
+
+    struct FeeInstance{
+        address pairAddress;
+        address token0;
+        address token1;
+        uint256 swapFee;
+        uint256 devFee;
+    }
+
+    struct SwapInfoWithFee{
+        uint amountOut;
+        uint price;
+        uint priceImpact;
+        uint tradeFee;
+        uint tradeFeeUSDT;
+        uint feeReturn;
+        uint feeReturnUSDT;
+        uint rbAmount;
+        FeeInstance[] fees;
+    }
+
+    function swapInfoV2(address account, address[] memory path, uint amountIn) public view returns (SwapInfoWithFee memory _swapInfoWithFee ){
+        ISwapFeeReward.SwapInfo memory _swapInfo = ISwapFeeReward(swapFeeReward).swapInfo(account, path, amountIn);
+        
+        _swapInfoWithFee.amountOut      = _swapInfo.amountOut;
+        _swapInfoWithFee.priceImpact    = _swapInfo.priceImpact;
+        _swapInfoWithFee.price          = _swapInfo.price;//amount in / amount out
+        _swapInfoWithFee.tradeFee       = _swapInfo.tradeFee;//amount * swap fee
+        _swapInfoWithFee.tradeFeeUSDT   = _swapInfo.tradeFeeUSDT;
+        _swapInfoWithFee.feeReturn      = _swapInfo.feeReturn;
+        _swapInfoWithFee.feeReturnUSDT  = _swapInfo.feeReturnUSDT;
+        _swapInfoWithFee.rbAmount       = _swapInfo.rbAmount;
+        _swapInfoWithFee.fees = new FeeInstance[](path.length - 1);
+
+        for (uint i; i < path.length - 1; i++) {
+            IBiswapPair pa = poolV2(path[i], path[i + 1]);
+             _swapInfoWithFee.fees[i].pairAddress = address(pa);
+             _swapInfoWithFee.fees[i].token0      = pa.token0();
+             _swapInfoWithFee.fees[i].token1      = pa.token1();
+             _swapInfoWithFee.fees[i].swapFee     = pa.swapFee();
+             _swapInfoWithFee.fees[i].devFee      = pa.devFee();            
+        }
+    }
+
+
+    //staticCall only
+    function swapInfo(address account, uint amountIn, bytes memory path) public returns (SwapInfoWithFee memory _swapInfoWithFee ){
+        uint pathLength = Path.numPools(path);
+        require(pathLength > 0, 'INVALID_PATH');
+        uint index;
+
+        
+        _swapInfoWithFee.fees = new FeeInstance[](pathLength);
+        _swapInfoWithFee.amountOut      = amountIn;
+        _swapInfoWithFee.priceImpact    = 0;
+        _swapInfoWithFee.price          = 1e12;
+        uint swapFee = 1;
+        (address inputToken,,) = path.decodeFirstPool();
+
+        while(index < pathLength){
+            (address token0, address token1, uint16 fee) = path.decodeFirstPool();
+            
+            if(fee == 0){
+                address[] memory tmpPath = new address[](2);
+                tmpPath[0] = token0;
+                tmpPath[1] = token1;
+
+                SwapInfoWithFee memory _swapInfo = swapInfoV2(account, tmpPath, _swapInfoWithFee.amountOut);
+
+                _swapInfoWithFee.amountOut      = _swapInfo.amountOut;// always use last anountOut
+                _swapInfoWithFee.priceImpact    = _swapInfoWithFee.priceImpact + _swapInfo.priceImpact; // times 1e12
+
+                _swapInfoWithFee.feeReturn      += _swapInfo.feeReturn;
+                _swapInfoWithFee.feeReturnUSDT  += _swapInfo.feeReturnUSDT;
+                _swapInfoWithFee.rbAmount       += _swapInfo.rbAmount;
+                
+                IBiswapPair pa = poolV2(token0, token1);
+                require(address(pa) != address(0), 'PAIR v2 NOT EXISTENT!');
+                swapFee = swapFee * (1e6 - (pa.swapFee()*1000));
+                _swapInfoWithFee.fees[index].pairAddress = address(pa);
+                _swapInfoWithFee.fees[index].token0      = pa.token0();
+                _swapInfoWithFee.fees[index].token1      = pa.token1();
+                _swapInfoWithFee.fees[index].swapFee     = pa.swapFee() * 1000;
+                _swapInfoWithFee.fees[index].devFee      = 100 / (pa.devFee() + 1);            
+            }else {
+
+                uint8 dec0 = IERC20(token0).decimals();
+                uint8 dec1 = IERC20(token1).decimals();
+            
+                // //v3
+                IBiswapPoolV3 pa = poolV3(token0, token1, fee);
+                require(address(pa) != address(0), 'PAIR v3 NOT EXISTENT!');
+                swapFee = swapFee * (1e6 - pa.fee());
+                uint oldPriceE12 = LogPowMath.getSqrtPrice(IState(address(pa)).state().currentPoint) * 10**dec0 / 10**dec1;
+                oldPriceE12 = oldPriceE12 * 1e12 / 2**96;//need handle it before call quoter
+                int24 newPoint;
+
+                (_swapInfoWithFee.amountOut, newPoint) = getAmountOutV3_quoter(uint128(_swapInfoWithFee.amountOut), token0, token1, fee);
+                 uint newPriceE12 = LogPowMath.getSqrtPrice(newPoint) * 10**dec0 / 10**dec1;
+                newPriceE12 = newPriceE12 * 1e12 / 2**96;
+                _swapInfoWithFee.priceImpact    = _swapInfoWithFee.priceImpact + newPriceE12 > oldPriceE12 ? newPriceE12 * 1e12 / oldPriceE12 : oldPriceE12 * 1e12 / newPriceE12;
+        
+                _swapInfoWithFee.fees[index].pairAddress = address(pa);
+                _swapInfoWithFee.fees[index].token0      = pa.tokenX();
+                _swapInfoWithFee.fees[index].token1      = pa.tokenY();
+                _swapInfoWithFee.fees[index].swapFee     = pa.fee();
+                _swapInfoWithFee.fees[index].devFee      = pa.feeChargePercent();
+            }
+            index++;
+            path = path.skipToken();
+        }
+
+        _swapInfoWithFee.price = _swapInfoWithFee.amountOut * 1e12 / amountIn;//actual price of path
+        _swapInfoWithFee.tradeFee = amountIn - ((amountIn * swapFee) / (1e6**(pathLength)));
+        _swapInfoWithFee.tradeFeeUSDT = ISwapFeeReward(swapFeeReward).getQuantity(inputToken, _swapInfoWithFee.tradeFee, USDT); 
+    }
+
+    struct SwapInfoStruct{
+        uint amountIn;
+        bytes path;  
+    }
+
+    function swapInfoMultiple(address account, SwapInfoStruct[] memory swapInfoReceipt) public returns(SwapInfoWithFee memory _swapInfosWithFee){
+        uint swapsCount;
+        uint feesIndex;
+        for (uint i; i < swapInfoReceipt.length; i++){
+            swapsCount += Path.numPools(swapInfoReceipt[i].path);
+        }
+
+        _swapInfosWithFee.fees = new FeeInstance[](swapsCount);
+
+        for (uint i; i < swapInfoReceipt.length; i++){
+            SwapInfoWithFee memory tmp = swapInfo(
+                account,
+                swapInfoReceipt[i].amountIn,
+                swapInfoReceipt[i].path
+            );
+
+            _swapInfosWithFee.amountOut     += tmp.amountOut;
+            _swapInfosWithFee.price         += tmp.price;
+            _swapInfosWithFee.priceImpact   += tmp.priceImpact;
+            _swapInfosWithFee.tradeFee      += tmp.tradeFee;
+            _swapInfosWithFee.tradeFeeUSDT  += tmp.tradeFeeUSDT;
+            _swapInfosWithFee.feeReturn     += tmp.feeReturn;
+            _swapInfosWithFee.feeReturnUSDT += tmp.feeReturnUSDT;
+            _swapInfosWithFee.rbAmount      += tmp.rbAmount;
+
+            for (uint k; k < tmp.fees.length; k++){
+                _swapInfosWithFee.fees[feesIndex++] = tmp.fees[k];
+            }
+        }
+
+        _swapInfosWithFee.price = _swapInfosWithFee.price / swapInfoReceipt.length;
+
+        //TODO combine
+    }
+
+    function swapCombinedPath(
+        uint amountIn, 
+        bytes memory path,
+        uint amountOutMin, 
+        uint deadline
+    ) public{
+        uint pathLength = Path.numPools(path);
+        require(pathLength > 0, 'INVALID_PATH');
+        uint index;
+        (address firstToken,,) = path.decodeFirstPool();
+        IERC20(firstToken).transferFrom(msg.sender, address(this), amountIn);
+        uint amountOut = amountIn;
+
+        while(index < pathLength){
+            (address tokenIn, address tokenOut, uint16 fee) = path.decodeFirstPool();
+            
+            if(fee == 0){
+                IBiswapPair pa = poolV2(tokenIn, tokenOut);
+                IERC20(tokenIn).transfer(address(pa), amountOut);
+                (address token0,) = sortTokens(tokenIn, tokenOut);
+                amountOut = getAmountsOutV2(amountIn, tokenIn, tokenOut);
+                (uint amount0Out, uint amount1Out) = token0 == tokenIn ? (uint(0), amountOut) : (amountOut, uint(0));
+                try ISwapFeeReward(0x785E76678e04aD2aC481fcdbE9064b00Dd8651e3).swap(msg.sender, tokenIn, tokenOut, amountOut) {} catch {}
+                pa.swap(amount0Out, amount1Out, address(this), new bytes(0));
+            }else{
+                IERC20(tokenIn).approve(address(swapContract), amountOut);
+                (, amountOut) = ISwap(swapContract).swapAmount(ISwap.SwapAmountParams({
+                    path:        Path.getFirstPool(path),
+                    recipient:   address(this),
+                    amount:      uint128(amountOut),
+                    minAcquired: 0,
+                    deadline:    deadline
+                }));
+            }
+
+            index++;
+            path = path.skipToken();
+
+            if(path.length == 20) {
+                sweepToken(path.toAddress(0), amountOutMin, msg.sender);
+                break;
+            }
+        }
+    }
+
+    function sweepToken(
+        address token,
+        uint256 minAmount,
+        address recipient
+    ) internal{
+        uint256 all = IERC20(token).balanceOf(address(this));
+        require(all >= minAmount, '!AMOUNT OUT MIN');
+        if (all == 0) return;
+        safeTransfer(token, recipient, all);
+    }
+
+    function safeTransfer(
+        address token,
+        address to,
+        uint256 value
+    ) internal {
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'ST');
+    }
+    
+}
+
+// File: hardhat/console.sol
+// SPDX-License-Identifier: MIT
+pragma solidity >= 0.4.22 <0.9.0;
+
+library console {
+	address constant CONSOLE_ADDRESS = address(0x000000000000000000636F6e736F6c652e6c6f67);
+
+	function _sendLogPayload(bytes memory payload) private view {
+		uint256 payloadLength = payload.length;
+		address consoleAddress = CONSOLE_ADDRESS;
+		assembly {
+			let payloadStart := add(payload, 32)
+			let r := staticcall(gas(), consoleAddress, payloadStart, payloadLength, 0, 0)
+		}
+	}
+
+	function log() internal view {
+		_sendLogPayload(abi.encodeWithSignature("log()"));
+	}
+
+	function logInt(int256 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(int256)", p0));
+	}
+
+	function logUint(uint256 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256)", p0));
+	}
+
+	function logString(string memory p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string)", p0));
+	}
+
+	function logBool(bool p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool)", p0));
+	}
+
+	function logAddress(address p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address)", p0));
+	}
+
+	function logBytes(bytes memory p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes)", p0));
+	}
+
+	function logBytes1(bytes1 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes1)", p0));
+	}
+
+	function logBytes2(bytes2 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes2)", p0));
+	}
+
+	function logBytes3(bytes3 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes3)", p0));
+	}
+
+	function logBytes4(bytes4 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes4)", p0));
+	}
+
+	function logBytes5(bytes5 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes5)", p0));
+	}
+
+	function logBytes6(bytes6 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes6)", p0));
+	}
+
+	function logBytes7(bytes7 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes7)", p0));
+	}
+
+	function logBytes8(bytes8 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes8)", p0));
+	}
+
+	function logBytes9(bytes9 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes9)", p0));
+	}
+
+	function logBytes10(bytes10 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes10)", p0));
+	}
+
+	function logBytes11(bytes11 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes11)", p0));
+	}
+
+	function logBytes12(bytes12 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes12)", p0));
+	}
+
+	function logBytes13(bytes13 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes13)", p0));
+	}
+
+	function logBytes14(bytes14 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes14)", p0));
+	}
+
+	function logBytes15(bytes15 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes15)", p0));
+	}
+
+	function logBytes16(bytes16 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes16)", p0));
+	}
+
+	function logBytes17(bytes17 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes17)", p0));
+	}
+
+	function logBytes18(bytes18 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes18)", p0));
+	}
+
+	function logBytes19(bytes19 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes19)", p0));
+	}
+
+	function logBytes20(bytes20 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes20)", p0));
+	}
+
+	function logBytes21(bytes21 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes21)", p0));
+	}
+
+	function logBytes22(bytes22 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes22)", p0));
+	}
+
+	function logBytes23(bytes23 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes23)", p0));
+	}
+
+	function logBytes24(bytes24 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes24)", p0));
+	}
+
+	function logBytes25(bytes25 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes25)", p0));
+	}
+
+	function logBytes26(bytes26 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes26)", p0));
+	}
+
+	function logBytes27(bytes27 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes27)", p0));
+	}
+
+	function logBytes28(bytes28 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes28)", p0));
+	}
+
+	function logBytes29(bytes29 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes29)", p0));
+	}
+
+	function logBytes30(bytes30 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes30)", p0));
+	}
+
+	function logBytes31(bytes31 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes31)", p0));
+	}
+
+	function logBytes32(bytes32 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bytes32)", p0));
+	}
+
+	function log(uint256 p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256)", p0));
+	}
+
+	function log(string memory p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string)", p0));
+	}
+
+	function log(bool p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool)", p0));
+	}
+
+	function log(address p0) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address)", p0));
+	}
+
+	function log(uint256 p0, uint256 p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256)", p0, p1));
+	}
+
+	function log(uint256 p0, string memory p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string)", p0, p1));
+	}
+
+	function log(uint256 p0, bool p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool)", p0, p1));
+	}
+
+	function log(uint256 p0, address p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address)", p0, p1));
+	}
+
+	function log(string memory p0, uint256 p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256)", p0, p1));
+	}
+
+	function log(string memory p0, string memory p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string)", p0, p1));
+	}
+
+	function log(string memory p0, bool p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool)", p0, p1));
+	}
+
+	function log(string memory p0, address p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address)", p0, p1));
+	}
+
+	function log(bool p0, uint256 p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256)", p0, p1));
+	}
+
+	function log(bool p0, string memory p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string)", p0, p1));
+	}
+
+	function log(bool p0, bool p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool)", p0, p1));
+	}
+
+	function log(bool p0, address p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address)", p0, p1));
+	}
+
+	function log(address p0, uint256 p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256)", p0, p1));
+	}
+
+	function log(address p0, string memory p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string)", p0, p1));
+	}
+
+	function log(address p0, bool p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool)", p0, p1));
+	}
+
+	function log(address p0, address p1) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address)", p0, p1));
+	}
+
+	function log(uint256 p0, uint256 p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,uint256)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, uint256 p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,string)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, uint256 p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,bool)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, uint256 p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,address)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, string memory p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,uint256)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, string memory p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,string)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, string memory p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,bool)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, string memory p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,address)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, bool p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,uint256)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, bool p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,string)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, bool p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,bool)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, bool p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,address)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, address p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,uint256)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, address p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,string)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, address p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,bool)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, address p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,address)", p0, p1, p2));
+	}
+
+	function log(string memory p0, uint256 p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,uint256)", p0, p1, p2));
+	}
+
+	function log(string memory p0, uint256 p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,string)", p0, p1, p2));
+	}
+
+	function log(string memory p0, uint256 p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,bool)", p0, p1, p2));
+	}
+
+	function log(string memory p0, uint256 p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,address)", p0, p1, p2));
+	}
+
+	function log(string memory p0, string memory p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,uint256)", p0, p1, p2));
+	}
+
+	function log(string memory p0, string memory p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,string)", p0, p1, p2));
+	}
+
+	function log(string memory p0, string memory p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,bool)", p0, p1, p2));
+	}
+
+	function log(string memory p0, string memory p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,address)", p0, p1, p2));
+	}
+
+	function log(string memory p0, bool p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,uint256)", p0, p1, p2));
+	}
+
+	function log(string memory p0, bool p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,string)", p0, p1, p2));
+	}
+
+	function log(string memory p0, bool p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,bool)", p0, p1, p2));
+	}
+
+	function log(string memory p0, bool p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,address)", p0, p1, p2));
+	}
+
+	function log(string memory p0, address p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,uint256)", p0, p1, p2));
+	}
+
+	function log(string memory p0, address p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,string)", p0, p1, p2));
+	}
+
+	function log(string memory p0, address p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,bool)", p0, p1, p2));
+	}
+
+	function log(string memory p0, address p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,address)", p0, p1, p2));
+	}
+
+	function log(bool p0, uint256 p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,uint256)", p0, p1, p2));
+	}
+
+	function log(bool p0, uint256 p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,string)", p0, p1, p2));
+	}
+
+	function log(bool p0, uint256 p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,bool)", p0, p1, p2));
+	}
+
+	function log(bool p0, uint256 p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,address)", p0, p1, p2));
+	}
+
+	function log(bool p0, string memory p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,uint256)", p0, p1, p2));
+	}
+
+	function log(bool p0, string memory p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,string)", p0, p1, p2));
+	}
+
+	function log(bool p0, string memory p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,bool)", p0, p1, p2));
+	}
+
+	function log(bool p0, string memory p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,address)", p0, p1, p2));
+	}
+
+	function log(bool p0, bool p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,uint256)", p0, p1, p2));
+	}
+
+	function log(bool p0, bool p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,string)", p0, p1, p2));
+	}
+
+	function log(bool p0, bool p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,bool)", p0, p1, p2));
+	}
+
+	function log(bool p0, bool p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,address)", p0, p1, p2));
+	}
+
+	function log(bool p0, address p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,uint256)", p0, p1, p2));
+	}
+
+	function log(bool p0, address p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,string)", p0, p1, p2));
+	}
+
+	function log(bool p0, address p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,bool)", p0, p1, p2));
+	}
+
+	function log(bool p0, address p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,address)", p0, p1, p2));
+	}
+
+	function log(address p0, uint256 p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,uint256)", p0, p1, p2));
+	}
+
+	function log(address p0, uint256 p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,string)", p0, p1, p2));
+	}
+
+	function log(address p0, uint256 p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,bool)", p0, p1, p2));
+	}
+
+	function log(address p0, uint256 p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,address)", p0, p1, p2));
+	}
+
+	function log(address p0, string memory p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,uint256)", p0, p1, p2));
+	}
+
+	function log(address p0, string memory p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,string)", p0, p1, p2));
+	}
+
+	function log(address p0, string memory p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,bool)", p0, p1, p2));
+	}
+
+	function log(address p0, string memory p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,address)", p0, p1, p2));
+	}
+
+	function log(address p0, bool p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,uint256)", p0, p1, p2));
+	}
+
+	function log(address p0, bool p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,string)", p0, p1, p2));
+	}
+
+	function log(address p0, bool p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,bool)", p0, p1, p2));
+	}
+
+	function log(address p0, bool p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,address)", p0, p1, p2));
+	}
+
+	function log(address p0, address p1, uint256 p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,uint256)", p0, p1, p2));
+	}
+
+	function log(address p0, address p1, string memory p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,string)", p0, p1, p2));
+	}
+
+	function log(address p0, address p1, bool p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,bool)", p0, p1, p2));
+	}
+
+	function log(address p0, address p1, address p2) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,address)", p0, p1, p2));
+	}
+
+	function log(uint256 p0, uint256 p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, uint256 p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,uint256,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, string memory p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,string,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, bool p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,bool,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(uint256 p0, address p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(uint256,address,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, uint256 p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,uint256,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, string memory p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,string,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, bool p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,bool,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(string memory p0, address p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(string,address,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, uint256 p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,uint256,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, string memory p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,string,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, bool p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,bool,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(bool p0, address p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(bool,address,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, uint256 p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,uint256,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, string memory p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,string,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, bool p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,bool,address,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, uint256 p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,uint256,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, uint256 p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,uint256,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, uint256 p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,uint256,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, uint256 p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,uint256,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, string memory p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,string,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, string memory p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,string,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, string memory p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,string,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, string memory p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,string,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, bool p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,bool,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, bool p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,bool,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, bool p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,bool,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, bool p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,bool,address)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, address p2, uint256 p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,address,uint256)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, address p2, string memory p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,address,string)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, address p2, bool p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,address,bool)", p0, p1, p2, p3));
+	}
+
+	function log(address p0, address p1, address p2, address p3) internal view {
+		_sendLogPayload(abi.encodeWithSignature("log(address,address,address,address)", p0, p1, p2, p3));
+	}
+
+}
+
