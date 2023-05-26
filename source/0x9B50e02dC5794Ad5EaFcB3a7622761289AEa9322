@@ -1,0 +1,98 @@
+pragma solidity ^0.8.0;
+
+// SPDX-License-Identifier: MIT
+
+/**
+ * @title BEP20 Token Contract with Tax in Currency
+ * @dev Implementation of the BEP20 token standard with a transfer tax in currency.
+ * @dev This contract is provided with an MIT license.
+ */
+
+// Token Contract
+contract GuxxiToken {
+    string public name = "Guxxi";
+    string public symbol = "GUXXI";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 1000000 * 10 ** uint256(decimals);
+    address public owner;
+    address public taxWallet;
+    
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) private allowances;
+    
+    uint256 public taxPercentage = 3;
+    
+    constructor() {
+        owner = msg.sender;
+        taxWallet = msg.sender; // Tax initially sent to the contract owner
+        balances[msg.sender] = totalSupply;
+    }
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function.");
+        _;
+    }
+    
+    event Transfer(address indexed from, address indexed to, uint256 value, uint256 taxAmount);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    
+    function renounceOwnership() external onlyOwner {
+        owner = address(0);
+    }
+    
+    function balanceOf(address account) external view returns (uint256) {
+        return balances[account];
+    }
+    
+    function transfer(address recipient, uint256 amount) external returns (bool) {
+        require(amount <= balances[msg.sender], "Insufficient balance.");
+        
+        uint256 taxAmount = (amount * taxPercentage) / 100;
+        uint256 transferAmount = amount - taxAmount;
+        
+        balances[msg.sender] -= amount;
+        balances[recipient] += transferAmount;
+        balances[taxWallet] += taxAmount;
+        
+        emit Transfer(msg.sender, recipient, transferAmount, taxAmount);
+        
+        return true;
+    }
+    
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool) {
+        require(amount <= balances[sender], "Insufficient balance.");
+        require(amount <= allowances[sender][msg.sender], "Insufficient allowance.");
+        
+        uint256 taxAmount = (amount * taxPercentage) / 100;
+        uint256 transferAmount = amount - taxAmount;
+        
+        balances[sender] -= amount;
+        balances[recipient] += transferAmount;
+        balances[taxWallet] += taxAmount;
+        
+        emit Transfer(sender, recipient, transferAmount, taxAmount);
+        
+        _approve(sender, msg.sender, allowances[sender][msg.sender] - amount);
+        
+        return true;
+    }
+    
+    function approve(address spender, uint256 amount) external returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+    
+    function allowance(address _owner, address spender) external view returns (uint256) {
+        return allowances[_owner][spender];
+    }
+    
+    function setTaxWallet(address _taxWallet) external onlyOwner {
+        require(_taxWallet != address(0), "Invalid tax wallet address.");
+        taxWallet = _taxWallet;
+    }
+    
+    function _approve(address _owner, address spender, uint256 amount) private {
+        allowances[_owner][spender] = amount;
+        emit Approval(_owner, spender, amount);
+    }
+}

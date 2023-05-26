@@ -1,0 +1,129 @@
+/*                                                                                                                                                                                      
+ * ARK Pre-Seed
+ * 
+ * Written by: MrGreenCrypto
+ * Co-Founder of CodeCraftrs.com
+ * 
+ * SPDX-License-Identifier: None
+ */
+
+pragma solidity 0.8.19;
+
+interface IBEP20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount ) external returns (bool);
+}
+
+interface ISWAP {
+    function getCurrentPriceInUSD() external view returns (uint256);
+}
+interface IVAULT {
+    function hasAccount(address _address) external view returns (bool);
+}
+
+contract ARK_PRE_SEED {
+    address public constant CEO = 0xdf0048DF98A749ED36553788B4b449eA7a7BAA88;
+    address public constant VAULT = 0xeB5f81A779BCcA0A19012d24156caD8f899F6452;
+    ISWAP public constant SWAP = ISWAP(0x55553531D05394750d60EFab7E93D73a356F5555);
+    IBEP20 public constant ARK = IBEP20(0x111120a4cFacF4C78e0D6729274fD5A5AE2B1111);
+    IBEP20 public constant BUSD = IBEP20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);
+
+    mapping(address => Deposit[]) public deposits;
+    mapping(address => mapping(uint256 => uint256)) public depositsOfRound;
+    mapping(address => uint256) public balance;
+
+    uint256 public currentRound;
+    uint256 public limitPerWalletOfRound;
+    uint256 public totalArkOfRound;
+    uint256 public arkLeftInRound;
+    uint256 public valueOfArkOfRound;
+    uint256 public valueDivisor;
+    bool public specialPrice;
+    uint256 public openingTime = type(uint256).max;
+    
+    uint256 public totalDepositsARK;
+    uint256 public totalDepositsValueBUSD;
+
+    struct Deposit{
+        uint256 amountInArk;
+        uint256 valueInBusd;
+        uint256 timestamp;
+        uint256 round;
+    }
+    
+    address[] public preSeeders;
+
+    modifier onlyCEO() {
+        require(msg.sender == CEO, "Only CEO");
+        _;
+    }
+
+	constructor() {}
+
+    function getUsdValue(uint256 amount) public view returns (uint256) {
+        uint256 usdEquivalent = amount * SWAP.getCurrentPriceInUSD() / 10**18;
+        return usdEquivalent;
+    }
+
+    function depositARK(uint256 amount) external {
+        require(block.timestamp > openingTime, "Not open");
+        require(IVAULT(VAULT).hasAccount(msg.sender), "Not open");
+        if(depositsOfRound[msg.sender][currentRound] + amount > limitPerWalletOfRound) amount = limitPerWalletOfRound - depositsOfRound[msg.sender][currentRound];
+        if(arkLeftInRound < amount) amount = arkLeftInRound;
+        if(amount == 0) return;
+        if(balance[msg.sender] == 0) preSeeders.push(msg.sender);
+        uint256 usdEquivalent = specialPrice ? amount * valueOfArkOfRound / valueDivisor : getUsdValue(amount);
+        ARK.transferFrom(msg.sender, VAULT, amount);
+        arkLeftInRound -= amount;
+        depositsOfRound[msg.sender][currentRound] += amount;
+        totalDepositsARK += amount;
+        totalDepositsValueBUSD += usdEquivalent;
+        Deposit memory thisDeposit;
+        thisDeposit.amountInArk = amount;
+        thisDeposit.valueInBusd = usdEquivalent;
+        thisDeposit.timestamp = block.timestamp;
+        thisDeposit.round = currentRound;
+        deposits[msg.sender].push(thisDeposit);
+        balance[msg.sender] += usdEquivalent;
+    }
+
+    function startNewRound(uint256 totalArk, uint256 maxPerWallet, uint256 arkValue, uint256 divisor, uint256 startTime, bool specialPriceActive) external onlyCEO {
+        currentRound++;
+        limitPerWalletOfRound = maxPerWallet * 10**18;
+        totalArkOfRound = totalArk * 10**18;
+        arkLeftInRound = totalArkOfRound;
+        valueOfArkOfRound = arkValue;
+        valueDivisor = divisor;
+        specialPrice = specialPriceActive;
+        openingTime = startTime;
+    }
+
+    function rescueAnyToken(IBEP20 tokenToRescue) external onlyCEO {
+        uint256 _balance = tokenToRescue.balanceOf(address(this));
+        tokenToRescue.transfer(CEO, _balance);
+    }
+
+    function rescueBnb() external onlyCEO {
+        (bool success,) = address(CEO).call{value: address(this).balance}("");
+        if(success) return;
+    } 
+
+    function getAllInvestors() public view returns(address[] memory) {
+        return preSeeders;
+    }
+
+    function getBalances() public view returns(address[] memory, uint256[] memory) {
+        address[] memory investors = preSeeders;
+        uint256[] memory balances = new uint256[](investors.length);
+        for(uint i = 0; i<investors.length; i++) balances[i] = balance[investors[i]];
+        return (investors,balances);
+    }
+
+    function getBalancesCustom(uint256 from, uint256 howMany) public view returns(address[] memory, uint256[] memory) {
+        address[] memory investors = preSeeders;
+        uint256[] memory balances = new uint256[](investors.length);
+        for(uint i = from; i< from + howMany; i++) balances[i] = balance[investors[i]];
+        return (investors,balances);
+    }
+}

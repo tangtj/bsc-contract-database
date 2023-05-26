@@ -1,0 +1,73 @@
+pragma solidity ^0.8.0;
+
+contract FofoToken {
+    string public name = "fofo Token";
+    string public symbol = "foo";
+    uint256 public totalSupply = 1000000000 * 10 ** 18; // 1 billion tokens
+    uint8 public decimals = 18;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    uint256 public constant MIN_BALANCE = 1000 ether; // Minimum balance required to sell tokens
+    mapping(address => bool) public canSell;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    function transfer(address _to, uint256 _value) public returns (bool success) {
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+        _transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    function approve(address _spender, uint256 _value) public returns (bool success) {
+        allowance[msg.sender][_spender] = _value;
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+        require(_value <= balanceOf[_from], "Insufficient balance");
+        require(_value <= allowance[_from][msg.sender], "Allowance exceeded");
+        _transfer(_from, _to, _value);
+        allowance[_from][msg.sender] -= _value;
+        return true;
+    }
+
+    function _transfer(address _from, address _to, uint256 _value) private {
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += _value;
+        emit Transfer(_from, _to, _value);
+    }
+
+    function buyTokens() public payable {
+        require(msg.value > 0, "Invalid amount");
+        uint256 tokens = msg.value * 10 ** decimals / 1 ether;
+        require(balanceOf[address(this)] >= tokens, "Insufficient token balance");
+        _transfer(address(this), msg.sender, tokens);
+    }
+
+    function sellTokens(uint256 _value) public {
+        require(canSell[msg.sender], "You cannot sell tokens");
+        require(_value <= balanceOf[msg.sender], "Insufficient balance");
+        require(address(this).balance >= _value * 1 ether / 10 ** decimals, "Insufficient contract balance");
+        balanceOf[msg.sender] -= _value;
+        balanceOf[address(this)] += _value;
+        payable(msg.sender).transfer(_value * 1 ether / 10 ** decimals);
+    }
+
+    function setCanSell(address _seller, bool _canSell) public {
+        require(msg.sender == _seller, "You cannot set another user's selling status");
+        if (balanceOf[_seller] < MIN_BALANCE) {
+            canSell[_seller] = false;
+        } else {
+            canSell[_seller] = _canSell;
+        }
+    }
+}
+// SPDX-License-Identifier: MIT

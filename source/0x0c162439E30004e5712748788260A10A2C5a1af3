@@ -1,0 +1,285 @@
+// SPDX-License-Identifier: RRCCoin
+pragma solidity ^0.8.19;
+
+interface IBEP20 {
+    function transfer(address to, uint256 value) external returns (bool);
+    function approve(address spender, uint256 value) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+contract RRCExchange {
+    IBEP20 public USDTToken;
+    IBEP20 public RRCToken;
+    IBEP20 public token1;
+    IBEP20 public token2;
+    address public owner;
+    uint256 RRCBuyPrice;
+    uint256 RRCSellPrice;
+
+    struct ExchangeInfo {
+        bool isBuy;
+        address wallet;
+        uint256 usdAmount;
+        uint256 rrcAmount;
+        uint256 rrcPrice;
+        uint256 timestamp;
+    }
+
+    struct Node {
+        address parent;
+        address[] children;
+        uint256 registerTime;
+    }
+
+    struct Transaction {
+        string txType;
+        uint256 amount;
+        uint256 time;
+    }
+
+    mapping(address => Node) public tree;
+    address public root = 0x0000E0011e223322334455445566776677888988;
+    address[] public allNodes;
+    uint256 public referralPercent;
+    mapping(address => Transaction[]) public userRewards;
+
+    ExchangeInfo[] public exchangeHistory;
+    
+    constructor() {
+        USDTToken = IBEP20(0x55d398326f99059fF775485246999027B3197955);
+        RRCToken = IBEP20(0xa9474F7a7608B90a9C524a7D09d73865D0174503);
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner {
+        require(msg.sender == owner, "Only the contract owner can call this function.");
+        _;
+    }
+
+    function setOwner(address newOwner) public onlyOwner {
+        owner = newOwner;
+    }
+
+    function addChild(address parent, address child) private {
+        require(parent != address(0), "Parent address should not be zero.");
+        require(child != address(0), "Child address should not be zero.");
+        require(parent != child, "Parent and child addresses should not be the same.");
+        require(tree[parent].parent != child, "Cannot set child as parent of its parent.");
+        require(tree[child].parent == address(0), "Child node already has a parent.");
+        
+        tree[parent].children.push(child);
+        tree[child].parent = parent;
+        tree[child].registerTime = block.timestamp;
+
+        allNodes.push(child);
+    }
+
+    receive() external payable {}
+
+    event Exchange(address indexed sender, uint256 amount);
+
+    function exchange(address parent, string memory _currencySymbol, uint256 _amount) public payable {
+        require(bytes(_currencySymbol).length > 0, "Token name cannot be empty");
+        require(( keccak256(bytes(_currencySymbol)) == keccak256(bytes("USDT")) && address(USDTToken) != address(0)) || ( keccak256(bytes(_currencySymbol)) == keccak256(bytes("RRC")) && address(RRCToken) != address(0)), "Invalid token name");
+        uint256 newAmount;
+        if (keccak256(bytes(_currencySymbol)) == keccak256(bytes("USDT"))) {
+            token1 = USDTToken;
+            token2 = RRCToken;
+            // Amount to transfer
+            newAmount = (_amount / RRCBuyPrice) * 10**18;
+            // History
+            ExchangeInfo memory exchangeInfo = ExchangeInfo({
+                isBuy: true,
+                wallet: msg.sender,
+                usdAmount: _amount,
+                rrcAmount: newAmount,
+                rrcPrice: RRCBuyPrice,
+                timestamp: block.timestamp
+            });
+            exchangeHistory.push(exchangeInfo);
+
+            if(parent != address(0) && tree[msg.sender].parent == address(0)){
+                // Call addChild function with parent and child addresses
+                addChild(parent, msg.sender); 
+            }
+
+            if(tree[msg.sender].parent != address(0) && referralPercent != 0) {
+                token2.transfer( tree[msg.sender].parent, newAmount * referralPercent);
+                Transaction memory referral = Transaction({
+                    txType: "Refferal",
+                    amount: newAmount * referralPercent,
+                    time: block.timestamp
+                });
+                userRewards[tree[msg.sender].parent].push(referral);
+            }
+        }
+        if (keccak256(bytes(_currencySymbol)) == keccak256(bytes("RRC"))) {
+            token1 = RRCToken;
+            token2 = USDTToken;
+            // Amount to transfer
+            newAmount = (_amount * RRCSellPrice) / 10**18;
+            // History
+            ExchangeInfo memory exchangeInfo = ExchangeInfo({
+                isBuy: false,
+                wallet: msg.sender,
+                usdAmount: newAmount,
+                rrcAmount: _amount,
+                rrcPrice: RRCSellPrice,
+                timestamp: block.timestamp
+            });
+            exchangeHistory.push(exchangeInfo);
+        }
+
+        //Check
+        require(_amount > 0, "Amount must be greater than 0");
+        require(token1.allowance(msg.sender, address(this)) >= _amount, "Token allowance not enough");
+        require(token1.balanceOf(msg.sender) >= _amount, "Insufficient token balance");
+        require(token2.balanceOf(address(this)) >= newAmount, "Insufficient token balance");
+
+        //Deposit
+        token1.transferFrom(msg.sender, address(this), _amount);
+
+        // Withdraw
+        token2.transfer(msg.sender, newAmount);
+
+        emit Exchange(msg.sender, _amount);
+    }
+
+    function setExchangeInfo(address _wallet, string memory _currencySymbol, uint256 _amountUSDT, uint256 _amountRRC) public onlyOwner {
+        if (keccak256(bytes(_currencySymbol)) == keccak256(bytes("USDT"))) {
+            uint256 thatRRCSellPrice = _amountUSDT / _amountRRC;
+            ExchangeInfo memory exchangeInfo = ExchangeInfo({
+                isBuy: true,
+                wallet: _wallet,
+                usdAmount: _amountUSDT,
+                rrcAmount: _amountRRC,
+                rrcPrice: thatRRCSellPrice,
+                timestamp: block.timestamp
+            });
+            exchangeHistory.push(exchangeInfo);
+        }
+        if (keccak256(bytes(_currencySymbol)) == keccak256(bytes("RRC"))) {
+            uint256 thatRRCBuyPrice = _amountUSDT / _amountRRC;
+            ExchangeInfo memory exchangeInfo = ExchangeInfo({
+                isBuy: false,
+                wallet: _wallet,
+                usdAmount: _amountUSDT,
+                rrcAmount: _amountRRC,
+                rrcPrice: thatRRCBuyPrice,
+                timestamp: block.timestamp
+            });
+            exchangeHistory.push(exchangeInfo);
+        }
+    }
+
+    function transferToken(address _wallet, uint256 _amount) public onlyOwner {
+        require(_amount > 0, "Amount must be greater than zero.");
+        RRCToken.transfer(_wallet, _amount);
+    }
+
+    function setRRCBuyPrice(uint256 _price) public onlyOwner {
+        require(_price >= RRCSellPrice, "Buy price must be greater than sell price.");
+        RRCBuyPrice = _price;
+    }
+
+    function setRRCSellPrice(uint256 _price) public onlyOwner {
+        require(_price <= RRCBuyPrice, "Buy price must be greater than sell price.");
+        RRCSellPrice = _price;
+    }
+
+    function depositUSDT(uint256 amount) public onlyOwner {
+        require(USDTToken.transferFrom(msg.sender, address(this), amount), "USDT deposit failed");
+    }
+
+    function depositRRC(uint256 amount) public onlyOwner {
+        require(RRCToken.transferFrom(msg.sender, address(this), amount), "RRC deposit failed");
+    }
+
+    function withdrawUSDT(uint256 _amount) public onlyOwner {
+        require(USDTToken.transfer(msg.sender, _amount), "USDT withdrawal failed");
+    }
+
+    function withdrawRRC(uint256 _amount) public onlyOwner {
+        require(RRCToken.transfer(msg.sender, _amount), "RRC withdrawal failed");
+    }
+
+    function setReferralPercent(uint256 _referralPercent) public onlyOwner {
+        require(_referralPercent >= 0, "Referral percent must be greater or equal to zero.");
+        referralPercent = _referralPercent;
+    }
+
+    function getUSDTBalance() public view returns (uint256) {
+        return USDTToken.balanceOf(address(this));
+    }
+
+    function getRRCBalance() public view returns (uint256) {
+        return RRCToken.balanceOf(address(this));
+    }
+
+    function getRRCBuyPrice() public view returns (uint256) {
+        return RRCBuyPrice;
+    }
+
+    function getRRCSellPrice() public view returns (uint256) {
+        return RRCSellPrice;
+    }
+
+    function getReferralPercent() public view returns (uint256) {
+        return referralPercent;
+    }
+
+    function getExchangeHistory() public view returns (ExchangeInfo[] memory) {
+        return exchangeHistory;
+    }
+
+    function getExchangeForAddress(address walletAddress) public view returns (ExchangeInfo[] memory) {
+        uint256[] memory exchangeIndexes = new uint256[](exchangeHistory.length);
+        uint256 exchangeCount = 0;
+        for (uint256 i = 0; i < exchangeHistory.length; i++) {
+            if (exchangeHistory[i].wallet == walletAddress) {
+                exchangeIndexes[exchangeCount] = i;
+                exchangeCount++;
+            }
+        }
+        ExchangeInfo[] memory result = new ExchangeInfo[](exchangeCount);
+        for (uint256 i = 0; i < exchangeCount; i++) {
+            result[i] = exchangeHistory[exchangeIndexes[i]];
+        }
+        return result;
+    }
+
+    function getAllNodes() public view returns (address[] memory) {
+        return allNodes;
+    }
+
+    function getAllNodesCount() public view returns (uint256) {
+        return allNodes.length;
+    }
+
+    function getNodeDetails(address nodeAddress) public view returns (address parent, address[] memory children, uint256 registerTime) {
+        Node memory nodeStruct = tree[nodeAddress];
+        return (nodeStruct.parent, nodeStruct.children, nodeStruct.registerTime);
+    }
+
+    function getParent(address child) public view returns (address) {
+        return tree[child].parent;
+    }
+
+    function getChildren(address parent) public view returns (address[] memory) {
+        return tree[parent].children;
+    }
+
+    function getAddressChildCount(address _address) public view returns (uint256) {
+        return tree[_address].children.length;
+    }
+
+    function getAddressRegisterTime(address _address) public view returns (uint256) {
+        return tree[_address].registerTime;
+    }
+
+    function getTransactions(address _wallet) public view returns (Transaction[] memory) {
+        return userRewards[_wallet];
+    }
+}

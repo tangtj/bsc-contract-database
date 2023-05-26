@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+contract CoinFlipGame {
+    uint256 public pot;
+    address payable public deployer;
+    bool public tradingEnabled;
+
+    constructor() {
+        deployer = payable(msg.sender);
+        tradingEnabled = true;
+    }
+
+    modifier isTradingEnabled {
+        require(tradingEnabled, "Trading is currently disabled.");
+        _;
+    }
+
+    function flipCoin() public payable isTradingEnabled {
+        require(msg.value > 0, "Amount must be greater than 0 BNB.");
+
+        // Calculate potential winnings
+        uint256 potentialWinnings = (msg.value * 15) / 10;  // 1.5x of the player's initial investment
+
+        // Check if potential winnings exceed the pot balance
+        require(pot >= potentialWinnings, "Potential winnings exceed the available pot balance.");
+
+        // Generate a random number between 0 and 99
+        uint256 randomNumber = uint256(keccak256(abi.encodePacked(block.timestamp, block.difficulty))) % 100;
+
+        // If the generated number is less than 35, the player wins
+        if (randomNumber < 35) {
+            // Calculate player's winnings
+            uint256 playerWinnings = (potentialWinnings * 8) / 10;  // 80% of the 1.5x winnings
+
+            // Calculate pot increase
+            uint256 potIncrease = (potentialWinnings * 10) / 100;  // 10% of the 1.5x winnings
+
+            // Calculate contract fee
+            uint256 contractFee = (potentialWinnings * 10) / 100;  // 10% of the 1.5x winnings
+
+            // Transfer player's winnings to player
+            payable(msg.sender).transfer(playerWinnings);
+
+            // Update pot and send 10% to deployer
+            pot += potIncrease;
+            deployer.transfer(contractFee);
+        }
+        // If the generated number is greater than or equal to 35, the player loses
+        else {
+            // Calculate contract fee
+            uint256 contractFee = (msg.value * 25) / 100;  // 25% of the player's initial investment
+
+            // Update pot
+            pot += (msg.value * 25) / 100;  // 25% of the player's initial investment added to the pot
+
+            // Calculate return amount for the player
+            uint256 returnAmount = (msg.value * 50) / 100;  // 50% of the player's initial investment
+
+            // Transfer return amount to the player
+            payable(msg.sender).transfer(returnAmount);
+
+            // Send contract fee to deployer
+            deployer.transfer(contractFee);
+        }
+    }
+
+    function enableTrading() public {
+        require(msg.sender == deployer, "Only the contract deployer can enable trading.");
+        tradingEnabled = true;
+    }
+
+    function disableTrading() public {
+        require(msg.sender == deployer, "Only the contract deployer can disable trading.");
+        tradingEnabled = false;
+    }
+
+    function withdrawPot() public {
+        require(msg.sender == deployer, "Only the contract deployer can withdraw the pot.");
+        require(pot > 0, "Pot balance is 0.");
+
+        uint256 potAmount = pot;
+        pot = 0;
+        deployer.transfer(potAmount);
+    }
+
+    function viewPot() public view returns (uint256) {
+        return pot;
+    }
+}

@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IUniswapV2Router02 {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+}
+
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+contract NapsterBEP20Token {
+    string public name = "Napster";
+    string public symbol = "NAPSTER";
+    uint256 public totalSupply = 1000000000 * 10**18; // 1 billion tokens with 18 decimal places
+    uint8 public decimals = 18;
+    address public owner;
+    address public router;
+    address public pancakePair;
+    address public marketingWallet = 0xDDCc79baC9461b809B2277c6ECad1040E2c9b47a; // Wallet address to receive the marketing fee
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public isExcludedFromFee;
+
+    uint256 public marketingFee = 3;
+    uint256 public liquidityFee = 1;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function.");
+        _;
+    }
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        owner = msg.sender;
+        balanceOf[owner] = totalSupply;
+        router = 0x10ED43C718714eb63d5aA57B78B54704E256024E; // PancakeSwap router address
+
+        address factory = 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73; // PancakeSwap factory address
+        address wbnb = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c; // WBNB address
+
+        pancakePair = IUniswapV2Factory(factory).createPair(address(this), wbnb);
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        require(to != address(0), "Invalid address.");
+        require(amount > 0, "Amount must be greater than zero.");
+        require(amount <= balanceOf[msg.sender], "Insufficient balance.");
+
+        uint256 marketingAmount = (amount * marketingFee) / 100;
+        uint256 liquidityAmount = (amount * liquidityFee) / 100;
+
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount - marketingAmount - liquidityAmount;
+
+                // Transfer BNB to the marketing wallet address
+        if (!isExcludedFromFee[msg.sender]) {
+            payable(marketingWallet).transfer(marketingAmount);
+        }
+
+        emit Transfer(msg.sender, to, amount);
+        emit Transfer(msg.sender, marketingWallet, marketingAmount);
+
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(from != address(0), "Invalid address.");
+        require(to != address(0), "Invalid address.");
+        require(amount > 0, "Amount must be greater than zero.");
+        require(amount <= balanceOf[from], "Insufficient balance.");
+        require(amount <= allowance[from][msg.sender], "Insufficient allowance.");
+
+        uint256 marketingAmount = (amount * marketingFee) / 100;
+        uint256 liquidityAmount = (amount * liquidityFee) / 100;
+
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount - marketingAmount - liquidityAmount;
+
+        // Transfer BNB to the marketing wallet address
+        if (!isExcludedFromFee[from]) {
+            payable(marketingWallet).transfer(marketingAmount);
+        }
+
+        allowance[from][msg.sender] -= amount;
+
+        emit Transfer(from, to, amount);
+        emit Transfer(from, marketingWallet, marketingAmount);
+
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        require(spender != address(0), "Invalid spender address.");
+
+        allowance[msg.sender][spender] = amount;
+
+        emit Approval(msg.sender, spender, amount);
+
+        return true;
+    }
+
+    function renounceOwnership() external onlyOwner {
+        owner = address(0);
+    }
+
+    function excludeFromFee(address account) external onlyOwner {
+        isExcludedFromFee[account] = true;
+    }
+
+    function includeInFee(address account) external onlyOwner {
+        isExcludedFromFee[account] = false;
+    }
+}

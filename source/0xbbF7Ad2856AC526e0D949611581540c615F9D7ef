@@ -1,0 +1,257 @@
+// SPDX-License-Identifier: MIT
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+
+
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.10;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+// File: @openzeppelin/contracts/utils/Context.sol
+
+
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+// File: contracts/PoolDepositTokenSwap.sol
+
+
+pragma solidity ^0.8.10;
+
+
+
+contract PoolDepositTokenSwap is Context {
+   address private _owner;
+   IERC20 public token;
+   address public tokenDepositPool;  
+   mapping(address => bool) public adminLists;
+   mapping(string => SwapData) public swapDatas;
+
+   ///@dev swap limit
+
+   uint256 public swapDelay; 
+   uint256 public maxSwapAmount;
+   mapping(address => uint256) public lastGSwap;
+   uint256 public totalDepoPool;
+   mapping(address => uint256) public depoList;
+   
+   struct SwapData {
+      address user;
+      uint256 amount;
+      uint256 swapTime;
+   }
+
+   constructor(address token_) {
+      token = IERC20(token_);
+      tokenDepositPool = msg.sender;
+      adminLists[msg.sender] = true;
+      totalDepoPool = 0;
+      swapDelay = 5; // 5s 
+      maxSwapAmount = 0; 
+      _owner = msg.sender;
+   }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+       /**
+   * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+   /** ==================== EVENT ============================ */
+   event RoleEvent(
+      string role,
+      address user,
+      bool status
+   );
+
+   event SwapEvent (
+      string internalTx,
+      address user,
+      uint256 amount
+   );
+
+
+   /** ==================== CONFIG ========================= */
+   function setAdmin(address user_, bool status_) external onlyOwner{
+      adminLists[user_] = status_;
+      emit RoleEvent("set_admin", user_, status_);
+   }
+
+   modifier onlyAdmins(){
+      require(adminLists[msg.sender] == true || msg.sender == owner(), "Authorization: Require admin role");
+      _;
+   }
+
+   function setTokenDepositPool(address addressPool) external onlyAdmins{
+      tokenDepositPool = addressPool;
+      emit RoleEvent("set_token_DepositPool", addressPool, true);
+   }
+
+   function setExchangeToken(IERC20 token_) external onlyAdmins{
+      token = token_;
+      emit RoleEvent("set_exchange_token", address(token), true);
+   }
+
+   function setSwapDelay(uint256 swapDelay_) external onlyAdmins {
+      swapDelay = swapDelay_;
+   }
+
+   function setTotalDepoPool(uint256 totalDepoPool_) external onlyAdmins {
+      totalDepoPool = totalDepoPool_;
+   }
+
+   function setMaxSwapAmount(uint256 maxSwapAmount_) external onlyAdmins {
+      maxSwapAmount = maxSwapAmount_;
+   }
+
+   modifier swapDataNotExisted(string memory internalTx_) {
+      require(swapDatas[internalTx_].swapTime == 0, "Tx state: Swap data existed");
+      _;
+   }
+      /**
+   *depositToPool
+    */
+   function depositToPool(string memory internalTx_, address user_, uint256 amount_) external swapDataNotExisted(internalTx_)
+   {
+         _validateSwapData(user_, amount_);
+         require(amount_ > 0, "depositToPool: Amount is zero");
+
+         //transfer token from user to distributor 
+         token.transferFrom(msg.sender, tokenDepositPool, amount_);
+         depoList[msg.sender] += amount_;
+         totalDepoPool += amount_;
+
+         swapDatas[internalTx_] = SwapData (
+            msg.sender,
+            amount_,
+            block.timestamp
+         );
+
+         // emit event 
+         emit SwapEvent(internalTx_, msg.sender, amount_);
+      
+   }
+
+   function _validateSwapData(address user_, uint256 amount_) private {
+      // Check delay 
+      require(block.timestamp >= (lastGSwap[user_] + swapDelay), "depositToPool: Not to swap time yet");
+      //Check max limit 
+      if (maxSwapAmount != 0){
+         require(amount_ <= maxSwapAmount, "depositToPool: Swap amount exceed max limit");
+      }
+      //update last swap time
+      lastGSwap[user_] = block.timestamp;
+   }
+
+   function blockTime() external view returns(uint256) {
+      return block.timestamp;
+   }
+}
