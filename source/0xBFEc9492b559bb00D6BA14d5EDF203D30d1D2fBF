@@ -1,0 +1,148 @@
+pragma solidity ^0.8.0;
+
+contract OctopiCoin {
+    string public name = "OctopiCoin";
+    string public symbol = "OPI";
+    uint8 public decimals = 18;
+    uint256 private _initialSupply;
+
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => uint256) private _purchaseTimestamp;
+    address[] private _holders;
+
+    uint256 private _totalBurned;
+    address private _taxReceiveAddress = 0x47F2c317d989108553c43b901433Ab196eC571d7;
+    uint256 private _transactionTax = 4;
+    uint256 private _buybackFee = 1;
+    uint256 private _burnPercentage = 10;
+    uint256 private _taxPercentage = 2;
+    uint256 private _sellRestrictionTime = 604800; // Default: 1 week
+
+    address private _owner;
+
+    modifier onlyOwner() {
+        require(msg.sender == _owner, "Only the contract owner can call this function");
+        _;
+    }
+
+    constructor() {
+        _initialSupply = 1000000000000000 * 10**uint256(decimals);
+        _balances[msg.sender] = _initialSupply;
+        _holders.push(msg.sender);
+        _owner = msg.sender;
+    }
+
+    function totalSupply() public view returns (uint256) {
+        return _initialSupply;
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return _balances[account];
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function purchaseTimestamp(address account) public view returns (uint256) {
+        return _purchaseTimestamp[account];
+    }
+
+    function sellRestrictionTime() public view returns (uint256) {
+        return _sellRestrictionTime;
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        require(canSellTokens(msg.sender), "Tokens can only be sold after the allowed sell restriction time");
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+        require(canSellTokens(sender), "Tokens can only be sold after the allowed sell restriction time");
+        require(amount <= _allowances[sender][msg.sender], "Transfer amount exceeds allowance");
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender] - amount);
+        return true;
+    }
+
+    function totalBurned() public view returns (uint256) {
+        return _totalBurned;
+    }
+
+    function transactionTax() public view returns (uint256) {
+        return _transactionTax;
+    }
+
+    function setTransactionTax(uint256 tax) external onlyOwner {
+        require(tax <= 100, "Transaction tax must be between 0 and 100");
+        _transactionTax = tax;
+    }
+
+    function buybackFee() public view returns (uint256) {
+        return _buybackFee;
+    }
+
+    function setBuybackFee(uint256 fee) external onlyOwner {
+        require(fee <= 100, "Buyback fee must be between 0 and 100");
+        _buybackFee = fee;
+    }
+
+    function setSellRestrictionTime(uint256 sellTime) external onlyOwner {
+        _sellRestrictionTime = sellTime;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+
+        uint256 transactionTaxAmount = (amount * _transactionTax) / 100;
+        uint256 buybackFeeAmount = (transactionTaxAmount * _buybackFee) / 100;
+        uint256 transferAmount = amount - transactionTaxAmount;
+        uint256 senderBalance = _balances[sender];
+
+        require(senderBalance >= amount, "Insufficient balance");
+
+        _balances[sender] = senderBalance - amount;
+        _balances[recipient] += transferAmount;
+        _balances[_taxReceiveAddress] += buybackFeeAmount;
+        _totalBurned += (amount * _burnPercentage) / 100;
+
+        emit Transfer(sender, recipient, transferAmount);
+        emit Transfer(sender, _taxReceiveAddress, buybackFeeAmount);
+        emit Transfer(sender, address(0), (amount * _burnPercentage) / 100);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function canSellTokens(address account) internal view returns (bool) {
+        uint256 purchaseTime = _purchaseTimestamp[account];
+        if (block.timestamp - purchaseTime >= _sellRestrictionTime) {
+            return true;
+        }
+        return false;
+    }
+
+    function purchaseTokens() external {
+        _purchaseTimestamp[msg.sender] = block.timestamp;
+        if (_balances[msg.sender] == 0) {
+            _holders.push(msg.sender);
+        }
+    }
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}

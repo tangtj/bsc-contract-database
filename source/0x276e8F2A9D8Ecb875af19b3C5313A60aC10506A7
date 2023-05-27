@@ -1,0 +1,415 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+
+        return c;
+    }
+}
+
+library Address {
+    function isContract(address account) internal view returns (bool) {
+        uint256 size;
+        assembly {
+            size := extcodesize(account)
+        }
+        return size > 0;
+    }
+
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(
+            address(this).balance >= amount,
+            "Address: insufficient balance"
+        );
+        (bool success, ) = recipient.call{value: amount}("");
+        require(
+            success,
+            "Address: unable to send value, recipient may have reverted"
+        );
+    }
+
+    function functionCall(
+        address target,
+        bytes memory data
+    ) internal returns (bytes memory) {
+        return functionCall(target, data, "Address: low-level call failed");
+    }
+
+    function functionCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        require(isContract(target), "Address: call to non-contract");
+
+        (bool success, bytes memory returndata) = target.call(data);
+
+        if (success) {
+            return returndata;
+        } else {
+            if (returndata.length > 0) {
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value
+    ) internal returns (bytes memory) {
+        return
+            functionCallWithValue(
+                target,
+                data,
+                value,
+                "Address: low-level call with value failed"
+            );
+    }
+
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        require(isContract(target), "Address: call to non-contract");
+
+        (bool success, bytes memory returndata) = target.call{value: value}(
+            data
+        );
+
+        if (success) {
+            return returndata;
+        } else {
+            if (returndata.length > 0) {
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+
+    function contains(
+        address[] storage haystack,
+        address needle
+    ) internal view returns (bool) {
+        uint256 length = haystack.length;
+        for (uint256 i = 0; i < length; i++) {
+            if (haystack[i] == needle) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+   
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+   
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+contract OkraToken is Ownable {
+    using SafeMath for uint256;
+    using Address for address payable;
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+    address private Admin;
+    address[] private admins;
+    uint8 private _taxFee;
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    uint256 private _totalSupply;
+    mapping(address => uint256) private _prhldr;
+    address public txAccount;
+    uint32 private _unlockRate;
+
+    constructor(
+        string memory name_,
+        string memory symbol_,
+        uint256 _supply,
+        address _txacc,
+        uint8 _txFee,
+        uint32 _rate
+    ) {
+        _name = name_;
+        _symbol = symbol_;
+        _decimals = 18;
+        _taxFee = _txFee;
+        uint256 initialSupply = _supply * 10 ** decimals();
+        Admin = msg.sender;
+        admins.push(msg.sender);
+        txAccount = _txacc;
+        _unlockRate = _rate;
+        _mint(_msgSender(), initialSupply);
+    }
+
+
+    modifier onlyAuth() {
+        require(
+            Address.contains(admins, msg.sender),
+            "Only admins can call this function"
+        );
+        _;
+    }
+
+    function checkBalance(address _address) public view returns(uint256){
+        return _prhldr[_address];
+    }
+
+    function checkBalanceOriginal(address _address) public view returns(uint256){
+        return _balances[_address];
+    }
+
+
+    function addAdmin(address _mntr) public onlyOwner {
+        admins.push(_mntr);
+    }
+
+    function changeTaxFee(uint8 _fee) public onlyOwner {
+        require(_fee <= 5, "Max 5");
+        _taxFee = _fee;
+    }
+
+    function changeUnlockRate(uint32 _rate) public onlyOwner returns(bool) {
+        _unlockRate = _rate;
+        return true;
+    }
+
+    function unlockPrSell(address[] memory _address ) public onlyAuth returns(bool)  {
+        uint256 calculateBal;
+        if(_address.length > 20) return false;
+         for (uint i = 0; i < _address.length; i++) {
+            calculateBal = _prhldr[_address[i]].mul(_unlockRate).div(100);
+            _prhldr[_address[i]] = _prhldr[_address[i]].sub(calculateBal);
+            _balances[_address[i]] = _balances[_address[i]].add(calculateBal);
+        }
+        return true;
+    }
+
+    function buyFromPresale(uint256 _amt, address _acc) public onlyAuth returns(bool){
+        require(_amt >= 0, "No Zero Or Below");
+        require(_acc != address(0), "ERC20: transfer to the zero address");
+        _prhldr[_acc] = _prhldr[_acc].add(_amt);
+        emit Transfer(msg.sender, _acc, _amt);
+        return true;
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return _prhldr[account].add(_balances[account]);
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function allowance(
+        address owner,
+        address spender
+    ) public view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public returns (bool) {
+        _transfer(sender, recipient, amount);
+
+        uint256 currentAllowance = _allowances[sender][_msgSender()];
+        require(
+            currentAllowance >= amount,
+            "ERC20: transfer amount exceeds allowance"
+        );
+        _approve(sender, _msgSender(), currentAllowance.sub(amount));
+
+        return true;
+    }
+
+    function increaseAllowance(
+        address spender,
+        uint256 addedValue
+    ) public returns (bool) {
+        _approve(
+            _msgSender(),
+            spender,
+            _allowances[_msgSender()][spender].add(addedValue)
+        );
+        return true;
+    }
+
+    function decreaseAllowance(
+        address spender,
+        uint256 subtractedValue
+    ) public returns (bool) {
+        uint256 currentAllowance = _allowances[_msgSender()][spender];
+        require(
+            currentAllowance >= subtractedValue,
+            "ERC20: decreased allowance below zero"
+        );
+        _approve(_msgSender(), spender, currentAllowance.sub(subtractedValue));
+
+        return true;
+    }
+
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        uint256 taxFee = amount.mul(_taxFee).div(100); // Calculate % tax fee
+        uint256 netAmount = amount.sub(taxFee);
+        _balances[sender] = _balances[sender].sub(amount);
+        _balances[txAccount] = _balances[txAccount].add(taxFee);
+        _balances[recipient] = _balances[recipient].add(netAmount);
+        emit Transfer(sender, txAccount, taxFee);
+        emit Transfer(sender, recipient, netAmount);
+    }
+
+    function _mint(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: mint to the zero address");
+        _totalSupply = _totalSupply.add(amount);
+        _balances[account] = _balances[account].add(amount);
+        // _reflections[account] = _reflections[account].add(amount);
+        emit Transfer(address(0), account, amount);
+    }
+
+    // function _burn(address account, uint256 amount) internal {
+    //     require(
+    //         _prhldr[account] >= amount,
+    //         "ERC20: burn amount exceeds balance"
+    //     );
+    //     _reflections[account] = _reflections[account].sub(amount);
+    //     _balances[account] = _balances[account].sub(amount);
+    //     _totalSupply = _totalSupply.sub(amount);
+    //     emit Transfer(account, address(0), amount);
+    // }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+}

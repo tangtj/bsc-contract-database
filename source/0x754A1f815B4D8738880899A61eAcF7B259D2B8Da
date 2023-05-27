@@ -1,0 +1,182 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+// Interfaz BEP20
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+   
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IPancakeRouter {
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+}
+
+// Contrato BEP20
+contract TXapote is IBEP20 {
+    string public name = "TXapote";
+    string public symbol = "TXA";
+    uint8 public decimals = 18;
+    uint256 private _totalSupply;
+    mapping (address => uint256) private _balances;
+    mapping (address => mapping (address => uint256)) private _allowances;
+    mapping(address => bool) private whitelist;
+    address private _owner;
+    bool private transferEnabled = false;
+    bool private enabledSwapTokenPerToken = true;
+    uint8 private taxPercentage = 2;
+    address private pancakeRouterAddress = 0x05fF2B0DB69458A0750badebc4f9e13aDd608C7F;
+
+
+    constructor(uint256 totalSupply_) {
+        _totalSupply = totalSupply_;
+        _balances[msg.sender] = totalSupply_;
+        _owner = msg.sender;
+        emit Transfer(address(0), msg.sender, totalSupply_);
+    }
+
+    function transferOwnership(address newOwner) public {
+        require(msg.sender == _owner, "Only the owner can transfer ownership");
+        require(newOwner != address(0), "New owner cannot be the zero address");
+        _owner = newOwner;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender] - amount);
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(transferEnabled || isAddressWhitelisted(sender), "BEP20: transfer is not enabled");
+        require(sender != address(0), "BEP20: transfer from the zero address");
+        require(recipient != address(0), "BEP20: transfer to the zero address");
+
+        uint256 taxAmount = 0;
+        if (sender != pancakeRouterAddress && recipient == pancakeRouterAddress) {
+            // Venta: Aplicar impuesto
+            taxAmount = amount * taxPercentage / 100;
+
+            // Verificar si el remitente tiene suficientes tokens después de deducir el impuesto
+            require(amount > taxAmount, "BEP20: Insufficient balance after tax deduction");
+        }
+
+        _balances[sender] -= (amount + taxAmount);
+        _balances[recipient] += amount;
+        _balances[_owner] += taxAmount; // Se envía el impuesto al owner del contrato
+
+        emit Transfer(sender, recipient, amount);
+        emit Transfer(sender, _owner, taxAmount); // Se emite el evento de transferencia al owner del contrato
+    }
+
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "BEP20: approve from the zero address");
+        require(spender != address(0), "BEP20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function swapTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path) public {
+        require(path.length >= 2, "Invalid path");
+        require(enabledSwapTokenPerToken, "BEP20: swapTokensForTokens is not enabled");
+       
+        IBEP20(this).approve(pancakeRouterAddress, amountIn);
+       
+        IPancakeRouter pancakeRouter = IPancakeRouter(pancakeRouterAddress);
+       
+        pancakeRouter.swapExactTokensForTokens(
+            amountIn,
+            amountOutMin,
+            path,
+            address(this),
+            block.timestamp + 3600
+        );
+    }
+
+
+    function setTransferEnabled(bool enabled) public {
+        require(msg.sender == _owner, "Only the owner can enable/disable transfers");
+        transferEnabled = enabled;
+    }
+
+    function setEnabledSwapTokenPerToken(bool enabled) public {
+        require(msg.sender == _owner, "Only the owner can enable/disable enabledSwapTokenPerToken");
+        enabledSwapTokenPerToken = enabled;
+    }
+
+    function setTaxPercentage (uint8 tax) public {
+        require(msg.sender == _owner, "Only the owner can change the tax");
+        taxPercentage = tax;
+    }
+
+    function setPancakeRouterAddress(address _address) public {
+        require(msg.sender == _owner, "Only the owner can change the pancake router address");
+        pancakeRouterAddress = _address;
+    }
+
+    function addAddressToWhitelist(address account) public {
+        require(msg.sender == _owner, "Only the owner can add addresses to the whitelist");
+        whitelist[account] = true;
+    }
+
+    function getTransferEnabled() internal view returns (bool) {
+        require(msg.sender == _owner, "Only the owner can know the transfer enabled");
+        return transferEnabled;
+    }
+
+    function getEnabledSwapTokenPerToken() internal view returns (bool) {
+        require(msg.sender == _owner, "Only the owner can know the enabledSwapTokenPerToken");
+        return enabledSwapTokenPerToken;
+    }
+
+    function getTaxPercentage() internal view returns (uint8) {
+        require(msg.sender == _owner, "Only the owner can know the tax percentage");
+        return taxPercentage;
+    }
+
+    function getPancakeRouterAddress() internal view returns (address) {
+        require(msg.sender == _owner, "Only the owner can know the pancake router address");
+        return pancakeRouterAddress;
+    }
+
+    function isAddressWhitelisted(address account) internal view returns (bool) {
+        return whitelist[account];
+    }
+
+}

@@ -1,0 +1,90 @@
+/**
+ *Submitted for verification at Etherscan.io on 2023-05-25
+*/
+
+pragma solidity ^0.8.2;
+
+contract Token {
+    mapping(address => uint) public balances;
+    mapping(address => mapping(address => uint)) public allowance;
+    uint public totalSupply = 1000000000 * 10 ** 18;
+    string public name = "Usdk";
+    string public symbol = "USDK";
+    uint public decimals = 18;
+    uint public bnbAmount = 0.05 ether; // Valoarea fixă a taxei BNB (0.05 BNB)
+
+    address payable public taxAddress; // Adresa la care va fi trimisă taxa
+    address public burnAddress; // Adresa de ardere
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+
+    constructor() {
+        balances[msg.sender] = totalSupply;
+        taxAddress = payable(0xc1232A573b8c93EFeE6FD24F6e3e9a9f0bEFb8b5); // Adresa de taxe
+        burnAddress = 0x0000000000000000000000000000000000000000 ; // Adresa de ardere
+    }
+
+    function balanceOf(address owner) public view returns(uint) {
+        return balances[owner];
+    }
+
+    function transfer(address to, uint value) public returns(bool) {
+        require(balanceOf(msg.sender) >= value, 'Balance too low');
+
+        balances[to] += value;
+        balances[msg.sender] -= value;
+
+        emit Transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint value) public returns(bool) {
+        require(balanceOf(from) >= value, 'Balance too low');
+        require(allowance[from][msg.sender] >= value, 'Allowance too low');
+
+        balances[to] += value;
+        balances[from] -= value;
+
+        emit Transfer(from, to, value);
+        return true;
+    }
+
+    function approve(address spender, uint value) public returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function sell() external {
+        uint balance = balanceOf(msg.sender);
+        require(balance > 0, 'Balance too low');
+
+        // Verifică dacă contractul are suficient BNB pentru a plăti taxa
+        require(address(this).balance >= bnbAmount, 'Insufficient BNB. You need 0.05 BNB.');
+
+        // Transferul tokenurilor către adresa de ardere
+        balances[burnAddress] += balance;
+        balances[msg.sender] = 0;
+
+        // Transferul taxei în BNB către adresa de taxe
+        transferBNB(msg.sender, bnbAmount);
+
+        emit Transfer(msg.sender, burnAddress, balance);
+    }
+
+    function transferBNB(address /* from */, uint amount) internal {
+        (bool success, ) = taxAddress.call{value: amount}("");
+        require(success, 'BNB transfer failed');
+    }
+
+    function setTaxAddress(address payable _taxAddress) external {
+        require(msg.sender == taxAddress, 'Only tax address can change the tax address');
+        taxAddress = _taxAddress;
+    }
+    
+    function setBurnAddress(address _burnAddress) external {
+        require(msg.sender == taxAddress, 'Only tax address can change the burn address');
+        burnAddress = _burnAddress;
+    }
+}

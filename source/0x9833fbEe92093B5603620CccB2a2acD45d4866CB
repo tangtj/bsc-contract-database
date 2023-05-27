@@ -1,0 +1,121 @@
+
+// File: contracts/BankRoll.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.18;
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+// BankRoll
+contract BankRoll {
+    uint256 private _reEntancyStatus = 1; //Non_Entered
+    uint256 public balanceOfBNBInBankRoll;
+    address public owner;
+    mapping(address => uint256) public tokenBalance;
+    mapping(address => bool) public whitelistedAddresses;
+    /* ========== EVENTS ========== */
+    event Withdraw(address indexed withdrawActionBy, address indexed to, uint256 indexed amount);
+    event EtherDeposited(address indexed from, uint256 indexed amount);
+    event SentWinAmount(address indexed game, address indexed user, uint256 amount, address indexed token);
+    event WhitelistStatus(address[] indexed contractAddresses, bool isWhitelisted);
+
+    /* ========== ERRORS ========== */
+    error AddressNotWhiteListed(address _inputAddress);
+    error CallerIsNotOwner(address _owner);
+    error ArrayLengthCantBeZero();
+    error ETHTransferFailed(address _to, uint256 _amount);
+    error ReEntrantCall();
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) {
+            revert CallerIsNotOwner(owner);
+        }
+        _;
+    }
+    modifier nonReentrant() {
+        if (_reEntancyStatus == 2) {
+            revert ReEntrantCall();
+        }
+        _reEntancyStatus = 2; //Entered
+        _;
+        _reEntancyStatus = 1;
+    }
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    receive() external payable {
+        if (whitelistedAddresses[msg.sender] || msg.sender == owner) {
+            balanceOfBNBInBankRoll += msg.value;
+        }
+        emit EtherDeposited(msg.sender, msg.value);
+    }
+
+    function whitelist(address[] calldata addresses, bool isWhitelisted) external onlyOwner {
+        if (addresses.length == 0) {
+            revert ArrayLengthCantBeZero();
+        }
+        for (uint256 i = 0; i < addresses.length; ) {
+            whitelistedAddresses[addresses[i]] = isWhitelisted;
+            unchecked {
+                ++i;
+            }
+        }
+        emit WhitelistStatus(addresses, isWhitelisted);
+    }
+
+    function sendWinAmount(address user, uint256 amount, address _token) external nonReentrant {
+        if (!whitelistedAddresses[msg.sender]) {
+            revert AddressNotWhiteListed(msg.sender);
+        }
+        if (_token == address(0)) {
+            balanceOfBNBInBankRoll -= amount;
+            _withdrawEther(user, amount);
+        } else {
+            tokenBalance[_token] -= amount;
+            IERC20(_token).transfer(user, amount);
+        }
+        emit SentWinAmount(msg.sender, user, amount, _token);
+    }
+
+    /// Deposit any IERC20 tokens in this contract
+    function depositTokens(address _token, uint256 _amount) external onlyOwner nonReentrant {
+        tokenBalance[_token] += _amount;
+        IERC20(_token).transferFrom(msg.sender, address(this), _amount);
+    }
+
+    /// Approve Transfer
+    function approve(address _token, address target, uint256 amount) external onlyOwner nonReentrant {
+        IERC20(_token).approve(target, amount);
+    }
+
+    /// Withdraw any IERC20 tokens accumulated in this contract
+    function withdrawTokens(address _token, uint256 _amount) external onlyOwner nonReentrant {
+        tokenBalance[_token] -= _amount;
+        IERC20(_token).transfer(msg.sender, _amount);
+    }
+
+    /// Withdraw Ether accumulated in this contract
+    function withdrawEther(address to, uint256 amount) external onlyOwner nonReentrant {
+        balanceOfBNBInBankRoll -= amount;
+        _withdrawEther(to, amount);
+        emit Withdraw(msg.sender, to, amount);
+    }
+
+    function _withdrawEther(address user, uint256 amount) internal {
+        (bool sent, ) = payable(user).call{value: amount}('');
+        if (!sent) {
+            revert ETHTransferFailed(user, amount);
+        }
+    }
+}
+
