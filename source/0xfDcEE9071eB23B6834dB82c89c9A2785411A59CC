@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract NftFriends {
+    string public name = "Nft Friends";
+    string public symbol = "NF";
+    uint256 public totalSupply = 420000000000 * 10**18;
+    uint8 public decimals = 18;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => uint256) public lastDividendPoints;
+    uint256 public totalDividendPoints;
+    uint256 public unclaimedDividends;
+
+    address public marketingWallet = 0xFF5Fd469e657Ff762aa67775A05595f7d0c560f3;
+    uint256 public distributionPercentage = 5; // 5% of each transaction
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    function transfer(address to, uint256 value) external returns (bool) {
+        require(value > 0, "Invalid value");
+
+        uint256 dividendPoints = calculateDividendPoints(msg.sender);
+        updateAccount(msg.sender, dividendPoints);
+
+        uint256 burnAmount = value * 3 / 100;
+        uint256 transferAmount = value - burnAmount;
+
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += transferAmount;
+        balanceOf[address(0)] += burnAmount;
+
+        // Distribute tokens to holders
+        distributeTokensToHolders(value * distributionPercentage / 100);
+
+        emit Transfer(msg.sender, to, transferAmount);
+        emit Transfer(msg.sender, address(0), burnAmount);
+
+        return true;
+    }
+
+    function approve(address spender, uint256 value) external returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) external returns (bool) {
+        require(value > 0, "Invalid value");
+        require(value <= balanceOf[from], "Insufficient balance");
+        require(value <= allowance[from][msg.sender], "Insufficient allowance");
+
+        uint256 dividendPoints = calculateDividendPoints(from);
+        updateAccount(from, dividendPoints);
+        dividendPoints = calculateDividendPoints(to);
+        updateAccount(to, dividendPoints);
+
+        uint256 burnAmount = value * 3 / 100;
+        uint256 transferAmount = value - burnAmount;
+
+        balanceOf[from] -= value;
+        balanceOf[to] += transferAmount;
+        balanceOf[address(0)] += burnAmount;
+
+        // Distribute tokens to holders
+        distributeTokensToHolders(value * distributionPercentage / 100);
+
+        allowance[from][msg.sender] -= value;
+
+        emit Transfer(from, to, transferAmount);
+        emit Transfer(from, address(0), burnAmount);
+
+        return true;
+    }
+
+    function calculateDividendPoints(address account) internal view returns (uint256) {
+        uint256 totalPoints = totalDividendPoints + unclaimedDividends / totalSupply;
+        return totalPoints - lastDividendPoints[account];
+    }
+
+    function updateAccount(address account, uint256 dividendPoints) internal {
+        lastDividendPoints[account] = totalDividendPoints;
+        uint256 owing = balanceOf[account] * dividendPoints;
+        unclaimedDividends -= owing;
+        balanceOf[account] += owing;
+    }
+
+    function distributeDividends(uint256 amount) external {
+        require(amount > 0, "Invalid amount");
+        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
+
+        uint256 dividendPoints = amount / totalSupply;
+        totalDividendPoints += dividendPoints;
+        unclaimedDividends += amount;
+
+        balanceOf[msg.sender] -= amount;
+
+        emit Transfer(msg.sender, address(0), amount);
+    }
+
+function distributeTokensToHolders(uint256 amount) internal {
+    require(amount > 0, "Invalid amount");
+    uint256 totalHoldersBalance = totalSupply - balanceOf[address(0)];
+
+    if (totalHoldersBalance > 0) {
+        address[] memory holders = new address[](totalSupply);
+        uint256 holderCount = 0;
+
+        // Encontrar os detentores
+        for (uint256 i = 0; i < totalSupply; i++) {
+            address holder = address(uint160(i));
+            if (balanceOf[holder] > 0) {
+                holders[holderCount] = holder;
+                holderCount++;
+            }
+        }
+
+        // Distribuir tokens para cada detentor
+        uint256 individualAmount = amount / totalHoldersBalance;
+        for (uint256 i = 0; i < holderCount; i++) {
+            address holder = holders[i];
+            uint256 holderTokens = balanceOf[holder];
+            uint256 tokensToDistribute = holderTokens * individualAmount;
+            balanceOf[holder] += tokensToDistribute;
+            unclaimedDividends += tokensToDistribute;
+
+            emit Transfer(address(0), holder, tokensToDistribute);
+        }
+    }
+}
+}

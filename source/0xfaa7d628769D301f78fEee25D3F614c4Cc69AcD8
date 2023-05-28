@@ -1,0 +1,344 @@
+//SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.5;
+
+
+interface rfIERC20 {
+
+	function totalSupply() external view returns (uint);
+
+	function balanceOf(address account) external view returns (uint);
+
+	function transfer(address recipient, uint amount) external returns (bool);
+
+	function allowance(address owner, address spender) external view returns (uint);
+
+	function approve(address spender, uint amount) external returns (bool);
+
+	function transferFrom(address sender, address recipient, uint amount) external returns (bool);
+
+}
+
+
+interface IXFARMER {
+
+	struct HistoryDeposit {
+	address	player;
+	uint	amount;
+	uint	time;
+	}
+
+	struct userInfoData {
+		bool isUser;
+		uint earnings;
+		uint active;
+		uint daily;
+		uint match_bonus;
+		uint total_invested;
+		uint total_withdrawn;
+		uint total_match_bonus;
+		uint[5] structure;
+		uint structure_sum;
+	}
+	function deposits(uint _idx) external view returns( HistoryDeposit memory _deposit );
+	function userInfo(address _addr) external view returns(	uint _time, userInfoData memory _userData );
+}
+
+
+library rfAddress {
+
+	function isContract(address account) internal view returns (bool) {
+
+		uint size;
+		assembly {
+			size := extcodesize(account)
+		}
+		return size > 0;
+	}
+
+	function sendValue(address payable recipient, uint amount) internal {
+		require(address(this).balance >= amount, "Address: insufficient balance");
+		(bool success, ) = recipient.call{value: amount}("");
+		require(success, "Address: unable to send value, recipient may have reverted");
+	}
+
+	function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+		return functionCall(target, data, "Address: low-level call failed");
+	}
+
+	function functionCall(
+		address target,
+		bytes memory data,
+		string memory errorMessage
+	) internal returns (bytes memory) {
+		return functionCallWithValue(target, data, 0, errorMessage);
+	}
+
+	function functionCallWithValue(
+		address target,
+		bytes memory data,
+		uint value
+	) internal returns (bytes memory) {
+		return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+	}
+
+	function functionCallWithValue(
+		address target,
+		bytes memory data,
+		uint value,
+		string memory errorMessage
+	) internal returns (bytes memory) {
+		require(address(this).balance >= value, "Address: insufficient balance for call");
+		require(isContract(target), "Address: call to non-contract");
+		(bool success, bytes memory returndata) = target.call{value: value}(data);
+		return verifyCallResult(success, returndata, errorMessage);
+	}
+
+	function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+		return functionStaticCall(target, data, "Address: low-level static call failed");
+	}
+
+	function functionStaticCall(
+		address target,
+		bytes memory data,
+		string memory errorMessage
+	) internal view returns (bytes memory) {
+		require(isContract(target), "Address: static call to non-contract");
+		(bool success, bytes memory returndata) = target.staticcall(data);
+		return verifyCallResult(success, returndata, errorMessage);
+	}
+
+	function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+		return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+	}
+
+	function functionDelegateCall(
+		address target,
+		bytes memory data,
+		string memory errorMessage
+	) internal returns (bytes memory) {
+		require(isContract(target), "Address: delegate call to non-contract");
+		(bool success, bytes memory returndata) = target.delegatecall(data);
+		return verifyCallResult(success, returndata, errorMessage);
+	}
+
+	function verifyCallResult(
+		bool success,
+		bytes memory returndata,
+		string memory errorMessage
+	) internal pure returns (bytes memory) {
+		if (success) {
+			return returndata;
+		} else {
+			if (returndata.length > 0) {
+				assembly {
+					let returndata_size := mload(returndata)
+					revert(add(32, returndata), returndata_size)
+				}
+			} else {
+				revert(errorMessage);
+			}
+		}
+	}
+}
+
+
+library rfSafeERC20 {
+
+	using rfAddress for address;
+
+	function safeTransfer(
+		rfIERC20 token,
+		address to,
+		uint value
+	) internal {
+		_callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+	}
+
+	function safeTransferFrom(
+		rfIERC20 token,
+		address from,
+		address to,
+		uint value
+	) internal {
+		_callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+	}
+
+	function safeApprove(
+		rfIERC20 token,
+		address spender,
+		uint value
+	) internal {
+		require(
+			(value == 0) || (token.allowance(address(this), spender) == 0),
+			"SafeERC20: approve from non-zero to non-zero allowance"
+		);
+		_callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+	}
+
+	function safeIncreaseAllowance(
+		rfIERC20 token,
+		address spender,
+		uint value
+	) internal {
+		uint newAllowance = token.allowance(address(this), spender) + value;
+		_callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+	}
+
+	function safeDecreaseAllowance(
+		rfIERC20 token,
+		address spender,
+		uint value
+	) internal {
+		unchecked {
+			uint oldAllowance = token.allowance(address(this), spender);
+			require(oldAllowance >= value, "SafeERC20: decreased allowance below zero");
+			uint newAllowance = oldAllowance - value;
+			_callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+		}
+	}
+
+	function _callOptionalReturn(rfIERC20 token, bytes memory data) private {
+		bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+		if (returndata.length > 0) {
+			require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+		}
+	}
+}
+
+
+
+contract BUSDXFARMER_REFUND {
+
+	using rfSafeERC20 for rfIERC20;
+
+	struct User {
+		bool	exists;
+		uint	invested;
+		uint	withdrawn;
+		uint	available;
+		uint	claimed;
+	}
+
+	struct History {
+		uint	time;
+		address	user;
+		uint	amount;
+	}
+
+	rfIERC20 public						TOKEN;
+	address public						OWNER;
+	IXFARMER public						XFARMER;
+	address[] public					ADDRS;
+	mapping(address => User) public		USERS;
+	History[] public					HISTORY;
+	uint public							TOTAL_REQUIRED;
+	uint public							TOTAL_CLAIMED;
+
+
+	constructor(address _usdtAddr, address _xfarmerAddr, uint _depositsLength) {
+
+		TOKEN = rfIERC20(_usdtAddr);
+		XFARMER = IXFARMER(_xfarmerAddr);
+		OWNER = msg.sender;
+
+		for(uint i=0; i<_depositsLength; i++) {
+
+			IXFARMER.HistoryDeposit memory deposit = XFARMER.deposits(i);
+
+			if(USERS[deposit.player].exists) continue;
+
+			ADDRS.push( deposit.player );
+
+			(,IXFARMER.userInfoData memory data) = XFARMER.userInfo(deposit.player);
+
+			USERS[deposit.player] = User({
+									exists:		true,
+									invested:	data.total_invested,
+									withdrawn:	data.total_withdrawn,
+									available:	0,
+									claimed:	0
+								});
+
+			TOTAL_REQUIRED += _userPool(deposit.player); 
+		}
+	}
+
+
+	function _min(uint num1, uint num2) private pure returns(uint) {
+
+		return num1 < num2 ? num1 : num2;
+	}
+
+	function _userPool(address _user) private view returns(uint) {
+
+		User storage user = USERS[_user];
+
+		uint output = user.withdrawn + user.available + user.claimed;
+
+		return (user.invested >= output) ? (user.invested - output) : 0;
+	}
+
+
+	function claim() public {
+
+		User storage user = USERS[msg.sender];
+
+		uint available = user.available;
+		user.claimed += available;
+		TOTAL_CLAIMED += available;
+		user.available = 0;
+
+		TOKEN.safeTransfer(msg.sender, available);
+
+		HISTORY.push( History({ time: block.timestamp, user: msg.sender, amount: available }) );
+	}
+
+
+	function insert(uint _amount) public {
+
+		uint totalPool;
+		for(uint i=0; i<ADDRS.length; i++) {
+			uint pool = _userPool( ADDRS[i] );
+			if(pool > 0) totalPool += pool;
+		}
+		if(totalPool==0) return;
+
+		uint amountMax = _min(_amount, totalPool);
+		uint amountReal;
+
+		for(uint i=0; i<ADDRS.length; i++) {
+			uint pool = _userPool( ADDRS[i] );
+			if(pool > 0) {
+				uint share = amountMax * pool / totalPool;
+				USERS[ ADDRS[i] ].available += share;
+				amountReal += share;
+			}
+		}
+
+		TOKEN.safeTransferFrom( msg.sender, address(this), amountReal );
+
+		TOTAL_REQUIRED -= amountReal;
+	}
+
+
+	function extract() public {
+
+		require(msg.sender == OWNER, 'Only Owner');
+
+		for(uint i=0; i<ADDRS.length; i++) {
+			User storage user = USERS[ADDRS[i]];
+			TOTAL_REQUIRED += user.available;
+			user.available = 0;
+		}
+
+		TOKEN.safeTransfer(OWNER, TOKEN.balanceOf(address(this)) );
+	}
+
+
+	function info(address _user) public view returns(User memory user, uint userPool, uint totalRequired, uint totalClaimed, uint userBalance) {
+
+		return( USERS[_user], _userPool(_user), TOTAL_REQUIRED, TOTAL_CLAIMED, TOKEN.balanceOf(_user) );
+	}
+
+
+}

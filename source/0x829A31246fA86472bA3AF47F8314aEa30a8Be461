@@ -1,0 +1,252 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract TicketMarketplace {
+    address private owner;//             ___  
+    address private managingContract; //__&__\\
+    // Gas efficient shma gas efficient \*_*/
+    uint256 public ticketPrice;
+    uint256 public exzit;
+    uint256 public societyBalance;
+    uint256 public taxPercentage = 21;
+    uint256 public constant initialPrice = 0.003 ether;
+    uint256 public constant maxTickets = 6900;
+
+    uint256 public trades;
+    mapping(uint256 => address) private traderId;
+    mapping(address => bool) private traders;
+
+    mapping(address => uint256) public balances;
+
+    uint256 ticketCount;
+    uint256 nextTicket;
+    mapping(uint => Ticket) public tickets;
+
+    struct Ticket {
+        uint id;
+        uint256 price;
+        address payable owner;
+        bool purchased;
+        bool forsale;
+    }
+
+    // owner must create tickets to be buyable
+    event TicketCreated(uint id,uint price,address payable owner,bool purchased);
+    event TicketPurchased(uint id,uint price,address payable owner,bool purchased);
+    event TicketListed(address seller, uint256 ticketId, uint256 price);
+    event TicketUnlisted(address seller, uint256 ticketId );
+
+    bool internal lock;
+    bool internal locked;
+
+    constructor() {
+        owner = msg.sender;
+        locked = false;
+        lock = false;
+        managingContract = owner;
+        ticketPrice = initialPrice;
+        nextTicket = 1;
+        exzit = 10000 ether;
+    }
+    
+    modifier noReentrant() {
+        require(!locked, "No re-entrancy");
+        locked = true;
+        _;
+        locked = false;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can call this function.");
+        _;
+    }
+
+    function createTicket() internal {
+        ticketCount++;
+
+        tickets[ticketCount] = Ticket({
+            id: ticketCount,
+            price: ticketPrice,
+            owner: payable(owner),
+            purchased: false,
+            forsale: true
+        });
+
+        emit TicketCreated({
+            id: ticketCount,
+            price: ticketPrice,
+            owner: payable(owner),
+            purchased: true
+        });
+
+        ticketPrice += initialPrice;
+    }
+
+
+    function isTradeBefore(address sender) internal {
+        if(!traders[sender]){
+            trades++;
+            traders[sender] = true;
+            traderId[trades];
+        }
+    }
+
+    function purchaseTicket(uint256 id) public payable noReentrant {
+    Ticket memory _ticket = tickets[id];
+        address payable _seller = _ticket.owner;
+        require(_ticket.id > 0 && _ticket.id <= ticketCount, "Invalid ticket ID.");
+        require(_ticket.forsale, "Ticket not available for sale.");
+        require(_ticket.purchased, "Ticket not available.");
+        require(_seller != msg.sender && _seller != address(0) , "You cannot buy your own ticket.");
+        require(msg.value >= _ticket.price, "Insufficient funds.");
+        require(msg.sender != owner);
+
+        // ***
+        // * purchaseValue equal to ticket less the caulculate tax (public taxPercentage)
+        // *** 
+        uint256 taxAmount = (_ticket.price * taxPercentage) / 100; 
+        uint256 purchaseValue = _ticket.price - taxAmount; 
+
+        isTradeBefore(msg.sender);
+        
+        _ticket.forsale = false;
+        _ticket.owner = payable(msg.sender);
+        _seller.transfer(purchaseValue);
+
+        uint256 taxAmount2 = (taxAmount * 21) / 100; 
+        societyBalance += taxAmount - taxAmount2;
+        balances[owner] += taxAmount2;
+
+        _ticket.purchased = true;
+        tickets[id] = _ticket;
+
+        if (msg.value > _ticket.price) {
+            uint256 refundAmount = msg.value - _ticket.price;
+            payable(msg.sender).transfer(refundAmount);
+        } 
+
+        emit TicketPurchased({
+            id: ticketCount,
+            price: _ticket.price,
+            owner: payable(msg.sender),
+            purchased: true
+        });
+    }
+
+    
+    function firstPurchaseTicket() public payable noReentrant {
+        createTicket();
+
+        Ticket memory _ticket = tickets[ticketCount];
+        address payable _seller = _ticket.owner;
+        require(_ticket.id > 0 && _ticket.id <= ticketCount, "Invalid ticket ID.");
+        require(msg.value >= _ticket.price, "Insufficient funds.");
+        require(_ticket.forsale, "Ticket not available for sale.");
+        require(!_ticket.purchased, "Ticket not available for sale.");
+        require(msg.sender != _seller, "You cannot buy your own ticket.");
+
+        uint256 taxAmount = (_ticket.price * taxPercentage) / 100; 
+        uint256 purchaseValue = _ticket.price - taxAmount; 
+
+        _ticket.forsale = false;
+        _ticket.owner = payable(msg.sender);
+        isTradeBefore(msg.sender);
+        _ticket.purchased = true;
+        societyBalance += purchaseValue; 
+        balances[owner] += taxAmount;
+        _ticket.purchased = true;
+        tickets[nextTicket] = _ticket;
+        nextTicket++;
+
+        if (msg.value > _ticket.price) {
+            uint256 refundAmount = msg.value - _ticket.price;
+            payable(msg.sender).transfer(refundAmount);
+        } 
+
+        emit TicketPurchased({
+            id: ticketCount,
+            price: _ticket.price,
+            owner: payable(msg.sender),
+            purchased: true
+        });
+    }
+
+    function setTax(uint256 tax) public onlyOwner {
+        require(tax <= 21);
+        taxPercentage = tax;
+    }
+
+    function setManagingContract(address managingAddress) public onlyOwner {
+        require(lock, "if locked cannot change");
+        managingContract = managingAddress;
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        owner = newOwner;
+    }
+    // ***
+    // * yep.. this contract is sellable.. if you want to buy it don't hesitate
+    // * community getting 31% from selling
+    // * I would sell my ownership if thats means a 100,000 bnb buy & burn for the community
+    // * and that's will be the law for any owner of this contract
+    // ***
+    function exit() public payable noReentrant {
+
+        require(msg.value >= exzit);
+        require(msg.sender != owner);
+        
+        address own = owner;
+        uint256 amount = (exzit * 69) / 100; 
+        uint256 toCommunity = exzit - amount;
+        societyBalance += toCommunity; 
+        owner = msg.sender;
+        payable(own).transfer(amount);
+
+        if (msg.value > exzit) {
+            uint256 refundAmount = msg.value - exzit;
+            payable(msg.sender).transfer(refundAmount);
+        } 
+        exzit += exzit;
+
+    }
+    
+    function sendToManagingContract() public onlyOwner noReentrant {
+        require(address(this).balance >= societyBalance);
+        payable(managingContract).transfer(societyBalance - 0.1 ether);
+        societyBalance = 0.1 ether;
+    }
+
+    function withdrawFunds() external payable noReentrant {
+        uint256 balance = balances[msg.sender];
+        require(balance > 0, "No funds available for withdrawal.");
+        balances[msg.sender] = 0;
+        payable(msg.sender).transfer(balance);
+    }
+    
+    
+    function listTicket(uint256 ticketId, uint256 price) external noReentrant {
+        require(price >= ticketPrice / 10, "Tickets can't be sold at this price");
+        require(ticketId >= 1 && ticketId <= maxTickets, "Invalid ticket ID.");
+        Ticket memory ticket = tickets[ticketId];
+        require(ticket.purchased, "You can only list vailed ticket's");
+        require(ticket.owner == msg.sender, "You can only list your own tickets.");
+        require(!ticket.forsale, "Ticket already listed for sale.");
+        ticket.forsale = true;
+        ticket.price = price;
+        tickets[ticketId] = ticket;
+
+        emit TicketListed(msg.sender, ticketId, price);
+    }
+
+    function unlistTicket(uint256 ticketId) external noReentrant {
+        require(ticketId >= 1 && ticketId <= maxTickets, "Invalid ticket ID.");
+        require(tickets[ticketId].owner == msg.sender, "You can only unlist your own tickets.");
+        require(tickets[ticketId].forsale, "Ticket is not listed for sale.");
+        
+        tickets[ticketId].forsale = false;
+
+        emit TicketUnlisted(msg.sender, ticketId);
+    }
+
+    
+}

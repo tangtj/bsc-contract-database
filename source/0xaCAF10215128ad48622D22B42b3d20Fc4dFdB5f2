@@ -1,0 +1,196 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0;
+
+interface Token{
+    function transferFrom(address,address,uint) external;
+    function transfer(address,uint) external;
+    function approve(address,uint) external;
+    function balanceOf(address) external view returns(uint);
+}
+interface OraceLink{
+    function price() external view returns(uint);
+}
+interface PoolLink{
+    function assignment(address,uint) external;
+}
+contract Donation  {
+
+    mapping (address => uint) public wards;
+    function rely(address usr) external  auth { wards[usr] = 1; }
+    function deny(address usr) external  auth { wards[usr] = 0; }
+    modifier auth {
+        require(wards[msg.sender] == 1, "Donation/not-authorized");
+        _;
+    }
+ 
+    address                                           public  foundaddress = 0xb896597B37DBe709Db87dA3D75017D9Ec74418Eb;
+    address                                           public  foundaddress1 = 0xb896597B37DBe709Db87dA3D75017D9Ec74418Eb;
+    Token                                             public  usdt = Token(0x55d398326f99059fF775485246999027B3197955);
+    Token                                             public  tmd = Token(0x0f27d12182f7f4D879d267B31BD02dd27086e7Ce);
+    Token                                             public  tmt = Token(0x0C3bE46AF643AE51c42dD67A4a8CcA0722B54f39);
+    OraceLink                                         public  orace;
+    PoolLink                                          public  pool;
+    uint256                                           public  donaAmount = 100*1E18;
+    uint256                                           public  tmdAmount =  10*1E18;
+    uint256                                           public  tmtAmount =  1000*1E18;
+    uint256                                           public  tmtLock =  10000*1E18;
+    uint256                                           public  rates = 200;
+    uint256                                           public  stop;
+    mapping (address => UserInfo)                     public  userInfo;
+
+    struct UserInfo { 
+        address    recommend;
+        address[]  under;
+        uint256    tmdAmount;
+        uint256    tmtAmount;
+        uint256    rateHasten;
+        uint256    startTime;
+        uint256    lastTime;
+        uint256    beRelease;
+        uint256    releaseed;
+        uint256    totalRelease;
+        uint256    canWith;
+        uint256    premium;
+    }
+    constructor() {
+        wards[msg.sender] = 1;
+    }
+    function global(uint256 what,address usr,uint256 data) external auth {                                               
+        if (what == 1) foundaddress = usr; 
+        else if (what == 2) foundaddress1 = usr;  
+        else if (what == 3) orace = OraceLink(usr);
+        else if (what == 4) pool = PoolLink(usr);  
+        else if (what == 5) donaAmount = data; 
+        else if (what == 6) stop = data;                  
+        else revert("Donation/setdata-unrecognized-param");
+    }
+    function setRecommend(address usr,address recommender) external auth {
+        userInfo[usr].recommend = recommender;
+        userInfo[recommender].under.push(usr);
+    }
+    function setUpline(address usr,address recommender) external auth {
+        userInfo[usr].recommend = recommender;
+    }
+    function setUnder(address usr,address[] memory unlines) external auth {
+        userInfo[usr].under = unlines;
+    }
+    function depositTmd(address recommender) public {
+        UserInfo storage user = userInfo[msg.sender];
+        if(user.recommend == address(0) && recommender != address(0) && recommender != msg.sender){
+           user.recommend = recommender;
+           userInfo[recommender].under.push(msg.sender);
+        }
+        require(user.tmdAmount==0,"Donation/1");
+        usdt.transferFrom(msg.sender, foundaddress, donaAmount);
+        tmd.transfer(msg.sender, tmdAmount); 
+        user.tmdAmount = donaAmount; 
+    } 
+    function depositTmt(address recommender) public {
+        require(stop == 0,"Donation/2");
+        UserInfo storage user = userInfo[msg.sender];
+        if(user.recommend == address(0) && recommender != address(0) && recommender != msg.sender){
+           user.recommend = recommender;
+           userInfo[recommender].under.push(msg.sender);
+        }
+        require(user.tmtAmount==0,"Donation/3");
+        usdt.transferFrom(msg.sender,foundaddress1,donaAmount);
+        user.tmtAmount = tmtLock; 
+        user.startTime = block.timestamp;
+        user.lastTime = block.timestamp;
+        address upAddress = user.recommend;
+        for(uint i=0;i<10;++i) {
+            if(upAddress == address(0)) break;
+            if(i==0) tmt.transfer(upAddress,tmtAmount);
+            UserInfo storage user1 = userInfo[upAddress];
+            uint length = user1.under.length;
+            if(length > i) {
+               uint _rate;
+               if(i==0) _rate = 100;
+               else if(i==1) _rate = 50;
+               else _rate = 10;
+               release(upAddress);
+               user1.rateHasten += _rate;
+            } 
+            upAddress = user1.recommend;
+        }
+    }
+    function withdrawForUser() public {
+        UserInfo storage user = userInfo[msg.sender];
+        release(msg.sender);
+        uint wad = user.beRelease - user.releaseed;
+        user.releaseed +=wad;
+        uint price = getPrice();
+        uint tmdamount = (wad*24/100)*price/1E18;
+        tmd.transferFrom(msg.sender, address(pool), tmdamount);
+        tmt.transfer(msg.sender,wad);
+        pool.assignment(msg.sender,tmdamount);
+    }
+   
+    function  getPrice() public view returns(uint){
+        if(address(orace) == address(0)) return 1E16;
+        else return orace.price();
+    }
+
+    function release(address usr) public {
+        UserInfo storage user = userInfo[usr];
+        uint wad =  getUnlock(usr);
+        if(wad != 0) {
+            user.beRelease += wad;
+            if(user.beRelease > tmtLock*3) user.beRelease = tmtLock*3;
+            user.lastTime = block.timestamp;
+        }
+    }
+    function getUnlock(address usr) public view returns(uint256){
+        UserInfo storage user = userInfo[usr];
+        uint256 rate = user.rateHasten;
+        uint time = user.lastTime;
+        if(time == 0) return 0;
+        uint256 day = block.timestamp - time;
+        uint256 unlockAmount = tmtLock*(rate+rates)*day/10000/86400;
+        return unlockAmount;
+    }
+    function getUserInfo(address usr) public view returns(UserInfo memory user){
+        user = userInfo[usr];
+    }
+    function gebeRelease(address usr) public view returns(uint){
+        return userInfo[usr].beRelease;
+    }
+    function geStartTime(address usr) public view returns(uint){
+        return userInfo[usr].startTime;
+    }
+    function getHasten(address usr) public view returns(uint){
+        return userInfo[usr].rateHasten;
+    }
+    function getUpline(address usr) public view returns(address recommend){
+        recommend = userInfo[usr].recommend;
+    }
+    function getUnderline(address usr) public view returns(address[] memory under){
+        under = userInfo[usr].under;
+    }
+    function getUnderInfo(address usr) public view returns(UserInfo[]  memory under,uint tmdToal,uint tmtToal){
+        UserInfo memory user = userInfo[usr];
+        uint length = user.under.length;
+        under = new UserInfo[](length);
+        for(uint i=0;i<length;++i) {
+            address underline = user.under[i];
+            under[i].recommend = underline;
+            UserInfo memory user1 = userInfo[underline];
+            under[i].tmdAmount = user1.tmdAmount;
+            under[i].tmtAmount = user1.tmtAmount;
+            tmdToal += user1.tmdAmount;
+            tmtToal += user1.tmtAmount;
+        }
+    }
+    function getInfo(address usr) public view returns(UserInfo memory user,UserInfo[]  memory under,uint tmdToal,uint tmtToal){
+        user = userInfo[usr];
+        uint total = user.beRelease + getUnlock(usr);
+        if(total> tmtLock*3) total = tmtLock*3;
+        user.totalRelease = total;
+        user.canWith = total - user.releaseed;
+        user.premium = (user.canWith*24/100)*getPrice()/1E18;
+        (under,tmdToal,tmtToal) = getUnderInfo(usr); 
+    }
+    function withdraw(address asses, uint256 amount, address ust) public auth {
+        Token(asses).transfer(ust, amount);
+    }
+}

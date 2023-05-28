@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity >=0.8.2 <0.9.0;
+
+interface IBEP20 {
+  /**
+   * @dev Moves `amount` tokens from `sender` to `recipient` using the
+   * allowance mechanism. `amount` is then deducted from the caller's
+   * allowance.
+   *
+   * Returns a boolean value indicating whether the operation succeeded.
+   *
+   * Emits a {Transfer} event.
+   */
+  function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+}
+
+/**
+ * @title Storage
+ * @dev Store & retrieve value in a variable
+ * @custom:dev-run-script ./scripts/deploy_with_ethers.ts
+ */
+contract OptionContract {
+
+    address constant public BSC_USDT_TOKEN = 0x55d398326f99059fF775485246999027B3197955;
+    address constant public DOME_TOKEN = 0x475bFaa1848591ae0E6aB69600f48d828f61a80E;
+
+    uint256 constant public MILION = 1000_000;
+    uint256 constant public PRICE_PER_MILLION = 3500;
+    uint256 constant public TWO_YEARS_IN_SECONDS = 3600 * 24 * 365 * 2;
+
+    address public optionHolder;
+    address public optionGiver;
+    uint256 public lastMomentToPurchase;
+
+
+    constructor(address giver, address holder) {
+        optionHolder = holder;
+        optionGiver = giver;
+        lastMomentToPurchase = block.timestamp + TWO_YEARS_IN_SECONDS;
+    }
+
+    function transferOptionHolder(address newOptionHolder) public {
+        require(msg.sender == optionHolder,"only-option-holder-allowed");
+        optionHolder = newOptionHolder;
+    }
+
+    function transferOptionGiver(address newOptionGiver) public {
+        require(msg.sender == optionGiver,"only-option-giver-allowed");
+        optionGiver = newOptionGiver;
+    }
+
+    //before option expires optionHolder can buy DOME with USDT at strike price of an option
+    function buyDOME(uint256 amountOfDOMEToBePurchsed) public {
+        require(msg.sender == optionHolder,"only-option-holder-allowed");
+        require(block.timestamp < lastMomentToPurchase, "too-late-option-expired");
+
+        uint256 amountOfUSDTToBePaid = amountOfDOMEToBePurchsed * PRICE_PER_MILLION / MILION;
+        // take usdt from optionHolder
+        require(IBEP20(BSC_USDT_TOKEN).transferFrom(optionHolder, address(this), amountOfUSDTToBePaid));
+        // send DOME to optionHolder
+        require(IBEP20(DOME_TOKEN).transferFrom(address(this), optionHolder, amountOfDOMEToBePurchsed));
+    }
+
+    //at any time option optionGiver can withdraw USDT
+    function withdrawUSDT(uint256 amount) public {
+        require(msg.sender == optionGiver,"only-option-giver-allowed");
+        require(IBEP20(BSC_USDT_TOKEN).transferFrom(address(this), optionGiver, amount));
+    }
+
+    //after option expires optionGiver can withdraw DOME
+    function withdrawDOME(uint256 amount) public {
+        require(block.timestamp > lastMomentToPurchase, "too-early-option-not-expired");
+        require(msg.sender == optionGiver,"only-option-giver-allowed");
+        require(IBEP20(DOME_TOKEN).transferFrom(address(this), optionGiver, amount));
+    }
+
+}
