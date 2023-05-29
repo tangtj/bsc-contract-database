@@ -1,0 +1,261 @@
+pragma solidity ^0.8.0;
+
+// SPDX-License-Identifier: MIT
+
+interface AggregatorV3Interface {
+  function decimals() external view returns (uint8);
+
+  function description() external view returns (string memory);
+
+  function version() external view returns (uint256);
+
+  function getRoundData(
+    uint80 _roundId
+  ) external view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
+
+  function latestRoundData()
+    external
+    view
+    returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
+}
+contract UzhavuMeetpu {
+    string public name = "UzhavuMeetpu";
+    string public symbol = "UVM";
+    uint256 public totalSupply = 10000000000 * 10**8; // 10 billion tokens with 8 decimal places
+    uint256 public ICO1Supply = 200000000 * 10**8; // 200 million tokens with 8 decimal places
+    uint256 public ICO2Supply = 400000000 * 10**8; // 400 million tokens with 8 decimal places
+    uint256 public ICO1Price = 0.0015 * 10**8; // 0.0015 USD with 8 decimal places
+    uint256 public ICO2Price = 0.00175 * 10**8; // 0.00175 USD with 8 decimal places
+    uint256 public ICO1StartTime = 1684540800; // 20-05-2023 ICO1 start time (Unix timestamp)
+    uint256 public ICO1EndTime = 1688495400; // 05-07-2023 ICO1 end time (Unix timestamp)
+    uint256 public ICO2StartTime = 1690828200; // 01-08-2023 ICO2 start time (Unix timestamp)
+    uint256 public ICO2EndTime = 1696098600; // ICO2 end time (Unix timestamp)
+    uint8 public decimals = 8;
+
+    
+    address public owner = 0x717F474e6a51e431a95681feacEfA621f3c08461;
+    AggregatorV3Interface private priceFeed;
+
+    mapping(address => uint256) public balanceOf;
+    uint256 public remainingICO1Supply;
+    uint256 public remainingICO2Supply;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Burn(address indexed from, uint256 amount);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event Paused(address account);
+    event Unpaused(address account);
+
+    bool public paused;
+    address public newOwner;
+    bool private locked;
+
+    modifier nonReentrant() {
+        require(!locked, "Reentrant call");
+        locked = true;
+        _;
+        locked = false;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can call this function");
+        _;
+    }
+
+    modifier whenNotPaused() {
+        require(!paused, "Contract is paused");
+        _;
+    }
+
+    modifier whenPaused() {
+        require(paused, "Contract is not paused");
+        _;
+    }
+
+    constructor() {
+        balanceOf[owner] = totalSupply;
+        remainingICO1Supply = ICO1Supply;
+        remainingICO2Supply = ICO2Supply;
+        priceFeed = AggregatorV3Interface(0xC5A35FC58EFDC4B88DDCA51AcACd2E8F593504bE);
+    }
+
+    function getLatestPrice() public view returns (int256) {
+        (
+            /* uint80 roundID */,
+            int256 price,
+            /* uint256 startedAt */,
+            /* uint256 updatedAt */,
+            /* uint80 answeredInRound */
+        ) = priceFeed.latestRoundData();
+        return price;
+    }
+
+    function getICO1PriceInBNB() public view returns (uint256) {
+          uint256 priceInBNB = (ICO1Price * (10**uint256(decimals))) / uint256(getLatestPrice());
+             return priceInBNB;
+    }
+
+    function getICO2PriceInBNB() public view returns (uint256) {
+            uint256 priceInBNB = (ICO2Price * (10**uint256(decimals))) / uint256(getLatestPrice());
+            return priceInBNB;
+    }
+
+    function getICO1RemainingTokens() public view returns (uint256) {
+        return remainingICO1Supply;
+    }
+
+    function getICO2RemainingTokens() public view returns (uint256) {
+        return remainingICO2Supply;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transfer(address to, uint256 value) external returns (bool) {
+        _transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) external returns (bool) {
+        require(value <= allowance[from][msg.sender], "Insufficient allowance");
+        allowance[from][msg.sender] -= value;
+        _transfer(from, to, value);
+        return true;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal {
+        require(from != address(0), "Transfer from the zero address");
+        require(to != address(0), "Transfer to the zero address");
+        require(value > 0, "Transfer value must be greater than zero");
+        require(balanceOf[from] >= value, "Insufficient balance");
+
+        balanceOf[from] -= value;
+        balanceOf[to] += value;
+        emit Transfer(from, to, value);
+    }
+
+    
+    function buyTokens(uint256 tokenAmount) external payable nonReentrant{
+        require(tokenAmount > 0, "Token amount must be greater than zero");
+        require(msg.value > 0, "Sent BNB value must be greater than zero");
+
+        uint256 priceInBNB;
+        uint256 remainingSupply;
+
+        if (block.timestamp >= ICO1StartTime && block.timestamp <= ICO1EndTime) {
+            priceInBNB = getICO1PriceInBNB();
+            remainingSupply = remainingICO1Supply;
+        } else if (block.timestamp >= ICO2StartTime && block.timestamp <= ICO2EndTime) {
+            priceInBNB = getICO2PriceInBNB();
+            remainingSupply = remainingICO2Supply;
+        } else {
+            revert("ICO is not active at the moment");
+        }
+
+        require(remainingSupply >= tokenAmount, "Insufficient tokens available for sale");
+
+        uint256 costInBNB = (tokenAmount * priceInBNB / (10**decimals));
+        require(msg.value >= costInBNB, "Insufficient BNB sent");
+
+        // Transfer tokens to the buyer
+        _transfer(owner, msg.sender, tokenAmount);
+
+        // Transfer 95% of the received BNB to the owner
+        uint256 ownerAmount = (msg.value * 95) / 100;
+        (bool success, ) = owner.call{value: ownerAmount}("");
+        require(success, "Failed to transfer BNB to the owner");
+
+        // Refund excess BNB to the buyer
+        uint256 refundAmount = msg.value - ownerAmount;
+        if (refundAmount > 0) {
+            (success, ) = msg.sender.call{value: refundAmount}("");
+            require(success, "Failed to refund excess BNB");
+        }
+
+        // Update remaining supply
+        if (block.timestamp >= ICO1StartTime && block.timestamp <= ICO1EndTime) {
+            remainingICO1Supply -= tokenAmount;
+        } else if (block.timestamp >= ICO2StartTime && block.timestamp <= ICO2EndTime) {
+            remainingICO2Supply -= tokenAmount;
+        }
+    }
+
+    function airdrop(address[] memory recipients, uint256[] memory amounts) external onlyOwner {
+    require(recipients.length == amounts.length, "Array lengths must match");
+
+    for (uint256 i = 0; i < recipients.length; i++) {
+        require(recipients[i] != address(0), "Invalid recipient address");
+        _transfer(owner, recipients[i], amounts[i]);
+    }
+    }
+
+    function withdrawRemainingTokens() external onlyOwner {
+        require(block.timestamp > ICO2EndTime, "ICO2 has not ended yet");
+        uint256 remainingTokens = balanceOf[owner];
+        balanceOf[owner] = 0;
+        balanceOf[msg.sender] += remainingTokens;
+        emit Transfer(owner, msg.sender, remainingTokens);
+    }
+
+    function withdrawFunds() external onlyOwner {
+        uint256 contractBalance = address(this).balance;
+        (bool success, ) = owner.call{value: contractBalance}("");
+        require(success, "Failed to transfer contract balance to the owner");
+    }
+
+    function burn(uint256 amount) external {
+        require(amount > 0, "Amount must be greater than zero");
+        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
+
+        balanceOf[msg.sender] -= amount;
+        totalSupply -= amount;
+
+        emit Transfer(msg.sender, address(0), amount);
+        emit Burn(msg.sender, amount);
+    }
+
+    function transferOwnership(address _newOwner) external onlyOwner {
+        require(_newOwner != address(0), "Invalid new owner address");
+        newOwner = _newOwner;
+    }
+
+    function claimOwnership() external {
+        require(msg.sender == newOwner, "Caller is not the new owner");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+        newOwner = address(0);
+    }
+
+    function batchTransfer(address[] memory recipients, uint256[] memory amounts) external onlyOwner returns (bool) {
+        require(recipients.length == amounts.length, "Array lengths must match");
+
+        uint256 totalAmount = 0;
+        for (uint256 i = 0; i < recipients.length; i++) {
+            require(recipients[i] != address(0), "Invalid recipient address");
+            totalAmount += amounts[i];
+        }
+
+        require(totalAmount <= balanceOf[msg.sender], "Insufficient balance");
+
+        for (uint256 i = 0; i < recipients.length; i++) {
+            _transfer(msg.sender, recipients[i], amounts[i]);
+        }
+
+        return true;
+    }
+
+    function pause() external onlyOwner whenNotPaused {
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    function unpause() external onlyOwner whenPaused {
+        paused = false;
+        emit Unpaused(msg.sender);
+    }
+}

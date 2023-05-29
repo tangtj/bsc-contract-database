@@ -1,0 +1,237 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.19;
+
+interface IPancakeSwapRouter {
+    function WETH() external pure returns (address);
+    function swapExactTokensForTokens(uint256, uint256, address[] calldata, address, uint256) external;
+}
+
+contract RefundCoinBsc {
+    string private _name = "RefundCoinBSC";
+    string private _symbol = "RCB";
+    uint8 private _decimals = 18;
+
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 private _totalSupply = 1e12 * 10 ** uint256(_decimals);
+    address private _owner;
+    uint256 private _contractBalance;
+
+    address public pancakeSwapRouter;
+    address public marketWallet;
+    mapping(address => bool) private _isWhitelisted;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event WhitelistUpdated(address indexed account, bool isWhitelisted);
+    event Transfer(address indexed sender, address indexed recipient, uint256 amount);
+    event Approval(address indexed owner, address indexed spender, uint256 amount);
+
+    constructor() {
+        _owner = msg.sender;
+        _balances[msg.sender] = _totalSupply;
+
+        pancakeSwapRouter = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+        marketWallet = 0xC36Bf45A4a70050F489F704bd56bb2BD2900704B;
+
+        emit OwnershipTransferred(address(0), _owner);
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == _owner, "Caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token.
+     */
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Returns the number of decimals used for the token.
+     */
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    /**
+     * @dev Returns the total supply of the token.
+     */
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev Returns the balance of the specified address.
+     */
+    function balanceOf(address account) public view returns (uint256) {
+        return _balances[account];
+    }
+
+    /**
+     * @dev Transfers tokens from the sender's address to the recipient's address.
+     * Transfers are subject to fees and whitelist checks.
+     */
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        require(recipient != address(0), "Transfer to the zero address is not allowed");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        require(_balances[msg.sender] >= amount, "Insufficient balance");
+
+        uint256 fee = calculateFee(amount);
+        uint256 transferAmount = amount - fee;
+
+        _balances[msg.sender] -= amount;
+        _balances[recipient] += transferAmount;
+
+        emit Transfer(msg.sender, recipient, transferAmount);
+        if (fee > 0) {
+            _balances[pancakeSwapRouter] += fee;
+            emit Transfer(msg.sender, pancakeSwapRouter, fee);
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev Transfers tokens from the sender's address to the recipient's address, using the allowance mechanism.
+     * Transfers are subject to fees, whitelist checks, and allowance validation.
+     */
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+        require(sender != address(0), "Transfer from the zero address is not allowed");
+        require(recipient != address(0), "Transfer to the zero address is not allowed");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        require(_balances[sender] >= amount, "Insufficient balance");
+        require(_allowances[sender][msg.sender] >= amount, "Insufficient allowance");
+
+        uint256 fee = calculateFee(amount);
+        uint256 transferAmount = amount - fee;
+
+        _balances[sender] -= amount;
+        _balances[recipient] += transferAmount;
+        _allowances[sender][msg.sender] -= amount;
+
+        emit Transfer(sender, recipient, transferAmount);
+        if (fee > 0) {
+            _balances[pancakeSwapRouter] += fee;
+            emit Transfer(sender, pancakeSwapRouter, fee);
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev Approves the specified address to spend tokens on behalf of the sender.
+     */
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    /**
+     * @dev Returns the current allowance from the specified address to the spender address.
+     */
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    /**
+     * @dev Calculates the fee to be applied to a transfer amount.
+     */
+    function calculateFee(uint256 amount) internal pure returns (uint256) {
+        return amount * 2 / 100; // 2% fee
+    }
+
+    /**
+     * @dev Adds or removes an address from the whitelist.
+     * Whitelisted addresses are exempt from transfer fees.
+     * Only the contract owner can modify the whitelist.
+     */
+    function updateWhitelist(address account, bool whitelistedStatus) public onlyOwner {
+        _isWhitelisted[account] = whitelistedStatus;
+        emit WhitelistUpdated(account, whitelistedStatus);
+    }
+
+    /**
+     * @dev Checks if an address is whitelisted.
+     */
+    function isWhitelisted(address account) public view returns (bool) {
+        return _isWhitelisted[account];
+    }
+
+    /**
+     * @dev Buys tokens from the liquidity pool.
+     * The purchase amount is subject to a fee.
+     */
+    function buy(uint256 amount) public {
+        require(amount > 0, "Purchase amount must be greater than zero");
+
+        uint256 fee = amount * 2 / 100; // 2% fee
+        uint256 purchaseAmount = amount - fee;
+
+        address[] memory path = new address[](2);
+        path[0] = IPancakeSwapRouter(pancakeSwapRouter).WETH();
+        path[1] = address(this);
+
+        IPancakeSwapRouter(pancakeSwapRouter).swapExactTokensForTokens(purchaseAmount, 0, path, msg.sender, block.timestamp);
+
+        if (fee > 0) {
+            uint256 marketFee = fee / 2;
+            uint256 liquidityFee = fee - marketFee;
+
+            _balances[marketWallet] += marketFee;
+            _balances[pancakeSwapRouter] += liquidityFee;
+
+            emit Transfer(msg.sender, marketWallet, marketFee);
+            emit Transfer(msg.sender, pancakeSwapRouter, liquidityFee);
+        }
+    }
+
+    /**
+     * @dev Sells tokens to the liquidity pool.
+     * The sale amount is subject to a fee.
+     */
+    function sell(uint256 amount) public {
+        require(amount > 0, "Sale amount must be greater than zero");
+        require(_balances[msg.sender] >= amount, "Insufficient balance");
+
+        uint256 fee = amount * 4 / 100; // 4% fee
+        uint256 saleAmount = amount - fee;
+
+        _balances[msg.sender] -= amount;
+
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = IPancakeSwapRouter(pancakeSwapRouter).WETH();
+
+        IPancakeSwapRouter(pancakeSwapRouter).swapExactTokensForTokens(saleAmount, 0, path, msg.sender, block.timestamp);
+
+        if (fee > 0) {
+            uint256 marketFee = fee / 4;
+            uint256 liquidityFee = fee - marketFee;
+
+            _balances[marketWallet] += marketFee;
+            _balances[pancakeSwapRouter] += liquidityFee;
+
+            emit Transfer(msg.sender, marketWallet, marketFee);
+            emit Transfer(msg.sender, pancakeSwapRouter, liquidityFee);
+        }
+    }
+
+    /**
+     * @dev Sets the market wallet address.
+     */
+    function setMarketWallet(address account) public onlyOwner {
+        marketWallet = account;
+    }
+}

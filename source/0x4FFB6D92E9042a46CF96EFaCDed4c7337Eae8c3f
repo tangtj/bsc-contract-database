@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.4;
+
+contract CoinFlipGame {
+    address payable public deployer;
+    uint256 public potBalance;
+    bool public tradingEnabled;
+
+    mapping(address => uint256) public playerWinnings;
+
+    event BetPlaced(address indexed player, uint256 betAmount);
+    event Win(address indexed player, uint256 winnings);
+    event Loss(address indexed player, uint256 refund);
+
+    modifier onlyDeployer() {
+        require(msg.sender == deployer, "Only deployer can call this function.");
+        _;
+    }
+
+    constructor() {
+        deployer = payable(msg.sender);
+        tradingEnabled = true;
+    }
+
+    function flipCoin() external payable {
+        require(tradingEnabled, "Trading is disabled.");
+        require(msg.value > 0, "Invalid bet amount.");
+
+        uint256 maxPotentialWinnings = (potBalance * 9) / 10;
+        require(msg.value * 2 <= maxPotentialWinnings, "Potential winnings exceed 90% of the pot.");
+
+        uint256 randomNumber = uint256(keccak256(abi.encodePacked(block.timestamp, msg.sender, gasleft())));
+
+        if (randomNumber < 35) {
+            _processWin(msg.value);
+        } else {
+            _processLoss(msg.value);
+        }
+    }
+
+    function _processWin(uint256 betAmount) private {
+        uint256 winnings = (betAmount * 2 * 80) / 100;
+        uint256 potShare = (betAmount * 2 * 10) / 100;
+        uint256 deployerShare = (betAmount * 2 * 10) / 100;
+
+        playerWinnings[msg.sender] += winnings;
+        potBalance += potShare;
+
+        emit Win(msg.sender, winnings);
+
+        deployer.transfer(deployerShare);
+        payable(msg.sender).transfer(winnings);
+    }
+
+    function _processLoss(uint256 betAmount) private {
+        uint256 refund = betAmount / 2;
+        uint256 potShare = (betAmount * 30) / 100;
+        uint256 deployerShare = (betAmount * 20) / 100;
+
+        playerWinnings[msg.sender] -= refund;
+        potBalance += potShare;
+
+        emit Loss(msg.sender, refund);
+
+        deployer.transfer(deployerShare);
+        payable(msg.sender).transfer(refund);
+    }
+
+    function withdraw(uint256 amount) external onlyDeployer {
+        require(amount <= address(this).balance, "Insufficient contract balance.");
+        deployer.transfer(amount);
+    }
+
+    function give() external payable {
+        require(msg.value > 0, "Invalid amount sent.");
+        potBalance += msg.value;
+    }
+
+    function viewWinnings() external view returns (uint256) {
+        return playerWinnings[msg.sender];
+    }
+
+    function getTradingStatus() external view returns (string memory) {
+        if (tradingEnabled) {
+            return "Trading is enabled";
+        } else {
+            return "Trading is disabled";
+        }
+    }
+
+    function enableTrading() external onlyDeployer {
+        tradingEnabled = true;
+    }
+
+    function disableTrading() external onlyDeployer {
+        tradingEnabled = false;
+    }
+}

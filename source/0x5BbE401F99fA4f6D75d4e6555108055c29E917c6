@@ -1,0 +1,196 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IERC1363 is IBEP20 {
+    function transferAndCall(address recipient, uint256 amount) external returns (bool);
+    function transferAndCall(address recipient, uint256 amount, bytes calldata data) external returns (bool);
+    function transferFromAndCall(address sender, address recipient, uint256 amount) external returns (bool);
+    function transferFromAndCall(address sender, address recipient, uint256 amount, bytes calldata data) external returns (bool);
+    function approveAndCall(address spender, uint256 amount) external returns (bool);
+    function approveAndCall(address spender, uint256 amount, bytes calldata data) external returns (bool);
+}
+
+interface IBEP20Mintable {
+    function mint(address account, uint256 amount) external returns (bool);
+    function burn(uint256 amount) external returns (bool);
+    function burnFrom(address account, uint256 amount) external returns (bool);
+    
+    event Mint(address indexed account, uint256 amount);
+    event Burn(address indexed account, uint256 amount);
+}
+
+contract BEP20Token is IBEP20, IERC1363, IBEP20Mintable {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    uint256 private _totalSupply;
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+        _decimals = 18;
+        _totalSupply = 1000000000 * 10 ** uint256(_decimals); // Total supply of 1,000,000,000 tokens
+        _balances[msg.sender] = _totalSupply; // Assign the total supply to the contract deployer
+        emit Transfer(address(0), msg.sender, _totalSupply); // Emit the transfer event to reflect the initial supply
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender] - amount);
+        return true;
+    }
+
+    function transferAndCall(address recipient, uint256 amount) public override returns (bool) {
+        return transferAndCall(recipient, amount, "");
+    }
+
+    function transferAndCall(address recipient, uint256 amount, bytes memory data) public override returns (bool) {
+        require(transfer(recipient, amount));
+        if (_isContract(recipient)) {
+            IERC1363Receiver(recipient).onTransferReceived(msg.sender, recipient, amount, data);
+        }
+        return true;
+    }
+
+    function transferFromAndCall(address sender, address recipient, uint256 amount) public override returns (bool) {
+        return transferFromAndCall(sender, recipient, amount, "");
+    }
+
+    function transferFromAndCall(address sender, address recipient, uint256 amount, bytes memory data) public override returns (bool) {
+        require(transferFrom(sender, recipient, amount));
+        if (_isContract(recipient)) {
+            IERC1363Receiver(recipient).onTransferReceived(msg.sender, recipient, amount, data);
+        }
+        return true;
+    }
+
+    function approveAndCall(address spender, uint256 amount) public override returns (bool) {
+        return approveAndCall(spender, amount, "");
+    }
+
+    function approveAndCall(address spender, uint256 amount, bytes memory data) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        if (_isContract(spender)) {
+            IERC1363Spender(spender).onApprovalReceived(msg.sender, amount, data);
+        }
+        return true;
+    }
+
+    function mint(address account, uint256 amount) public override returns (bool) {
+        require(account != address(0), "BEP20: mint to the zero address");
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Mint(account, amount);
+        emit Transfer(address(0), account, amount);
+        return true;
+    }
+
+    function burn(uint256 amount) public override returns (bool) {
+        _burn(msg.sender, amount);
+        return true;
+    }
+
+    function burnFrom(address account, uint256 amount) public override returns (bool) {
+        _burnFrom(account, amount);
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "BEP20: transfer from the zero address");
+        require(recipient != address(0), "BEP20: transfer to the zero address");
+        require(amount > 0, "BEP20: transfer amount must be greater than zero");
+        require(_balances[sender] >= amount, "BEP20: insufficient balance");
+
+        _balances[sender] -= amount;
+        _balances[recipient] += amount;
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "BEP20: approve from the zero address");
+        require(spender != address(0), "BEP20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal {
+        require(account != address(0), "BEP20: burn from the zero address");
+        require(_balances[account] >= amount, "BEP20: insufficient balance for burn");
+
+        _balances[account] -= amount;
+        _totalSupply -= amount;
+        emit Burn(account, amount);
+        emit Transfer(account, address(0), amount);
+    }
+
+    function _burnFrom(address account, uint256 amount) internal {
+        require(amount <= _allowances[account][msg.sender], "BEP20: burn amount exceeds allowance");
+
+        _allowances[account][msg.sender] -= amount;
+        _burn(account, amount);
+    }
+
+    function _isContract(address account) internal view returns (bool) {
+        uint256 size;
+        assembly { size := extcodesize(account) }
+        return size > 0;
+    }
+}
+
+interface IERC1363Receiver {
+    function onTransferReceived(address operator, address from, uint256 value, bytes calldata data) external returns (bytes4);
+}
+
+interface IERC1363Spender {
+    function onApprovalReceived(address owner, uint256 value, bytes calldata data) external returns (bytes4);
+}

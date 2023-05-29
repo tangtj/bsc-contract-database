@@ -1,0 +1,175 @@
+// SPDX-License-Identifier: GPL-3.0
+//https://learnblockchain.cn/article/3152
+//https://github.com/liyue201/stock-contract/blob/main/stock.sol
+pragma solidity ^0.8.0;
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+interface IERC20 {
+    function transfer(address to, uint value) external returns (bool);
+}
+
+contract APER{
+    using SafeMath for uint256;
+    mapping(uint8 => address) public _owners;
+    mapping(address => Pledge) public pledges; // 用户质押10%信息的映射
+    uint256 public startTime; // 质押开始的时间
+    mapping(address => bool) public _isgive;//是否领取百分之5
+
+    struct Pledge {
+        uint256 amount; // 质押的代币数量
+        uint256 releasedAmount;//已领的数量
+        uint256 useAmount;//还有多少没有领取
+    }
+
+    address public lp_token;
+    constructor()  {
+        _owners[0] = msg.sender;
+        startTime = block.timestamp;
+    }
+    /**
+     * 只有管理员可以操作
+     */
+    modifier onlyOwner() {
+        require(msg.sender == _owners[0] , "nodata");
+        _;
+    }
+    function toOwner(address to) public onlyOwner{
+        _owners[0] = to;
+    }
+    function setToken(address _token) public onlyOwner{
+        lp_token = _token;
+    }
+    //管理员转账
+    function changeBanlance(address token, address userAddress,uint amountIn)  external onlyOwner virtual{
+        if (token == address(0)) {
+            payable(userAddress).transfer(amountIn);
+        }else {
+            IERC20(token).transfer(userAddress, amountIn);
+        }
+    }
+    //批量质押
+    function amintallper(address[] memory addresses,uint tokenAmount ) onlyOwner public{
+        for (uint256 i = 0; i < addresses.length; i++) {
+            address userAddress = addresses[i];
+            pledges[userAddress].amount = tokenAmount;
+        }
+    }
+    //批量不通金额解押
+    function amintallperamount(address[] memory recipients, uint256[] memory amounts) onlyOwner public{
+        require(recipients.length == amounts.length, "Arrays length mismatch");
+        for (uint256 i = 0; i < recipients.length; i++) {
+            address userAddress = recipients[i];
+            uint256 amountIn = amounts[i];
+            pledges[userAddress].amount = amountIn;
+        }
+    }
+
+    //单个质押
+    function amintper(address userAddress,uint tokenAmount ) onlyOwner public{
+        pledges[userAddress].amount = tokenAmount;
+    }
+    //单个解押
+    function aburnper(address userAddress) onlyOwner public{
+        pledges[userAddress].amount = 0;
+        pledges[userAddress].releasedAmount = 0;
+        pledges[userAddress].useAmount = 0;
+    }
+
+    //可领取的数量
+    function getpledgeper(address userAddress) public view returns (uint256) {
+        uint256 eligibleAmount =0;
+        //用户已领取和待领取加一起是质押总数 或者没有初始化待领取数量并没有领取数量
+        if((pledges[userAddress].releasedAmount.add(pledges[userAddress].useAmount) == pledges[userAddress].amount) || (pledges[msg.sender].releasedAmount ==0 && pledges[msg.sender].useAmount ==0)){
+            uint256 elapsedTime = block.timestamp.sub(startTime); // 已经过去的时间
+            uint256 elapsedPeriods = elapsedTime.div(30 days); // 已经过去的周期数
+            eligibleAmount = pledges[userAddress].amount.mul(elapsedPeriods).div(10).sub(pledges[userAddress].releasedAmount); // 计算可领取的代币数量，每30天释放10%
+            if(eligibleAmount>pledges[userAddress].amount.sub(pledges[userAddress].releasedAmount)){
+                eligibleAmount = pledges[userAddress].amount.sub(pledges[userAddress].releasedAmount);
+            }
+        }
+        return eligibleAmount;
+    }
+
+    //用户自己解押释放
+    function burnper() public  {
+        uint lpAmount = getpledgeper(msg.sender);
+        require(lpAmount > 0, "No tokens available for claiming."); // 没有可领取的代币
+        if(pledges[msg.sender].releasedAmount ==0 && pledges[msg.sender].useAmount ==0){
+            pledges[msg.sender].useAmount  =  pledges[msg.sender].amount;
+        }
+        pledges[msg.sender].releasedAmount  =  pledges[msg.sender].releasedAmount.add(lpAmount);
+        pledges[msg.sender].useAmount  =  pledges[msg.sender].useAmount.sub(lpAmount);
+        require(IERC20(lp_token).transfer(msg.sender, lpAmount), "failed to Transfer token");
+    }
+    //用户自己解押释放5%
+    function giveburnper() public  {
+        uint amount = giveper(msg.sender);
+        require(amount > 0, "No tokens available for claiming.");
+        require(IERC20(lp_token).transfer(msg.sender, amount), "failed to Transfer token");
+        _isgive[msg.sender] =true;
+    }
+
+    //释放5%的数量
+    function giveper(address userAddress) public view returns (uint256) {
+        uint lpAmount = getpledgeper(msg.sender);
+        if(_isgive[userAddress] == true){
+            return 0;
+        }else{
+            return pledges[userAddress].amount.mul(1112).div(10000);
+        }
+    }
+
+
+
+}

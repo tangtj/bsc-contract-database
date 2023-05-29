@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract MyToken is IBEP20 {
+    string public constant name = "testtt";
+    string public constant symbol = "MTK";
+    uint8 public constant decimals = 18;
+    uint256 private constant _totalSupply = 420000000000 * 10**decimals;
+    mapping (address => uint256) private _balances;
+    mapping (address => mapping (address => uint256)) private _allowances;
+    address private _marketingWallet = 0xdCaB9d81f64994043949D2Fc322Fd453dA0c0B76; // Inserisci qui l'indirizzo del wallet del marketing
+    uint256 private constant _taxFee = 5; // Tassa del 5% per ogni transazione
+    uint256 private constant _taxFeeDivider = 100;
+
+    constructor() {
+        _balances[msg.sender] = _totalSupply;
+        emit Transfer(address(0), msg.sender, _totalSupply);
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        uint256 taxAmount = amount * _taxFee / _taxFeeDivider;
+        uint256 transferAmount = amount - taxAmount;
+        _balances[msg.sender] -= amount;
+        _balances[recipient] += transferAmount;
+        _balances[_marketingWallet] += taxAmount;
+        emit Transfer(msg.sender, recipient, transferAmount);
+        emit Transfer(msg.sender, _marketingWallet, taxAmount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        uint256 taxAmount = amount * _taxFee / _taxFeeDivider;
+        uint256 transferAmount = amount - taxAmount;
+        _balances[sender] -= amount;
+        _balances[recipient] += transferAmount;
+        _balances[_marketingWallet] += taxAmount;
+        _allowances[sender][msg.sender] -= amount;
+        emit Transfer(sender, recipient, transferAmount);
+        emit Transfer(sender, _marketingWallet, taxAmount);
+        return true;
+    }
+
+    function withdrawMarketingFunds() public {
+        require(msg.sender == _marketingWallet, "Only the marketing wallet can withdraw funds");
+        uint256 balance = balanceOf(_marketingWallet);
+        require(balance > 0, "No funds available for withdrawal");
+        _balances[_marketingWallet] = 0;
+        require(transfer(_marketingWallet, balance), "Transfer failed");
+    }
+}

@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.7;
+
+contract ERC20Token {
+    string public constant name = "Pepegator";
+    string public constant symbol = "PPGTR";
+    uint8 public constant decimals = 9;
+
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+    event Transfer(address indexed from, address indexed to, uint tokens);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event AddressBlacklisted(address indexed account);
+    event AddressRemovedFromBlacklist(address indexed account);
+
+    mapping(address => uint256) balances;
+    mapping(address => mapping (address => uint256)) allowed;
+    mapping(address => bool) blacklisted;
+    
+    uint256 totalSupply_;
+    address public owner;
+
+    using SafeMath for uint256;
+
+    constructor(uint256 total) {
+        totalSupply_ = total;
+        balances[msg.sender] = totalSupply_;
+        owner = msg.sender;
+    }  
+
+    function totalSupply() public view returns (uint256) {
+        return totalSupply_;
+    }
+    
+    function balanceOf(address tokenOwner) public view returns (uint256) {
+        return balances[tokenOwner];
+    }
+
+    function transfer(address receiver, uint numTokens) public returns (bool) {
+        require(numTokens <= balances[msg.sender]);
+        require(!blacklisted[msg.sender], "Sender is blacklisted");
+        require(!blacklisted[receiver], "Receiver is blacklisted");
+        
+        balances[msg.sender] = balances[msg.sender].sub(numTokens);
+        balances[receiver] = balances[receiver].add(numTokens);
+        emit Transfer(msg.sender, receiver, numTokens);
+        return true;
+    }
+
+    function approve(address delegate, uint numTokens) public returns (bool) {
+        allowed[msg.sender][delegate] = numTokens;
+        emit Approval(msg.sender, delegate, numTokens);
+        return true;
+    }
+
+    function allowance(address tokenOwner, address delegate) public view returns (uint) {
+        return allowed[tokenOwner][delegate];
+    }
+
+    function transferFrom(address tokenOwner, address buyer, uint numTokens) public returns (bool) {
+        require(numTokens <= balances[tokenOwner]);    
+        require(numTokens <= allowed[tokenOwner][msg.sender]);
+        require(!blacklisted[tokenOwner], "Token owner is blacklisted");
+        require(!blacklisted[buyer], "Buyer is blacklisted");
+        
+        balances[tokenOwner] = balances[tokenOwner].sub(numTokens);
+        allowed[tokenOwner][msg.sender] = allowed[tokenOwner][msg.sender].sub(numTokens);
+        balances[buyer] = balances[buyer].add(numTokens);
+        emit Transfer(tokenOwner, buyer, numTokens);
+        return true;
+    }
+    
+    function blacklistAddress(address account) public {
+        require(msg.sender == owner, "Only the contract owner can blacklist addresses");
+        require(!blacklisted[account], "Address is already blacklisted");
+        
+        blacklisted[account] = true;
+        emit AddressBlacklisted(account);
+    }
+    
+    function removeAddressFromBlacklist(address account) public {
+        require(msg.sender == owner, "Only the contract owner can remove addresses from the blacklist");
+        require(blacklisted[account], "Address is not blacklisted");
+        
+        blacklisted[account] = false;
+        emit AddressRemovedFromBlacklist(account);
+    }
+    
+    function renounceOwnership() public {
+        require(msg.sender == owner, "Only the contract owner can renounce ownership");
+        emit OwnershipTransferred(owner, address(0));
+        owner = address(0);
+    }
+}
+
+library SafeMath { 
+        function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        assert(b <= a);
+        return a - b;
+    }
+    
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        assert(c >= a);
+        return c;
+    }
+}
