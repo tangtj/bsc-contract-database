@@ -1,0 +1,384 @@
+// SPDX-License-Identifier: --🌲--
+
+pragma solidity ^0.8.0;
+
+// Get a link to treedefi collectibles BEP721 smart contract
+interface ITreedefiForest {
+    
+    // Transfer collectibles
+    function transferFrom(
+      address _from,
+      address _to,
+      uint256 _id
+    ) external;
+    
+    // Mint Nftree
+    function mint(
+      string memory treeId_, 
+      string memory treeName_,
+      string memory longitude_,
+      string memory latitude_,
+      uint256 carbonDioxideOffset_
+    ) external returns(uint256);
+    
+    // Appove nftree
+    function approve(address to, uint256 tokenId) external;
+    
+    // Fetch owner address
+    function getOwner() external returns (address);
+
+}
+
+// Get a link to auction contract
+interface IAuction {
+    
+    // List for english auction
+    function listTreeForEnglishAuction(
+      uint256 _id, 
+      uint256 _basePrice, 
+      uint64 _duration,
+      uint8 _paymentType
+    ) external;
+    
+    // List for dutch auction    
+    function listTreeForDutchAuction(
+      uint256 _id, 
+      uint256 _startPrice,
+      uint256 _endPrice, 
+      uint64 _duration,
+      uint8 _paymentType
+    ) external;
+    
+    // Accept bid for english auction
+    function acceptBid(uint256 _id, uint256 _bidNumber) external;
+    
+    // Cancel ongoing auction
+    function cancelAuction(uint256 _id) external;
+    
+}
+
+// Get a link to BEP20 token
+interface IBep20Token {
+    
+    // Fetch token balance
+    function balanceOf(address account) external view returns (uint256);
+    
+    // Transfer BEP20 token
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+}
+
+/**
+ * @title Treedefi Nftree minter/auction plugin 1.0
+ *
+ * @author treedefi
+ */
+contract NftreePlugin {
+    
+  // Link to treedefi collectibles
+  ITreedefiForest public NFTREE;
+  
+  // Link to auction 1.0
+  IAuction public AUCTION;
+  
+  // Address of treedefi owner
+  address public owner;
+  
+  // Address of auction contract
+  address public auction;
+  
+  // Allowed Batch size
+  uint8 public batchSize;
+  
+  // To restrict access
+  modifier onlyOwner() {
+    
+    require(
+      owner == msg.sender,
+      "Treedefi: Not an owner"
+    );
+    
+    _;
+  
+  }
+  
+  /**
+	* @dev Creates/deploys Treedefi Nftree minter/auction plugin Version 1.0
+	*
+	* @param nftree_ address of treedefi collectibles
+	* @param auction_ address of auction contract
+	* @param batchSize_ number of request allowed in a batch
+	*/ 
+  constructor(address nftree_, address auction_, uint8 batchSize_) {
+    
+    //Setup smart contract internal state//
+    NFTREE = ITreedefiForest(nftree_);
+    
+    AUCTION = IAuction(auction_);
+    
+    auction = auction_;
+    
+    batchSize = batchSize_;
+    
+    owner = NFTREE.getOwner();
+    
+  }
+  
+  /** 
+    * @dev upgrades admin address to existing NFTREE V2 owner
+    *        as ownership of NFTREE V2 is transferable
+    */
+  function upgradeAdminAddress() external {
+    
+    // Update owner address
+    owner = NFTREE.getOwner();
+
+  }
+  
+  /** 
+    * @dev updates the batch size 
+    * 
+    * @param batchSize_ number of request allowed in batch
+    */
+  function setBatchSize(uint8 batchSize_) external onlyOwner {
+      
+      batchSize = batchSize_;
+      
+  }
+  
+  /**
+    * @dev Mint NFTs and assign it to `owner`, increasing the total supply.
+    * 
+    * @param treeId_ defines ids of tree
+    * @param treeName_ defines names of tree
+    * @param longitude_ defines longitudes of tree
+    * @param latitude_ defines latitudes of tree
+    * @param carbonDioxideOffset_ unsigned integer defines CO2 offset(gram/year) of trees
+    */
+  function mintTrees(
+    string[] memory treeId_, 
+    string[] memory treeName_, 
+    string[] memory longitude_,
+    string[] memory latitude_,
+    uint256[] memory carbonDioxideOffset_
+  ) 
+    external
+    onlyOwner 
+  {
+    
+    // Get length of batch request
+    uint256 _length = treeId_.length;
+      
+    require(
+        treeName_.length == _length && longitude_.length == _length && latitude_.length == _length
+        && carbonDioxideOffset_.length == _length && _length <= batchSize,
+        "Treedefi: Invalid input"
+    );  
+    
+    for(uint8 i; i < _length; i++) {
+        
+        require(carbonDioxideOffset_[i] > 0);
+        
+        // Mint NFTrees
+        NFTREE.mint(treeId_[i], treeName_[i], longitude_[i], latitude_[i], carbonDioxideOffset_[i]);
+    
+    }
+    
+  }
+  
+  /**
+    * @dev Deposits NFTs to the contract
+    * 
+    * @param id_ defines ids of tree
+    */
+  function depositTree(uint256[] memory id_) external {
+    
+    // Get length of batch request
+    uint256 _length = id_.length;
+      
+    require(_length <= batchSize, "Treedefi: Invalid input");
+    
+    for(uint8 i; i < _length; i++) {
+        
+        // Transfer NFTree to contract address
+        NFTREE.transferFrom(msg.sender, address(this), id_[i]);
+        
+        // Approve auction contract to spend NFTree
+        NFTREE.approve(auction, id_[i]);
+        
+    }
+    
+  }
+  
+  /**
+    * @dev Withdraw NFTs from the contract
+    * 
+    * @param id_ defines ids of tree
+    */
+  function withdrawTree(uint256[] memory id_) external onlyOwner {
+    
+    // Get length of batch request
+    uint256 _length = id_.length;
+      
+    require(_length <= batchSize, "Treedefi: Invalid input");
+    
+    for(uint8 i; i < _length; i++) {
+        
+        // Transfer NFTree to owner
+        NFTREE.transferFrom(address(this), msg.sender, id_[i]);
+        
+    }
+    
+  }
+  
+  /** 
+    * @dev List Treedefi Forest NFTs for english auction 
+    * 
+    * @param id_ defines tokenIDs to list for auction
+    * @param basePrice_ defines base price for the tokenIDs
+    * @param duration_ defines duration for auction
+    * @param paymentType_ defines payment type in terms of SEED/TREE/WBNB 
+    */
+  function listTreesForEnglishAuction(
+    uint256[] memory id_, 
+    uint256[] memory basePrice_, 
+    uint64[] memory duration_,
+    uint8[] memory paymentType_
+  ) 
+    external
+    onlyOwner
+  {
+    
+    // Get length of batch request
+    uint256 _length = id_.length;
+      
+    require(
+        basePrice_.length == _length && duration_.length == _length
+        && paymentType_.length == _length && _length <= batchSize,
+        "Treedefi: Invalid input"
+    );
+    
+    for(uint8 i; i < _length; i++) {
+        
+        // List trees for english auction
+        AUCTION.listTreeForEnglishAuction(id_[i], basePrice_[i], duration_[i], paymentType_[i]);
+        
+    }
+        
+  }
+  
+  /** 
+    * @dev List Treedefi Forest NFTs for dutch auction 
+    *
+    * @param id_ defines tokenIDs to list for auction
+    * @param startPrice_ defines starting price 
+    * @param endPrice_ defines ending price 
+    * @param duration_ defines duration for auction
+    * @param paymentType_ defines payment type in terms of SEED/TREE/WBNB 
+    */
+  function listTreesForDutchAuction(
+    uint256[] memory id_, 
+    uint256[] memory startPrice_,
+    uint256[] memory endPrice_, 
+    uint64[] memory duration_,
+    uint8[] memory paymentType_
+  ) 
+    external
+    onlyOwner
+  {
+    
+    // Get length of batch request
+    uint256 _length = id_.length;
+      
+    require(
+        startPrice_.length == _length && endPrice_.length == _length &&
+        duration_.length == _length && paymentType_.length == _length && _length <= batchSize,
+        "Treedefi: Invalid input"
+    );
+    
+    for(uint8 i; i < _length; i++) {
+        
+        // List trees for dutch auction
+        AUCTION.listTreeForDutchAuction(id_[i], startPrice_[i], endPrice_[i], duration_[i], paymentType_[i]);
+        
+    }
+        
+  }
+  
+  /**
+    * @dev Accept bids for Treedefi Forest NFTs listed in english auction 
+    * 
+    * @dev On success NFTree is transfered to bidder and auction owner gets the amount
+    * @param id_ IDs of NFTree
+    * @param bidNumber_ serial numbers of bid to accept
+    */
+  function acceptBids(
+    uint256[] memory id_,
+    uint256[] memory bidNumber_
+  ) 
+    external
+    onlyOwner
+  {
+    
+    // Get length of batch request
+    uint256 _length = id_.length;
+      
+    require(
+        bidNumber_.length == _length && _length <= batchSize,
+        "Treedefi: Invalid input"
+    );
+    
+    for(uint8 i; i < _length; i++) {
+        
+        // Accepts bid for english auction
+        AUCTION.acceptBid(id_[i], bidNumber_[i]);
+        
+    }
+    
+  }
+  
+  /**
+    * @dev Cancels pending auctions 
+    * 
+    * @param id_ IDs of NFTree
+    */
+  function cancelAuctions(uint256[] memory id_)
+    external
+    onlyOwner
+  {
+    
+    // Get length of batch request
+    uint256 _length = id_.length;
+      
+    require(
+       _length <= batchSize,
+        "Treedefi: Invalid input"
+    );
+    
+    for(uint8 i; i < _length; i++) {
+        
+        // Cancel auction
+        AUCTION.cancelAuction(id_[i]);
+        
+    }
+    
+  }
+  
+  /**
+    * @dev Withdraw BEP20 tokens 
+    * 
+    * @param token_ address of BEP20 token
+    */
+  function withdrawTokens(address token_) external onlyOwner {
+    
+    // Fetch balance of the contract  
+    uint _balance = IBep20Token(token_).balanceOf(address(this));
+    
+    require(_balance > 0, "Treedefi: zero balance");
+    
+    // transfer tokens to owner if balance is non-zero
+    IBep20Token(token_).transfer(msg.sender, _balance);
+      
+  }
+  
+}
