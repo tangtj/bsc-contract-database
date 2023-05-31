@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract TateInu {
+    string public name = "TATE";
+    string public symbol = "TATE";
+    uint8 public decimals = 18;
+    uint256 public totalSupply;
+    
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    
+    uint256 public buyTaxPercentage = 5;
+    uint256 public sellTaxPercentage = 10;
+    
+    address private owner;
+    address private marketingWallet;
+    
+    event Transfer(address indexed from, address indexed to, uint256 amount);
+    event Approval(address indexed owner, address indexed spender, uint256 amount);
+    
+    constructor() {
+        totalSupply = 90000000000 * (10 ** uint256(decimals));
+        balanceOf[msg.sender] = totalSupply;
+        owner = 0x4a729d93EF8e77C4174721937529ac551B73C6B3; // Owner wallet address
+        marketingWallet = 0xc9EDe98b1335d57d634be6C4115D396F3e2498Af; // Marketing wallet address
+    }
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can perform this action.");
+        _;
+    }
+    
+    function transfer(address to, uint256 amount) external returns (bool) {
+        require(amount > 0, "Amount must be greater than zero.");
+        require(balanceOf[msg.sender] >= amount, "Insufficient balance.");
+
+        uint256 taxAmount = msg.sender == owner ? 0 : calculateTax(amount, msg.sender == address(this) ? buyTaxPercentage : sellTaxPercentage);
+        uint256 transferAmount = amount - taxAmount;
+
+        _transfer(msg.sender, to, transferAmount);
+        _transfer(msg.sender, marketingWallet, taxAmount);
+
+        return true;
+    }
+    
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+    
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(amount > 0, "Amount must be greater than zero.");
+        require(balanceOf[from] >= amount, "Insufficient balance.");
+        require(allowance[from][msg.sender] >= amount, "Insufficient allowance.");
+
+        uint256 taxAmount = from == owner ? 0 : calculateTax(amount, msg.sender == address(this) ? buyTaxPercentage : sellTaxPercentage);
+        uint256 transferAmount = amount - taxAmount;
+
+        _transfer(from, to, transferAmount);
+        _transfer(from, marketingWallet, taxAmount);
+        allowance[from][msg.sender] -= amount;
+
+        return true;
+    }
+    
+    function calculateTax(uint256 amount, uint256 taxPercentage) internal pure returns (uint256) {
+        return (amount * taxPercentage) / 100;
+    }
+    
+    function _transfer(address from, address to, uint256 amount) internal {
+        require(from != address(0), "Invalid sender address.");
+        require(to != address(0), "Invalid recipient address.");
+        require(amount > 0, "Amount must be greater than zero.");
+        require(balanceOf[from] >= amount, "Insufficient balance.");
+
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+
+        emit Transfer(from, to, amount);
+    }
+}

@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.18;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract TEST2 is IERC20 {
+    string public name = "TEST2";
+    string public symbol = "TEST";
+    uint8 public decimals = 18;
+    uint256 public override totalSupply = 1000000000000 * 10**uint(decimals);
+    mapping(address => uint256) public override balanceOf;
+    mapping(address => mapping(address => uint256)) public override allowance;
+
+    address public marketingAddress;
+    address public owner;
+
+    uint256 public taxBuyPercent = 6;
+    uint256 public taxSellPercent = 6;
+
+    uint256 public maxTransactionAmount = 2000000000 * 10**uint(decimals); // 2% of total supply
+    uint256 public maxWalletAmount = 2000000000 * 10**uint(decimals); // 2% of total supply
+    uint256 public minimumTokenBeforeSwapAmount = 1000000000 * 10**uint(decimals); // 0.1% of total supply
+
+    bool public contractRenounced;
+
+    modifier onlyOwner() {
+        require(!contractRenounced && (msg.sender == owner), "Only the owner can call this function");
+        _;
+    }
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+        marketingAddress = 0xE3F48BA37Faf10A3B8d8f38645B057674c699529;
+        owner = 0x07dcbf1aD667f503215b1A1F5aAF6ae629516008;
+        contractRenounced = false;
+    }
+
+    function transfer(address _to, uint256 _value) external override returns (bool) {
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+        require(_checkMaxTransactionLimit(_value), "Exceeds max transaction limit");
+        require(_checkMaxWalletLimit(_to, _value), "Exceeds max wallet limit");
+        _transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) external override returns (bool) {
+        require(balanceOf[_from] >= _value, "Insufficient balance");
+        require(allowance[_from][msg.sender] >= _value, "Not allowed to transfer");
+        require(_checkMaxTransactionLimit(_value), "Exceeds max transaction limit");
+        require(_checkMaxWalletLimit(_to, _value), "Exceeds max wallet limit");
+        _transfer(_from, _to, _value);
+        _approve(_from, msg.sender, allowance[_from][msg.sender] - _value);
+        return true;
+    }
+
+    function _transfer(address _from, address _to, uint256 _value) internal {
+        require(_to != address(0), "Invalid recipient address");
+
+        uint256 transferAmount = _value;
+        uint256 taxAmount = 0;
+
+        // Apply tax for non-marketing transactions
+        if (_from != marketingAddress && _to != marketingAddress) {
+            if (_from == owner || _to == owner) {
+                taxAmount = (_value * taxSellPercent) / 100; // 6% tax on sell transactions
+            } else {
+                taxAmount = (_value * taxBuyPercent) / 100; // 6% tax on buy transactions
+            }
+            transferAmount = _value - taxAmount;
+        }
+
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += transferAmount;
+        balanceOf[marketingAddress] += taxAmount;
+
+        emit Transfer(_from, _to, transferAmount);
+        if (taxAmount > 0) {
+            emit Transfer(_from, marketingAddress, taxAmount);
+        }
+    }
+
+    function _approve(address _owner, address _spender, uint256 _amount) internal {
+        allowance[_owner][_spender] = _amount;
+        emit Approval(_owner, _spender, _amount);
+    }
+
+    function _checkMaxTransactionLimit(uint256 _value) internal view returns (bool) {
+        if (contractRenounced) {
+            return true;
+        } else {
+            return _value <= maxTransactionAmount;
+        }
+    }
+
+    function _checkMaxWalletLimit(address _address, uint256 _value) internal view returns (bool) {
+        if (contractRenounced || _address == owner) {
+            return true;
+        } else {
+            return balanceOf[_address] + _value <= maxWalletAmount;
+        }
+    }
+
+    function setMarketingAddress(address _marketingAddress) external onlyOwner {
+        marketingAddress = _marketingAddress;
+    }
+
+    function setTaxBuyPercent(uint256 _percent) external onlyOwner {
+        require(_percent <= 100, "Invalid percentage");
+        taxBuyPercent = _percent;
+    }
+
+    function setTaxSellPercent(uint256 _percent) external onlyOwner {
+        require(_percent <= 100, "Invalid percentage");
+        taxSellPercent = _percent;
+    }
+
+    function setMaxTransactionAmount(uint256 _amount) external onlyOwner {
+        maxTransactionAmount = _amount;
+    }
+
+    function setMaxWalletAmount(uint256 _amount) external onlyOwner {
+        maxWalletAmount = _amount;
+    }
+
+    function setMinimumTokenBeforeSwapAmount(uint256 _amount) external onlyOwner {
+        minimumTokenBeforeSwapAmount = _amount;
+    }
+
+    function renounceOwnership() external onlyOwner {
+        contractRenounced = true;
+    }
+
+    function approve(address _spender, uint256 _amount) external override returns (bool) {
+        _approve(msg.sender, _spender, _amount);
+        return true;
+    }
+}

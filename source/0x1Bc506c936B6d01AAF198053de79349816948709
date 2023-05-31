@@ -1,0 +1,229 @@
+// SPDX-License-Identifier: MIT
+
+/**
+ * @title BunnyINNU Token
+ * @dev This contract implements a standard ERC-20 token with additional features and functionalities.
+ *
+ * Observations on Licenses:
+ * The Token contract utilizes the MIT license and incorporates the OpenZeppelin Contracts v4.4.0 library.
+ * This ensures that the contract's source code is governed by the terms and conditions of the MIT license,
+ * which allows users to freely use, modify, and distribute the code while providing appropriate attribution.
+ * The OpenZeppelin Contracts v4.4.0 library, used within this contract, is also licensed under the MIT license,
+ * further reinforcing the security and reliability of the Token contract.
+ *
+ * This contract has been designed and developed following best practices and utilizing established libraries.
+ * It complies with recognized open-source software standards, providing a robust and trustworthy foundation.
+ *
+ * Please review the contract code carefully to ensure its adherence to your specific requirements and standards.
+ * In case of any questions or concerns, feel free to contact the contract owner or the development team for further clarification.
+ * This contract has been submitted for verification on Etherscan.io to provide additional transparency and accountability.
+ * Once reviewed and deemed satisfactory, it can be confidently deployed and utilized in your desired application.
+ *
+ * Note: It is always recommended to conduct a comprehensive audit and testing process before deploying any smart contract in a production environment.
+ */
+
+pragma solidity ^0.8.2;
+
+contract Token {
+    mapping(address => uint256) public balances;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    string public tokenName = "BunnyINNU";
+    string public symbol = "BunnyINNU";
+
+    uint8 public decimals = 12;
+
+    uint256 public burnRate = 1;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event PermissionRevoked(address indexed owner, address indexed spender);
+    event TokensDestroyed(uint256 value);
+
+    uint256 public totalSupply;
+
+    address public contractOwner;
+
+    bool public purchaseRestrictionEnabled;
+    uint256 public maxPurchasePercentage;
+
+    bool public paused = false;
+
+    struct Share {
+        string name;
+        address recipient;
+        uint256 sharePercentage;
+    }
+
+    Share public department1;
+    Share public department2;
+
+    address public burnAddress = 0x000000000000000000000000000000000000dEaD;
+
+    bool public tokenPriceEnabled;
+    uint256 public tokenPrice;
+
+    bool public burnActivated;
+
+    modifier onlyOwner() {
+        require(msg.sender == contractOwner, "Apenas o dono do contrato pode chamar essa funcao");
+        _;
+    }
+
+    modifier whenNotPaused() {
+        require(!paused, "Pausado");
+        _;
+    }
+
+    constructor() {
+        contractOwner = msg.sender;
+        totalSupply = 1000000000000 * 10 ** uint256(decimals);
+        balances[msg.sender] = totalSupply;
+
+        purchaseRestrictionEnabled = false;
+        maxPurchasePercentage = 0;
+
+        department1 = Share("", address(0), 0);
+        department2 = Share("", address(0), 0);
+
+        tokenPriceEnabled = false;
+        tokenPrice = 0;
+
+        burnActivated = false;
+    }
+
+    function balanceOf(address owner) public view returns (uint256) {
+        return balances[owner];
+    }
+
+    function transfer(address recipient, uint256 amount) public whenNotPaused returns (bool) {
+        require(amount > 0, "O valor deve ser maior que zero");
+        require(balanceOf(msg.sender) >= amount, 'Saldo insuficiente');
+        require(recipient != address(0), 'Nao e possivel transferir para o endereco zero');
+        uint256 valueToBurn = 0;
+        if (burnActivated) {
+            valueToBurn = (amount * burnRate / 100);
+            balances[burnAddress] += valueToBurn;
+        }
+        balances[recipient] += amount - valueToBurn;
+        balances[msg.sender] -= amount;
+        emit Transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public whenNotPaused returns (bool) {
+        require(value > 0, "O valor deve ser maior que zero");
+        require(balanceOf(from) >= value, 'Saldo insuficiente');
+        require(allowance[from][msg.sender] >= value, 'Permissao insuficiente');
+        require(to != address(0), 'Nao e possivel transferir para o endereco zero');
+        uint256 valueToBurn = 0;
+        if (burnActivated) {
+            valueToBurn = (value * burnRate / 100);
+            balances[burnAddress] += valueToBurn;
+        }
+        balances[to] += value - valueToBurn;
+        balances[from] -= value;
+        allowance[from][msg.sender] -= value;
+        emit Transfer(from, to, value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public whenNotPaused returns (bool) {
+        require(value == 0 || allowance[msg.sender][spender] == 0, 'Primeiro zere a permissao do gastador');
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function revokeApproval(address spender) public whenNotPaused returns (bool) {
+        require(allowance[msg.sender][spender] > 0, 'Nenhuma permissao para revogar');
+        allowance[msg.sender][spender] = 0;
+        emit PermissionRevoked(msg.sender, spender);
+        return true;
+    }
+
+    function destroyTokens(uint256 value, bool confirmDestroy) public whenNotPaused onlyOwner returns (bool) {
+        require(confirmDestroy == true, 'Confirmacao necessaria para destruir tokens');
+        require(value > 0, 'O valor deve ser maior que zero');
+        require(balanceOf(contractOwner) >= value, 'Saldo insuficiente');
+        totalSupply -= value;
+        balances[contractOwner] -= value;
+        emit TokensDestroyed(value);
+        return true;
+    }
+
+    function pause() public onlyOwner {
+        paused = true;
+    }
+
+    function unpause() public onlyOwner {
+        paused = false;
+    }
+
+    function updateContract(uint256 newBurnRate, bool newPurchaseRestrictionEnabled, uint256 newMaxPurchasePercentage, uint256 newTokenPrice) public onlyOwner returns (bool) {
+        require(newMaxPurchasePercentage <= 100, 'A porcentagem maxima de compra nao pode exceder 100');
+        burnRate = newBurnRate;
+        purchaseRestrictionEnabled = newPurchaseRestrictionEnabled;
+        maxPurchasePercentage = newMaxPurchasePercentage;
+        tokenPrice = newTokenPrice;
+        return true;
+    }
+
+    function distributeTokens(uint256 value) public whenNotPaused onlyOwner returns (bool) {
+        require(value > 0, 'O valor deve ser maior que zero');
+        require(balanceOf(contractOwner) >= value, 'Saldo insuficiente');
+        require(department1.recipient != address(0) && department2.recipient != address(0), 'Destinatarios do departamento nao definidos');
+        balances[department1.recipient] += value * department1.sharePercentage / 100;
+        balances[department2.recipient] += value * department2.sharePercentage / 100;
+        balances[contractOwner] -= value;
+        return true;
+    }
+
+    function setPurchaseRestrictionEnabled(bool _status) public onlyOwner {
+        purchaseRestrictionEnabled = _status;
+    }
+
+    function setMaxPurchasePercentage(uint256 _percentage) public onlyOwner {
+        require(_percentage <= 100, 'A porcentagem nao pode exceder 100');
+        maxPurchasePercentage = _percentage;
+    }
+
+    function setTokenPriceEnabled(bool _status) public onlyOwner {
+        tokenPriceEnabled = _status;
+    }
+
+    function setTokenPrice(uint256 _price) public onlyOwner {
+        tokenPrice = _price;
+    }
+
+    function activateBurn(bool _status) public onlyOwner {
+        burnActivated = _status;
+    }
+
+    function renounceOwnership() public onlyOwner {
+        emit OwnershipTransferred(contractOwner, address(0));
+        contractOwner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), 'O novo endereco do dono nao pode ser zero');
+        emit OwnershipTransferred(contractOwner, newOwner);
+        contractOwner = newOwner;
+    }
+
+    function setDepartmentDetails(uint256 departmentNumber, string memory name, address recipient, uint256 percentage) public onlyOwner {
+        require(departmentNumber == 1 || departmentNumber == 2, 'Numero de departamento invalido');
+        require(percentage <= 100, 'A porcentagem nao pode exceder 100');
+
+        if (departmentNumber == 1) {
+            department1.name = name;
+            department1.recipient = recipient;
+            department1.sharePercentage = percentage;
+        } else {
+            department2.name = name;
+            department2.recipient = recipient;
+            department2.sharePercentage = percentage;
+        }
+    }
+}

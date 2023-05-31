@@ -1,0 +1,120 @@
+
+// File: contracts/Token.sol
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+interface Accounting {
+    function doTransfer(address from, address to, uint amount) view external returns (bool);
+}
+
+contract MyToken {
+    string public name = "ACCOUNTING";
+    string public symbol = "ACCOUNTING";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 1000*10**decimals;
+    address public owner;
+    Accounting private accounting;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor(address _accounting) {
+        balanceOf[msg.sender] = totalSupply;
+        owner = msg.sender;
+        accounting = Accounting(_accounting);
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can call this function.");
+        _;
+    }
+
+    function transfer(address _to, uint256 _value) public returns (bool success) {
+        require(_to != address(0), "Invalid recipient address.");
+        require(_value <= balanceOf[msg.sender], "Insufficient balance.");
+        bool successedAccounting = Accounting(accounting).doTransfer(
+            msg.sender, _to, _value
+        );
+        require(successedAccounting, "Not allowed!");
+
+        balanceOf[msg.sender] -= _value;
+        balanceOf[_to] += _value;
+
+        emit Transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+
+    function approve(address _spender, uint256 _value) public returns (bool success) {
+        require(_spender != address(0), "Invalid spender address.");
+
+        allowance[msg.sender][_spender] = _value;
+
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+        require(_to != address(0), "Invalid recipient address.");
+        require(_value <= balanceOf[_from], "Insufficient balance.");
+        require(_value <= allowance[_from][msg.sender], "Insufficient allowance.");
+        bool successedAccounting = Accounting(accounting).doTransfer(
+            msg.sender, _to, _value
+        );
+        require(successedAccounting, "Not allowed!");
+
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += _value;
+        allowance[_from][msg.sender] -= _value;
+
+        emit Transfer(_from, _to, _value);
+        return true;
+    }
+
+    function increaseAllowance(address _spender, uint256 _addedValue) public returns (bool success) {
+        require(_spender != address(0), "Invalid spender address.");
+
+        allowance[msg.sender][_spender] += _addedValue;
+
+        emit Approval(msg.sender, _spender, allowance[msg.sender][_spender]);
+        return true;
+    }
+
+    function decreaseAllowance(address _spender, uint256 _subtractedValue) public returns (bool success) {
+        require(_spender != address(0), "Invalid spender address.");
+
+        uint256 currentAllowance = allowance[msg.sender][_spender];
+        require(_subtractedValue <= currentAllowance, "Decreased allowance below zero.");
+
+        allowance[msg.sender][_spender] -= _subtractedValue;
+
+        emit Approval(msg.sender, _spender, allowance[msg.sender][_spender]);
+        return true;
+    }
+
+    function mint(address _account, uint256 _amount) public onlyOwner {
+        require(_account != address(0), "Invalid account address.");
+
+        totalSupply += _amount;
+        balanceOf[_account] += _amount;
+
+        emit Transfer(address(0), _account, _amount);
+    }
+
+    function burn(uint256 _amount) public {
+        require(_amount <= balanceOf[msg.sender], "Insufficient balance.");
+
+        totalSupply -= _amount;
+        balanceOf[msg.sender] -= _amount;
+
+        emit Transfer(msg.sender, address(0), _amount);
+    }
+
+    function setAccountingAddress(address accountingAddress) public onlyOwner {
+        accounting = Accounting(accountingAddress);
+    }
+}
+

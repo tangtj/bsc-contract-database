@@ -1,0 +1,87 @@
+pragma solidity ^0.8.0;
+
+contract SmartToken {
+    string public name;
+    string public symbol;
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    
+    uint256 public transactionReward = 500000000000000; // 0.0005 BNB in Wei
+    address public owner;
+    
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    
+    constructor(string memory _name, string memory _symbol, uint256 _totalSupply) {
+        name = _name;
+        symbol = _symbol;
+        totalSupply = _totalSupply;
+        balanceOf[msg.sender] = _totalSupply;
+        owner = msg.sender;
+    }
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can call this function");
+        _;
+    }
+    
+    modifier onlyValidRecipient(address _recipient) {
+        require(_recipient != address(0), "Invalid recipient");
+        require(_recipient != address(this), "Invalid recipient");
+        _;
+    }
+    
+    function transfer(address _to, uint256 _value) public onlyValidRecipient(_to) returns (bool) {
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+        
+        uint256 transactionRewardAmount = calculateTransactionReward(_value);
+        uint256 transferAmount = _value - transactionRewardAmount;
+        
+        balanceOf[msg.sender] -= _value;
+        balanceOf[_to] += transferAmount;
+        balanceOf[owner] += transactionRewardAmount;
+        
+        emit Transfer(msg.sender, _to, transferAmount);
+        emit Transfer(msg.sender, owner, transactionRewardAmount);
+        
+        return true;
+    }
+    
+    function approve(address _spender, uint256 _value) public onlyValidRecipient(_spender) returns (bool) {
+        allowance[msg.sender][_spender] = _value;
+        
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+    
+    function transferFrom(address _from, address _to, uint256 _value) public onlyValidRecipient(_to) returns (bool) {
+        require(balanceOf[_from] >= _value, "Insufficient balance");
+        require(allowance[_from][msg.sender] >= _value, "Not allowed to spend");
+        
+        uint256 transactionRewardAmount = calculateTransactionReward(_value);
+        uint256 transferAmount = _value - transactionRewardAmount;
+        
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += transferAmount;
+        balanceOf[owner] += transactionRewardAmount;
+        allowance[_from][msg.sender] -= _value;
+        
+        emit Transfer(_from, _to, transferAmount);
+        emit Transfer(_from, owner, transactionRewardAmount);
+        
+        return true;
+    }
+    
+    function calculateTransactionReward(uint256 _value) internal view returns (uint256) {
+        uint256 transactionRewardAmount = (_value * transactionReward) / 1e18; // Calculate the transaction reward
+        return transactionRewardAmount;
+    }
+    
+    function transferOwnership(address _newOwner) public onlyOwner {
+        require(_newOwner != address(0), "Invalid new owner");
+        emit OwnershipTransferred(owner, _newOwner);
+        owner = _newOwner;
+    }
+}

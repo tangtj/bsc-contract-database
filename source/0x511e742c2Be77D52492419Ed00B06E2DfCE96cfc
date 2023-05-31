@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract OXMMining {
+    string public name = "OXM Mining";
+    string public symbol = "OXMM";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 21000000 * (10**uint256(decimals));
+    
+    address public owner;
+    bool public publicClaimEnabled = true;
+    uint256 public publicClaimAmount = 10**uint256(decimals) / 10; // 0.25 OXMM
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+        owner = msg.sender;
+    }
+
+    function transfer(address _to, uint256 _value) external returns (bool success) {
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+
+        uint256 feeAmount = (_value * 2) / 100; // 2% transaction fee
+        uint256 transferAmount = _value - feeAmount;
+
+        balanceOf[msg.sender] -= _value;
+        balanceOf[_to] += transferAmount;
+        balanceOf[owner] += feeAmount;
+
+        emit Transfer(msg.sender, _to, transferAmount);
+        emit Transfer(msg.sender, owner, feeAmount);
+
+        return true;
+    }
+
+    function approve(address _spender, uint256 _value) external returns (bool success) {
+        allowance[msg.sender][_spender] = _value;
+
+        emit Approval(msg.sender, _spender, _value);
+
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) external returns (bool success) {
+        require(balanceOf[_from] >= _value, "Insufficient balance");
+        require(allowance[_from][msg.sender] >= _value, "Allowance exceeded");
+
+        uint256 feeAmount = (_value * 2) / 100; // 2% transaction fee
+        uint256 transferAmount = _value - feeAmount;
+
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += transferAmount;
+        balanceOf[owner] += feeAmount;
+        allowance[_from][msg.sender] -= _value;
+
+        emit Transfer(_from, _to, transferAmount);
+        emit Transfer(_from, owner, feeAmount);
+        emit Approval(_from, msg.sender, allowance[_from][msg.sender]);
+
+        return true;
+    }
+
+    function publicClaim(uint256 _amount) external {
+        require(publicClaimEnabled, "Public claim disabled");
+        require(balanceOf[owner] >= _amount, "Insufficient balance for public claim");
+
+        balanceOf[owner] -= _amount;
+        balanceOf[msg.sender] += _amount;
+
+        emit Transfer(owner, msg.sender, _amount);
+    }
+
+    function enablePublicClaim(bool _enabled) external {
+        require(msg.sender == owner, "Only the contract owner can enable/disable public claim");
+
+        publicClaimEnabled = _enabled;
+    }
+
+    function setPublicClaimAmount(uint256 _amount) external {
+        require(msg.sender == owner, "Only the contract owner can set the public claim amount");
+
+        publicClaimAmount = _amount;
+    }
+
+    function transferOwnership(address _newOwner) external {
+        require(msg.sender == owner, "Only the current owner can transfer ownership");
+
+        owner = _newOwner;
+    }
+}

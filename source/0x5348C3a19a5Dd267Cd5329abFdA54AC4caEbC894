@@ -1,0 +1,261 @@
+// SPDX-License-Identifier: MIT
+
+/*
+
+██████╗░██╗░░░░░██╗░░░██╗███████╗░██╗░░░░░░░██╗░█████╗░██╗░░░░░███████╗
+██╔══██╗██║░░░░░██║░░░██║██╔════╝░██║░░██╗░░██║██╔══██╗██║░░░░░██╔════╝
+██████╦╝██║░░░░░██║░░░██║█████╗░░░╚██╗████╗██╔╝██║░░██║██║░░░░░█████╗░░
+██╔══██╗██║░░░░░██║░░░██║██╔══╝░░░░████╔═████║░██║░░██║██║░░░░░██╔══╝░░
+██████╦╝███████╗╚██████╔╝███████╗░░╚██╔╝░╚██╔╝░╚█████╔╝███████╗██║░░░░░
+╚═════╝░╚══════╝░╚═════╝░╚══════╝░░░╚═╝░░░╚═╝░░░╚════╝░╚══════╝╚═╝░░░░░
+
+░██████╗░██╗░░░░░░█████╗░██████╗░░█████╗░██╗░░░░░
+██╔════╝░██║░░░░░██╔══██╗██╔══██╗██╔══██╗██║░░░░░
+██║░░██╗░██║░░░░░██║░░██║██████╦╝███████║██║░░░░░
+██║░░╚██╗██║░░░░░██║░░██║██╔══██╗██╔══██║██║░░░░░
+╚██████╔╝███████╗╚█████╔╝██████╦╝██║░░██║███████╗
+░╚═════╝░╚══════╝░╚════╝░╚═════╝░╚═╝░░╚═╝╚══════╝
+
+// 🌐 Join TG: https://t.me/bwg_lfg 💎
+
+❓What is $BWG token❓
+
+$BWG is token driven with chads wolf community, utilities,
+high APR staking, Android/iOS P2E game.
+
+The $BWG great wolf team came from uni team both forex trader house and
+SAFU crypto developers and more unity game builder team from other side of partner,
+We need to build our chads lodge by use this token as main and connecting any our
+DAPP for wolf meta-world.
+
+❓Did We Done Or Not❓
+
+First our Racing P2E beta-test game live on Play Store/App Store already,
+We plan to build many board-game and RPG open world and will live battle tournament event
+and holders can win up reward in dollar every event.
+
+Distribution
+🔵 65% Liquidity
+🔵 15% Staking
+🔵 12% Vesting
+🔵 5% Marketing
+🔵 3% Airdrop/Event
+
+🛡️No unlock token first 30 days after launch❗
+🔐All wallet vesting locked by Pinksale.Finance🎟️
+
+Tokenomics
+⚙️ 3/3 Trading Fee
+🔹 1.5% Auto Liquidity
+🔹 0.5% Marketing Wallet
+🔹 0.5% Treasury Wallet
+
+*/
+
+pragma solidity 0.8.19;
+
+interface IDEXFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+interface IDEXRouter {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) { return msg.sender; }
+}
+
+contract Ownable is Context {
+
+    address private _owner;
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    
+    constructor () {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) { return _owner; }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+}
+
+contract BWGTokenV2 is Ownable {
+
+    event Transfer(address indexed from, address indexed to, uint256 amount);
+    event Approval(address indexed from, address indexed to, uint256 amount);
+
+    string public name = "Blue Wolf Global";
+    string public symbol = "$BWG";
+    uint256 public decimals = 18;
+    uint256 public totalSupply =   100_000_000 * 1e18;
+    
+    IDEXRouter public router;
+    address public pair;
+    address public receiver;
+    bool basicTransfer;
+
+    uint256 tradingTax = 3;
+    uint256 denominator = 100;
+    uint256 swapthreshold = totalSupply/1e3;
+    bool public enabledTrading;
+
+    mapping(address => uint256) public balances;
+    mapping(address => bool) public isFeeExempt;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    mapping(address => bool) public permission;
+    modifier onlyPermission() {
+        require(permission[msg.sender], "!Ownable: caller is have no permit");
+        _;
+    }
+    constructor(address _receiver) {
+        receiver = _receiver;
+        router = IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        pair = IDEXFactory(router.factory()).createPair(router.WETH(), address(this));
+        allowance[address(this)][address(router)] = type(uint256).max;
+        isFeeExempt[address(this)] = true;
+        isFeeExempt[address(router)] = true;
+        isFeeExempt[address(msg.sender)] = true;
+        balances[msg.sender] = totalSupply;
+        emit Transfer(address(0),msg.sender,totalSupply);
+    }
+    
+    function balanceOf(address adr) public view returns(uint256) { return balances[adr]; }
+
+    function transfer(address to, uint256 amount) public returns (bool) {
+        _transferFrom(msg.sender,to,amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) public returns(bool) {
+        allowance[from][msg.sender] -= amount;
+        _transferFrom(from,to,amount);
+        return true;
+    }
+
+    function _transferFrom(address from,address to, uint256 amount) internal {
+        if(basicTransfer){ return _basictransfer(from,to,amount); }else{
+            if(balances[address(this)] > swapthreshold && msg.sender != pair){
+                basicTransfer = true;
+                uint256 distribute = balances[address(this)] / 2;
+                uint256 liquidfy = distribute / 2;
+                uint256 amountToSwap = distribute + liquidfy;
+                uint256 before = address(this).balance;
+                swap2ETH(amountToSwap);
+                uint256 increase = address(this).balance - before;
+                uint256 torecevier = increase * 2 / 3;
+                uint256 tolp = increase - torecevier;
+                (bool success,) = receiver.call{ value: torecevier }("");
+                require(success, "!fail to send eth");
+                autoAddLP(liquidfy,tolp);
+                basicTransfer = false;
+            }
+            _transfer(from,to,amount);
+        }
+    }
+
+    function approve(address to, uint256 amount) public returns (bool) {
+        require(to != address(0));
+        allowance[msg.sender][to] = amount;
+        emit Approval(msg.sender, to, amount);
+        return true;
+    }
+
+    function _transfer(address from,address to, uint256 amount) internal {
+        if(from==pair){ require(enabledTrading,"Erc20: trading was not open yet"); }
+        balances[from] -= amount;
+        balances[to] += amount;
+        uint256 fee;
+        if(from==pair && !isFeeExempt[to]){ fee = amount * tradingTax / denominator; }
+        if(to==pair && !isFeeExempt[from]){ fee = amount * tradingTax / denominator; }
+        if(fee>0){ _basictransfer(to,address(this),fee); }
+        emit Transfer(from, to, amount - fee);
+    }
+
+    function _basictransfer(address from,address to, uint256 amount) internal {
+        balances[from] -= amount;
+        balances[to] += amount;
+        emit Transfer(from, to, amount);
+    }
+
+    function swap2ETH(uint256 amount) internal {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = router.WETH();
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+        amount,
+        0,
+        path,
+        address(this),
+        block.timestamp
+        );
+    }
+
+    function autoAddLP(uint256 amountToLiquify,uint256 amountBNB) internal {
+        router.addLiquidityETH{value: amountBNB }(
+        address(this),
+        amountToLiquify,
+        0,
+        0,
+        receiver,
+        block.timestamp
+        );
+    }
+
+    function enableTrading() public onlyOwner() returns (bool) {
+        require(!enabledTrading,"Erc20: trading already enabled");
+        enabledTrading = true;
+        return true;
+    }
+
+    function settingFeeExempt(address _account,bool _flag) public onlyOwner() returns (bool) {
+        isFeeExempt[_account] = _flag;
+        return true;
+    }
+    
+    function settingTokenomics(uint256 _tax,uint256 _swapTreshold,uint256 _denominator,address _receiver) public onlyOwner() returns (bool) {
+        require((_tax*100)/_denominator<=25,"Erc20: safe token can't set tax over 25%");
+        tradingTax = _tax;
+        denominator = _denominator;
+        swapthreshold = _swapTreshold;
+        receiver = _receiver;
+        return true;
+    }
+
+    receive() external payable {}
+}
