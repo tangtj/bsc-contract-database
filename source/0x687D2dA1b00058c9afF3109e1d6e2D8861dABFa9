@@ -1,0 +1,199 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.9;
+pragma experimental ABIEncoderV2;
+
+contract PokeTowns {
+    struct Building {
+        uint256 tools;
+        uint256 emerald;
+        uint256 emerald2;
+        uint256 yield;
+        uint256 timestamp;
+        uint256 hrs;
+        address ref;
+        uint256 refs;
+        uint256 refEmerald;
+        uint256 refTools;
+        uint8 market;
+        uint8[7] workers;
+    }
+
+    mapping(address => Building) public buildings;
+
+    uint256 public totalWorkers;
+    uint256 public totalTrainers;
+    uint256 public totalInvested;
+    address developer;
+    address marketing;
+    address admin;
+
+
+constructor(address developer_, address marketing_, address admin_) {
+       developer = developer_; 
+       marketing = marketing_;
+       admin = admin_; 
+}
+
+    function addPokecash(address ref) external payable {
+        uint256 tools = msg.value / 4e14;
+        require(tools > 0, "Zero PokeCash");
+        address user = msg.sender;
+        totalInvested += msg.value;
+        if (buildings[user].timestamp == 0) {
+            totalTrainers++;
+            buildings[user].timestamp = block.timestamp;
+            buildings[user].market = 0;
+            if (ref != address(0) && buildings[ref].timestamp != 0) {
+                buildings[user].ref = ref;
+                buildings[ref].refs++;  
+            }
+        }
+
+        if (buildings[user].ref != address(0)) {
+            referralReward(buildings[user].ref, tools, 10, 10);
+        }
+
+        buildings[user].tools += tools;
+
+        payable(developer).transfer((msg.value * 10) / 100); //10% developer fee
+        payable(marketing).transfer((msg.value * 10) / 100); //10% marketing Fee
+        payable(admin).transfer((msg.value * 10) / 100); //10% admin fee
+
+    }
+
+    function referralReward(
+        address ref,
+        uint256 amount,
+        uint8 tProcent,
+        uint8 gProcent
+    ) internal {
+        uint256 tools = (amount * tProcent) / 100;
+        uint256 emerald = (amount * 100 * gProcent) / 100;
+
+        buildings[ref].tools += tools;
+        buildings[ref].emerald += emerald;
+
+        buildings[ref].refEmerald += emerald;
+        buildings[ref].refTools += tools;
+    }
+
+    function compound(uint256 emerald) external {
+        address user = msg.sender;
+        require(emerald <= buildings[user].emerald && emerald > 0);
+        buildings[user].emerald -= emerald;
+        uint256 amount = (emerald * 125) / 10000;
+        buildings[user].tools += amount;
+    }
+
+    function withdrawPokecoins(uint256 emerald) external {
+        address user = msg.sender;
+        require(emerald <= buildings[user].emerald && emerald > 0);
+        buildings[user].emerald -= emerald;
+        
+        uint256 amount = emerald * 4e12;
+        amount = address(this).balance < amount
+            ? address(this).balance
+            : amount;
+        payable(user).transfer(amount);
+
+        
+    }
+
+    function collectPokecoins() public {
+        address user = msg.sender;
+        syncBuildings(user);
+        buildings[user].hrs = 0;
+        buildings[user].emerald += buildings[user].emerald2;
+        buildings[user].emerald2 = 0;
+    }
+
+    function upgradeBuilding(uint256 buildingId) external {
+        require(buildingId < 7, "Max 7 buildings");
+        address user = msg.sender;
+        syncBuildings(user);
+        buildings[user].workers[buildingId]++;
+        totalWorkers++;
+        uint256 workers = buildings[user].workers[buildingId];
+        buildings[user].tools -= getUpgradePrice(buildingId, workers);
+        buildings[user].yield += getYield(buildingId, workers);
+    }
+
+    function upgradeHome() external {
+        address user = msg.sender;
+        syncBuildings(user);
+        uint8 marketId = buildings[user].market + 1;
+        (uint256 price, ) = getMarket(marketId);
+        buildings[user].tools -= price;
+        buildings[user].market = marketId;
+    }
+
+    function getWorkers(address addr) external view returns (uint8[7] memory) {
+        return buildings[addr].workers;
+    }
+
+    function syncBuildings(address user) internal {
+        require(buildings[user].timestamp > 0, "User is not registered");
+        if (buildings[user].yield > 0) {
+            (, uint256 market) = getMarket(buildings[user].market);
+            uint256 hrs = block.timestamp /
+                3600 -
+                buildings[user].timestamp /
+                3600;
+            if (hrs + buildings[user].hrs > market) {
+                hrs = market - buildings[user].hrs;
+            }
+            buildings[user].emerald2 += hrs * buildings[user].yield;
+            buildings[user].hrs += hrs;
+        }
+        buildings[user].timestamp = block.timestamp;
+    }
+
+    function getUpgradePrice(uint256 buildingId, uint256 workerId)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (workerId == 1)
+            return [250, 750, 1750, 3000, 5500, 10000, 20000][buildingId];
+        if (workerId == 2)
+            return [350, 950, 2000, 3500, 6500, 12000, 25000][buildingId];
+        if (workerId == 3)
+            return [450, 1150, 2250, 4000, 7500, 14000, 30000][buildingId];
+        if (workerId == 4)
+            return [550, 1350, 2500, 4500, 8500, 16000, 35000][buildingId];
+        if (workerId == 5)
+            return [650, 1550, 2750, 5000, 9500, 18000, 40000][buildingId];
+        revert("Incorrect workerId");
+    }
+
+    function getYield(uint256 buildingId, uint256 workerId)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (workerId == 1)
+            return [2, 16, 54, 125, 310, 730, 1834][buildingId];
+        if (workerId == 2)
+            return [4, 24, 65, 158, 390, 925, 2501][buildingId];
+        if (workerId == 3)
+            return [6, 29, 78, 190, 475, 1140, 3251][buildingId];
+        if (workerId == 4)
+            return [9, 36, 93, 229, 572, 1366, 4091][buildingId];
+        if (workerId == 5)
+            return [13, 45, 110, 271, 673, 1613, 5000][buildingId];
+        revert("Incorrect workerId");
+    }
+
+    function getMarket(uint256 marketId)
+        internal
+        pure
+        returns (uint256, uint256)
+    {
+        if (marketId == 0) return (0, 24); // price | value
+        if (marketId == 1) return (1250, 28);
+        if (marketId == 2) return (1250, 32);
+        if (marketId == 3) return (1250, 36);
+        revert("Incorrect marketId");
+    }
+}

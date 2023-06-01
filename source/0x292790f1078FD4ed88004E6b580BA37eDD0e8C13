@@ -1,0 +1,225 @@
+pragma solidity >=0.6.0 <0.8.0;
+
+interface IERC20 {    
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+      
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () internal {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+    
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+interface IAppleData {
+    function marketAddress() external view returns(address);
+    function receiver() external view returns(address);
+    function usdt() external view returns(address);
+    function wbnb() external view returns(address);
+    function appleToken() external view returns(address);
+    function pancakeFactory() external view returns(address);
+    function appleFactory() external view returns(address);
+    function appleRouter() external view returns(address);
+    function lpProxy() external view returns(address);
+    function lpMine() external view returns(address);
+    function idoNodeMine() external view returns(address);
+    function inviteReward() external view returns(address);
+    function superNode() external view returns(address);
+    function invite() external view returns(address);
+
+    function lpRatioOneDay() external view returns(uint256);
+
+    function lpMineRatio() external view returns(uint256);
+    function inviteRewardRatio() external view returns(uint256);
+    function superNodeRatio() external view returns(uint256);
+    function idoNodeRatio() external view returns(uint256);
+    function marketRatio() external view returns(uint256);
+}
+
+interface ISwapFactory {
+    function getPair(address token0,address token1) external view returns (address);
+}
+
+interface ISwapRouter {
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external;
+    function swapExactTokensForTokensSupportingFeeOnBurnTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external;
+    function removeLiquidity(address tokenA, address tokenB, uint liquidity, uint amountAMin, uint amountBMin, address to,
+        uint deadline) external returns (uint amountA, uint amountB);
+    function addLiquidity(address tokenA, address tokenB, uint amountADesired, uint amountBDesired, uint amountAMin, uint amountBMin,
+        address to, uint deadline) external returns (uint amountA, uint amountB, uint liquidity);
+}
+
+interface IMine {    
+    function notifyRewardRate(uint256 oneDayAmount_) external;
+}
+
+contract LpProxy is Ownable {
+    IAppleData public appleData;
+    uint256 public startTime;
+    uint256 public lastTime;
+    uint256 public oneDaySecond = 86400;
+
+    constructor(uint256 startTime_, address appleData_) public {
+        startTime = startTime_;
+        lastTime = startTime_;
+        appleData = IAppleData(appleData_);
+    }
+
+    uint private unlocked = 1;
+    modifier lock() {
+        require(unlocked == 1, 'LpProxy: LOCKED');
+        unlocked = 0;
+        _;
+        unlocked = 1;
+    }
+
+    receive() external payable {
+        notifyRemoveLiquidityAndReward();
+    }
+    
+    function notifyRemoveLiquidityAndReward() public lock {
+        uint256 nowTime = block.timestamp;
+        if (nowTime >= lastTime) {
+            lastTime += oneDaySecond;
+            _removeLiquidityAndReward();
+        } 
+    }
+
+    function _removeLiquidityAndReward() private {
+        address usdt = appleData.usdt();
+        address appleToken = appleData.appleToken();
+
+        uint256 usdtReward = _removeLiquidityAndSwap(usdt, appleToken);
+        if(usdtReward > 0) {
+            _doUsdtReward(usdt, usdtReward);
+        }
+
+        uint256 appleReward = IERC20(appleToken).balanceOf(address(this));
+        if(appleReward > 0) {
+            _doAppleReward(appleToken, appleReward);
+        }
+    }
+
+    function _doUsdtReward(address usdt, uint256 usdtReward) private {
+        uint256 inviteRewardAmount = usdtReward * appleData.inviteRewardRatio() / (appleData.superNodeRatio() + appleData.inviteRewardRatio());
+        uint256 superNodeAmount = usdtReward - inviteRewardAmount;
+
+        if (inviteRewardAmount > 0) {
+            IERC20(usdt).transfer(appleData.inviteReward(), inviteRewardAmount);
+        } 
+
+        if (superNodeAmount > 0) {
+            IERC20(usdt).transfer(appleData.superNode(), superNodeAmount);
+        } 
+    }
+
+    function _doAppleReward(address appleToken, uint256 appleReward) private {
+        uint256 totalAppleRatio = appleData.lpMineRatio() + appleData.idoNodeRatio() + appleData.marketRatio();
+        uint256 lpMineAmount = appleReward * appleData.lpMineRatio() / totalAppleRatio;
+        uint256 idoNodeAmount = appleReward * appleData.idoNodeRatio() / totalAppleRatio;
+        uint256 marketAmount = appleReward - lpMineAmount - idoNodeAmount;
+
+        if (lpMineAmount > 0) {
+            address lpMine = appleData.lpMine();
+            IERC20(appleToken).transfer(lpMine, lpMineAmount);
+            IMine(lpMine).notifyRewardRate(lpMineAmount);
+        } 
+
+        if (idoNodeAmount > 0) {
+            address idoNodeMine = appleData.idoNodeMine();
+            IERC20(appleToken).transfer(idoNodeMine, idoNodeAmount);
+            IMine(idoNodeMine).notifyRewardRate(idoNodeAmount);
+        } 
+
+        if (marketAmount > 0) {
+            IERC20(appleToken).transfer(appleData.marketAddress(), marketAmount);
+        } 
+    }
+
+    function _removeLiquidityAndSwap(address usdt, address appleToken) private returns (uint256) {
+        address pair = ISwapFactory(appleData.appleFactory()).getPair(usdt, appleToken);
+
+        uint256 lpAmount = IERC20(pair).balanceOf(address(this)) * appleData.lpRatioOneDay() / 1000;
+        if (lpAmount == 0) {
+            return 0;
+        } 
+
+        address appleRouter = appleData.appleRouter();
+        ISwapRouter router = ISwapRouter(appleRouter);
+
+        IERC20(pair).approve(appleRouter, lpAmount);
+        router.removeLiquidity(usdt, appleToken, lpAmount, 0, 0, address(this), block.timestamp);
+
+        address[] memory path = new address[](2);
+        path[0] = usdt;
+        path[1] = appleToken;
+
+        uint256 usdtBalance = IERC20(usdt).balanceOf(address(this));
+        uint256 usdtReward = usdtBalance * (appleData.superNodeRatio() + appleData.inviteRewardRatio()) * 2 / 100;
+        uint256 usdtAmount = usdtBalance - usdtReward;
+        IERC20(usdt).approve(appleRouter, usdtAmount);
+        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(usdtAmount,0,path,address(this),block.timestamp);
+
+        return usdtReward;
+    }
+    
+    function setSecond(uint256 oneDaySecond_) public onlyOwner {
+        require(oneDaySecond_ <= 86400, "oneDaySecond must less than 86400");
+        oneDaySecond = oneDaySecond_;
+    }
+
+    function setStartTime(uint256 startTime_) public onlyOwner {
+        startTime = startTime_;
+        lastTime = startTime_;
+    }
+
+    function setAppleData(address appleData_) public onlyOwner {
+        appleData = IAppleData(appleData_);
+    }
+}

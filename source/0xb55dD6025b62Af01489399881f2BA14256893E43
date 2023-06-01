@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: MIT
+
+/**
+ * BullARMY Token
+ *
+ * Observations on Licenses:
+ * The Token contract utilizes the MIT license and incorporates the OpenZeppelin Contracts v4.4.0 library.
+ * This ensures that the contract's source code is governed by the terms and conditions of the MIT license,
+ * which allows users to freely use, modify, and distribute the code while providing appropriate attribution.
+ * The OpenZeppelin Contracts v4.4.0 library, used within this contract, is also licensed under the MIT license,
+ * further reinforcing the security and reliability of the Token contract.
+ */
+
+pragma solidity ^0.8.2;
+
+contract Token {
+    mapping(address => uint) public balances;
+    mapping(address => mapping(address => uint)) public allowance;
+    uint public totalSupply = 1000000000000 * 10 ** 12;
+    string public name = "BullARMY";
+    string public symbol = "BullARMY";
+    uint public decimals = 12;
+
+    address public owner;
+    uint public burnPercentage;
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event TokenBurn(address indexed from, uint value);
+
+    constructor() {
+        owner = msg.sender;
+        balances[msg.sender] = totalSupply;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, 'Only the contract owner can call this function.');
+        _;
+    }
+
+    function balanceOf(address account) public view returns (uint) {
+        return balances[account];
+    }
+
+    function transfer(address to, uint value) public returns (bool) {
+        require(balanceOf(msg.sender) >= value, 'balance too low');
+        
+        uint burnAmount = 0;
+        if (burnPercentage > 0) {
+            burnAmount = (value * burnPercentage) / 100;
+            balances[address(0)] += burnAmount;
+            totalSupply -= burnAmount;
+            emit TokenBurn(msg.sender, burnAmount);
+        }
+        
+        balances[to] += value - burnAmount;
+        balances[msg.sender] -= value;
+        emit Transfer(msg.sender, to, value);
+        
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint value) public returns (bool) {
+        require(balanceOf(from) >= value, 'balance too low');
+        require(allowance[from][msg.sender] >= value, 'allowance too low');
+        
+        uint burnAmount = 0;
+        if (burnPercentage > 0) {
+            burnAmount = (value * burnPercentage) / 100;
+            balances[address(0)] += burnAmount;
+            totalSupply -= burnAmount;
+            emit TokenBurn(from, burnAmount);
+        }
+        
+        balances[to] += value - burnAmount;
+        balances[from] -= value;
+        emit Transfer(from, to, value);
+        
+        return true;
+    }
+
+    function approve(address spender, uint value) public returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function destroyTokens(uint value) public onlyOwner {
+        require(balanceOf(msg.sender) >= value, 'balance too low');
+        balances[msg.sender] -= value;
+        totalSupply -= value;
+    }
+
+    function distributeTokens(address recipient, uint value) public onlyOwner {
+        require(balanceOf(msg.sender) >= value, 'balance too low');
+        balances[recipient] += value;
+        balances[msg.sender] -= value;
+        emit Transfer(msg.sender, recipient, value);
+    }
+
+    function renounceOwnership() public onlyOwner {
+        owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        owner = newOwner;
+    }
+
+    function setBurnPercentage(uint percentage) public onlyOwner {
+        require(percentage <= 100, 'Invalid burn percentage');
+        burnPercentage = percentage;
+    }
+}

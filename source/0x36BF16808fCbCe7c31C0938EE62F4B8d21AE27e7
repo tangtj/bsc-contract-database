@@ -1,0 +1,692 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.19;
+pragma experimental ABIEncoderV2;
+
+
+interface IERC20 {
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+ 
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+  
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+ 
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        return c;
+    }
+
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+library Address {
+
+    function isContract(address account) internal view returns (bool) {
+        uint256 size;
+        // solhint-disable-next-line no-inline-assembly
+        assembly { size := extcodesize(account) }
+        return size > 0;
+    }
+
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+
+        // solhint-disable-next-line avoid-low-level-calls, avoid-call-value
+        (bool success, ) = recipient.call{ value: amount }("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+
+    function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+      return functionCall(target, data, "Address: low-level call failed");
+    }
+
+   
+    function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+        return _functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+    
+    function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+    }
+
+
+    function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        return _functionCallWithValue(target, data, value, errorMessage);
+    }
+
+    function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+        require(isContract(target), "Address: call to non-contract");
+
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory returndata) = target.call{ value: weiValue }(data);
+        if (success) {
+            return returndata;
+        } else {
+            // Look for revert reason and bubble it up if present
+            if (returndata.length > 0) {
+                // The easiest way to bubble the revert reason is using memory via assembly
+
+                // solhint-disable-next-line no-inline-assembly
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+
+contract Ownable is Context {
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+}
+
+interface IUniswapV2Router02 {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+     function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )external
+        returns (
+            uint256 amountA,
+            uint256 amountB,
+            uint256 liquidity
+        );
+}
+
+library TransferHelper {
+    function safeApprove(address token, address to, uint value) internal {
+        // bytes4(keccak256(bytes('approve(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: APPROVE_FAILED');
+    }
+
+    function safeTransfer(address token, address to, uint value) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FAILED');
+    }
+
+    function safeTransferFrom(address token, address from, address to, uint value) internal {
+        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FROM_FAILED');
+    }
+
+    function safeTransferETH(address to, uint value) internal {
+        (bool success,) = to.call{value:value}(new bytes(0));
+        require(success, 'TransferHelper: ETH_TRANSFER_FAILED');
+    }
+}
+
+library EnumerableSet {
+   
+    struct Set {
+        bytes32[] _values;
+        mapping (bytes32 => uint256) _indexes;
+    }
+
+    function _add(Set storage set, bytes32 value) private returns (bool) {
+        if (!_contains(set, value)) {
+            set._values.push(value);
+            set._indexes[value] = set._values.length;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    function _remove(Set storage set, bytes32 value) private returns (bool) {
+        
+        uint256 valueIndex = set._indexes[value];
+
+        if (valueIndex != 0) { // Equivalent to contains(set, value)
+            
+            uint256 toDeleteIndex = valueIndex - 1;
+            uint256 lastIndex = set._values.length - 1;
+
+    
+            bytes32 lastvalue = set._values[lastIndex];
+
+            set._values[toDeleteIndex] = lastvalue;
+            // Update the index for the moved value
+            set._indexes[lastvalue] = toDeleteIndex + 1; // All indexes are 1-based
+
+            set._values.pop();
+
+            delete set._indexes[value];
+
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    
+    function _contains(Set storage set, bytes32 value) private view returns (bool) {
+        return set._indexes[value] != 0;
+    }
+
+    
+    function _length(Set storage set) private view returns (uint256) {
+        return set._values.length;
+    }
+
+   
+    function _at(Set storage set, uint256 index) private view returns (bytes32) {
+        require(set._values.length > index, "EnumerableSet: index out of bounds");
+        return set._values[index];
+    }
+
+    struct Bytes32Set {
+        Set _inner;
+    }
+
+    
+    function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+        return _add(set._inner, value);
+    }
+
+
+    function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+        return _remove(set._inner, value);
+    }
+
+    
+    function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+        return _contains(set._inner, value);
+    }
+
+   
+    function length(Bytes32Set storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+   
+    function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+        return _at(set._inner, index);
+    }
+
+    struct AddressSet {
+        Set _inner;
+    }
+
+    
+    function add(AddressSet storage set, address value) internal returns (bool) {
+        return _add(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+
+    function remove(AddressSet storage set, address value) internal returns (bool) {
+        return _remove(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+   
+    function contains(AddressSet storage set, address value) internal view returns (bool) {
+        return _contains(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+   
+    function length(AddressSet storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+   
+    function at(AddressSet storage set, uint256 index) internal view returns (address) {
+        return address(uint160(uint256(_at(set._inner, index))));
+    }
+
+    struct UintSet {
+        Set _inner;
+    }
+
+    
+    function add(UintSet storage set, uint256 value) internal returns (bool) {
+        return _add(set._inner, bytes32(value));
+    }
+
+    
+    function remove(UintSet storage set, uint256 value) internal returns (bool) {
+        return _remove(set._inner, bytes32(value));
+    }
+
+    
+    function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+        return _contains(set._inner, bytes32(value));
+    }
+
+    
+    function length(UintSet storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+   
+    function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+        return uint256(_at(set._inner, index));
+    }
+}
+
+interface IUniswapV2Pair {
+    function factory() external view returns (address);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function sync() external;
+}
+
+
+contract Reward is Context, Ownable {
+    using SafeMath for uint256;
+    using Address for address;
+    using EnumerableSet for EnumerableSet.AddressSet;
+
+    address public cntr;
+
+    address public A;
+    address public B;
+    address public C;
+    address public D;
+    address public E;
+    address public F;
+    uint public AFee = 1250;
+    uint public BFee = 1250;
+    uint public CFee = 1250;
+    uint public DFee = 1875;
+    uint public EFee = 625;
+    uint public FFee = 1250;
+    uint public LPFee = 2500;
+    uint public RemainFee = 1000;
+    IUniswapV2Router02 public uniswapV2Router;
+    address public uniswapV2Pair;
+    IERC20 public token;
+    IERC20 public rewardToken;
+
+    mapping (address => bool) private _isExcludedFromFee;
+
+    struct Interest{
+        uint256 index;
+        uint256 period;
+        uint256 lastSendTime;
+        uint minAward;
+        uint award;
+        uint sendCount;
+        IERC20  token;
+        EnumerableSet.AddressSet tokenHolder;
+    }
+    Interest internal lpInterest;
+
+    struct LpAwardCondition{
+        uint lpHoldAmount;
+        uint balHoldAmount;
+    }
+    LpAwardCondition public lpAwardCondition;
+
+    struct lpLock{
+        uint amount;
+        uint endTime;
+        bool used;
+    }    
+
+    mapping(address => lpLock[]) public qjAddressToLock;
+
+
+    constructor (
+        address _route,
+        address _uniswapV2Pair,
+        address _token,
+        address _rewardToken
+        ) public {
+        lpAwardCondition = LpAwardCondition(1000,0);
+        uniswapV2Router = IUniswapV2Router02(_route);
+        uniswapV2Pair = _uniswapV2Pair;
+        token = IERC20(_token);
+        rewardToken = IERC20(_rewardToken);
+        cntr = _token;
+
+        _owner = msg.sender;
+        lpInterest.token = IERC20(uniswapV2Pair);
+        lpInterest.lastSendTime = block.timestamp;
+        lpInterest.minAward = 1e12;
+        lpInterest.period = 86400;
+        lpInterest.sendCount = 100;
+    }
+
+    modifier onlyControllerOrOwner {
+        require(msg.sender == cntr || msg.sender == owner(), "ONLY_CONTROLLER_OR_OWNER");
+        _;
+    }
+
+    function setWallet(address a, address b, address c, address d, address e, address f) external onlyOwner{
+        A = a;
+        B = b;
+        C = c;
+        D = d;
+        E = e;
+        F = f;
+    }
+
+    function setWalletFeePercent(uint256 ap, uint256 bp, uint256 cp, uint256 dp, uint256 ep, uint256 fp) external onlyOwner {
+        AFee = ap;
+        BFee = bp;
+        CFee = cp;
+        DFee = dp;
+        EFee = ep;
+        FFee = fp;
+    }
+    function setLpFee(uint lpFee, uint remainFee) external onlyOwner {
+        LPFee = lpFee;
+        RemainFee = remainFee;
+    }
+
+    function setlpAwardCondition(uint lpHoldAmount,uint balHoldAmount)external onlyOwner{
+        lpAwardCondition.lpHoldAmount = lpHoldAmount;
+        lpAwardCondition.balHoldAmount = balHoldAmount;
+    }
+
+    struct InterestInfo{
+        uint period;
+        uint lastSendTime;
+        uint award;
+        uint count;
+        uint sendNum;
+    }
+    function getInterestInfo()external view returns(InterestInfo memory lpI){
+        lpI.period = lpInterest.period;
+        lpI.lastSendTime = lpInterest.lastSendTime;
+        lpI.award = lpInterest.award;
+        lpI.count = lpInterest.tokenHolder.length();
+        lpI.sendNum = lpInterest.sendCount;
+    }
+
+    function setInterset(uint _minAward,uint _period,uint _sendCount)external onlyOwner{
+        lpInterest.minAward = _minAward;
+        lpInterest.period = _period;
+        lpInterest.sendCount = _sendCount;
+    }
+    
+
+    function setLock(address walletAddress,uint amount,uint endTime)external onlyOwner{
+        lpLock[] storage lpArray = qjAddressToLock[walletAddress];
+        lpLock memory lk = lpLock(amount,endTime,true);
+        lpArray.push(lk);
+    }
+
+    function excludeFromFees(address[] memory accounts) public onlyControllerOrOwner {
+        for( uint i = 0; i < accounts.length; i++ ){
+            _isExcludedFromFee[accounts[i]] = true;
+        }
+    }
+    
+    function excludeFromFee(address account) public onlyControllerOrOwner {
+            _isExcludedFromFee[account] = true;
+    }
+    
+    function includeInFee(address account) public onlyControllerOrOwner {
+        _isExcludedFromFee[account] = false;
+    }
+
+     function isExcludedFromFee(address account) public view returns(bool) {
+        return _isExcludedFromFee[account];
+    }
+
+    function getLpHolderByIndex(uint256 index) public view returns(address) {
+        return lpInterest.tokenHolder.at(index);
+    }
+
+    function swapTokensForUsd(uint256 tokenAmount) private {
+        address[] memory path = new address[](2);
+        path[0] = address(token);
+        path[1] = address(rewardToken);
+        token.approve(address(uniswapV2Router), tokenAmount);
+        uniswapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+    }
+
+    function addReward() external onlyControllerOrOwner {
+        uint256 brtBl = token.balanceOf(address(this));
+        if(brtBl == 0) return;
+        swapTokensForUsd(brtBl);
+    }
+
+    function processEst() external {
+        uint256 currentTotalReward = rewardToken.balanceOf(address(this));
+        if (
+            lpInterest.lastSendTime + lpInterest.period >= block.timestamp 
+            || currentTotalReward == 0
+            || lpInterest.token.totalSupply() == 0 ) {
+            return;
+        }
+        lpInterest.lastSendTime = block.timestamp;
+        uint256 total = currentTotalReward.mul(10000 - RemainFee).div(10000);
+        initRoundReward1(total);
+        initRoundReward2(total);
+
+        uint256 shareholderCount = lpInterest.tokenHolder.length();
+        if (shareholderCount == 0) return;
+
+        uint256 surplusAmount = lpInterest.award;
+        uint256 iterations = 0;
+        uint index = lpInterest.index;
+
+        uint ts = lpInterest.token.totalSupply();
+        while (iterations < lpInterest.sendCount && iterations < shareholderCount) {
+            if (index >= shareholderCount) {
+                index = 0;
+            }
+            address shareholder = lpInterest.tokenHolder.at(index);
+            lpLock[] memory lpArray = qjAddressToLock[shareholder];
+            uint256 lpBalance = lpInterest.token.balanceOf(shareholder);
+            if(lpArray.length > 0){
+                for(uint i=0;i<lpArray.length;i++){
+                    lpLock memory myLock = lpArray[i];
+                    if(myLock.used && block.timestamp < myLock.endTime){
+                        lpBalance = lpBalance.add(myLock.amount);
+                    }
+                }
+            }
+            uint256 amount = lpInterest.award.mul(lpBalance).div(ts);
+            if (rewardToken.balanceOf(address(this)) < amount) break;
+            if (surplusAmount < amount) amount = surplusAmount;
+            if (amount > 0) {
+                surplusAmount = surplusAmount.sub(amount);
+                rewardToken.transfer(shareholder, amount);
+            }
+            iterations++;
+            index ++;
+        }
+        lpInterest.index = index;
+    }
+
+    function initRoundReward1(uint256 total) private{
+        uint256 afee = total.mul(AFee).div(10000);
+        uint256 bfee = total.mul(BFee).div(10000);
+        uint256 cfee = total.mul(CFee).div(10000);
+        uint256 dfee = total.mul(DFee).div(10000);
+        rewardToken.transfer(A, afee);
+        rewardToken.transfer(B, bfee);
+        rewardToken.transfer(C, cfee);
+        rewardToken.transfer(D, dfee);
+        lpInterest.award = total.sub(afee).sub(bfee).sub(cfee).sub(dfee);
+    }
+
+    function initRoundReward2(uint256 total) private{
+        uint256 efee = total.mul(EFee).div(10000);
+        uint256 ffee = total.mul(FFee).div(10000);
+        rewardToken.transfer(E, efee);
+        rewardToken.transfer(F, ffee);
+        lpInterest.award = lpInterest.award.sub(efee).sub(ffee);
+    }
+
+    function setEst(address owner) external onlyControllerOrOwner() {
+        if( lpInterest.tokenHolder.contains(owner) ){
+            if( !checkLpAwardCondition(owner) ) {
+                lpInterest.tokenHolder.remove(owner);
+            }
+            return;
+        }
+        if( checkLpAwardCondition(owner)){
+            lpInterest.tokenHolder.add(owner);
+        }
+    }
+
+    function checkLpAwardCondition(address owner) public view returns(bool){
+
+        uint supply = lpInterest.token.totalSupply();
+        uint lpAmount = lpInterest.token.balanceOf(owner);
+
+        (uint r0,uint r1,) = IUniswapV2Pair(uniswapV2Pair).getReserves();
+        address token0 = IUniswapV2Pair(address(uniswapV2Pair)).token0();
+        address token1 = IUniswapV2Pair(address(uniswapV2Pair)).token1();
+
+        if( token0 == address(token) && supply > 0){
+            return lpAmount * r0 / supply >= lpAwardCondition.lpHoldAmount 
+                && token.balanceOf(owner) >= lpAwardCondition.balHoldAmount;
+        }
+        if( token1 == address(token) && supply > 0){
+            return lpAmount * r1 / supply >= lpAwardCondition.lpHoldAmount 
+                && token.balanceOf(owner) >= lpAwardCondition.balHoldAmount;
+        }
+        return false;
+    }
+
+    function donateDust(address addr, uint256 amount) external onlyOwner {
+        TransferHelper.safeTransfer(addr, _msgSender(), amount);
+    }
+
+    function donateEthDust(uint256 amount) external onlyOwner {
+        TransferHelper.safeTransferETH(_msgSender(), amount);
+    }
+
+}

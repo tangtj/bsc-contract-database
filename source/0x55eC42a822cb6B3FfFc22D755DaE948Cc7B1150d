@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: none
+
+pragma solidity ^0.8.18;
+
+interface BEP20 {
+    function totalSupply() external view returns (uint theTotalSupply);
+    function balanceOf(address _owner) external view returns (uint balance);
+    function transfer(address _to, uint _value) external returns (bool success);
+    function transferFrom(address _from, address _to, uint _value) external returns (bool success);
+    function approve(address _spender, uint _value) external returns (bool success);
+    function allowance(address _owner, address _spender) external view returns (uint remaining);
+    event Transfer(address indexed _from, address indexed _to, uint _value);
+    event Approval(address indexed _owner, address indexed _spender, uint _value);
+}
+
+contract QizonIDO{
+  
+
+  struct Tariff {
+    uint time;
+    uint percent;
+  }
+
+  struct Deposit {
+    uint tariff;
+    uint amount;
+    uint at;
+  }
+  
+  struct Investor {
+    bool registered;
+   Deposit[] deposits;
+    uint invested;
+    uint paidAt;
+    uint withdrawn;
+  }
+ 
+ uint public MIN_DEPOSIT_BUSD; 
+    
+  
+  address public buyTokenAddr = 0xa459f259219547835C73eC0db6CB920735B3b642; // TESTNET
+  
+  uint public tokenPrice;
+  uint public tokenPriceDecimal;
+  event OwnershipTransferred(address);
+  
+  address public owner = msg.sender;
+  
+  
+  uint public totalInvested;
+  address public contractAddr = address(this);
+  
+  mapping (address => Investor) public investors;
+  event DepositAt(address user, uint tariff, uint amount);
+  event Withdraw(address user, uint amount);
+  
+  constructor() {
+    
+  }
+
+  function buyTokenWithBUSD(uint BusdAmount) external {
+        BusdAmount = BusdAmount ;
+        BEP20 sendtoken    = BEP20(buyTokenAddr);
+        BEP20 receiveToken = BEP20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56); ///Mainnet
+        
+        uint tokenVal = (BusdAmount* 10**tokenPriceDecimal) / tokenPrice ; 
+        
+        require(sendtoken.balanceOf(address(this)) >= tokenVal, "Insufficient contract balance");
+        require(receiveToken.balanceOf(msg.sender) >= BusdAmount, "Insufficient user balance");
+      
+        receiveToken.transferFrom(msg.sender, contractAddr, BusdAmount);
+        investors[msg.sender].invested += tokenVal;
+        totalInvested += tokenVal;
+       
+        sendtoken.transfer(msg.sender, tokenVal);
+        emit DepositAt(msg.sender, 0, tokenVal);
+  
+  } 
+
+    // Set buy price  
+    function setBuyPrice(uint _price, uint _decimal) public {
+      require(msg.sender == owner, "Only owner");
+      tokenPrice        = _price;
+      tokenPriceDecimal = _decimal;
+    }       
+
+          // Owner BNB Withdraw    
+    // Only owner can withdraw BNB 
+      function withdrawBNB(address payable to, uint amount) public returns(bool) {
+        require(msg.sender == owner, "Only owner");
+        require(to != address(0), "Cannot send to zero address");
+        to.transfer(amount);
+        return true;
+    }
+
+    // Owner Token Withdraw    
+    // Only owner can withdraw token 
+    function withdrawToken(address tokenAddress, address to, uint amount) public returns(bool) {
+        require(msg.sender == owner, "Only owner");
+        require(to != address(0), "Cannot send to zero address");
+        BEP20 _token = BEP20(tokenAddress);
+        _token.transfer(to, amount);
+        return true;
+    }
+
+     function setMinbusd(uint _busdAmt) public {
+      require(msg.sender == owner, "Only owner");
+      MIN_DEPOSIT_BUSD = _busdAmt;
+    }
+
+    // Ownership Transfer
+    // Only owner can call this function
+    function transferOwnership(address to) public returns(bool) {
+        require(msg.sender == owner, "Only owner");
+        require(to != address(0), "Cannot transfer ownership to zero address");
+        owner = to;
+        emit OwnershipTransferred(to);
+        return true;
+    }
+}

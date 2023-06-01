@@ -1,0 +1,247 @@
+//SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+interface Simba{
+    function transfer(address to, uint tokens) external returns (bool success);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool) ;
+}
+
+
+
+
+
+contract SimbaTokenStaking
+    {
+       
+        address  public owner;
+
+        
+
+        
+        address Simbacontract=0x11Ae0efA2FF44Bc6Eb33D41030eb01052fc5d6b7;
+
+        uint public totalSimbaInvestors;
+        uint public rewardToken=4000000000000000000;//50000000
+        //uint public min_Stake_amount=10000;  //10000000000000000000000
+        uint public min_Stake_amount=1;  //10000000000000000000000
+
+        uint public max_Stake_amount=50000000000; //5000000000000000000000000
+        uint public denomenator=100000; //5000000000000000000000000
+        uint public investmentPeriod=300 days;
+        uint public totalbusiness; 
+        uint rew_till_done;
+
+
+        struct allInvestments{
+
+            uint investedAmount;
+            uint withdrawnTime;
+            uint DepositTime;
+            uint investmentNum;
+            uint unstakeTime;
+            bool unstake;
+        }
+
+        struct ref_data{
+            uint reward;
+            uint count;
+        }
+
+        struct Data{
+
+            mapping(uint=>allInvestments) investment;
+            address[] hisReferrals;
+            address referralFrom;
+            mapping(uint=>ref_data) referralLevel;
+            uint reward;
+            uint noOfInvestment;
+            uint totalInvestment;
+            uint totalWithdraw_reward;
+            bool investBefore;
+            uint stakeTime;
+        }
+  
+        mapping(address=>Data) public Simbainvestor;
+
+        constructor(){
+            
+            owner=msg.sender;              //here we are setting the owner of this contract
+
+        }
+
+        function Stake(uint _investedamount) external returns(bool success){
+            require(_investedamount >= min_Stake_amount && _investedamount <= max_Stake_amount,"value is not greater than 1 and less than 5000000");     //ensuring that investment amount is not less than zero
+            
+            if(Simbainvestor[msg.sender].investBefore == false)
+            { 
+                totalSimbaInvestors++;                                     
+            }
+            if(Simbainvestor[msg.sender].totalInvestment == 0)
+            { 
+                Simbainvestor[msg.sender].stakeTime = block.timestamp + 300 days;
+            }
+
+            uint num = Simbainvestor[msg.sender].noOfInvestment;
+            Simbainvestor[msg.sender].investment[num].investedAmount =_investedamount;
+            Simbainvestor[msg.sender].investment[num].DepositTime=block.timestamp;
+            Simbainvestor[msg.sender].investment[num].withdrawnTime=block.timestamp + investmentPeriod ;  // 300 days
+            Simbainvestor[msg.sender].investment[num].investmentNum=num;
+            Simbainvestor[msg.sender].totalInvestment+=_investedamount;
+            Simbainvestor[msg.sender].noOfInvestment++;
+            totalbusiness+=_investedamount;
+            Simba(Simbacontract).transferFrom(msg.sender,address(this),_investedamount*10**18);
+            Simbainvestor[msg.sender].investBefore=true;
+
+            return true;
+            
+        }
+        function getReward() view public returns(uint){ //this function is get the total reward balance of the investor
+            uint totalReward;
+            uint depTime;
+            uint rew;
+            uint temp = Simbainvestor[msg.sender].noOfInvestment;
+            for( uint i = 0;i < temp;i++)
+            {   
+                if(!Simbainvestor[msg.sender].investment[i].unstake)
+                {
+                    depTime =block.timestamp - Simbainvestor[msg.sender].investment[i].DepositTime;
+                }
+                else{
+                    depTime =Simbainvestor[msg.sender].investment[i].unstakeTime - Simbainvestor[msg.sender].investment[i].DepositTime;
+                }
+                depTime=depTime/1; //1 second
+                if(depTime>0)
+                {
+                    //rew  = ((Simbainvestor[msg.sender].investment[i].investedAmount)*rewardToken)/denomenator;
+                    rew  = ((Simbainvestor[msg.sender].investment[i].investedAmount)*rewardToken)/(denomenator*86400);
+
+                    totalReward += depTime * rew;
+                }
+            }
+            totalReward -= Simbainvestor[msg.sender].totalWithdraw_reward;
+
+            return totalReward;
+        }
+
+        
+
+        function withdrawReward() external returns (bool success){
+            uint Total_reward = getReward();
+            require(Total_reward>0,"you dont have rewards to withdrawn");         //ensuring that if the investor have rewards to withdraw
+            Simbainvestor[msg.sender].totalWithdraw_reward+=Total_reward;
+            Simba(Simbacontract).transfer(msg.sender, Total_reward);
+            return true;
+
+        }
+
+
+        function unStake() external  returns (bool success){
+            require(Simbainvestor[msg.sender].totalInvestment>0,"you dont have investment to withdrawn");             //checking that he invested any amount or not
+            uint amount=Simbainvestor[msg.sender].totalInvestment;
+            uint temp = Simbainvestor[msg.sender].noOfInvestment;
+            uint from = rew_till_done;
+            //uint amount50;
+            //uint amount50;
+            if(Simbainvestor[msg.sender].stakeTime > block.timestamp)
+            {
+                //amount50 = (amount*50)/100;
+                //amount70 = (amount*70)/100;
+                Simba(Simbacontract).transfer(msg.sender,amount * 10**18);             //transferring this specific investment to the investor
+                //Simba(Simbacontract).transfer(fee_receiver,amount50 * 10**18);   
+
+            }
+            else{
+
+                Simba(Simbacontract).transfer(msg.sender,amount* 10**18);             //transferring this specific investment to the investor
+            }
+            for( from=0;from < temp;from++)
+            {   
+                Simbainvestor[msg.sender].investment[from].unstake =true;    
+                Simbainvestor[msg.sender].investment[from].unstakeTime =block.timestamp;    
+
+                            
+
+            }
+            rew_till_done =Simbainvestor[msg.sender].noOfInvestment;                                       
+            Simbainvestor[msg.sender].totalInvestment=0;           // decrease this invested amount from the total investment
+
+            return true;
+
+        }
+
+        function getTotalInvestmentSimba() public view returns(uint) {   //this function is to get the total investment of the ivestor
+            
+            return Simbainvestor[msg.sender].totalInvestment;
+
+        }
+
+        function getAllSimbainvestments() public view returns (allInvestments[] memory) { //this function will return the all investments of the investor and withware date
+            uint num = Simbainvestor[msg.sender].noOfInvestment;
+            uint temp;
+            uint currentIndex;
+            
+            for(uint i=0;i<num;i++)
+            {
+               if( Simbainvestor[msg.sender].investment[i].investedAmount > 0 ){
+                   temp++;
+               }
+
+            }
+         
+            allInvestments[] memory Invested =  new allInvestments[](temp) ;
+
+            for(uint i=0;i<num;i++)
+            {
+               if( Simbainvestor[msg.sender].investment[i].investedAmount > 0 ){
+                 //allInvestments storage currentitem=Simbainvestor[msg.sender].investment[i];
+                   Invested[currentIndex]=Simbainvestor[msg.sender].investment[i];
+                   currentIndex++;
+               }
+
+            }
+            return Invested;
+
+        }
+
+
+
+        function SimbaTotalReferrals() public view returns(uint){ // this function is to get the total number of referrals 
+            return (Simbainvestor[msg.sender].hisReferrals).length;
+        }
+
+        function SimbaReferralsList() public view returns(address[] memory){ //this function is to get the all investors list with there account number
+           return Simbainvestor[msg.sender].hisReferrals;
+        }
+        function setReward(uint _amount,uint _denomenator) public 
+        {
+            rewardToken = _amount;
+            denomenator = _denomenator;
+
+        }
+        function set_min_Stake_amount(uint _amount) public 
+        {
+            min_Stake_amount = _amount;
+        }
+        function set_max_Stake_amount(uint _amount) public 
+        {
+            max_Stake_amount = _amount;
+        }
+        function set_values(uint min_stake,uint max_stake,uint reward_per_day,uint _denomenator) public 
+        {
+            max_Stake_amount = max_stake;
+            min_Stake_amount = min_stake;
+            rewardToken = reward_per_day;
+            denomenator = _denomenator;
+        }
+        function transferOwnership(address _owner)  public
+        {
+            require(msg.sender==owner,"only Owner can call this function");
+            owner = _owner;
+        }
+
+        
+
+
+
+    }
