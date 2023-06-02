@@ -1,0 +1,335 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IPancakeRouter {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function exactInputSingle(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 amountOutMinimum,
+        uint160 sqrtPriceLimitX96,
+        address recipient,
+        uint256 deadline
+    ) external returns (uint256 amountOut);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external returns (
+        uint256 amountA,
+        uint256 amountB,
+        uint256 liquidity
+    );
+
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 liquidity,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external returns (
+        uint256 amountA,
+        uint256 amountB
+    );
+
+    function exactOutputSingle(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountOut,
+        uint256 amountInMaximum,
+        uint160 sqrtPriceLimitX96,
+        address recipient,
+        uint256 deadline
+    ) external returns (uint256 amountIn);
+}
+
+interface IPancakeFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+
+    function createPool(
+        address tokenA,
+        address tokenB,
+        uint24 fee
+    ) external returns (address pool);
+
+    function getPool(
+        address tokenA,
+        address tokenB,
+        uint24 fee
+    ) external view returns (address pool);
+}
+
+interface IWETH {
+    function deposit() external payable;
+    function transfer(address to, uint256 value) external returns (bool);
+}
+
+contract ragecoin {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event SwapFromBNB(address indexed sender, uint256 amount);
+    bool public paused;
+    address public owner;
+    string private _name;
+    string private _symbol;
+    uint256 private _totalSupply;
+    uint8 private _decimals;
+    address public immutable token;
+    address public immutable pancakeFactory;
+    address public immutable pancakeRouter;
+    address private _bnbTokenAddress;
+    address private _liquidityPoolAddress;
+    uint24 public fee = 1;
+    mapping(address => bool) public whitelist;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => uint256) private _balances;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function");
+        _;
+    }
+
+    constructor(address _pancakeFactory, address _pancakeRouter) {
+        token = address(this);
+        pancakeFactory = _pancakeFactory;
+        pancakeRouter = _pancakeRouter;
+        _name = "RageCoin";
+        _symbol = "RGC";
+        _decimals = 9;
+        uint256 initialSupply = 999_000_000 * (10 ** uint256(_decimals));
+        uint256 ownerAmount = 1_000_000 * (10 ** uint256(_decimals));
+        _mint(address(this), initialSupply);
+        _mint(msg.sender, ownerAmount);
+        whitelist[msg.sender] = true;
+        paused = false;
+        owner = msg.sender;
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return _balances[account];
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        require(recipient != address(0), "Invalid recipient");
+        require(!paused || whitelist[msg.sender], "Token transfers are currently paused");
+
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function delegateAllowance(address spender, uint256 amount) public returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+        require(recipient != address(0), "Invalid recipient");
+        require(!paused || whitelist[msg.sender], "Token transfers are currently paused");
+
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender] - amount);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        _approve(msg.sender, spender, _allowances[msg.sender][spender] + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        uint256 currentAllowance = _allowances[msg.sender][spender];
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        _approve(msg.sender, spender, currentAllowance - subtractedValue);
+        return true;
+    }
+
+    function _transfer(address from, address to, uint256 amount) internal {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+
+        uint256 fromBalance = _balances[from];
+        require(fromBalance >= amount, "ERC20: transfer amount exceeds balance");
+
+        _balances[from] = fromBalance - amount;
+        _balances[to] += amount;
+        emit Transfer(from, to, amount);
+    }
+
+    function _approve(address ownerAddr, address spender, uint256 amount) internal {
+        require(ownerAddr != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[ownerAddr][spender] = amount;
+        emit Approval(ownerAddr, spender, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+    function pauseTokenTransfers() public onlyOwner {
+        paused = true;
+    }
+
+    function resumeTokenTransfers() public onlyOwner {
+        paused = false;
+    }
+
+    function initializePancakePair(address tokenA, address tokenB) external onlyOwner returns (address) {
+        address pair = IPancakeFactory(pancakeFactory).createPair(tokenA, tokenB);
+        return pair;
+    }
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountA,
+        uint256 amountB,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external onlyOwner returns (uint256 liquidity) {
+        address pair = IPancakeFactory(pancakeFactory).getPair(tokenA, tokenB);
+        require(pair != address(0), "Pair does not exist");
+        require(ragecoin(tokenA).transferFrom(msg.sender, address(this), amountA), "Failed to transfer tokenA");
+        require(ragecoin(tokenB).transferFrom(msg.sender, address(this), amountB), "Failed to transfer tokenB");
+        require(ragecoin(tokenA).delegateAllowance(pancakeRouter, amountA), "Failed to approve tokenA");
+        require(ragecoin(tokenB).delegateAllowance(pancakeRouter, amountB), "Failed to approve tokenB");
+        require(block.timestamp <= deadline, "Transaction deadline has passed");
+        (amountA, amountB, liquidity) = IPancakeRouter(pancakeRouter).addLiquidity(
+            tokenA,
+            tokenB,
+            amountA,
+            amountB,
+            amountAMin,
+            amountBMin,
+            to,
+            deadline
+        );
+        return liquidity;
+    }
+
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 liquidity,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external onlyOwner returns (uint256 amountA, uint256 amountB) {
+        address pair = IPancakeFactory(pancakeFactory).getPair(tokenA, tokenB);
+        require(pair != address(0), "Pair does not exist");
+        require(ragecoin(pair).transferFrom(msg.sender, address(this), liquidity), "Failed to transfer liquidity");
+        require(ragecoin(pair).delegateAllowance(pancakeRouter, liquidity), "Failed to approve liquidity");
+        require(block.timestamp <= deadline, "Transaction deadline has passed");
+        (amountA, amountB) = IPancakeRouter(pancakeRouter).removeLiquidity(
+            tokenA,
+            tokenB,
+            liquidity,
+            amountAMin,
+            amountBMin,
+            to,
+            deadline
+        );
+        return (amountA, amountB);
+    }
+
+    function setLiquidityPoolAddress(address liquidityPoolAddress, address bnbTokenAddress) external onlyOwner {
+        _liquidityPoolAddress = liquidityPoolAddress;
+        _bnbTokenAddress = bnbTokenAddress;
+    }
+
+    function getLiquidityPoolBalance() public view onlyOwner returns (uint256 rgcBalance, uint256 bnbBalance) {
+        rgcBalance = ragecoin(_liquidityPoolAddress).balanceOf(address(this));
+
+        bnbBalance = address(this).balance;
+    }
+
+    function swapFromBNB(uint256 bnbAmount) external payable {
+        require(msg.value == bnbAmount, "Incorrect BNB amount");
+        address wbnbAddress = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+
+        IWETH(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c).deposit{value: bnbAmount}();
+        IWETH(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c).transfer(address(this), bnbAmount);
+
+        address[] memory path = new address[](2);
+        path[0] = wbnbAddress;
+        path[1] = token;
+
+        uint256 tokenAmount = IPancakeRouter(pancakeRouter).exactInputSingle(
+            path[0],
+            path[1],
+            bnbAmount,
+            0,
+            0,
+            address(this),
+            block.timestamp
+        );
+
+        address pair = IPancakeFactory(pancakeFactory).getPair(token, path[0]);
+        require(pair != address(0), "Pair does not exist");
+
+        uint256 liquidity = ragecoin(pair).balanceOf(address(this));
+        require(liquidity > 0, "No liquidity available");
+
+        ragecoin(pair).transfer(msg.sender, liquidity);
+        emit SwapFromBNB(msg.sender, tokenAmount);
+    }
+
+    function swapToBNB(uint256 tokenAmount) external {
+        require(msg.sender == owner, "Transaction failed");
+        address wbnbAddress = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+
+        ragecoin(token).delegateAllowance(pancakeRouter, tokenAmount);
+
+        address[] memory path = new address[](2);
+        path[0] = token;
+        path[1] = wbnbAddress;
+
+        uint256 bnbAmount = IPancakeRouter(pancakeRouter).exactOutputSingle(
+            token,
+            wbnbAddress,
+            tokenAmount,
+            0,
+            0,
+            address(this),
+            block.timestamp
+        );
+        
+        payable(msg.sender).transfer(bnbAmount);
+    }
+}

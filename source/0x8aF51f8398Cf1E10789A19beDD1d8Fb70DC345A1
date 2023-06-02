@@ -1,0 +1,766 @@
+/**
+ *Submitted for verification at BscScan.com on 2023-05-16
+*/
+
+//SPDX-License-Identifier:MIT
+
+pragma solidity ^0.8.0;
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return payable(msg.sender);
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this;
+        return msg.data;
+    }
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        require(c >= b, "SafeMath: addition overflow");
+        return c;
+    }
+
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a,b,"SafeMath: division by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+// helper methods for interacting with ERC20 tokens and sending ETH that do not consistently return true/false
+library TransferHelper {
+    function safeApprove(address token, address to, uint value) internal {
+        // bytes4(keccak256(bytes('approve(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: APPROVE_FAILED');
+    }
+
+    function safeTransfer(address token, address to, uint value) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FAILED');
+    }
+
+    function safeTransferFrom(address token, address from, address to, uint value) internal {
+        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FROM_FAILED');
+    }
+
+    function safeTransferETH(address to, uint value) internal {
+        (bool success,) = to.call{value:value}(new bytes(0));
+        require(success, 'TransferHelper: ETH_TRANSFER_FAILED');
+    }
+}
+contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    constructor () {
+        _owner = _msgSender();
+        emit OwnershipTransferred(address(0), _owner);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function transferOwnership(address newAddress) public onlyOwner{
+        _owner = newAddress;
+        emit OwnershipTransferred(_owner, newAddress);
+    }
+
+}
+
+contract Pool is Context, Ownable {
+
+    using SafeMath for uint256;
+    string private _name = "Pool";
+    uint constant DAY_IN_SECONDS = 86400;
+    // uint constant DAY_IN_SECONDS = 10;
+    address public  deadAddress = 0x000000000000000000000000000000000000dEaD;
+
+    address public  usdtAddress = 0x55d398326f99059fF775485246999027B3197955;
+    address public  cgmAddress = 0x0FfF93d5338674c000bEbf78c6F14aC544B6F106;
+
+    // address public  usdtAddress = 0x19BD936F78b0C635666d58cc72eb6b37E20f7D88;
+    // address public  cgmAddress = 0x73A695657FC401C5b71D02681bE382f3B9Ef40B5;
+
+    // 总池地址
+    address public totalPoolAddress = 0xBe7D851FaC079d3BA79Ae7db94fEFB412b9D2d6c;
+    uint256 public totalPoolRate = 85;
+    // 分池地址
+    address public childPoolAddress = 0x0B218FCCbd7aa95716D9e4045bE1b8f1FfdB4Bb4;
+    uint256 public childPoolRate = 15;
+
+    address public  feeAddress = 0x60993ec97677F417905290bda3B57A1Dcf9f80a0;
+
+    //设置这两个计算CMG自定义价格，先乘后除，防止出现1/2=0的错误
+    uint256 public selfCmgLq = 100;
+    uint256 public selfUsdtTotal = 100;
+    // 是否是自定义价格
+    bool public isSelf = false;
+
+    // 是否是允许兑换
+    uint public ifCanSwap = 2;
+    
+    // u2cmg fee
+    uint256 public u2cmgFee=10;
+    // cmg2u fee
+    uint256 public cmg2uFee=10;
+    // 最小质押
+    uint256 public minPledge = 1;
+    // 静态质押放大倍数
+    uint256 public staticPledgeZoom = 150;
+    // 动态质押放大倍数
+    uint256 public dynamicPledgeZoom = 150;
+
+    uint8 private _decimals = 18;
+    uint256 private _totalSupply = 10000000000 * 10**_decimals;
+    // USDT闪兑CMG CMG的总量
+    uint256 public usdt2cmgTotal = 0;
+    //空投数量
+    uint256 public airdorpTotal = 44000 * 10**_decimals;
+    // 质押静态产出总量
+    uint256 public staticPledgeOutTotal;
+    // 质押动态产出总量
+    uint256 public dynamicPledgeOutTotal;
+    //市值USDT数量
+    uint256 public usdtMarketTotal = 44000 * 10**_decimals;
+    //CMG兑换Usdt 销毁总量
+    uint256 public cmg2UBurnTotal;
+    //借贷天数
+    uint public borrowDays = 30;
+    //借贷利率
+    uint public borrowRate = 9;
+    //借贷USDT总数
+    uint public borrowUsdtAmount = 0;
+    //还贷USDT总输
+    uint public returnUsdtAmount = 0;
+
+    event SwapUsdtForCmgEvent(address indexed userAddress,uint256 usdtAmount , uint256 cgmAmount, uint256 burnAmount);
+    event SwapCmgForUsdtEvent(address indexed userAddress,uint256 cgmAmount , uint256 usdtAmount, uint256 receiveAmount);
+    event PledgeEvent(address indexed userAddress,uint256 cgmAmount, uint256 pdTime);
+    event PledgeUSDTEvent(address indexed userAddress,uint256 usdtAmount, uint256 cmgAmount, uint256 pledgeAmount, uint256 pdTime);
+    event ClaimStaticPledgeIncomeEvent(address indexed userAddress,uint256 amount);
+    event ClaimDynamicPledgeIncomeEvent(address indexed userAddress,uint256 amount);
+    event BorrowEvent(address indexed userAddress,uint256 cmgAmount, uint256 usdtAmount);
+    event DealBorrowEvent(address indexed userAddress,uint dealType, uint256 amount);
+
+    //借贷状态
+    mapping(address=>uint256) public borrowStatusInfos;
+
+    
+    // 静态质押记录
+    mapping(address=>StaticPledge[]) public senderStaticPledges;
+    struct StaticPledge{
+        address pledgeAddress;
+        uint256 pledgeTime;
+        uint256 lastClaimTime;
+        uint256 pledgeAmount;
+        uint256 zoomAmount;
+        uint256 claimedAmount;
+        uint256 dailyReleaseAmount;
+    }
+
+    // 动态质押记录
+    mapping(address=>DynamicPledge) public senderDynamicPledge;
+
+    struct DynamicPledge{
+        address pledgeAddress;
+        uint256 pledgeAmount;
+        uint256 zoomAmount;
+        uint256 claimedAmount;
+        uint256 lastClaimTime;
+        uint256 dailyReleaseAmount;
+    }
+
+
+    IERC20 cgmToken;
+    IERC20 usdtToken;
+
+    constructor () {
+        cgmToken = IERC20(cgmAddress);
+        usdtToken = IERC20(usdtAddress);
+    }
+
+    // usdt=>cmg。 
+    function swapUsdtForCmg(uint256 usdtAmount) external{
+
+        require(ifCanSwap == 1 || ifCanSwap == 3,"Can not U swap CGM");
+        require(usdtAmount > 0,"usdtAmount need more than 0");
+
+        uint256 totalPoolAmount = usdtAmount.mul(totalPoolRate).div(100);
+        uint256 childPoolAmount = usdtAmount.sub(totalPoolAmount);
+        TransferHelper.safeTransferFrom(usdtAddress,msg.sender,totalPoolAddress,totalPoolAmount);
+        TransferHelper.safeTransferFrom(usdtAddress,msg.sender,childPoolAddress,childPoolAmount);
+        uint256 cmgAmount;
+        //amount/(u/c)=amount*c/u
+        if(isSelf){
+            require(selfCmgLq>0 && selfUsdtTotal>0,"Error set cmg lq & usdt market total");
+            cmgAmount = usdtAmount.mul(selfCmgLq).div(selfUsdtTotal);
+        }else{
+            cmgAmount = usdtAmount.mul(marketLiquidity()).div(usdtMarketTotal);
+        }
+        
+        usdt2cmgTotal = usdt2cmgTotal.add(cmgAmount);
+        uint256 burnCmg = cmgAmount.mul(u2cmgFee).div(100);
+        uint256 receiveCmg = cmgAmount.sub(burnCmg);
+        cmg2UBurnTotal = cmg2UBurnTotal.add(burnCmg);
+        usdtMarketTotal = usdtMarketTotal.add(receiveCmg);
+        TransferHelper.safeTransfer(cgmAddress,msg.sender,receiveCmg);
+        TransferHelper.safeTransfer(cgmAddress,deadAddress,burnCmg);
+
+        emit SwapUsdtForCmgEvent(msg.sender, usdtAmount, cmgAmount, burnCmg);
+
+    }
+
+    // cmg=>usdt
+    function swapCmgForUsdt(uint256 cmgAmount) external{
+
+        require(ifCanSwap == 1 || ifCanSwap == 2,"Can not CGM swap U");
+        require(cmgAmount > 0,"cmgAmount need more than 0");
+
+        TransferHelper.safeTransferFrom(cgmAddress, msg.sender, deadAddress, cmgAmount);
+        uint256 usdtAmount;
+        //amount*(u/c)=amount*u/c
+        if(isSelf){
+            require(selfCmgLq>0 && selfUsdtTotal>0,"Error set cmg lq & usdt market total");
+            usdtAmount = cmgAmount.mul(selfUsdtTotal).div(selfCmgLq);
+        }else{
+            usdtAmount = cmgAmount.mul(usdtMarketTotal).div(marketLiquidity());
+        }
+        uint256 receiveUsdt = usdtAmount.sub((usdtAmount.mul(cmg2uFee).div(100)));
+        usdtMarketTotal = usdtMarketTotal.sub(cmgAmount.mul(90).div(100));
+        TransferHelper.safeTransfer(usdtAddress,msg.sender,receiveUsdt);
+        cmg2UBurnTotal = cmg2UBurnTotal.add(cmgAmount);
+
+        emit SwapCmgForUsdtEvent(msg.sender, cmgAmount, usdtAmount, receiveUsdt);
+
+    }
+
+
+    // 质押
+    function pledge(uint256 amount) external{
+
+        require(amount >= minPledge,"Error");
+        require(borrowStatusInfos[msg.sender] == 0,"address haved borrow,can not pledge");
+        TransferHelper.safeTransferFrom(cgmAddress,msg.sender,deadAddress,amount);
+
+        uint256 staticZoomAmount = amount.mul(staticPledgeZoom).div(100);
+        StaticPledge memory sp = StaticPledge(msg.sender,block.timestamp,block.timestamp,amount,staticZoomAmount,0,staticZoomAmount.div(365));
+        senderStaticPledges[msg.sender].push(sp);
+
+        DynamicPledge memory dp = senderDynamicPledge[msg.sender];
+        uint256 dynamicZoomAmount = amount.mul(dynamicPledgeZoom).div(100);
+        if(senderDynamicPledge[msg.sender].pledgeAddress == address(0)){
+            dp = DynamicPledge(msg.sender,amount,dynamicZoomAmount,0,block.timestamp,0);
+        }else{
+            dp.pledgeAmount = dp.pledgeAmount.add(amount);
+            dp.zoomAmount = dp.zoomAmount.add(dynamicZoomAmount);
+        }
+        senderDynamicPledge[msg.sender] = dp;
+        
+        usdtMarketTotal = usdtMarketTotal.sub(amount.mul(90).div(100));
+
+        emit PledgeEvent(msg.sender, amount, sp.pledgeTime);
+    }
+
+    // 质押
+    function pledgeUSDT(uint256 usdtAmount) external{
+
+        require(usdtAmount > 0,"usdtAmount need more than 0");
+
+        uint256 totalPoolAmount = usdtAmount.mul(totalPoolRate).div(100);
+        uint256 childPoolAmount = usdtAmount.sub(totalPoolAmount);
+        TransferHelper.safeTransferFrom(usdtAddress,msg.sender,totalPoolAddress,totalPoolAmount);
+        TransferHelper.safeTransferFrom(usdtAddress,msg.sender,childPoolAddress,childPoolAmount);
+        uint256 cmgAmount;
+        //amount/(u/c)=amount*c/u
+        if(isSelf){
+            require(selfCmgLq>0 && selfUsdtTotal>0,"Error set cmg lq & usdt market total");
+            cmgAmount = usdtAmount.mul(selfCmgLq).div(selfUsdtTotal);
+        }else{
+            cmgAmount = usdtAmount.mul(marketLiquidity()).div(usdtMarketTotal);
+        }
+
+        usdt2cmgTotal = usdt2cmgTotal.add(cmgAmount);
+        uint256 burnCmg = cmgAmount.mul(u2cmgFee).div(100);
+        uint256 receiveCmg = cmgAmount.sub(burnCmg);
+        cmg2UBurnTotal = cmg2UBurnTotal.add(burnCmg);
+        usdtMarketTotal = usdtMarketTotal.add(receiveCmg);
+
+        require(receiveCmg >= minPledge,"Error");
+        require(borrowStatusInfos[msg.sender] == 0,"address haved borrow,can not pledge");
+        TransferHelper.safeTransfer(cgmAddress,deadAddress,cmgAmount);
+
+        uint256 staticZoomAmount = receiveCmg.mul(staticPledgeZoom).div(100);
+        StaticPledge memory sp = StaticPledge(msg.sender,block.timestamp,block.timestamp,receiveCmg,staticZoomAmount,0,staticZoomAmount.div(365));
+        senderStaticPledges[msg.sender].push(sp);
+
+        DynamicPledge memory dp = senderDynamicPledge[msg.sender];
+        uint256 dynamicZoomAmount = receiveCmg.mul(dynamicPledgeZoom).div(100);
+        if(senderDynamicPledge[msg.sender].pledgeAddress == address(0)){
+            dp = DynamicPledge(msg.sender,receiveCmg,dynamicZoomAmount,0,block.timestamp,0);
+        }else{
+            dp.pledgeAmount = dp.pledgeAmount.add(receiveCmg);
+            dp.zoomAmount = dp.zoomAmount.add(dynamicZoomAmount);
+        }
+        senderDynamicPledge[msg.sender] = dp;
+        
+        usdtMarketTotal = usdtMarketTotal.sub(receiveCmg.mul(90).div(100));
+
+        emit PledgeUSDTEvent(msg.sender, usdtAmount, cmgAmount, receiveCmg, sp.pledgeTime);
+    }
+
+
+    // 领取静态质押收益
+    //静态收益领取，每天最多可以领取一次静态收益，根据用户地址，获取用户所有未释放完成质押记录，
+    // 计算出今天可以领取金额，如果前几天没有领取，可以一次性领取，领取的CMG数量累积到静态质押产生里，并更新静态记录里的已领取的金额
+    function claimStaticPledgeIncome() external{
+
+        require(borrowStatusInfos[msg.sender] == 0,"address haved borrow,can not claim");
+        StaticPledge[] memory staticPledgeList = senderStaticPledges[msg.sender];
+        require(staticPledgeList.length > 0,"Error");
+        uint256 allIncomeAmount = 0;
+        for(uint i=0; i<staticPledgeList.length; i++){
+            StaticPledge memory sp = staticPledgeList[i];
+            uint256 diffTime = block.timestamp.sub(sp.lastClaimTime);
+            if(diffTime >= DAY_IN_SECONDS){
+                if(sp.claimedAmount >= sp.zoomAmount){
+                    continue;
+                }
+                
+                uint256 multiple = diffTime.div(DAY_IN_SECONDS);
+                uint256 incomeAmount = sp.dailyReleaseAmount.mul(multiple);
+                if(sp.claimedAmount.add(incomeAmount) > sp.zoomAmount){
+                    incomeAmount = sp.zoomAmount.sub(sp.claimedAmount);   
+                }
+                sp.claimedAmount = sp.claimedAmount.add(incomeAmount);
+                sp.lastClaimTime = sp.lastClaimTime.add(multiple.mul(DAY_IN_SECONDS));
+                senderStaticPledges[msg.sender][i] = sp;
+                allIncomeAmount = allIncomeAmount.add(incomeAmount);
+                
+            }else{
+                continue;
+            }
+        }
+
+        if(allIncomeAmount >0){
+            staticPledgeOutTotal = staticPledgeOutTotal.add(allIncomeAmount);
+            usdtMarketTotal = usdtMarketTotal.add(allIncomeAmount);
+            TransferHelper.safeTransfer(cgmAddress,msg.sender,allIncomeAmount);
+        }
+
+        emit ClaimStaticPledgeIncomeEvent(msg.sender, allIncomeAmount);
+                
+    }
+
+    // 动态质押收益
+    //动态领取，每天最多可以领取一次动态收益，根据用户地址，获取用户动态质押记录
+    //计算出今天可以领取金额，如果前几天没有领取，可以一次性领取，领取的CMG数量累积到动态质押产生里，并更新动态记录里已经领取的金额
+    function claimDynamicPledgeIncome() external{
+
+        require(borrowStatusInfos[msg.sender] == 0,"address haved borrow,can not claim");
+        DynamicPledge memory dp = senderDynamicPledge[msg.sender];
+        require(dp.pledgeAddress!= address(0),"Error sender not");
+        require(dp.dailyReleaseAmount > 0,"Error dailyReleaseAmount 0");
+        require(dp.claimedAmount < dp.zoomAmount,"Eroor voer max");
+        uint256 diffTime = block.timestamp.sub(dp.lastClaimTime);
+        require(diffTime >= DAY_IN_SECONDS,"Error time not yeat");
+        uint256 multiple = diffTime.div(DAY_IN_SECONDS);
+        uint256 incomeAmount = dp.dailyReleaseAmount.mul(multiple);
+        if(dp.claimedAmount.add(incomeAmount) > dp.zoomAmount){
+            incomeAmount = dp.zoomAmount.sub(dp.claimedAmount);   
+        }
+        dp.claimedAmount = dp.claimedAmount.add(incomeAmount);
+        dp.lastClaimTime = dp.lastClaimTime.add(multiple.mul(DAY_IN_SECONDS));
+        senderDynamicPledge[msg.sender] = dp;        
+        dynamicPledgeOutTotal = dynamicPledgeOutTotal.add(incomeAmount);
+        usdtMarketTotal = usdtMarketTotal.add(incomeAmount);
+        TransferHelper.safeTransfer(cgmAddress,msg.sender,incomeAmount);
+
+        emit ClaimDynamicPledgeIncomeEvent(msg.sender,incomeAmount);
+    }
+
+    //设置动态释放金额
+    function setDynamicReleaseAmount(address _addr,uint256 _uint) external onlyOwner{
+        require(_addr != address(0),"Error");
+        DynamicPledge memory dp = senderDynamicPledge[_addr];
+        if(dp.pledgeAddress != address(0)){
+            uint256 diffTime = block.timestamp.sub(dp.lastClaimTime);
+            uint256 multiple = diffTime.div(DAY_IN_SECONDS);
+            if(multiple > 2 || dp.claimedAmount == 0){
+                dp.lastClaimTime = block.timestamp;
+            }
+            dp.dailyReleaseAmount = _uint;
+            senderDynamicPledge[_addr] = dp;
+        }
+    }
+
+    //borrow
+    function borrow() external{
+
+        require(borrowStatusInfos[msg.sender] == 0,"address haved borrow,can not borrow again");
+        borrowStatusInfos[msg.sender] = block.timestamp;
+
+        uint256 canBorrowUsdtAmount = 0;
+
+        StaticPledge[] memory staticPledgeList = senderStaticPledges[msg.sender];
+        if(staticPledgeList.length > 0){
+            for(uint i=0; i<staticPledgeList.length; i++){
+                StaticPledge memory sp = staticPledgeList[i];
+                uint256 staticBorrowAmount = sp.dailyReleaseAmount.mul(borrowDays);
+                if((sp.claimedAmount.add(staticBorrowAmount)) <= sp.zoomAmount){
+                    canBorrowUsdtAmount = canBorrowUsdtAmount.add(staticBorrowAmount);
+                }
+            }
+        }
+
+        DynamicPledge memory dp = senderDynamicPledge[msg.sender];
+        if(dp.pledgeAddress!= address(0) && dp.dailyReleaseAmount > 0){
+            uint256 dynamicBorrowAmount = dp.dailyReleaseAmount.mul(borrowDays);
+            if((dp.claimedAmount.add(dynamicBorrowAmount)) <= dp.zoomAmount){
+                canBorrowUsdtAmount = canBorrowUsdtAmount.add(dynamicBorrowAmount);
+            }
+        }
+
+        uint256 cmgAmount = canBorrowUsdtAmount;
+
+        canBorrowUsdtAmount = cmgAmount.sub((canBorrowUsdtAmount.mul(borrowRate).div(100)));
+        require(canBorrowUsdtAmount > 0,"borrowUsdtAmount is 0");
+        borrowUsdtAmount = borrowUsdtAmount.add(canBorrowUsdtAmount);
+        TransferHelper.safeTransfer(usdtAddress,msg.sender,borrowUsdtAmount);
+
+        emit BorrowEvent(msg.sender,cmgAmount, borrowUsdtAmount);
+
+    }
+
+    //dealBorrow, dealType = 0,return usdt ,dealType =1 return cmg
+    function dealBorrow(uint256 dealType) external{
+
+        require(borrowStatusInfos[msg.sender] > 0,"address haved not borrow");
+    
+        uint256 havedDays = (block.timestamp.sub(borrowStatusInfos[msg.sender])).div(DAY_IN_SECONDS);
+        require(havedDays >= borrowDays,"havedDays less than 30");
+
+        uint256 needReturnUsdtAmount = 0;
+
+        StaticPledge[] memory staticPledgeList = senderStaticPledges[msg.sender];
+        if(staticPledgeList.length > 0){
+            for(uint i=0; i<staticPledgeList.length; i++){
+                StaticPledge memory sp = staticPledgeList[i];
+                uint256 staticBorrowAmount = sp.dailyReleaseAmount.mul(borrowDays);
+                if((sp.claimedAmount.add(staticBorrowAmount)) <= sp.zoomAmount){
+                    needReturnUsdtAmount = needReturnUsdtAmount.add(staticBorrowAmount);
+                    sp.claimedAmount = sp.claimedAmount.add(staticBorrowAmount);
+                    sp.lastClaimTime = sp.lastClaimTime.add(borrowDays.mul(DAY_IN_SECONDS));
+                    senderStaticPledges[msg.sender][i] = sp;
+                }
+            }
+        }
+
+        if(needReturnUsdtAmount > 0){
+            staticPledgeOutTotal = staticPledgeOutTotal.add(needReturnUsdtAmount);
+        }
+
+        DynamicPledge memory dp = senderDynamicPledge[msg.sender];
+        if(dp.pledgeAddress!= address(0) && dp.dailyReleaseAmount > 0){
+            uint256 dynamicBorrowAmount = dp.dailyReleaseAmount.mul(borrowDays);
+            if((dp.claimedAmount.add(dynamicBorrowAmount)) <= dp.zoomAmount){
+                needReturnUsdtAmount = needReturnUsdtAmount.add(dynamicBorrowAmount);
+                dynamicPledgeOutTotal = dynamicPledgeOutTotal.add(dynamicBorrowAmount);
+                dp.claimedAmount = dp.claimedAmount.add(dynamicBorrowAmount);
+                dp.lastClaimTime = dp.lastClaimTime.add(borrowDays.mul(DAY_IN_SECONDS));
+                senderDynamicPledge[msg.sender] = dp;
+
+            }
+        }
+
+        if(needReturnUsdtAmount >0){
+
+            if(dealType == 0){
+
+                TransferHelper.safeTransferFrom(usdtAddress, msg.sender, address(this), needReturnUsdtAmount);
+                TransferHelper.safeTransfer(cgmAddress, msg.sender, needReturnUsdtAmount);
+                returnUsdtAmount = returnUsdtAmount.add(needReturnUsdtAmount);
+
+            }else {
+
+                TransferHelper.safeTransfer(cgmAddress, feeAddress, needReturnUsdtAmount);
+
+            }
+            
+            usdtMarketTotal = usdtMarketTotal.add(needReturnUsdtAmount);
+            
+            
+        }
+        
+        borrowStatusInfos[msg.sender] = 0;
+
+        emit DealBorrowEvent(msg.sender, dealType, needReturnUsdtAmount);
+
+    }
+
+
+    function wclaimToken(address _token, uint256 amount) external onlyOwner{
+        TransferHelper.safeTransfer(_token,owner(), amount);
+    }
+
+    // 设置usdt市值
+    function setUsdtMarket(uint256 _uint) external onlyOwner{
+        require(_uint > 0,"Error");
+        usdtMarketTotal = _uint;
+    }
+    // 设置静态质押放大倍数
+    function setStaticZoom(uint256 _uint) external onlyOwner{
+        require(_uint > 0,"Error");
+        staticPledgeZoom = _uint;
+    }
+
+    // 设置动态质押放大倍数
+    function setDynamicZoom(uint256 _uint) external onlyOwner{
+        require(_uint > 0,"Error");
+        dynamicPledgeZoom = _uint;
+    }
+    //设置价格使用
+    function setIsSelf(bool _enable) external onlyOwner{
+        isSelf=_enable;
+    }
+    // 设置cmg价格
+    function setCmgPrice(uint256 _cmgLq,uint256 _usdtTotal) external onlyOwner{
+        require(_cmgLq>0 && _usdtTotal>0,"Error");
+        selfCmgLq = _cmgLq;
+        selfUsdtTotal = _usdtTotal;
+    }
+
+
+    //设置最小质押
+    function setMinPledge(uint256 _minPledge) external onlyOwner {
+        require(_minPledge > 0,"_minPledge Error");
+        minPledge = _minPledge;
+    }
+
+    //设置已CGM兑换数量
+    function setUsdt2cmgTotal(uint256 _usdt2cmgTotal) external onlyOwner {
+        require(_usdt2cmgTotal >= 0,"_minPledge Error");
+        usdt2cmgTotal = _usdt2cmgTotal;
+    }
+
+    //设置兑换类型
+    function setIfCanSwap(uint _ifCanSwap) external onlyOwner {
+       ifCanSwap = _ifCanSwap;
+    }
+
+    
+
+    //设置借贷天数
+    function setBorrowDays(uint _days) external onlyOwner {
+        require(_days > 0,"days Error");
+        borrowDays = _days;
+    }
+
+    //设置借贷利率
+    function setBorrowRate(uint _rate) external onlyOwner {
+        require(_rate >= 0 && _rate <100,"_rate Error");
+        borrowRate = _rate;
+    }
+
+    //设置借贷状态
+    function setBorrowStatus(address _addr,uint status) external onlyOwner {
+       require(status >= 0,"status Error");
+       borrowStatusInfos[_addr] = status;
+    }
+
+    //设置cmg合约
+    function setCMG(address _addr) external onlyOwner{
+        require(_addr != address(0), "ERC20: cmg  address the zero address");
+        cgmAddress =_addr;
+        cgmToken = IERC20(cgmAddress);
+    }
+    //设置支付币种
+    function setUsdt(address _addr) external onlyOwner{
+        require(_addr != address(0), "ERC20: cmg  address the zero address");
+        usdtAddress = _addr;
+        usdtToken = IERC20(usdtAddress);
+    }
+
+    //设置fee地址
+    function setFeeAddress(address _addr) external onlyOwner{
+        require(_addr != address(0), "BEP20: cmg  address the zero address");
+        feeAddress = _addr;
+    }
+
+    //设置总池地址
+    function setTotalPoolAddr(address _addr) external onlyOwner{
+        require(_addr != address(0), "BEP20: cmg  address the zero address");
+        totalPoolAddress = _addr;
+    }
+    //设置分池地址
+    function setChildPoolAddr(address _addr) external onlyOwner{
+        require(_addr != address(0), "BEP20: cmg  address the zero address");
+        childPoolAddress = _addr;
+    }
+
+    //设置u2cmg u 的分配比例
+    function setTotalAndChildScale(uint256 _total, uint256 _child) external onlyOwner{
+        require(_total.add(_child) == 100,"BEP20: sum != 100");
+        totalPoolRate = _total;
+        childPoolRate = _child;
+    }
+    //设置usdt2cmg fee
+    function setU2CmgFee(uint256 _fee) external onlyOwner{
+        require(_fee>=0 && _fee<=100,"BEP20: set error");
+        u2cmgFee = _fee;
+    }
+    //设置cmg2u fee
+    function setCMG2UFee(uint256 _fee) external onlyOwner{
+       require(_fee>=0 && _fee<=100,"BEP20: set error");
+        cmg2uFee = _fee;
+    }
+    //设置空头数量
+    function setAirdropT(uint256 _t) external onlyOwner{
+        airdorpTotal=_t;
+    }
+    // 根据地址查询静态质押记录
+    function staticPledgeRecords(address _addr) public view returns(StaticPledge [] memory sps){
+        sps = senderStaticPledges[_addr];
+    }
+
+    //计算cmg市价
+    function calculateCmgPrice() public view returns(uint256){
+        if(isSelf){
+            return selfUsdtTotal.mul(1e18).div(selfCmgLq);
+        }
+        return usdtMarketTotal.mul(1e18).div(marketLiquidity());
+    }
+    //市场流通量=USDT闪兑CMG总量+空投数量+质押静态产出总量+质押动态产出总量-黑洞地址代币余额
+    function marketLiquidity() public view  returns (uint256) {
+        uint256 productAllNum = usdt2cmgTotal.add(airdorpTotal).add(staticPledgeOutTotal).add(dynamicPledgeOutTotal);
+        if(productAllNum > burnTotal()){
+            return productAllNum.sub(burnTotal());
+        }
+        return 1;
+    }
+    //cmg销毁总量
+    function burnTotal() public view  returns (uint256) {
+        return IERC20(cgmAddress).balanceOf(deadAddress);
+    }
+    //发行总量
+    function totalSupply() public view  returns (uint256) {
+        return _totalSupply;
+    }
+
+
+
+    function getStaticPledgeRecords(address userAddress)view public  returns(uint256 [] memory pledageTimeList,
+    uint256 [] memory pledgeAmountList, uint256[] memory zoomAmountList, uint256[] memory claimAmountList, uint256[] memory dayAmountList){
+
+        StaticPledge[] memory staticPledgeList = senderStaticPledges[userAddress];
+
+        pledageTimeList = new uint256[](staticPledgeList.length);
+        pledgeAmountList = new uint256[](staticPledgeList.length);
+        zoomAmountList = new uint256[](staticPledgeList.length);
+        claimAmountList = new uint256[](staticPledgeList.length);
+        dayAmountList = new uint256[](staticPledgeList.length);
+
+        for(uint i=0; i< staticPledgeList.length; i++){
+            pledageTimeList[i] = staticPledgeList[i].pledgeTime;
+            pledgeAmountList[i] = staticPledgeList[i].pledgeAmount;
+            zoomAmountList[i] = staticPledgeList[i].zoomAmount;
+            claimAmountList[i] = staticPledgeList[i].claimedAmount;
+            dayAmountList[i] = staticPledgeList[i].dailyReleaseAmount;
+        }
+    }
+
+    function getDynamicPledgeRecord(address userAddress)view public  returns(uint256 lastClaimTimeView,
+        uint256 pledgeAmountView, uint256 zoomAmountView, uint256 claimAmountView, uint256 dayAmountView){
+
+        DynamicPledge memory dp = senderDynamicPledge[userAddress];
+
+        lastClaimTimeView = dp.lastClaimTime;
+        pledgeAmountView = dp.pledgeAmount;
+        zoomAmountView = dp.zoomAmount;
+        claimAmountView = dp.claimedAmount;
+        dayAmountView = dp.dailyReleaseAmount;
+    }
+
+    function getStaticPledgeRecordOne(address userAddress, uint256 pdTime)view public  returns(uint256 lastClaimTimeView,
+        uint256 pledgeAmountView, uint256 zoomAmountView, uint256 claimAmountView, uint256 dayAmountView){
+
+        StaticPledge[] memory staticPledgeList = senderStaticPledges[userAddress];
+
+        for(uint i=0; i< staticPledgeList.length; i++){
+
+            if(staticPledgeList[i].pledgeTime == pdTime && staticPledgeList[i].pledgeAddress == userAddress){
+
+                lastClaimTimeView = staticPledgeList[i].lastClaimTime;
+                pledgeAmountView = staticPledgeList[i].pledgeAmount;
+                zoomAmountView = staticPledgeList[i].zoomAmount;
+                claimAmountView = staticPledgeList[i].claimedAmount;
+                dayAmountView = staticPledgeList[i].dailyReleaseAmount;
+                break;
+            }
+
+            
+        }
+    }
+
+
+
+}

@@ -1,0 +1,162 @@
+/*                                                                                                                                                                                      
+ * ARK Legacy Savings Account
+ * 
+ * Written by: MrGreenCrypto
+ * Co-Founder of CodeCraftrs.com
+ * 
+ * SPDX-License-Identifier: None
+ */
+
+pragma solidity 0.8.19;
+
+interface IBEP20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount ) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
+}
+
+interface ISWAP {
+    function getCurrentPriceInUSD() external view returns (uint256);
+    function removeLiquidity(uint256 amount, uint256 minimumBusd) external;
+}
+
+interface IBOND {
+    function unstake(address investor, uint256 amount) external;
+    function stake(address investor, uint256 amount) external;
+    function claimRewardsFor(address investor) external;
+    function distributeRewards() external;
+    function addToRewardsPool(uint256 busdAmount) external;
+    function sendRewards(uint256 busdAmount) external;
+    function getBondBalance(address investor) external view returns(uint256);
+    function shares(address investor) external view returns(uint256);
+}
+interface IDEXRouter {
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+}
+
+
+contract ARK_Savings_Account {
+    address public constant CEO = 0xdf0048DF98A749ED36553788B4b449eA7a7BAA88;
+    address public constant VAULT = 0x13fD16538FF8B3AeA324BC4d2863eb9EA78E1691;
+    ISWAP public constant SWAP = ISWAP(0x55553531D05394750d60EFab7E93D73a356F5555);
+    IBEP20 public constant ARK = IBEP20(0x111120a4cFacF4C78e0D6729274fD5A5AE2B1111);
+    IBEP20 public constant BUSD = IBEP20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);
+    IBOND public constant BOND = IBOND(0x3333e437546345F8Fd48Aa5cA8E92a77eD4b3333);
+    IDEXRouter public constant ROUTER = IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+    address public constant PAIR = 0x4004D3856499d947564521511dCD28e1155C460b;
+
+    mapping(address => Deposit[]) public deposits;
+    mapping(address => uint256) public balance;
+
+    uint256 public totalDepositsARK;
+    uint256 public totalDepositsBUSD;
+    uint256 public totalDepositsBOND;
+    bool public balancerActive = true;
+
+    struct Deposit{
+        uint256 valueInBusd;
+        uint256 timestamp;
+    }
+    
+    address[] public savingsAccounts;
+
+    modifier onlyCEO() {
+        require(msg.sender == CEO, "Only CEO");
+        _;
+    }
+
+	constructor() {
+        ARK.approve(address(ROUTER), type(uint256).max);
+        BUSD.approve(address(ROUTER), type(uint256).max);
+        IBEP20(PAIR).approve(address(ROUTER), type(uint256).max);
+    }
+
+    function getUsdValue(uint256 amount) public view returns (uint256) {
+        uint256 usdEquivalent = amount * SWAP.getCurrentPriceInUSD() / 10**18;
+        return usdEquivalent;
+    }
+
+    function depositBUSD(uint256 amount) external {
+        if(amount == 0) return;
+        BUSD.transferFrom(msg.sender,address(this),amount);
+        totalDepositsBUSD += amount;
+        Deposit memory thisDeposit;
+        thisDeposit.valueInBusd = amount;
+        thisDeposit.timestamp = block.timestamp;
+        deposits[msg.sender].push(thisDeposit);
+        balance[msg.sender] += amount;
+    }
+
+    function depositARK(uint256 amount) external {
+        if(amount == 0) return;
+        ARK.transferFrom(msg.sender, VAULT, amount);
+        uint256 usdEquivalent = getUsdValue(amount);
+        BUSD.transferFrom(address(SWAP),address(this),usdEquivalent);
+        totalDepositsARK += amount;
+        Deposit memory thisDeposit;
+        thisDeposit.valueInBusd = usdEquivalent;
+        thisDeposit.timestamp = block.timestamp;
+        deposits[msg.sender].push(thisDeposit);
+        balance[msg.sender] += usdEquivalent;
+    }
+
+    function depositBOND() external {
+        uint256 amount = BOND.shares(msg.sender);
+        if(amount == 0) return;
+        BOND.unstake(msg.sender, amount);
+        BOND.stake(address(this), amount);
+        uint256 currentBusdBalance = IBEP20(BUSD).balanceOf(address(this));        
+        SWAP.removeLiquidity(amount,0);
+        totalDepositsBOND += amount;
+        uint256 usdEquivalent = IBEP20(BUSD).balanceOf(address(this)) - currentBusdBalance;
+        Deposit memory thisDeposit;
+        thisDeposit.valueInBusd = usdEquivalent;
+        thisDeposit.timestamp = block.timestamp;
+        deposits[msg.sender].push(thisDeposit);
+        balance[msg.sender] += usdEquivalent;
+    }
+
+    function rescueAnyToken(IBEP20 tokenToRescue) external onlyCEO {
+        uint256 _balance = tokenToRescue.balanceOf(address(this));
+        tokenToRescue.transfer(CEO, _balance);
+    }
+
+    function rescueBnb() external onlyCEO {
+        (bool success,) = address(CEO).call{value: address(this).balance}("");
+        if(success) return;
+    } 
+
+    function balancerSwitch(bool active) external onlyCEO {
+        balancerActive = active;
+    } 
+
+    function getAllInvestors() public view returns(address[] memory) {
+        return savingsAccounts;
+    }
+
+    function getBalances() public view returns(address[] memory, uint256[] memory) {
+        address[] memory investors = savingsAccounts;
+        uint256[] memory balances = new uint256[](investors.length);
+        for(uint i = 0; i<investors.length; i++) balances[i] = balance[investors[i]];
+        return (investors,balances);
+    }
+
+    function getBalancesCustom(uint256 from, uint256 howMany) public view returns(address[] memory, uint256[] memory) {
+        address[] memory investors = savingsAccounts;
+        uint256[] memory balances = new uint256[](investors.length);
+        for(uint i = from; i< from + howMany; i++) balances[i-from] = balance[investors[i]];
+        return (investors,balances);
+    }
+
+    function getDeposits(address investor) public view returns(Deposit[] memory) {
+        return deposits[investor];
+    }
+
+}

@@ -1,0 +1,197 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+abstract contract Ownable {
+    /// Variables
+    address private currentOwner;
+    address private proposedOwner;
+
+    /// Events
+    event NewOwnerProposed(address indexed proposedOwner);
+    event OwnershipClaimed(address indexed newOwner);
+
+    /// Constructor
+    constructor() {
+        currentOwner = msg.sender;
+    }
+
+    /// Modifier
+    modifier onlyOwner {
+        require(msg.sender == currentOwner, "You are not the owner!");
+        _;
+    }
+
+    /// @dev Function to propose a new owner
+    /// @param _newOwner Address proposed to take the ownership
+    function proposeNewOwner(address _newOwner) public virtual onlyOwner {
+        proposedOwner = _newOwner;
+
+        emit NewOwnerProposed(_newOwner);
+    }
+
+    /// @dev Function to claim the ownership
+    function claimOwnership() public virtual {
+        require(msg.sender == proposedOwner, "You are not the proposed owner!");
+        currentOwner = msg.sender;
+        proposedOwner = address(0);
+
+        emit OwnershipClaimed(msg.sender);
+    }
+
+    /// @dev Function to return the owner
+    /// @return _owner Address of current owner
+    function getOwner() public virtual view returns(address _owner) {
+        _owner = currentOwner;
+    }
+}
+
+abstract contract ReentrancyGuard {
+
+    uint256 private enter = 1;
+
+    modifier nonReentrant() {
+        require(enter == 1, "Can't enter!");
+        enter = 2;
+        _;
+        enter = 1;
+    }
+}
+
+interface IToken {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+contract Fixed_Roi_Staking is Ownable, ReentrancyGuard {
+    // ROI
+    uint256 public roi = 50;
+
+    // Time variables
+    uint256 public startDate;
+    uint256 public limitTime = 7 days;
+    uint256 public duration = 90 days;
+    uint256 public endDate;
+
+    // Token object
+    IToken public token;
+
+    // Link staked amount to address
+    mapping(address => uint256) public stakedByUser;
+
+    // Whitelist users
+    mapping(address => uint256) public isWhitelisted;
+
+    // Events
+    event Stake(address indexed user, uint256 amount);
+    event Claim(address indexed user, uint256 amount, uint256 rewards);
+
+    // Constructor
+    constructor(
+        address _token
+    ) {
+        startDate = block.timestamp;
+        endDate = block.timestamp + 90 days;
+
+        token = IToken(_token);
+
+        isWhitelisted[msg.sender] = 1;
+    }
+
+    // Deposit function
+    function deposit(uint256 amount) external nonReentrant() {
+        require(isWhitelisted[msg.sender] == 1, "You are not whitelisted!");
+        require(block.timestamp < startDate + limitTime, "Can't stake anymore!");
+        require(token.transferFrom(msg.sender, address(this), amount), "Can't stake tokens!");
+
+        unchecked {
+            stakedByUser[msg.sender] += amount;
+        }
+
+        emit Stake(msg.sender, amount);
+    }
+
+    // Claim and unstake function
+    function claimAndUnstake() external nonReentrant() {
+        require(isWhitelisted[msg.sender] == 1, "You are not whitelisted!");
+        require(block.timestamp >= endDate, "Can't unstake now!");
+        uint256 _amount = stakedByUser[msg.sender];
+        uint256 _claimable = computeAmountToSent(msg.sender);
+
+        stakedByUser[msg.sender] = 0;
+
+        require(token.transfer(msg.sender, _claimable), "Can't transfer rewards!");
+
+        emit Claim(msg.sender, _amount, _claimable - _amount);
+    }
+
+    // Change the limit time
+    function changeLimitTime(uint256 newLimitTime) external onlyOwner {
+        limitTime = newLimitTime * 1 days;
+    }
+
+    // Change roi
+    function changeRoi(uint256 newRoi) external onlyOwner {
+        require(newRoi < 101);
+        roi = newRoi;
+    }
+
+    // Whitelist address
+    function whitelistAddresses(address[] calldata users) external onlyOwner {
+        for(uint256 i = 0; i < users.length;) {
+            require(isWhitelisted[users[i]] == 0, "Already whitelisted!");
+            isWhitelisted[users[i]] = 1;
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    // Blacklist address
+    function blacklistAddresses(address[] calldata users) external onlyOwner {
+        for(uint256 i = 0; i < users.length;) {
+            require(isWhitelisted[users[i]] == 1, "Not whitelisted!");
+            isWhitelisted[users[i]] = 0;
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    // Withdraw tokens
+    function withdrawTokens(address _token) external onlyOwner {
+        uint256 _balance = IToken(_token).balanceOf(address(this));
+        require(IToken(token).transfer(msg.sender, _balance), "Can't withdraw tokens!");
+    }
+
+    // Return staked amount + the rewards
+    function computeAmountToSent(address user) internal view returns(uint256) {
+        return stakedByUser[user] + stakedByUser[user] * roi / 100;
+    }
+
+    // Return staked amount
+    function getStakedAmount(address user) public view returns(uint256) {
+        return stakedByUser[user];
+    }
+
+    // Return the rewards
+    function getFinalRewards(address user) public view returns(uint256) {
+        return stakedByUser[user] * roi / 100;
+    }
+
+    // Return 1 if the user is whitelisted
+    function getWhitelisted(address user) public view returns(uint256) {
+        return isWhitelisted[user];
+    }
+
+    // Return end date
+    function getEndDate() public view returns(uint256) {
+        return endDate;
+    }
+
+    // Return the limit date for staking
+    function getLimitDate() external view returns(uint256) {
+        return startDate + limitTime;
+    }
+}

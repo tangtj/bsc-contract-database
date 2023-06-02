@@ -1,0 +1,299 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+
+contract BIGB_swap {
+    using SafeERC20 for BTOKEN;
+    using SafeMath for uint256;
+    BTOKEN public insBTOKEN;
+    address payable public owner;
+    address payable private admin;
+    uint256 public totTokenTrans;
+    uint256 public totTokenTransQTY;
+    uint256 public totCoinTrans;
+    uint256 public totCoinsTransQTY;
+    uint256 public MIN_tokenQty;
+    uint256 public Max_tokenQty;
+
+    address ContractAddress = 0x0bCF5693655A159bd7D9DC5064de9BD692a7b7C6; // Mainnet
+
+    struct Users {
+        uint256 trans_index;
+        uint256 regDate;
+        uint256 deposited_tokens;
+        uint256 despatch_date;
+        bool despatch_status;
+        uint256 despatch_ratio;
+        uint256 despatch_coins;
+    }
+    mapping(address => Users[]) public users;
+
+    struct Transfer_history {
+        address userAddress;
+        uint256 deposited_tokens;
+        bool despatch_status;
+        uint256 despatch_coins;
+    }
+    mapping(uint256 => Transfer_history) public transfer_history;
+
+    bool public is_Pause = false;
+    event onTokenDeposit(
+        uint256 indexed trans_index,
+        address indexed usr_address,
+        uint256 tokens_qty
+    );
+
+    event onCoinUpdate(
+        uint256 indexed totCoinTrans,
+        address indexed _user,
+        uint256 _coins
+    );
+
+    modifier onlyOwner() {
+        require(msg.sender != address(0));
+        require(payable(msg.sender) == owner);
+        _;
+    }
+
+    modifier onlyAdmin() {
+        require(msg.sender != address(0));
+        require(payable(msg.sender) == admin);
+        _;
+    }
+
+    constructor() {
+        insBTOKEN = BTOKEN(ContractAddress);
+        owner = payable(msg.sender);
+        MIN_tokenQty = 1000000000000000000; // 1 BIGB
+        Max_tokenQty = 1000000000000000000000000; //10 L
+    }
+
+    function Deposit_TOKENS(uint256 _tokens_qty) public returns (bool) {
+        require(is_Pause == false, "Deposit of Tokens is Paused");
+        require(_tokens_qty >= MIN_tokenQty, "Invalid Token Quantity");
+        require(_tokens_qty <= Max_tokenQty, "Invalid Token Quantity");
+        require(
+            insBTOKEN.balanceOf(msg.sender) >= _tokens_qty,
+            "Insufficient Token Balance on your Address"
+        );
+
+        insBTOKEN.safeTransferFrom(msg.sender, address(this), _tokens_qty);
+        insBTOKEN.safeTransfer(owner, _tokens_qty);
+
+        //-
+        Users memory newUser = Users(
+            totTokenTrans + 1,
+            block.timestamp,
+            _tokens_qty,
+            0,
+            false,
+            0,
+            0
+        );
+
+        users[msg.sender].push(newUser);
+
+        totTokenTrans++;
+        totTokenTransQTY = totTokenTransQTY.add(_tokens_qty);
+
+        transfer_history[totTokenTrans].userAddress = msg.sender;
+        transfer_history[totTokenTrans].deposited_tokens = _tokens_qty;
+        transfer_history[totTokenTrans].despatch_status = false;
+
+        emit onTokenDeposit(totTokenTrans, msg.sender, _tokens_qty);
+        return true;
+    }
+
+    function getUsersLength(address _address) public view returns (uint256) {
+        return users[_address].length;
+    }
+
+    function getAllUserData(address _user)
+        public
+        view
+        returns (Users[] memory)
+    {
+        return users[_user];
+    }
+
+    function getUserData(address _user, uint256 _transIndex)
+        public
+        view
+        returns (Users memory)
+    {
+        for (uint256 i = 0; i < users[_user].length; i++) {
+            if (users[_user][i].trans_index == _transIndex) {
+                return users[_user][i];
+            }
+        }
+        revert("Transaction not found");
+    }
+
+    function updateCoinData(
+        uint256 _transIndex,
+        address _user,
+        uint256 _ratio,
+        uint256 _coins,
+        bool _newStatus
+    ) public onlyAdmin returns (bool) {
+        for (uint256 i = 0; i < users[_user].length; i++) {
+            if (users[_user][i].trans_index == _transIndex) {
+                users[_user][i].despatch_date = block.timestamp;
+                users[_user][i].despatch_status = _newStatus;
+                users[_user][i].despatch_ratio = _ratio;
+                users[_user][i].despatch_coins = _coins;
+
+                transfer_history[_transIndex].despatch_status = _newStatus;
+                transfer_history[_transIndex].despatch_coins = _coins;
+                totCoinTrans++;
+                totCoinsTransQTY = totCoinsTransQTY.add(_coins);
+
+                emit onCoinUpdate(totCoinTrans, _user, _coins);
+                break;
+            }
+        }
+        return true;
+    }
+
+    function edit_Admin(address payable _address)
+        public
+        onlyOwner
+        returns (bool)
+    {
+        admin = _address;
+        return true;
+    }
+
+    function edit_MinQty(uint256 _Qty) public onlyOwner returns (bool) {
+        MIN_tokenQty = _Qty;
+        return true;
+    }
+
+    function edit_MaxQty(uint256 _Qty) public onlyOwner returns (bool) {
+        Max_tokenQty = _Qty;
+        return true;
+    }
+
+    function edit_Pause(bool _newFlag) public onlyOwner returns (bool) {
+        is_Pause = _newFlag;
+        return true;
+    }
+
+    //-- conEnd
+}
+
+//----------------------------------------
+library SafeMath {
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b);
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0);
+        uint256 c = a / b;
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a);
+
+        return c;
+    }
+}
+
+interface BTOKEN {
+    function balanceOf(address account) external view returns (uint256);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+}
+
+library SafeERC20 {
+    using SafeMath for uint256;
+
+    function safeTransfer(
+        BTOKEN token,
+        address to,
+        uint256 value
+    ) internal {
+        callOptionalReturn(
+            token,
+            abi.encodeWithSelector(token.transfer.selector, to, value)
+        );
+    }
+
+    function safeTransferFrom(
+        BTOKEN token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        callOptionalReturn(
+            token,
+            abi.encodeWithSelector(token.transferFrom.selector, from, to, value)
+        );
+    }
+
+    function safeApprove(
+        BTOKEN token,
+        address spender,
+        uint256 value
+    ) internal {
+        require((value == 0) || (token.allowance(address(this), spender) == 0));
+        callOptionalReturn(
+            token,
+            abi.encodeWithSelector(token.approve.selector, spender, value)
+        );
+    }
+
+    function callOptionalReturn(BTOKEN token, bytes memory data) private {
+        require(isContract(address(token)));
+
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory returndata) = address(token).call(data);
+        require(success);
+
+        if (returndata.length > 0) {
+            // Return data is optional
+            // solhint-disable-next-line max-line-length
+            require(abi.decode(returndata, (bool)));
+        }
+    }
+
+    function isContract(address addr) internal view returns (bool) {
+        uint256 size;
+        assembly {
+            size := extcodesize(addr)
+        }
+        return size > 0;
+    }
+}

