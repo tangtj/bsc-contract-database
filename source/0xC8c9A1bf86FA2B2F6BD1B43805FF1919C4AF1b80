@@ -1,0 +1,61 @@
+//SPDX-License-Identifier: MIT
+pragma solidity ^0.8.10;
+
+interface IMain {
+  function withdraw(uint256 user, address receiver, uint256 amount, address token) external;
+  function transferOwnership(address owner) external;
+}
+
+interface IERC20 {
+  function balanceOf(address user) external returns (uint256);
+}
+
+contract CallerProxy {
+  address public admin;
+  address public depositContract;
+
+  constructor(address _admin, address _depositContract){
+    admin = _admin;
+    depositContract = _depositContract;
+  }
+
+  modifier onlyAdmin(){
+    require(msg.sender == admin, "!admin");
+    _;
+  }
+
+  mapping(uint256 => bool) public usedIds;
+
+  function withdraw(uint256 user, address receiver, uint256 amount, uint256 id, address token) external onlyAdmin {
+    require(usedIds[id] == false, "already used");
+
+    usedIds[id] = true;
+
+    IMain(depositContract).withdraw(user, receiver, amount, token);
+  }
+
+  function set(address _admin, address _depositContract) external onlyAdmin {
+    admin = _admin;
+    depositContract = _depositContract;
+  }
+
+  function transferMainOwnership(address _new) external onlyAdmin {
+    IMain(depositContract).transferOwnership(_new);
+  }
+
+  function call(address target, uint256 value, string memory signature, bytes memory data) external onlyAdmin {
+    bytes memory callData;
+    if (bytes(signature).length == 0) {
+        callData = data;
+    } else {
+        callData = abi.encodePacked(bytes4(keccak256(bytes(signature))), data);
+    }
+
+    (bool success, ) = target.call{value: value}(callData);
+    require(success, "Transaction execution reverted.");
+  }
+
+  function getBalance(address token, address user) external returns (uint256) {
+    return IERC20(token).balanceOf(user);
+  }
+}
