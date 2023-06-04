@@ -1,0 +1,89 @@
+
+// File: Lock.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+contract Lock{
+
+    address public morAddress;
+    uint256 public duration;
+
+    struct LockInfo{
+        uint256 lockTime;
+        uint256 lockAmount;
+        uint256 claimedAmount;
+    }
+
+    mapping(address => LockInfo) public lockInfoMap;
+
+    constructor(address _morAddress, uint256 _duration){
+        morAddress = _morAddress;
+        duration = _duration;
+    }
+
+    function lock(uint256 _amount) external {
+
+        require(_amount > 0, "amount error");
+
+        LockInfo memory lockInfo = lockInfoMap[msg.sender];
+        require(lockInfo.lockTime == 0, "already locked");
+
+        require(IERC20(morAddress).transferFrom(msg.sender, address(this), _amount), "transfer error");
+
+        lockInfo.lockTime = block.timestamp;
+        lockInfo.lockAmount = _amount;
+
+        lockInfoMap[msg.sender] = lockInfo;
+
+    }
+
+    function lockFor(uint256 _amount, address _to) external {
+
+        require(_amount > 0, "amount error");
+        require(_to != address(0), "address error");
+
+        LockInfo memory lockInfo = lockInfoMap[_to];
+        require(lockInfo.lockTime == 0, "already locked");
+
+        require(IERC20(morAddress).transferFrom(msg.sender, address(this), _amount), "transfer error");
+
+        lockInfo.lockTime = block.timestamp;
+        lockInfo.lockAmount = _amount;
+
+        lockInfoMap[_to] = lockInfo;
+
+    }
+
+    function claimable(address _address) public view returns (uint256){
+        if(lockInfoMap[_address].lockTime == 0){
+            return 0;
+        }
+
+        uint256 rate = lockInfoMap[_address].lockAmount / duration;
+        uint256 amount = (block.timestamp - lockInfoMap[_address].lockTime) * rate;
+
+        if(amount > lockInfoMap[_address].lockAmount){
+            amount = lockInfoMap[_address].lockAmount;
+        }
+
+        return amount - lockInfoMap[_address].claimedAmount;
+    }
+
+
+    function claim() external{
+
+        uint256 _amount = claimable(msg.sender);
+        require(_amount>0, "nothing to claim");
+
+        lockInfoMap[msg.sender].claimedAmount = lockInfoMap[msg.sender].claimedAmount + _amount;
+
+        require(IERC20(morAddress).transfer(msg.sender, _amount), "transfer error");
+    }
+}
+

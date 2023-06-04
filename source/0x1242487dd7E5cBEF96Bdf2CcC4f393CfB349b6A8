@@ -1,0 +1,145 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract Gigawei is IBEP20 {
+    string public name = "Gigawei";
+    string public symbol = "Gwei";
+    uint8 public decimals = 18;
+    uint256 private totalTokenSupply = 7 * 10 ** uint256(decimals);
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) private allowances;
+    mapping(address => string) private referralCodes;
+    mapping(address => address) private referrers;
+    mapping(address => uint256) private referralRewards;
+    mapping(address => uint256) private lastWithdrawalTimestamp;
+
+    event ReferralReward(address indexed referrer, address indexed referred, uint256 amount);
+
+    constructor() {
+        balances[msg.sender] = totalTokenSupply;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return totalTokenSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        require(amount <= balances[msg.sender], "Insufficient balance");
+
+        updateReferralRewards(msg.sender);
+
+        balances[msg.sender] -= amount;
+        balances[recipient] += amount;
+
+        emit Transfer(msg.sender, recipient, amount);
+
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        allowances[msg.sender][spender] = amount;
+
+        emit Approval(msg.sender, spender, amount);
+
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        require(amount <= balances[sender], "Insufficient balance");
+        require(amount <= allowances[sender][msg.sender], "Insufficient allowance");
+
+        updateReferralRewards(sender);
+
+        balances[sender] -= amount;
+        balances[recipient] += amount;
+        allowances[sender][msg.sender] -= amount;
+
+        emit Transfer(sender, recipient, amount);
+
+        return true;
+    }
+
+    function getReferralCode(address account) public view returns (string memory) {
+        return referralCodes[account];
+    }
+
+    function getReferrer(address account) public view returns (address) {
+        return referrers[account];
+    }
+
+    function getReferralReward(address account) public view returns (uint256) {
+        return referralRewards[account];
+    }
+
+    function updateReferralRewards(address account) internal {
+        if (referrers[account] != address(0)) {
+            address referrer = referrers[account];
+
+            uint256 purchaseAmount = balances[account];
+            uint256 referralReward = purchaseAmount * 45 / 100;
+
+            referralRewards[referrer] += referralReward;
+            emit ReferralReward(referrer, account, referralReward);
+
+            address tier1Referrer = referrers[referrer];
+            if (tier1Referrer != address(0)) {
+                uint256 tier1Reward = purchaseAmount * 12 / 100;
+                referralRewards[tier1Referrer] += tier1Reward;
+                emit ReferralReward(tier1Referrer, account, tier1Reward);
+
+                address tier2Referrer = referrers[tier1Referrer];
+                if (tier2Referrer != address(0)) {
+                    uint256 tier2Reward = purchaseAmount * 10 / 100;
+                    referralRewards[tier2Referrer] += tier2Reward;
+                    emit ReferralReward(tier2Referrer, account, tier2Reward);
+
+                    address tier3Referrer = referrers[tier2Referrer];
+                    if (tier3Referrer != address(0)) {
+                        uint256 tier3Reward = purchaseAmount * 3 / 100;
+                        referralRewards[tier3Referrer] += tier3Reward;
+                        emit ReferralReward(tier3Referrer, account, tier3Reward);
+                    }
+                }
+            }
+        }
+    }
+
+    function withdrawReferralRewards() public {
+        uint256 reward = referralRewards[msg.sender];
+        require(reward > 0, "No referral rewards available");
+
+        uint256 thirtyDays = 30 days;
+        uint256 elapsedTime = block.timestamp - lastWithdrawalTimestamp[msg.sender];
+        require(elapsedTime >= thirtyDays, "Withdrawal interval not reached");
+
+        uint256 maxWithdrawal = totalTokenSupply * 30 / 100;
+        if (reward > maxWithdrawal) {
+            reward = maxWithdrawal;
+        }
+
+        referralRewards[msg.sender] -= reward;
+        balances[msg.sender] += reward;
+        lastWithdrawalTimestamp[msg.sender] = block.timestamp;
+
+        emit Transfer(address(this), msg.sender, reward);
+    }
+}

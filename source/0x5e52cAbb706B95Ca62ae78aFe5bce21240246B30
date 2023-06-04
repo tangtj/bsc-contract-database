@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+
+contract TorqueNetwork {
+    address public implementation;
+    address public contractOwner;
+
+    string public name;
+    string public symbol;
+    uint public decimals;
+    uint public totalSupply;
+    address public ecosystem;
+    uint public ecosystemValue;
+
+    mapping(address => uint) public balances;
+    mapping(address => mapping(address => uint)) public allowance;
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+
+    constructor(address _implementation) {
+        implementation = _implementation;
+        contractOwner = msg.sender;
+
+        name = "Torque Network";
+        symbol = "TORQUE";
+        decimals = 8;
+        totalSupply = 1000000000 * 10 ** decimals;
+        ecosystemValue = 1; // Default value for ecosystemValue
+        ecosystem = address(0); // Default value for ecosystem
+
+        balances[msg.sender] = totalSupply; // Transfer the total supply to the deployer's address
+
+        TORQUEImplementation(implementation).initialize();
+    }
+
+    fallback() external payable {
+        address _impl = implementation;
+        assembly {
+            let ptr := mload(0x40)
+            calldatacopy(ptr, 0, calldatasize())
+            let result := delegatecall(gas(), _impl, ptr, calldatasize(), 0, 0)
+            let size := returndatasize()
+            returndatacopy(ptr, 0, size)
+
+            switch result
+            case 0 {
+                revert(ptr, size)
+            }
+            default {
+                return(ptr, size)
+            }
+        }
+    }
+
+    receive() external payable {
+        // This empty receive function is added to suppress the warning
+    }
+
+    function upgradeImplementation(address newImplementation) public {
+        require(msg.sender == contractOwner, "Only contract owner can upgrade the implementation");
+        implementation = newImplementation;
+    }
+
+    // Getter for totalSupply
+    function getTotalSupply() public view returns (uint) {
+        return totalSupply;
+    }
+
+    // Setter for ecosystemValue
+    function setEcosystemValue(uint newValue) public {
+        require(msg.sender == contractOwner, "Only contract owner can set ecosystemValue");
+        ecosystemValue = newValue;
+    }
+
+    // Setter for ecosystem
+    function setEcosystem(address newEcosystem) public {
+        require(msg.sender == contractOwner, "Only contract owner can set ecosystem");
+        ecosystem = newEcosystem;
+    }
+
+    // Transfer tokens
+    function transfer(address to, uint value) public returns (bool) {
+        require(balances[msg.sender] >= value, 'Insufficient funds');
+
+        uint fee = (value * ecosystemValue) / 100;
+        uint transferAmount = value - fee;
+
+        balances[ecosystem] += fee;
+        balances[to] += transferAmount;
+        balances[msg.sender] -= value;
+
+        emit Transfer(msg.sender, to, transferAmount);
+        return true;
+    }
+
+    // Transfer tokens from a specific address
+    function transferFrom(address from, address to, uint value) public returns (bool) {
+        require(balances[from] >= value, 'Insufficient funds');
+        require(allowance[from][msg.sender] >= value, 'Allowance too low');
+
+        uint fee = (value * ecosystemValue) / 100;
+        uint transferAmount = value - fee;
+
+        balances[ecosystem] += fee;
+        balances[to] += transferAmount;
+        balances[from] -= value;
+
+        emit Transfer(from, to, transferAmount);
+        return true;
+    }
+
+    // Approve token allowance
+    function approve(address spender, uint value) public returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    // Get token balance of an address
+    function balanceOf(address owner) public view returns (uint) {
+        return balances[owner];
+    }
+}
+
+contract TORQUEImplementation {
+    string public version;
+
+    function initialize() external {
+        version = "1.0";
+        // Additional initialization logic can be added here if required
+    }
+
+    // Setter for version
+    function setVersion(string memory _version) public {
+        version = _version;
+    }
+}

