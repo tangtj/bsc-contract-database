@@ -1,0 +1,198 @@
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+
+
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+// File: TokenLocker.sol
+
+
+
+pragma solidity ^0.8.0;
+
+
+contract TokenLocker {
+    struct ContractInfo {
+        address tokenAddress;
+        uint256 unlockTimeInterval;
+        uint256 unlockAmountInterval;
+        uint256 unlockMul;
+        uint256 totalUnlockTime;
+    }
+
+    struct UserInfo {
+        uint256 amountLocked;
+        uint256 amountUnlocked;
+        uint256 lockTime;
+        uint256 unlockTime;
+    }
+
+    IERC20 private token;
+    ContractInfo public lockerData;
+    mapping(address => UserInfo) public userData;
+
+    constructor(
+        address _token,
+        uint256 _unlockTimeInterval,
+        uint256 _unlockAmountInterval
+    ) {
+        token = IERC20(_token);
+        lockerData = ContractInfo({
+            tokenAddress: _token,
+            unlockTimeInterval: _unlockTimeInterval,
+            unlockAmountInterval: _unlockAmountInterval,
+            unlockMul: 100 / _unlockAmountInterval,
+            totalUnlockTime: _unlockTimeInterval * (100 / _unlockAmountInterval)
+        });
+    }
+
+    function pendingToClaim(address _address) public view returns (uint256) {
+        uint256 pending;
+
+        uint256 amountLocked = userData[_address].amountLocked;
+        uint256 amountUnlocked = userData[_address].amountUnlocked;
+        uint256 lockTime = userData[_address].lockTime;
+
+        if (amountLocked > 0 && lockTime > 0) {
+            uint256 currentTime = block.timestamp;
+            uint256 elapsedTime = currentTime - lockTime;
+            uint256 unlockPeriods = elapsedTime / lockerData.unlockTimeInterval;
+            uint256 unlockablePercent = unlockPeriods *
+                lockerData.unlockAmountInterval;
+            uint256 remainingPercent = ((amountLocked - amountUnlocked) * 100) /
+                amountLocked;
+
+            if (unlockablePercent > remainingPercent) {
+                unlockablePercent = remainingPercent;
+            }
+
+            pending = (amountLocked * unlockablePercent) / 100;
+        }
+
+        return pending;
+    }
+
+    function depositAndLockTokens(address _to, uint256 _amount) public {
+        uint256 senderBalance = token.balanceOf(msg.sender);
+        require(
+            senderBalance >= _amount,
+            "Saldo o asignacion insuficiente del remitente"
+        );
+
+        uint256 amountLocked = userData[_to].amountLocked;
+        uint256 amountUnlocked = userData[_to].amountUnlocked;
+        uint256 amount = (amountLocked - amountUnlocked) + _amount;
+
+        userData[_to].unlockTime = block.timestamp + lockerData.totalUnlockTime;
+        userData[_to].amountLocked = amount;
+        userData[_to].amountUnlocked = 0;
+        userData[_to].lockTime = block.timestamp;
+
+        require(
+            token.transferFrom(msg.sender, address(this), _amount),
+            "Error al transferir los tokens al contrato"
+        );
+    }
+
+    function claimUnlockedTokens() public {
+        uint256 amountLocked = userData[msg.sender].amountLocked;
+        require(amountLocked > 0, "No hay tokens bloqueados");
+
+        uint256 pending = pendingToClaim(msg.sender);
+        require(
+            pending > 0,
+            "No hay cantidad desbloqueada pendiente para reclamar"
+        );
+
+        userData[msg.sender].lockTime = block.timestamp;
+        userData[msg.sender].amountUnlocked += pending;
+
+        if (userData[msg.sender].amountUnlocked >= amountLocked) {
+            delete userData[msg.sender];
+        }
+
+        require(
+            token.transfer(msg.sender, pending),
+            "Error al transferir los tokens desbloqueados al usuario"
+        );
+    }
+}

@@ -1,0 +1,251 @@
+// SPDX-License-Identifier: Unlicensed
+
+pragma solidity ^0.8.0;
+
+interface ISGM {
+    function updateCurrentFee(uint256 _newFee) external;
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+ 
+    function balanceOf(address account) external view returns (uint256);
+ 
+    function transfer(address recipient, uint256 amount) external returns (bool);
+ 
+    function allowance(address owner, address spender) external view returns (uint256);
+ 
+    function approve(address spender, uint256 amount) external returns (bool);
+ 
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+ 
+    event Transfer(address indexed from, address indexed to, uint256 value);
+ 
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+ 
+contract FeesImprovementProposal {
+    struct Round {
+        uint256 startTime;
+        uint256 endTime;
+        bool finalized;
+        uint256 totalRewardTokens;
+        uint256 currWinningFee;
+        mapping(uint256 => uint256) votes;
+    }
+
+    struct Voter {
+        uint256 round;
+        uint256 amount;
+        uint256 votedFee;
+        uint256 totalRewardsCollected;
+    }
+
+    uint256 public constant ROUND_DURATION = 1 days;
+    uint256 public constant ROUND_INTERVAL = 6 days;
+
+    address public sigmaAddress;
+    IERC20 public btcsigma;
+    IERC20 public bitcoin;
+    ISGM public sigmaFeeUpdater;
+
+    uint256 public currentRound;
+    uint256 public totalUnclaimedRewardTokens;
+    uint256 public fipdividends;
+    uint256 public initialRoundTimestamp;
+
+    mapping(uint256 => Round) public rounds;
+    mapping(address => Voter) public lockedTokens; // Add a mapping to store locked tokens for each voter
+
+    constructor(address _btcSigmaAddress, address _btcAddress) {
+        btcsigma = IERC20(_btcSigmaAddress);
+        bitcoin = IERC20(_btcAddress);
+        initialRoundTimestamp = block.timestamp;
+    }
+
+    function getRoundDetails(uint256 roundId) public view returns (uint256, uint256, uint256, uint256, uint256) {
+        Round storage round = rounds[roundId];
+        uint256 totalVotes = round.votes[1] + round.votes[2] + round.votes[5];
+        return (round.startTime, round.endTime, round.totalRewardTokens, round.currWinningFee, totalVotes);
+    }
+
+    function getCurrentBitcoinDividends() public view returns (uint256) {
+        return fipdividends;
+    }
+
+    function _setToken(address _sigmaAddress) public {
+        sigmaAddress = _sigmaAddress;
+        sigmaFeeUpdater = ISGM(_sigmaAddress);
+    }
+
+    function _assignFipDividends(uint256 _amount) external {
+        require(msg.sender == sigmaAddress, "Only Sigma contract can call this function.");
+        fipdividends += _amount;
+    }
+
+    function getCurrentRound() public view returns (uint256) {
+        return currentRound;
+    }
+
+    function withdrawBitcoin(uint256 _amount, address _recipient) external {
+        require(msg.sender == sigmaAddress, "Only 'withdraw' function form 'Sigma' contract can call this function.");
+        bitcoin.transfer(_recipient, _amount);
+    }
+
+    function getVotingStatus() public view returns (uint256) {
+        Round storage round = rounds[currentRound];
+        if (block.timestamp >= round.startTime && block.timestamp < round.endTime) {
+            return 0; // Voting is active
+        } else {
+            uint256 nextVotingStartTime = round.startTime + ROUND_INTERVAL;
+            return nextVotingStartTime - block.timestamp; // Time until voting will be active again
+        }
+    }
+
+    function getVotedFee(address user) public view returns (uint256) {
+        Voter storage voter = lockedTokens[user];
+        return voter.votedFee;
+    }
+
+    function getVotesForCurrentRound() public view returns (uint256[3] memory voteCounts) {
+        Round storage round = rounds[currentRound];
+        voteCounts[0] = round.votes[1];
+        voteCounts[1] = round.votes[2];
+        voteCounts[2] = round.votes[5];
+    }
+
+    function getVoterContributionForCurrentRound(address _voter) public view returns (uint256) {
+        Voter storage voter = lockedTokens[_voter];
+        if (voter.round == currentRound) {
+            return voter.amount;
+        } else {
+            return 0;
+        }
+    }
+
+    function triggerNewRound() public {
+        require(block.timestamp > initialRoundTimestamp + ROUND_DURATION + ROUND_INTERVAL, "FIP has not started yet.");
+        require(block.timestamp > (1 + currentRound) * (ROUND_DURATION + ROUND_INTERVAL) + initialRoundTimestamp, "New round starts each Saturday 00:00 UTC.");
+        _startNewRound();
+    }
+
+    function _startNewRound() private {
+        uint256 newRoundIndex = currentRound + 1;
+        Round storage round = rounds[newRoundIndex];
+        round.startTime = block.timestamp;
+        round.endTime = block.timestamp + ROUND_DURATION;
+        round.finalized = false;
+        round.totalRewardTokens = 0;
+        currentRound++;
+    }
+
+    function vote(uint256 fee) public {
+        require(fee == 1 || fee == 2 || fee == 5, "Invalid fee value. Must be 1, 2, or 5.");
+
+        Round storage round = rounds[currentRound];
+        require(block.timestamp >= round.startTime && block.timestamp < round.endTime, "Voting not active.");
+
+        uint256 voterBalance = btcsigma.balanceOf(msg.sender);
+        require(voterBalance > 0, "No btcSigma balance to vote with.");
+
+        Voter storage voter = lockedTokens[msg.sender];
+        require(voter.amount == 0 || rounds[voter.round].finalized == false, "Claim tokens from the previous round before voting.");
+
+        // Transfer the voter's btcSigma balance to the contract
+        btcsigma.transferFrom(msg.sender, address(this), voterBalance);
+
+        // Store the current totalRewardsCollected value
+        uint256 currentTotalRewardsCollected = voter.totalRewardsCollected;
+
+        // Update locked tokens for the voter
+        lockedTokens[msg.sender] = Voter(currentRound, voterBalance, fee, currentTotalRewardsCollected);
+
+        round.votes[fee] += voterBalance;
+    }
+
+    function finalizeVoting() public {
+        Round storage round = rounds[currentRound];
+        require(block.timestamp >= round.endTime, "Voting has not ended yet.");
+        require(!round.finalized, "Voting round already finalized.");
+
+        uint256 winningFee;
+        uint256 maxVotes = 0;
+        bool isDraw = false;
+
+        for (uint256 i = 1; i <= 5; i += (i == 1) ? 1 : (i == 2) ? 3 : 2) {
+            if (round.votes[i] > maxVotes) {
+                maxVotes = round.votes[i];
+                winningFee = i;
+                isDraw = false;
+            } else if (round.votes[i] == maxVotes) {
+                isDraw = true;
+            }
+        }
+
+        if (maxVotes == 0 || isDraw) {
+            winningFee = 2;
+        }
+        round.currWinningFee = winningFee;
+        sigmaFeeUpdater.updateCurrentFee(winningFee);
+        round.finalized = true;
+
+        // Calculate the bitcoin tokens for this round by subtracting the total unclaimed bitcoin tokens
+        round.totalRewardTokens = fipdividends;
+        fipdividends = 0;
+    }
+
+    function getPendingRewards() public view returns (uint256) {
+        Voter storage voter = lockedTokens[msg.sender];
+        require(voter.amount > 0, "No locked tokens to claim.");
+
+        uint256 amountToClaim = voter.amount;
+        Round storage round = rounds[voter.round];
+
+        uint256 winningFee = round.currWinningFee;
+
+        // Check if the user voted for the winningFee
+        bool userVotedForWinningFee = voter.votedFee == winningFee;
+
+        uint256 bitcoinTokensToClaim;
+
+        if (userVotedForWinningFee) {
+            bitcoinTokensToClaim = (amountToClaim * round.totalRewardTokens) / round.votes[winningFee];
+        } else {
+            bitcoinTokensToClaim = 0;
+        }
+
+        return bitcoinTokensToClaim;
+    }
+
+    function claimBitcoinAndBtcSigma() public {
+        Voter storage voter = lockedTokens[msg.sender];
+        require(voter.amount > 0, "No locked tokens to claim.");
+        require(rounds[voter.round].finalized, "Cannot claim tokens before the round is finalized.");
+
+        uint256 amountToClaim = voter.amount;
+        Round storage round = rounds[voter.round];
+
+        uint256 winningFee = round.currWinningFee;
+
+        // Check if the user voted for the winningFee
+        bool userVotedForWinningFee = voter.votedFee == winningFee;
+
+        uint256 bitcoinTokensToClaim;
+
+        if (userVotedForWinningFee) {
+            bitcoinTokensToClaim = (amountToClaim * round.totalRewardTokens) / round.votes[winningFee];
+            lockedTokens[msg.sender].totalRewardsCollected += bitcoinTokensToClaim;
+        } else {
+            bitcoinTokensToClaim = 0;
+        }
+
+        voter.amount = 0; // Reset the locked tokens for the voter
+        voter.votedFee = 0; // Reset the votedFee for the voter
+    
+        // Transfer the locked btcSigma back to the voter
+        btcsigma.transfer(msg.sender, amountToClaim);
+
+        // Transfer the proportionate bitcoin tokens to the voter
+        bitcoin.transfer(msg.sender, bitcoinTokensToClaim);
+    }
+}

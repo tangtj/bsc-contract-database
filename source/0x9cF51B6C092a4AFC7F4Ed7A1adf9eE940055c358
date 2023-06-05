@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract Pepedoll {
+    string public name = "Pepedoll";
+    string public symbol = "PEP";
+    uint256 public totalSupply = 100000000 * 10**18; // 100 million tokens with 18 decimal places
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    address public marketingWallet = 0x433A245a3bbEF99AA7CA253Bb19651D8d0555A05;
+    address public liquidityPool;
+
+    uint256 public buyTaxPercentage = 10;
+    uint256 public sellTaxPercentage = 10;
+    uint256 public marketingTaxPercentage = 8;
+    uint256 public liquidityPoolTaxPercentage = 2;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Burn(address indexed from, uint256 value);
+    event Mint(address indexed to, uint256 value);
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+        emit Transfer(address(0), msg.sender, totalSupply);
+    }
+
+    function transfer(address to, uint256 value) external returns (bool) {
+        _transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) external returns (bool) {
+        require(value <= allowance[from][msg.sender], "Insufficient allowance");
+        allowance[from][msg.sender] -= value;
+        _transfer(from, to, value);
+        return true;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal {
+        require(from != address(0), "Invalid sender address");
+        require(to != address(0), "Invalid recipient address");
+        require(value > 0, "Transfer value must be greater than zero");
+
+        uint256 taxAmount = calculateTax(value, from == liquidityPool ? sellTaxPercentage : buyTaxPercentage);
+        uint256 marketingTax = (taxAmount * marketingTaxPercentage) / 100;
+        uint256 liquidityPoolTax = (taxAmount * liquidityPoolTaxPercentage) / 100;
+        uint256 netValue = value - taxAmount;
+
+        balanceOf[from] -= value;
+        balanceOf[to] += netValue;
+
+        if (marketingTax > 0) {
+            balanceOf[marketingWallet] += marketingTax;
+            emit Transfer(from, marketingWallet, marketingTax);
+        }
+
+        if (liquidityPoolTax > 0 && liquidityPool != address(0)) {
+            balanceOf[liquidityPool] += liquidityPoolTax;
+            emit Transfer(from, liquidityPool, liquidityPoolTax);
+        }
+
+        emit Transfer(from, to, netValue);
+    }
+
+    function calculateTax(uint256 value, uint256 taxPercentage) internal pure returns (uint256) {
+        return (value * taxPercentage) / 100;
+    }
+
+    function burn(uint256 value) external {
+        require(value > 0, "Burn value must be greater than zero");
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+
+        balanceOf[msg.sender] -= value;
+        totalSupply -= value;
+
+        emit Transfer(msg.sender, address(0), value);
+        emit Burn(msg.sender, value);
+    }
+
+    function mint(address to, uint256 value) external {
+        require(value > 0, "Mint value must be greater than zero");
+
+        balanceOf[to] += value;
+        totalSupply += value;
+
+        emit Transfer(address(0), to, value);
+        emit Mint(to, value);
+    }
+
+    // Additional function to set the liquidity pool address
+    function setLiquidityPool(address _liquidityPool) external {
+        require(liquidityPool == address(0), "Liquidity pool already set");
+        require(_liquidityPool != address(0), "Invalid liquidity pool address");
+        liquidityPool = _liquidityPool;
+    }
+}

