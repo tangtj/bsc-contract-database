@@ -1,0 +1,264 @@
+/**
+               _  __          
+__      _____ | |/ _|         
+\ \ /\ / / _ \| | |_          
+ \ V  V / (_) | |  _|         
+  \_/\_/ \___/|_|_|           
+                             
+                 _ _        _ 
+  ___ __ _ _ __ (_) |_ __ _| |
+ / __/ _` | '_ \| | __/ _` | |
+| (_| (_| | |_) | | || (_| | |
+ \___\__,_| .__/|_|\__\__,_|_|
+          |_|                 
+*/
+
+//SPDX-License-Identifier: MIT Licensed
+pragma solidity ^0.8.10;
+
+interface IERC20 {
+    function name() external view returns (string memory);
+
+    function symbol() external view returns (string memory);
+
+    function decimals() external view returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+interface IERC721 {
+    function balanceOf(address owner) external view returns (uint256 balance);
+
+    function ownerOf(uint256 tokenId) external view returns (address owner);
+
+    function totalSupply() external view returns (uint256);
+
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId,
+        bytes calldata data
+    ) external;
+
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) external;
+
+    function transferFrom(address from, address to, uint256 tokenId) external;
+
+    function approve(address to, uint256 tokenId) external;
+
+    function safeMint(address to, string memory uri) external returns (uint256);
+}
+
+interface IWolf {
+    function getUserInfo(
+        address _user
+    )
+        external
+        view
+        returns (
+            bool _isExists,
+            uint256 _stakeCount,
+            address _referrer,
+            uint256 _referrals,
+            uint256 _referralRewards,
+            uint256 _teamId,
+            uint256 _currentStaked,
+            uint256 _totalStaked,
+            uint256 _totalWithdrawan
+        );
+}
+
+// Nft Minter Contract
+contract WolfCapitalMinter {
+    address public wolfV1;
+    address[3] public nft;
+    address public usdc;
+    address payable public owner;
+    address payable public feeReceiver;
+
+    uint256[3] public fee = [5000 ether, 2500 ether, 900 ether];
+    uint256[3] public totalRaised;
+    uint256[3] public totalSold;
+    uint256 public totalUsers;
+    uint256 public whitelistTime = 1686027600;
+    uint256 public publicTime = 1686070800;
+
+    bool public whitelistStart;
+    bool public publicStart;
+
+    struct User {
+        uint256 totalInvested;
+        uint256[3] totalBought;
+    }
+
+    mapping(address => User) internal users;
+    mapping(uint8 => address[]) public allUsers;
+    mapping(address => uint8) public isWhitelisted;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not an owner");
+        _;
+    }
+
+    constructor(address _feeReceiver) {
+        wolfV1 = 0x1500B2dec4712f60D27D500A731a6686Adbf9958;
+        usdc = 0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d;
+        owner = payable(msg.sender);
+        feeReceiver = payable(_feeReceiver);
+        nft[0] = 0xC1c30151221fBe950473a3a2e8fA77373000DA86;
+        nft[1] = 0xbcD0a8103f48753271151Fc6b3E744B6c1cEbfa4;
+        nft[2] = 0x11A7DcF268B0958F64e0018056830A537Af428D8;
+    }
+
+    // to buy Nft => for web3 use
+    function buyNft(uint8 _index, string memory _uri) public {
+        require(block.timestamp >= whitelistTime, "Wait for Whitelist launch");
+        if (whitelistStart) {
+            require(isWhitelisted[msg.sender] > 0, "Not whitelisted");
+            uint256 totalBought = users[msg.sender].totalBought[0] + users[msg.sender].totalBought[1] + users[msg.sender].totalBought[2];
+            require(
+                totalBought < isWhitelisted[msg.sender],
+                "Buy limit exceeds"
+            );
+        } else {
+            require(publicStart, "Public sale not yet Started.");
+        }
+        (bool isExist, , , , , , , , ) = IWolf(wolfV1).getUserInfo(msg.sender);
+        require(isExist, "Not a WC user");
+        require(_index >= 0 && _index <= 2, "Invalid index");
+        uint256 amount = fee[_index];
+        require(
+            IERC20(usdc).balanceOf(msg.sender) >= amount,
+            "Not enough balance"
+        );
+        IERC20(usdc).transferFrom(msg.sender, feeReceiver, amount);
+        if (users[msg.sender].totalInvested == 0) {
+            totalUsers++;
+            allUsers[_index].push(msg.sender);
+        }
+        IERC721(nft[_index]).safeMint(msg.sender, _uri);
+        users[msg.sender].totalInvested += amount;
+        totalRaised[_index] += amount;
+        users[msg.sender].totalBought[_index]++;
+        totalSold[_index]++;
+    }
+
+    function getUserInfo(
+        address _user
+    ) public view returns (uint256, uint256, uint256, uint256) {
+        return (
+            users[_user].totalInvested,
+            users[_user].totalBought[0],
+            users[_user].totalBought[1],
+            users[_user].totalBought[2]
+        );
+    }
+
+    function getAllUsersLength(uint8 _index) public view returns (uint256) {
+        return allUsers[_index].length;
+    }
+
+    function getTotalMinted() public view returns (uint256, uint256, uint256) {
+        return (
+            IERC721(nft[0]).totalSupply(),
+            IERC721(nft[1]).totalSupply(),
+            IERC721(nft[2]).totalSupply()
+        );
+    }
+
+    function setWhitelist(
+        address[] memory account,
+        uint8[] memory value
+    ) external onlyOwner {
+        for (uint256 i; i < account.length; i++) {
+            isWhitelisted[account[i]] = value[i];
+        }
+    }
+
+    function setSaleState(bool _wl, bool _pub) public onlyOwner {
+        whitelistStart = _wl;
+        publicStart = _pub;
+    }
+
+    function setTimesOfLaunch(uint256 _wl, uint256 _pub) public onlyOwner {
+        whitelistTime = _wl;
+        publicTime = _pub;
+    }
+
+    function updateFee(
+        uint256 _first,
+        uint256 _second,
+        uint256 _third
+    ) external onlyOwner {
+        fee[0] = _first;
+        fee[1] = _second;
+        fee[2] = _third;
+    }
+
+    // transfer ownership
+    function changeOwner(address payable _newOwner) external onlyOwner {
+        owner = _newOwner;
+    }
+
+    // change Fee Receiver
+    function changeFeeReceiver(address _new) external onlyOwner {
+        feeReceiver = payable(_new);
+    }
+
+    // change payment token
+    function changeToken(address _new) external onlyOwner {
+        usdc = _new;
+    }
+
+    function setContracts(address _wolf) external onlyOwner {
+        wolfV1 = _wolf;
+    }
+
+    // change nfts
+    function updateNFTs(
+        address _first,
+        address _second,
+        address _third
+    ) external onlyOwner {
+        nft[0] = _first;
+        nft[1] = _second;
+        nft[2] = _third;
+    }
+
+    // to draw funds
+    function transferFunds(address _token, uint256 _value) external onlyOwner {
+        IERC20(_token).transfer(feeReceiver, _value);
+    }
+}

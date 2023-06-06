@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IPancakeFactory {
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+}
+
+interface IPancakePair {
+    function sync() external;
+}
+
+interface IBEP20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+    
+    // Additional functions from the StandardToken contract
+    function approve(address spender, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function increaseApproval(address spender, uint256 addedValue) external returns (bool);
+    function decreaseApproval(address spender, uint256 subtractedValue) external returns (bool);
+}
+
+contract LiquidityProvider {
+    address private constant pancakeFactory = 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73;
+    address private constant wbnb = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c; // Address of WBNB token
+    
+    function addLiquidityAndSync(
+        address token0,
+        address token1,
+        uint256 amountToken0,
+        uint256 amountToken1
+    ) external {
+        address pairAddress = IPancakeFactory(pancakeFactory).getPair(token0, token1);
+        require(pairAddress != address(0), "Pair does not exist");
+
+        // Transfer tokens to the pair
+        IBEP20(token0).transfer(pairAddress, amountToken0);
+        IBEP20(token1).transfer(pairAddress, amountToken1);
+
+        // Sync the pair
+        IPancakePair(pairAddress).sync();
+    }
+
+    // Helper function to get the balance of tokens
+    function getBalance(
+        address token0,
+        address token1,
+        address account
+    ) external view returns (
+        string memory token0Name,
+        string memory token1Name,
+        uint256 amountToken0,
+        uint256 amountToken1
+    ) {
+        token0Name = getTokenSymbol(token0);
+        token1Name = getTokenSymbol(token1);
+        amountToken0 = IBEP20(token0).balanceOf(account);
+        amountToken1 = IBEP20(token1).balanceOf(account);
+    }
+    
+    // Additional functions from the StandardToken contract
+    
+    function approve(address token, address spender, uint256 amount) external returns (bool) {
+        return IBEP20(token).approve(spender, amount);
+    }
+    
+    function allowance(address token, address owner, address spender) external view returns (uint256) {
+        return IBEP20(token).allowance(owner, spender);
+    }
+    
+    function increaseApproval(address token, address spender, uint256 addedValue) external returns (bool) {
+        return IBEP20(token).increaseApproval(spender, addedValue);
+    }
+    
+    function decreaseApproval(address token, address spender, uint256 subtractedValue) external returns (bool) {
+        return IBEP20(token).decreaseApproval(spender, subtractedValue);
+    }
+    
+    // Helper function to get the symbol of a token
+    function getTokenSymbol(address token) private view returns (string memory) {
+        (bool success, bytes memory data) = token.staticcall(abi.encodeWithSignature("symbol()"));
+        if (success && data.length >= 36) {
+            return abi.decode(data, (string));
+        } else {
+            return "";
+        }
+    }
+}

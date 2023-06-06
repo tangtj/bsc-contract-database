@@ -1,0 +1,711 @@
+
+// File: SonThuyTinh.sol
+// SPDX-License-Identifier: UNLICENSED
+// vmh
+
+pragma solidity ^0.8.0;
+
+import "XCGod.sol";
+import "IXCHeartBeat.sol";
+
+contract SonThuyTinh is XCGod, IXCHeartBeatMaker {
+    struct GameCollection {
+        uint256 balance;
+        uint256[] orders;
+    }
+
+    struct Game {
+        uint256 id;
+        uint256 turn;
+        address[] tokens;
+        mapping(address => GameCollection) collection;
+    }
+
+    struct HeartBeat {
+        uint256 atBlock;
+        uint256 index;
+    }
+
+    string public constant VERSION = "1.0";
+    uint256 public division;
+    uint256 public step;
+    IXCHeartBeat public iHeartBeat;
+    uint256 public extraTip;
+
+    HeartBeat public nextBeat;
+    Game public game;
+
+    modifier onlyHeartBeat() {
+        require(msg.sender == address(iHeartBeat));
+        _;
+    }
+
+    constructor(
+        address _xchanceAddress,
+        uint256 _maxPendingRequests,
+        uint256 _division,
+        address _heartBeatAddress,
+        uint256 _extraTip
+    ) XCGod(_xchanceAddress, _maxPendingRequests) {
+        division = _division;
+        step = blocksPerGame / division;
+        iHeartBeat = IXCHeartBeat(_heartBeatAddress);
+        extraTip = _extraTip;
+    }
+
+    function updateExtraTip(uint256 _extraTip) public onlyOwner {
+        extraTip = _extraTip;
+    }
+
+    function live() public onlyOwner {
+        if (nextBeat.atBlock > 0) {
+            stopNextBeat();
+        }
+        IERC20(iHeartBeat.tokenAddress()).approve(
+            address(iHeartBeat),
+            type(uint256).max
+        );
+        keepWakeUp();
+    }
+
+    function takeBreak() public onlyOwner {
+        if (nextBeat.atBlock > 0) {
+            stopNextBeat();
+            delete nextBeat;
+        }
+        if (game.id > 0 && game.id < getGameID()) {
+            releaseGame();
+        }
+    }
+
+    function heartBeat() public onlyHeartBeat {
+        keepWakeUp();
+    }
+
+    // Return next block to wake up
+    function wakeUp() public returns (uint256) {
+        if (game.id == 0) {
+            return wakeUpSonTinh();
+        } else if (game.id == getGameID()) {
+            return wakeUpThuyTinh();
+        } else {
+            return releaseGame();
+        }
+    }
+
+    function stopNextBeat() internal {
+        iHeartBeat.unmake(nextBeat.atBlock, nextBeat.index);
+    }
+
+    function keepWakeUp() internal {
+        uint256 nextBlock = wakeUp();
+        if (nextBeat.atBlock != nextBlock) {
+            uint256 tip = iHeartBeat.averageTip(block.number) +
+                iHeartBeat.averageTip(block.number - 1) +
+                iHeartBeat.averageTip(block.number - 2);
+            tip = tip / 3 + extraTip;
+
+            nextBeat.atBlock = nextBlock;
+            nextBeat.index = iHeartBeat.make(nextBeat.atBlock, 0, tip);
+        }
+    }
+
+    function wakeUpSonTinh() internal returns (uint256) {
+        if (block.number % blocksPerGame >= step) {
+            return nextGameBlock();
+        }
+        address[] memory tokens = getTokens(division);
+        for (uint256 i = 0; i < tokens.length; i++) {
+            address token = tokens[i];
+            uint256 balance = getBalance(token);
+            uint256 unit = balance / (division * division);
+            if (unit > 0) {
+                if (token != address(0)) {
+                    approveAllowance(token, balance);
+                }
+                uint256 salt = uint256(keccak256(abi.encodePacked(token)));
+                uint256[] memory orders = shuffle(salt);
+                uint256[] memory pots = new uint256[](division);
+                for (uint256 k = 0; k < division; k++) {
+                    pots[orders[k]] = unit * (k + 1);
+                }
+                fundXChance(division, token, pots);
+
+                game.tokens.push(token);
+                GameCollection storage collection = game.collection[token];
+                collection.balance = balance;
+                collection.orders = orders;
+            }
+        }
+        if (game.tokens.length > 0) {
+            game.id = getGameID();
+            lockFund();
+            return nextStepBlock();
+        } else {
+            return nextGameBlock();
+        }
+    }
+
+    function wakeUpThuyTinh() internal returns (uint256) {
+        uint256 newTurn = (block.number % blocksPerGame) / step;
+        if (newTurn > game.turn && newTurn < division) {
+            uint256 distance = newTurn - game.turn;
+            for (uint256 i = 0; i < game.tokens.length; i++) {
+                address token = game.tokens[i];
+                GameCollection storage collection = game.collection[token];
+                if (collection.balance > 0) {
+                    uint256 unit = collection.balance / (division * division);
+                    uint256[] memory pots = new uint256[](division);
+                    for (uint256 j = 0; j < newTurn; j++) {
+                        uint256 multi = distance -
+                            (j > game.turn ? (j - game.turn) : 0);
+                        pots[collection.orders[j]] = unit * multi;
+                    }
+                    fundXChance(division, token, pots);
+                }
+            }
+            game.turn = newTurn;
+        }
+        return newTurn < division - 1 ? nextStepBlock() : nextGameBlock();
+    }
+
+    function releaseGame() internal returns (uint256) {
+        claimPrize(game.id);
+        unlockFund();
+        for (uint256 i = 0; i < game.tokens.length; i++) {
+            delete game.collection[game.tokens[i]];
+        }
+        delete game;
+        return
+            block.number % blocksPerGame < step - 1
+                ? block.number + 1
+                : nextGameBlock();
+    }
+
+    function shuffle(uint256 _salt) internal view returns (uint256[] memory) {
+        uint256[] memory pots = new uint256[](division);
+        for (uint256 i = 0; i < division; i++) {
+            pots[i] = i;
+        }
+        uint256 random = uint256(keccak256(abi.encodePacked(block.timestamp)));
+        for (uint256 i = 0; i < division; i++) {
+            uint256 n = i +
+                (((random % (division - i)) + (_salt % (division - i))) %
+                    (division - i));
+            uint256 temp = pots[n];
+            pots[n] = pots[i];
+            pots[i] = temp;
+        }
+        return pots;
+    }
+
+    function nextGameBlock() internal view returns (uint256) {
+        unchecked {
+            return
+                block.number + blocksPerGame - (block.number % blocksPerGame);
+        }
+    }
+
+    function nextStepBlock() internal view returns (uint256) {
+        unchecked {
+            return
+                block.number + step - ((block.number % blocksPerGame) % step);
+        }
+    }
+}
+
+
+// File: XCGod.sol
+// SPDX-License-Identifier: MIT
+// vmh
+
+pragma solidity ^0.8.0;
+
+import "IERC20.sol";
+import "XCFundable.sol";
+import "IXChance.sol";
+
+contract XCGod is XCFundable {
+    address public xchanceAddress;
+    uint256 public blocksPerGame;
+
+    constructor(
+        address _xchanceAddress,
+        uint256 _maxPendingRequests
+    ) XCFundable(_maxPendingRequests) {
+        xchanceAddress = _xchanceAddress;
+        blocksPerGame = IXChance(xchanceAddress).blocksPerGame();
+    }
+
+    receive() external payable {}
+
+    function getGameID() internal view returns (uint256) {
+        return block.number / blocksPerGame;
+    }
+
+    function getDivisions() internal view returns (uint256[] memory) {
+        return IXChance(xchanceAddress).getDivisions();
+    }
+
+    function getTokens(
+        uint256 _division
+    ) internal view returns (address[] memory) {
+        return IXChance(xchanceAddress).getTokens(_division);
+    }
+
+    function approveAllowance(address _token, uint256 _amount) internal {
+        IERC20(_token).approve(xchanceAddress, _amount);
+    }
+
+    function fundXChance(
+        uint256 _division,
+        address _token,
+        uint256[] memory _pots
+    ) internal {
+        if (_token == address(0)) {
+            uint256 totalValue;
+            for (uint256 i = 0; i < _pots.length; i++) {
+                totalValue += _pots[i];
+            }
+            IXChance(xchanceAddress).fundBatch{value: totalValue}(
+                _division,
+                _pots
+            );
+        } else {
+            IXChance(xchanceAddress).fundBatchToken(_division, _token, _pots);
+        }
+    }
+
+    function claimPrize(uint256 _gameID) internal {
+        IXChance(xchanceAddress).claimPrizeBatch(_gameID);
+    }
+}
+
+
+// File: IERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+
+// File: XCFundable.sol
+// SPDX-License-Identifier: MIT
+// vmh
+
+pragma solidity ^0.8.0;
+
+import "IERC20.sol";
+
+contract XCFundable {
+    struct Ownership {
+        uint256 totalUnits;
+        uint256 sharePrice;
+        mapping(address => uint256) stakeholders;
+    }
+
+    struct PendingOwnership {
+        uint256 newFund;
+        address[] fundSenders;
+        mapping(address => uint256) fundRequests;
+        address[] withdrawalSenders;
+        mapping(address => uint256) withdrawalRequests;
+    }
+
+    address public owner;
+    uint256 public maxPendingRequests;
+    address[] tokens;
+    mapping(address => Ownership) ownerships;
+    mapping(address => PendingOwnership) pendingOwnerships;
+    bool isLocked;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner);
+        _;
+    }
+
+    constructor(uint256 _maxPendingRequests) {
+        owner = msg.sender;
+        maxPendingRequests = _maxPendingRequests;
+        isLocked = false;
+    }
+
+    function kickstart(uint256 _units) public payable onlyOwner {
+        kickstartFund(address(0), msg.value, _units);
+    }
+
+    function kickstartToken(
+        address _tokenAddress,
+        uint256 _value,
+        uint256 _units
+    ) public onlyOwner {
+        IERC20(_tokenAddress).transferFrom(msg.sender, address(this), _value);
+        kickstartFund(_tokenAddress, _value, _units);
+    }
+
+    function kickstartFund(
+        address _tokenAddress,
+        uint256 _value,
+        uint256 _units
+    ) internal {
+        require(_value > 0 && _units > 0, "Invalid values to kickstart");
+        Ownership storage ownership = ownerships[_tokenAddress];
+        require(ownership.sharePrice == 0, "Not available to kickstart");
+        uint256 sharePrice = _value / _units;
+        require(sharePrice > 0, "Price is too small");
+        tokens.push(_tokenAddress);
+        ownership.totalUnits = _units;
+        ownership.stakeholders[msg.sender] = _units;
+        ownership.sharePrice = sharePrice;
+    }
+
+    function allowPending() public view returns (bool) {
+        uint256 sum;
+        for (uint256 i = 0; i < tokens.length; i++) {
+            address token = tokens[i];
+            sum += pendingOwnerships[token].fundSenders.length;
+            sum += pendingOwnerships[token].withdrawalSenders.length;
+        }
+        return sum < maxPendingRequests;
+    }
+
+    function fund() public payable {
+        recordFund(address(0), msg.value);
+    }
+
+    function fundToken(address _tokenAddress, uint256 _value) public {
+        IERC20(_tokenAddress).transferFrom(msg.sender, address(this), _value);
+        recordFund(_tokenAddress, _value);
+    }
+
+    function recordFund(address _tokenAddress, uint256 _value) internal {
+        Ownership storage ownership = ownerships[_tokenAddress];
+        require(ownership.sharePrice > 0, "Not available to fund");
+        if (isLocked) {
+            require(allowPending(), "Exceeds max pending requests");
+            PendingOwnership storage pending = pendingOwnerships[_tokenAddress];
+            if (pending.fundRequests[msg.sender] == 0) {
+                pending.fundSenders.push(msg.sender);
+            }
+            pending.fundRequests[msg.sender] += _value;
+            pending.newFund += _value;
+        } else {
+            uint256 units = _value / ownership.sharePrice;
+            require(units > 0, "Value is too small");
+            ownership.totalUnits += units;
+            ownership.stakeholders[msg.sender] += units;
+        }
+    }
+
+    function getOwnershipInfo(
+        address _tokenAddress
+    ) public view returns (uint256, uint256, uint256, uint256, uint256) {
+        Ownership storage ownership = ownerships[_tokenAddress];
+        PendingOwnership storage pending = pendingOwnerships[_tokenAddress];
+        return (
+            ownership.sharePrice,
+            ownership.totalUnits,
+            ownership.stakeholders[msg.sender],
+            pending.fundRequests[msg.sender],
+            pending.withdrawalRequests[msg.sender]
+        );
+    }
+
+    function getBalance(address _token) internal view returns (uint256) {
+        if (_token == address(0)) {
+            return address(this).balance;
+        } else {
+            return IERC20(_token).balanceOf(address(this));
+        }
+    }
+
+    function requestWithdrawal(uint256 _units) public {
+        uint256 amount = serveWithdrawal(address(0), _units);
+        if (amount > 0) {
+            payable(msg.sender).transfer(amount);
+        }
+    }
+
+    function requestWithdrawalToken(
+        address _tokenAddress,
+        uint256 _units
+    ) public {
+        uint256 amount = serveWithdrawal(_tokenAddress, _units);
+        if (amount > 0) {
+            IERC20(_tokenAddress).transfer(msg.sender, amount);
+        }
+    }
+
+    function serveWithdrawal(
+        address _tokenAddress,
+        uint256 _units
+    ) internal returns (uint256) {
+        Ownership storage ownership = ownerships[_tokenAddress];
+        uint256 shares = ownership.stakeholders[msg.sender];
+        require(shares > 0 && shares >= _units, "Not enough to withdraw");
+        if (isLocked) {
+            require(allowPending(), "Exceeds max pending requests");
+            PendingOwnership storage pending = pendingOwnerships[_tokenAddress];
+            if (pending.withdrawalRequests[msg.sender] == 0) {
+                pending.withdrawalSenders.push(msg.sender);
+            }
+            pending.withdrawalRequests[msg.sender] = _units;
+            return 0;
+        } else {
+            require(getBalance(_tokenAddress) > 0, "No balance to withdraw");
+            return proceedWithdrawal(ownership, msg.sender, _units);
+        }
+    }
+
+    function proceedWithdrawal(
+        Ownership storage _ownership,
+        address _sender,
+        uint256 _units
+    ) internal returns (uint256) {
+        _ownership.stakeholders[_sender] -= _units;
+        _ownership.totalUnits -= _units;
+        return _ownership.sharePrice * _units;
+    }
+
+    function lockFund() internal {
+        isLocked = true;
+    }
+
+    function unlockFund() internal {
+        for (uint256 i = 0; i < tokens.length; i++) {
+            address token = tokens[i];
+            Ownership storage ownership = ownerships[token];
+            PendingOwnership storage pending = pendingOwnerships[token];
+            uint256 balance = token == address(0)
+                ? address(this).balance
+                : IERC20(token).balanceOf(address(this));
+            uint256 newPrice = balance > pending.newFund
+                ? (balance - pending.newFund) / ownership.totalUnits
+                : 0;
+            if (newPrice > 0) {
+                ownership.sharePrice = newPrice;
+            }
+            proceedPendingWithdrawalRequests(token, newPrice);
+            if (pending.newFund > 0) {
+                proceedPendingFundRequests(token);
+                if (newPrice == 0) {
+                    uint256 sharePrice = balance / ownership.totalUnits;
+                    if (sharePrice > 0) {
+                        ownership.sharePrice = sharePrice;
+                    }
+                }
+            }
+            delete pendingOwnerships[token];
+        }
+        isLocked = false;
+    }
+
+    function proceedPendingWithdrawalRequests(
+        address _token,
+        uint256 newPrice
+    ) internal {
+        Ownership storage ownership = ownerships[_token];
+        PendingOwnership storage pending = pendingOwnerships[_token];
+        for (uint256 i = 0; i < pending.withdrawalSenders.length; i++) {
+            address sender = pending.withdrawalSenders[i];
+            if (newPrice > 0) {
+                uint256 units = pending.withdrawalRequests[sender];
+                if (units == 0) {
+                    continue;
+                }
+                uint256 amount = proceedWithdrawal(ownership, sender, units);
+                if (_token == address(0)) {
+                    payable(sender).transfer(amount);
+                } else {
+                    IERC20(_token).transfer(sender, amount);
+                }
+            }
+            delete pending.withdrawalRequests[sender];
+        }
+    }
+
+    function proceedPendingFundRequests(address _token) internal {
+        Ownership storage ownership = ownerships[_token];
+        PendingOwnership storage pending = pendingOwnerships[_token];
+        for (uint256 i = 0; i < pending.fundSenders.length; i++) {
+            address sender = pending.fundSenders[i];
+            uint256 units = pending.fundRequests[sender] / ownership.sharePrice;
+            ownership.totalUnits += units;
+            ownership.stakeholders[sender] += units;
+            delete pending.fundRequests[sender];
+        }
+    }
+}
+
+
+// File: IXChance.sol
+// SPDX-License-Identifier: MIT
+// vmh
+
+pragma solidity ^0.8.0;
+
+interface IXChance {
+    function blocksPerGame() external view returns (uint256);
+
+    function getDivisions() external view returns (uint256[] memory);
+
+    function getTokens(
+        uint256 _division
+    ) external view returns (address[] memory);
+
+    function fund(uint256 _division, uint256 _potID) external payable;
+
+    function fundToken(
+        uint256 _division,
+        address _token,
+        uint256 _potID,
+        uint256 _value
+    ) external;
+
+    function fundBatch(
+        uint256 _division,
+        uint256[] memory _pots
+    ) external payable;
+
+    function fundBatchToken(
+        uint256 _division,
+        address _token,
+        uint256[] memory _pots
+    ) external;
+
+    function getPots(
+        uint256 _division,
+        address _token,
+        uint256 _gameID
+    ) external view returns (uint256[] memory);
+
+    function getFunds(
+        uint256 _division,
+        address _token,
+        uint256 _gameID,
+        address _address
+    ) external view returns (uint256[] memory);
+
+    function claimPrize(uint256 _division, uint256 _gameID) external;
+
+    function claimTokenPrize(
+        uint256 _division,
+        address _token,
+        uint256 _gameID
+    ) external;
+
+    function claimPrizeBatch(uint256 _gameID) external;
+
+    function getClaim(
+        uint256 _division,
+        address _token,
+        uint256 _gameID,
+        address _address
+    ) external view returns (uint256);
+}
+
+
+// File: IXCHeartBeat.sol
+// SPDX-License-Identifier: MIT
+// vmh
+
+pragma solidity ^0.8.0;
+
+interface IXCHeartBeat {
+    function tokenAddress() external returns (address);
+
+    function averageTip(uint256 _atBlock) external returns (uint256);
+
+    function make(
+        uint256 _atBlock,
+        uint256 _expiresAtBlock,
+        uint256 _tip
+    ) external returns (uint256);
+
+    function unmake(uint256 _atBlock, uint256 _index) external;
+
+    function take(uint256[] memory list) external;
+}
+
+interface IXCHeartBeatMaker {
+    function heartBeat() external;
+}
+

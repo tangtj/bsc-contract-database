@@ -1,0 +1,903 @@
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+
+
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+// File: @openzeppelin/contracts/token/ERC721/IERC721Receiver.sol
+
+
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC721/IERC721Receiver.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @title ERC721 token receiver interface
+ * @dev Interface for any contract that wants to support safeTransfers
+ * from ERC721 asset contracts.
+ */
+interface IERC721Receiver {
+    /**
+     * @dev Whenever an {IERC721} `tokenId` token is transferred to this contract via {IERC721-safeTransferFrom}
+     * by `operator` from `from`, this function is called.
+     *
+     * It must return its Solidity selector to confirm the token transfer.
+     * If any other value is returned or the interface is not implemented by the recipient, the transfer will be reverted.
+     *
+     * The selector can be obtained in Solidity with `IERC721Receiver.onERC721Received.selector`.
+     */
+    function onERC721Received(
+        address operator,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external returns (bytes4);
+}
+
+// File: contracts/interfaces/IERC20Burn.sol
+
+pragma solidity =0.8.4;
+
+
+interface IERC20Burn {
+    function burn(uint256 amount) external;
+
+}
+// File: contracts/interfaces/INFT.sol
+
+pragma solidity =0.8.4;
+
+
+interface INFT {
+   
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) external;
+    function getPriceByTokenId(uint256 tokenId) external view returns (uint256,uint256,uint256);
+    function ownerOf(uint256 tokenId) external view returns (address owner);
+}
+// File: contracts/Masterchef.sol
+
+
+
+pragma solidity =0.8.4;
+
+
+
+
+
+contract Masterchef is IERC721Receiver {
+
+    modifier onlyMarket() {
+        require(msg.sender == marketAddr, "Ownable: caller is not the market");
+        _;
+    }
+
+    struct Reward{
+        uint256 startDate;
+        uint256 claimDate;
+        uint256 maxReward;
+        uint256 price;
+        uint256 claimed;
+        address owner;
+        bool deposited;
+        uint256 tokenId;
+        uint256 index;
+        uint256 endDate;
+    }
+   
+    struct Stake{
+        uint256 stakedDate;
+        uint256 claimDate;
+        uint256 uAmount;
+        address parent;
+        uint256 endDate;
+        uint256 pending;
+        bool staked;
+        bool isAuto;
+    }
+    
+    struct LV{
+        uint256 claimFedFee;
+        uint256 claimFedReward;
+        uint256 index;
+    }
+    struct Product{
+        uint256 time;
+        uint256 rate;
+    }
+    address public nftAddr=0xeba1687d165C82E39273F38Ca7584361eDE342eF;
+    address public usdtAddr=0x55d398326f99059fF775485246999027B3197955;
+    address public fedAddr=0x50d7e6258D56C760774DE404Ce4B405B0028Caf3;
+    address public fedtAddr=0xC5326Df5Adf6d40f123beC517a9d210d2bc9F519;
+
+    address public marketAddr=0x4d72dE4E6060D1c5b8caFE24eC26573B90AaF386;
+
+    uint256 public fedBase=10000;
+    uint256 public fedtBase=666666;
+    uint256 public maxBase=100000;
+    uint256 public depositNum;
+    uint256 public depositFedNum;
+    uint256 public nftFedNum;
+    uint256 public totalUser;
+
+    mapping (uint256=>Reward) public usdtReward;
+    mapping (address=>uint256[]) public userUsdtIds;
+    mapping (uint256=>Reward) public fedReward;
+    mapping (address=>uint256[]) public userFedIds;
+    mapping (uint256=>Product) public products;
+    mapping (address=>mapping (uint256=> Stake)) public userLedger;
+    mapping (address=>address[]) public userChildren;
+    mapping (address=>address) public userParent;
+    mapping (address=>uint256) public totalUsdtReward;
+    mapping (address=>uint256) public totalFedReward;
+    mapping (address=>uint256) public teamUsdtReward;
+    mapping (address=>uint256) public teamFedReward;
+    mapping (address=>uint256) public directUsdtReward;
+    mapping (address=>uint256) public directFedReward;
+    mapping (address=>uint256) public userLv;
+    mapping (address=>mapping (uint256=>bool)) public userNftDeposited;
+    mapping (uint256=>bool) public nftDeposited;
+    mapping (address=>uint256[]) public userDepositedNfts;
+    mapping (address=>bool) public userHasDeposited;
+
+    bool public fedStarted=true;
+    uint256 public fedStartDate;
+    bool public fedtStarted=true;
+    uint256 public fedtStartDate;
+    uint256 constant public maxRate=10000;
+
+    // for test: days=>hours hours=>minutes
+
+    constructor() {
+        fedStartDate=block.timestamp;
+        fedtStartDate=block.timestamp;
+        products[0]=Product(3 hours,50);
+        products[1]=Product(9 hours,60);
+        products[2]=Product(15 hours,70);
+        products[3]=Product(30 hours,80);
+        products[4]=Product(60 hours,90);
+        products[5]=Product(90 hours,100);
+        products[6]=Product(180 hours,110);
+        products[7]=Product(360 hours,120);
+        products[8]=Product(30 hours,80);
+    }
+
+    function checkLegal(uint256 amount,uint256 index) private pure returns (bool){
+        if(index==0){
+            if(amount==100*10**18) return true;
+            if(amount==500*10**18) return true;
+            if(amount==1000*10**18) return true;
+        }else if(index==1){
+            if(amount==100*10**18) return true;
+            if(amount==500*10**18) return true;
+            if(amount==1000*10**18) return true;
+            if(amount==5000*10**18) return true;
+        }else if(index==2){
+            if(amount==100*10**18) return true;
+            if(amount==500*10**18) return true;
+            if(amount==1000*10**18) return true;
+            if(amount==5000*10**18) return true;
+            if(amount==10000*10**18) return true;
+        }else if(index==3){
+            if(amount==100*10**18) return true;
+            if(amount==500*10**18) return true;
+            if(amount==1000*10**18) return true;
+            if(amount==5000*10**18) return true;
+            if(amount==10000*10**18) return true;
+            if(amount==50000*10**18) return true;
+            if(amount==100000*10**18) return true;
+        }else if(index==4){
+            if(amount==500*10**18) return true;
+            if(amount==1000*10**18) return true;
+            if(amount==5000*10**18) return true;
+            if(amount==10000*10**18) return true;
+            if(amount==50000*10**18) return true;
+            if(amount==100000*10**18) return true;
+        }else if(index==5){
+            if(amount==1000*10**18) return true;
+            if(amount==5000*10**18) return true;
+            if(amount==10000*10**18) return true;
+            if(amount==50000*10**18) return true;
+            if(amount==100000*10**18) return true;
+        }else if(index==6){
+            if(amount==5000*10**18) return true;
+            if(amount==10000*10**18) return true;
+            if(amount==50000*10**18) return true;
+            if(amount==100000*10**18) return true;
+        }else if(index==7){
+            if(amount==5000*10**18) return true;
+            if(amount==10000*10**18) return true;
+            if(amount==50000*10**18) return true;
+        }else if(index==8){
+            if(amount==100*10**18) return true;
+            if(amount==500*10**18) return true;
+            if(amount==1000*10**18) return true;
+        }
+        return false;
+    }
+    
+
+    function depositProduct(uint256 amount,address parent,uint256 index) external {
+        require(checkLegal(amount,index),"!legal");
+        if(!userHasDeposited[msg.sender]){
+            totalUser++;
+        }
+        userHasDeposited[msg.sender]=true;
+        address realParent=marketAddr;
+        if(parent!=address(0)){
+            realParent=parent;
+        }
+        require(msg.sender!=realParent,"legal invite");
+        Stake storage stake= userLedger[msg.sender][index];
+        require(!stake.staked,"staked");
+        if(userParent[msg.sender]!=address(0)){
+            stake.parent=userParent[msg.sender];
+        }else{
+            userParent[msg.sender]=realParent;
+            stake.parent=realParent;
+            userChildren[realParent].push(msg.sender);
+        }
+        depositFedNum+=amount;
+        stake.uAmount+=amount;
+        stake.stakedDate=block.timestamp;
+        stake.claimDate=block.timestamp;
+        stake.endDate=block.timestamp+products[index].time;
+        stake.staked=true;
+        stake.isAuto=true;
+        depositNum++;
+        IERC20(usdtAddr).transferFrom(msg.sender,address(this),amount);
+        if(index==8){
+            IERC20(fedtAddr).transferFrom(msg.sender,address(this),amount);
+        }else{
+            IERC20(fedAddr).transferFrom(msg.sender,address(this),amount);
+        }
+    }
+    function claimProduct(uint256 index) public  {
+        Stake storage stake= userLedger[msg.sender][index];
+        stake.claimDate=block.timestamp;
+        uint256 pending=getUserPending(msg.sender, index);
+        if(pending>0){
+            IERC20(usdtAddr).transfer(msg.sender,pending);
+            IERC20(fedAddr).transfer(msg.sender,pending);
+        }
+    }
+    function withdrawProduct(uint256 index) external {
+        Stake storage stake= userLedger[msg.sender][index];
+        uint256 cur=block.timestamp;
+        if(block.timestamp>=stake.endDate){
+            cur=stake.endDate;
+        }
+        require(stake.staked,"need staked");
+        require(!stake.isAuto,"auto lock");
+        require(block.timestamp>stake.endDate,"lock");
+        (,,,,uint256 subPerformance,)=getUserLV(msg.sender);
+        uint256 day=(cur-stake.stakedDate)/1 hours;
+        uint256 pending=day*stake.uAmount*products[index].rate/maxRate;
+        uint256 direct=day*subPerformance*products[index].rate/maxRate/10;
+        uint256 capital=stake.uAmount*99/100;
+        stake.uAmount=0;
+        stake.staked=false;
+        totalUsdtReward[msg.sender]+=(pending);
+        totalFedReward[msg.sender]+=pending;
+        directUsdtReward[msg.sender]+=direct;
+        directFedReward[msg.sender]+=direct;
+        claimProduct(index);
+        IERC20(usdtAddr).transfer(msg.sender,capital);
+        IERC20(fedAddr).transfer(msg.sender,capital);
+        (address p,LV memory plv)=getLegalParentWithLv(msg.sender);
+        if(p!=address(0)){
+            bool isdesc=isDesc(msg.sender);
+            if(isdesc){
+                // send p
+                totalFedReward[p]+=(pending)*plv.claimFedReward/100;
+                totalUsdtReward[p]+=(pending)*plv.claimFedReward/100;
+                teamFedReward[p]+=(pending)*plv.claimFedReward/100;
+                teamUsdtReward[p]+=(pending)*plv.claimFedReward/100;
+                IERC20(usdtAddr).transfer(p,(pending)*plv.claimFedReward/100);
+                IERC20(fedAddr).transfer(p,(pending)*plv.claimFedReward/100);
+                sendToParentDesc(msg.sender, pending);
+            }else{
+                sendToParent(msg.sender, pending);
+            }
+        }
+
+    }
+    function withdrawDirectReward() external {
+        require(directUsdtReward[msg.sender]>0,"no usdt pending");
+        require(directFedReward[msg.sender]>0,"no fed pending");
+        uint256 u=directUsdtReward[msg.sender];
+        uint256 f=directFedReward[msg.sender];
+        directUsdtReward[msg.sender]=0;
+        directFedReward[msg.sender]=0;
+        IERC20(usdtAddr).transfer(msg.sender,u);
+        IERC20(fedAddr).transfer(msg.sender,f);
+    }
+    function getUserPending(address user,uint256 index) public view returns (uint256){
+        Stake memory stake= userLedger[user][index];
+        uint256 day;
+        if(stake.isAuto){
+            day=(block.timestamp-stake.claimDate)/1 hours;
+        }else{
+            if(block.timestamp>=stake.endDate){
+                day=(stake.endDate-stake.claimDate)/1 hours;
+            }else {
+                day=(block.timestamp-stake.claimDate)/1 hours;
+            }
+        }
+        uint256 pending=day*stake.uAmount*products[index].rate/maxRate;
+        return pending;
+    }
+   
+    function isDesc(address user) public view returns(bool){
+        (address p,LV memory plv)=getLegalParentWithLv(user);
+        if(p==address(0)){
+            return false;
+        }else{
+            (address pp,LV memory pplv)=getLegalParentWithLv(p);
+            if(pp==address(0)){
+                return false;
+            }
+            if(plv.index<pplv.index){
+                return isDesc(p);
+            }else{
+                return true;
+            }
+        }
+    }
+    function sendToParentDesc(address user,uint256 amount) private {
+        (address p,LV memory plv)=getLegalParentWithLv(user);
+        (address pp,LV memory pplv)=getLegalParentWithLv(p);
+            if(pp!=address(0)){
+                //send pp
+                totalFedReward[pp]+=amount*(pplv.claimFedReward-plv.claimFedReward)/100;
+                totalUsdtReward[pp]+=amount*(pplv.claimFedReward-plv.claimFedReward)/100;
+                teamFedReward[pp]+=amount*(pplv.claimFedReward-plv.claimFedReward)/100;
+                teamUsdtReward[pp]+=amount*(pplv.claimFedReward-plv.claimFedReward)/100;
+                IERC20(usdtAddr).transfer(pp,amount*(pplv.claimFedReward-plv.claimFedReward)/100);
+                IERC20(fedAddr).transfer(pp,amount*(pplv.claimFedReward-plv.claimFedReward)/100);
+
+                sendToParentDesc(p,amount);
+            }
+    }
+      function sendToParent(address user,uint256 amount) private {
+        (address p,LV memory plv)=getLegalParentWithLv(user);
+        if(p!=address(0)){
+            (address pp,LV memory pplv)=getLegalParentWithLv(p);
+            if(pp!=address(0)){
+                if(pplv.index>plv.index){
+                    //send p and continue
+                    totalFedReward[p]+=amount*(pplv.claimFedReward-plv.claimFedReward)/100;
+                    totalUsdtReward[p]+=amount*(pplv.claimFedReward-plv.claimFedReward)/100;
+                    teamFedReward[p]+=amount*(pplv.claimFedReward-plv.claimFedReward)/100;
+                    teamUsdtReward[p]+=amount*(pplv.claimFedReward-plv.claimFedReward)/100;
+                    IERC20(usdtAddr).transfer(p,amount*(pplv.claimFedReward-plv.claimFedReward)/100);
+                    IERC20(fedAddr).transfer(p,amount*(pplv.claimFedReward-plv.claimFedReward)/100);
+                    sendToParent(p,amount);
+                }else{
+                    //send p and pp
+                    uint256 r=amount*plv.claimFedReward/100;
+                    totalFedReward[p]+=r;
+                    totalUsdtReward[p]+=r;
+                    teamFedReward[p]+=r;
+                    teamUsdtReward[p]+=r;
+                    IERC20(usdtAddr).transfer(p,r);
+                    IERC20(fedAddr).transfer(p,r);
+                    totalFedReward[pp]+=r/10;
+                    totalUsdtReward[pp]+=r/10;
+                    teamFedReward[pp]+=r/10;
+                    teamUsdtReward[pp]+=r/10;
+                    IERC20(usdtAddr).transfer(pp,r/10);
+                    IERC20(fedAddr).transfer(pp,r/10);
+                }
+            }else{
+                //send p
+                totalFedReward[p]+=amount*plv.claimFedReward/100;
+                totalUsdtReward[p]+=amount*plv.claimFedReward/100;
+                teamFedReward[p]+=amount*plv.claimFedReward/100;
+                teamUsdtReward[p]+=amount*plv.claimFedReward/100;
+                IERC20(usdtAddr).transfer(p,amount*plv.claimFedReward/100);
+                IERC20(fedAddr).transfer(p,amount*plv.claimFedReward/100);
+            }
+        }
+    }
+    function getLegalParentWithLv(address user) view public returns(address,LV memory){
+        if(userParent[user]==address(0)){
+            return (address(0),LV(50,0,0));
+        }else{
+            (LV memory lv,,,,,)=getUserLV(userParent[user]);
+            if(lv.index>0){
+                return (userParent[user],lv);
+            }else{
+                return getLegalParentWithLv(userParent[user]);
+            }
+        }
+    }
+    function getTeamLv(address user) view public returns(LV memory,uint256,uint256){
+        if(userParent[user]!=address(0)){
+            return getTeamLv(userParent[user]);
+        }else{
+            (LV memory lv,uint256 follows,uint256 performance,,,)=getUserLV(user);
+            return (lv,follows,performance);
+        }
+    }
+    function setFedAuto(uint256 index) external {
+        Stake storage stake= userLedger[msg.sender][index];
+        require(block.timestamp<stake.endDate,"end");
+        stake.isAuto=true;
+    }
+    function setFedManual(uint256 index) external {
+        Stake storage stake= userLedger[msg.sender][index];
+        stake.isAuto=false;
+        uint256 during=block.timestamp-stake.stakedDate;
+        uint256 period=during/products[index].time;
+        stake.endDate+=period*products[index].time;
+    }
+    
+    function getUserPerformance(address parent) public view returns(uint256,uint256,uint256,uint256){
+        uint256 follows;
+        uint256 performance;
+        uint256 maxPerformance;
+        for(uint256 i=0;i<userChildren[parent].length;i++){
+            uint256 subUAmount;
+            for(uint256 k=0;k<9;k++){
+                subUAmount+=userLedger[userChildren[parent][i]][k].uAmount;
+            }
+            if(subUAmount>maxPerformance){
+                maxPerformance=subUAmount;
+            }
+            performance+=subUAmount;
+            if(subUAmount>=100*10**18){
+                follows++;
+            }
+            (uint256 f,uint256 p,,)= getUserPerformance(userChildren[parent][i]);
+            follows+=f;
+            performance+=p;
+        }
+        if(maxPerformance>=100*10**18&&follows>0){
+            return (follows,performance,follows-1,performance-maxPerformance);
+        }else{
+            return (follows,performance,0,0);
+        }
+    }
+    function getUserPerformanceSub(address parent) public view returns(uint256,uint256,uint256,uint256){
+        uint256 follows;
+        uint256 performance;
+        uint256 maxPerformance;
+        for(uint256 i=0;i<userChildren[parent].length;i++){
+            uint256 subUAmount;
+            for(uint256 k=0;k<9;k++){
+                subUAmount+=userLedger[userChildren[parent][i]][k].uAmount;
+            }
+            if(subUAmount>maxPerformance){
+                maxPerformance=subUAmount;
+            }
+            performance+=subUAmount;
+            if(subUAmount>=100*10**18){
+                follows++;
+            }
+        }
+        if(maxPerformance>=100*10**18&&follows>0){
+            return (follows,performance,follows-1,performance-maxPerformance);
+        }else{
+            return (follows,performance,0,0);
+        }
+    }
+   
+   
+    function getUserProductList(address owner) public view returns(Stake[] memory){
+        Stake[] memory list=new Stake[](9);
+        for(uint256 i=0;i<9;i++){
+            list[i]=userLedger[owner][i];
+            list[i].pending=getUserPending(owner,i);
+        }
+        return list;
+    }
+    function getUserReward(address user) public view returns (uint256,uint256){
+        return (totalUsdtReward[user],totalFedReward[user]);
+    }
+    function getTeamReward(address user) public view returns (uint256,uint256){
+        return (teamUsdtReward[user]+directUsdtReward[user],teamFedReward[user]+directFedReward[user]);
+    }
+     function getDirectReward(address user) public view returns (uint256,uint256){
+        return (directUsdtReward[user],directFedReward[user]);
+    }
+    function getUserLV(address user) public view returns(LV memory,uint256,uint256,uint256,uint256,uint256){
+        uint256 follows;
+        uint256 subFollows;
+        uint256 performance;
+        uint256 subPerformance;
+        uint256 tempFollows;
+        uint256 tempPerformance;
+        (follows,performance,tempFollows,tempPerformance)=getUserPerformance(user);
+        (subFollows,subPerformance,,)=getUserPerformanceSub(user);
+
+        if(userLv[user]>0){
+            if(userLv[user]==1){
+                return (LV(40,10,1),follows,performance,subFollows,subPerformance,tempPerformance);
+            }else if(userLv[user]==2){
+                return (LV(32,20,2),follows,performance,subFollows,subPerformance,tempPerformance);
+            }else if(userLv[user]==3){
+                return (LV(26,30,3),follows,performance,subFollows,subPerformance,tempPerformance);
+            }else if(userLv[user]==4){
+                return (LV(22,35,4),follows,performance,subFollows,subPerformance,tempPerformance);
+            }else if(userLv[user]==5){
+                return (LV(20,40,5),follows,performance,subFollows,subPerformance,tempPerformance);
+            }
+        }
+        
+        //LV0 for fast
+        if(tempFollows<5){
+            return (LV(50,0,0),follows,performance,subFollows,subPerformance,tempPerformance);
+        }
+        //LV1
+        else if(tempFollows>=5&&tempFollows<10&&tempPerformance>=10000*10**18){
+            return (LV(40,10,1),follows,performance,subFollows,subPerformance,tempPerformance);
+        }
+        //LV2
+        else if(tempFollows>=10&&tempFollows<20&&tempPerformance>=50000*10**18){
+            return (LV(32,20,2),follows,performance,subFollows,subPerformance,tempPerformance);
+        }
+        //LV3
+        else if(tempFollows>=20&&tempFollows<60&&tempPerformance>=200000*10**18){
+            return (LV(26,30,3),follows,performance,subFollows,subPerformance,tempPerformance);
+        }
+        //LV4
+        else if(tempFollows>=60&&tempFollows<180&&tempPerformance>=700000*10**18){
+            return (LV(22,35,4),follows,performance,subFollows,subPerformance,tempPerformance);
+        }
+        //LV5++
+        else if(tempFollows>=180&&tempPerformance>=2000000*10**18){
+            return (LV(20,40,5),follows,performance,subFollows,subPerformance,tempPerformance);
+        }
+        else{
+            return (LV(50,0,0),follows,performance,subFollows,subPerformance,tempPerformance);
+        }
+    }
+
+    function depositNftForFed(uint256 tokenId) external {
+        (uint256 price,uint256 reward,uint256 index)=INFT(nftAddr).getPriceByTokenId(tokenId);
+        require(!userNftDeposited[msg.sender][index],"user deposited");
+        userNftDeposited[msg.sender][index]=true;
+        require(!nftDeposited[tokenId],"nft deposited");
+        nftDeposited[tokenId]=true;
+        userDepositedNfts[msg.sender].push(tokenId);
+        if(fedReward[tokenId].price>0){
+            fedReward[tokenId].startDate=block.timestamp;
+            fedReward[tokenId].claimDate=block.timestamp;
+            fedReward[tokenId].owner=msg.sender;
+            fedReward[tokenId].deposited=true;
+        }else{
+            uint256 day=reward/(price/100);
+            uint256 oneDay=1 hours;
+            uint256 endDate=block.timestamp+oneDay*day;
+            fedReward[tokenId]=Reward(block.timestamp,block.timestamp,reward/2,price/2,0,msg.sender,true,tokenId,index,endDate);
+        }
+        safeFedPush(tokenId, msg.sender);
+        INFT(nftAddr).safeTransferFrom(msg.sender,address(this),tokenId);
+        IERC20(fedAddr).transferFrom(msg.sender,address(this),price/2);
+    }
+   
+    function claimForFed(uint256 tokenId) public  {
+        Reward storage reward=fedReward[tokenId];
+        require(reward.owner==msg.sender,"not owner");
+        require(INFT(nftAddr).ownerOf(tokenId)==address(this),"need deposit");
+        uint256 day=(block.timestamp-reward.claimDate)/1 hours;
+        reward.claimDate=block.timestamp;
+        uint256 pending=day*reward.price/100;
+        if(pending==0){
+            return;
+        }
+        if(reward.claimed+pending>reward.maxReward){
+            uint256 r=reward.maxReward-reward.claimed;
+            reward.claimed=reward.maxReward;
+            if(r>0){
+                nftFedNum+=r;
+                IERC20(fedAddr).transfer(msg.sender,r);
+            }
+        }else {
+            reward.claimed+=pending;
+            nftFedNum+=pending;
+            IERC20(fedAddr).transfer(msg.sender,pending);
+        }
+    }
+    function withdrawNftForFed(uint256 tokenId) external {
+        claimForFed(tokenId);
+        fedReward[tokenId].deposited=false;
+        INFT(nftAddr).safeTransferFrom(address(this),msg.sender,tokenId);
+    }
+    function safeFedPush(uint256 tokenId,address owner) public {
+        bool isHas=false;
+        for(uint256 i=0;i<userFedIds[owner].length;i++){
+            if(userFedIds[owner][i]==tokenId){
+                isHas=true;
+            }
+        }
+        if(!isHas){
+            userFedIds[owner].push(tokenId);
+        }
+    }
+    function getUserFedDeposited() external view returns(Reward[] memory){
+        uint256[] memory ids=userFedIds[msg.sender];
+        uint256 count=ids.length;
+        Reward[] memory list=new Reward[](count);
+        for(uint256 i=0;i<count;i++){
+            if(address(this)!=INFT(nftAddr).ownerOf(ids[i])){
+                continue ;
+            }
+            list[i]=fedReward[ids[i]];
+        }
+        return list;
+    }
+    function depositNftForUsdt(uint256 tokenId) external {
+        (uint256 price,uint256 reward,uint256 index)=INFT(nftAddr).getPriceByTokenId(tokenId);
+        require(!userNftDeposited[msg.sender][index],"user deposited");
+        userNftDeposited[msg.sender][index]=true;
+        require(!nftDeposited[tokenId],"nft deposited");
+        nftDeposited[tokenId]=true;
+        userDepositedNfts[msg.sender].push(tokenId);
+        if(usdtReward[tokenId].price>0){
+            usdtReward[tokenId].startDate=block.timestamp;
+            usdtReward[tokenId].claimDate=block.timestamp;
+            usdtReward[tokenId].owner=msg.sender;
+            usdtReward[tokenId].deposited=true;
+        }else{
+            uint256 day=reward/(price/100);
+            uint256 oneDay=1 hours;
+            uint256 endDate=block.timestamp+oneDay*day;
+            usdtReward[tokenId]=Reward(block.timestamp,block.timestamp,reward,price,0,msg.sender,true,tokenId,index,endDate);
+        }
+        safeUsdtPush(tokenId, msg.sender);
+        INFT(nftAddr).safeTransferFrom(msg.sender,address(this),tokenId);
+    }
+   
+    function claimForUsdt(uint256 tokenId) public  {
+        Reward storage reward=usdtReward[tokenId];
+        require(reward.owner==msg.sender,"not owner");
+        require(INFT(nftAddr).ownerOf(tokenId)==address(this),"need deposit");
+        uint256 day=(block.timestamp-reward.claimDate)/1 hours;
+        reward.claimDate=block.timestamp;
+        uint256 pending=day*reward.price/100;
+        if(pending==0){
+            return;
+        }
+        if(reward.claimed+pending>reward.maxReward){
+            uint256 r=reward.maxReward-reward.claimed;
+            reward.claimed=reward.maxReward;
+            if(r>0){
+                IERC20(usdtAddr).transfer(msg.sender,r);
+            }
+        }else {
+            reward.claimed+=pending;
+            IERC20(usdtAddr).transfer(msg.sender,pending);
+        }
+    }
+    function withdrawNftForUsdt(uint256 tokenId) external {
+        claimForUsdt(tokenId);
+        usdtReward[tokenId].deposited=false;
+        INFT(nftAddr).safeTransferFrom(address(this),msg.sender,tokenId);
+    }
+    function safeUsdtPush(uint256 tokenId,address owner) public {
+        bool isHas=false;
+        for(uint256 i=0;i<userUsdtIds[owner].length;i++){
+            if(userUsdtIds[owner][i]==tokenId){
+                isHas=true;
+            }
+        }
+        if(!isHas){
+            userUsdtIds[owner].push(tokenId);
+        }
+    }
+    function getUserUsdtDeposited() external view returns(Reward[] memory){
+        uint256[] memory ids=userUsdtIds[msg.sender];
+        uint256 count=ids.length;
+        Reward[] memory list=new Reward[](count);
+        for(uint256 i=0;i<count;i++){
+            if(address(this)!=INFT(nftAddr).ownerOf(ids[i])){
+                continue ;
+            }
+            list[i]=usdtReward[ids[i]];
+        }
+        return list;
+    }
+    function getUserNftDeposited() view public returns(uint256[] memory){
+        uint256[] memory ids=userDepositedNfts[msg.sender];
+        uint256 count=ids.length;
+        uint256[] memory list=new uint256[](count);
+        for(uint256 i;i<count;i++){
+            list[i]=ids[i];
+        }
+        return list;
+    }
+    
+    function swapFedt(uint256 amountIn) external {
+        IERC20(usdtAddr).transferFrom(msg.sender,address(this),amountIn);
+        IERC20(usdtAddr).transfer(marketAddr,amountIn);
+        IERC20(fedtAddr).transfer(msg.sender,getFedtAmountOut(amountIn));
+    }
+    function swapFed(uint256 amountIn) external {
+        uint256 burnAmount=amountIn*20/100;
+        uint256 marketAmount=amountIn*30/100;
+        IERC20(fedAddr).transferFrom(msg.sender,address(this),amountIn);
+        IERC20Burn(fedAddr).burn(burnAmount);
+        IERC20(fedAddr).transfer(marketAddr,marketAmount);
+        IERC20(usdtAddr).transfer(msg.sender,getAmountOut(amountIn*50/100));
+    }
+    function usdtReturn(uint256 amount,address receiver) external {
+        require(msg.sender==fedAddr,"need fed");
+        uint256 out= getAmountOut(amount);
+        IERC20(usdtAddr).transfer(receiver,out);
+    }
+    function getAmountOut(uint256 amountIn) public view returns(uint256 amountOut){
+        amountOut=amountIn*getCurFedBase()/maxBase;
+    }
+    function getFedtAmountOut(uint256 amountIn) public view returns(uint256 amountOut){
+        amountOut=amountIn*getCurFedtBase()/maxBase;
+    }
+    function coolDiv(uint256 amount,uint256 period) private pure returns(uint256){
+        if(period==0){
+            return amount;
+        }
+        period--;
+        amount=amount*99/100;
+        return coolDiv(amount,period);
+    }
+    function getCurFedBase() private view returns(uint256){
+        uint256 period = (block.timestamp-fedStartDate)/36 minutes;
+        if(!fedStarted){
+            return fedBase;
+        }
+        if(period>300){
+            period=300;
+        }
+        return fedBase+fedBase*period*3/100;
+    }
+    function getCurFedtBase() private view returns(uint256){
+        uint256 period = (block.timestamp-fedStartDate)/36 minutes;
+        if(!fedStarted){
+            return fedBase;
+        }
+        if(period>=185){
+            return maxBase;
+        }
+        uint256 base=coolDiv(fedtBase,period);
+        if(base<=maxBase){
+            return maxBase;
+        }
+        return base;
+    }
+    function setFedStarted(bool _started) external onlyMarket{
+        fedStarted=_started;
+    }
+    function setFedStartDate(uint256 _date) external onlyMarket{
+        fedStartDate=_date;
+    }
+    function setFedBase(uint256 _base) external onlyMarket{
+        fedBase=_base;
+    }
+    function setFedtStarted(bool _started) external onlyMarket{
+        fedtStarted=_started;
+    }
+    function setFedtStartDate(uint256 _date) external onlyMarket{
+        fedtStartDate=_date;
+    }
+    function setFedtBase(uint256 _base) external onlyMarket{
+        fedtBase=_base;
+    }
+   
+    function setUsdtAddr(address addr) external  onlyMarket{
+        usdtAddr=addr;
+    }
+    function setFedtAddr(address addr) external  onlyMarket{
+        fedtAddr=addr;
+    }
+    function setFedAddr(address addr) external  onlyMarket{
+        fedAddr=addr;
+    }
+    function setUserLv(address addr,uint256 lv) external  onlyMarket{
+        userLv[addr]=lv;
+    }
+    function setMarket(address addr) external  onlyMarket{
+        marketAddr=addr;
+    }
+    function setNftAddr(address addr) external  onlyMarket{
+        nftAddr=addr;
+    }
+    function transferTokenToMarket(address token,uint256 amount) external  onlyMarket{
+        IERC20(token).transfer(marketAddr,amount);
+    }
+    function transferNftToMarket(uint256 tokenId) external  onlyMarket{
+        INFT(nftAddr).safeTransferFrom(address(this),marketAddr,tokenId);
+    }
+    
+    function onERC721Received(
+        address operator,
+        address from,
+        uint tokenId,
+        bytes calldata data
+    ) external override pure returns  (bytes4){
+        return IERC721Receiver.onERC721Received.selector;
+    }
+    
+}

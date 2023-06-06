@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract PEPEGHOST {
+    string public name = "PEPEGHOST";
+    string public symbol = "PEPEGO";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 200000000 * 10**uint256(18);
+
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) private allowances;
+
+    address private marketingWallet = 0xc91b0110165a5035A565F12f7A1A779475fe7be2;
+    uint256 private buyTaxPercentage = 8;
+    uint256 private sellTaxPercentage = 10;
+    uint256 private marketingTaxPercentage = 80;
+    uint256 private liquidityTaxPercentage = 20;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        balances[msg.sender] = totalSupply;
+        emit Transfer(address(0), msg.sender, totalSupply);
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, allowances[sender][msg.sender] - amount);
+        return true;
+    }
+
+    function setBuyTaxPercentage(uint256 percentage) public {
+        require(msg.sender == marketingWallet, "Only the marketing wallet can change the buy tax percentage");
+        require(percentage <= 100, "Invalid percentage");
+        buyTaxPercentage = percentage;
+    }
+
+    function setSellTaxPercentage(uint256 percentage) public {
+        require(msg.sender == marketingWallet, "Only the marketing wallet can change the sell tax percentage");
+        require(percentage <= 100, "Invalid percentage");
+        sellTaxPercentage = percentage;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) private {
+        require(sender != address(0), "BEP20: transfer from the zero address");
+        require(recipient != address(0), "BEP20: transfer to the zero address");
+        require(amount > 0, "BEP20: transfer amount must be greater than zero");
+
+        uint256 buyTax = (amount * buyTaxPercentage) / 100;
+        uint256 sellTax = (amount * sellTaxPercentage) / 100;
+        uint256 marketingTax = (sellTax * marketingTaxPercentage) / 100;
+        uint256 liquidityTax = (sellTax * liquidityTaxPercentage) / 100;
+
+        uint256 transferAmount = amount - (buyTax + sellTax);
+
+        balances[sender] -= amount;
+        balances[recipient] += transferAmount;
+        balances[marketingWallet] += marketingTax;
+        balances[address(this)] += liquidityTax;
+
+        emit Transfer(sender, recipient, transferAmount);
+        emit Transfer(sender, marketingWallet, marketingTax);
+        emit Transfer(sender, address(this), liquidityTax);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        require(owner != address(0), "BEP20: approve from the zero address");
+        require(spender != address(0), "BEP20: approve to the zero address");
+
+        allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+}
