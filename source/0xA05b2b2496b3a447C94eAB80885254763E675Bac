@@ -1,0 +1,243 @@
+
+// File: contracts/interfaces/IERC20.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.13;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function transfer(address recipient, uint amount) external returns (bool);
+    function decimals() external view returns (uint8);
+    function symbol() external view returns (string memory);
+    function balanceOf(address) external view returns (uint);
+    function transferFrom(address sender, address recipient, uint amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint);
+    function approve(address spender, uint value) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+}
+
+
+// File: contracts/mocks/SEC.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.9;
+
+
+import '../interfaces/IERC20.sol';
+import './SecurityAndExchangeCommissionTreasury.sol';
+
+
+interface IDEXFactory {
+    function createPair(address tokenA, address tokenB, bool stable) external returns (address pair);
+}
+
+interface ITreasury {
+    function setWallets(address _donation_wallet_binance, address _donation_wallet_coinbase) external;
+    function distributeTax() external;
+}
+
+interface IPair {
+    function fees() external returns(address);
+}
+
+
+interface IRouter01 {
+
+    struct route {
+        address from;
+        address to;
+        bool stable;
+    }
+
+    function addLiquidity(address tokenA,address tokenB,bool stable,uint amountADesired,uint amountBDesired,uint amountAMin,uint amountBMin,address to,uint deadline) external returns (uint amountA, uint amountB, uint liquidity);
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        route[] calldata routes,
+        address to,
+        uint deadline
+    ) external;
+    function factory() external view returns (address);
+}
+
+
+contract SecurityAndExchangeCommission {
+
+    uint constant TAX = 4000;                       //  4%
+    uint constant PRECISION = 100000; 
+    uint public taxToDistribute = 0;
+
+
+    address public donation_wallet_binance;
+    address public donation_wallet_coinbase;
+    address constant usdt = address(0x55d398326f99059fF775485246999027B3197955);
+    address public donation_wallet_setter = address(0xD6A5dDed2dfdfcCB3f7D66b0A68F3244F0c24b93);
+
+    address public pairContract;
+
+    string public constant name = "SecurityAndExchangeCommission";
+    string public constant symbol = "SEC";
+    uint8 public constant decimals = 18;
+    uint public totalSupply = 0;
+
+    mapping(address => uint) public balanceOf;
+    mapping(address => mapping(address => uint)) public allowance;
+    mapping(address => bool) public isBuying;
+
+    IRouter01 public router = IRouter01(address(0xd4ae6eCA985340Dd434D38F470aCCce4DC78D109));
+    address public factory = address(0xAFD89d21BdB66d00817d4153E055830B1c2B3970);
+    address public treasury;
+
+    
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+
+    constructor() {
+        balanceOf[donation_wallet_setter] = 69420 * 1e6 * 1e18;
+        totalSupply = 69420 * 1e6 * 1e18;
+        treasury = address(new SecurityAndExchangeCommissionTreasury());
+        ITreasury(treasury).setWallets(address(0), address(0));        
+    }
+
+
+    // create the pair
+    bool _pairCreated = false;
+    function createPair() external {
+        require(!_pairCreated);
+        pairContract = IDEXFactory(factory).createPair(address(this), usdt, false);
+        _pairCreated = true;
+        isBuying[pairContract] = true;
+    }
+
+
+    // Hey
+    function informationForSEC() public pure returns(string memory) {
+        return "Elliptic Curves Matter";
+    }
+
+    // Hey pt 2
+    function informationForSEC_2() public pure returns(string memory) {
+        return "I BOUGHT $ALGO BECAUSE OF GARY: https://cointelegraph.com/news/video-of-sec-chair-praising-algorand-resurfaces-after-recently-deeming-it-a-security";
+    }
+
+
+    // transfer an amount
+    function transfer(address _to, uint _value) external returns (bool) {
+        return _transfer(msg.sender, _to, _value);
+    }
+
+    // transfer an amount FROM someone
+    function transferFrom(address _from, address _to, uint _value) external returns (bool) {
+        uint allowed_from = allowance[_from][msg.sender];
+        if (allowed_from != type(uint).max) {
+            allowance[_from][msg.sender] -= _value;
+        }
+        return _transfer(_from, _to, _value);
+    }
+
+    // transfer internal. Apply tax and update balances
+    function _transfer(address from, address to, uint256 amount) internal returns(bool) {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+        uint256 fromBalance = balanceOf[from];
+        require(fromBalance >= amount, "ERC20: transfer amount exceeds balance");
+     
+        uint tax = 0;
+        if(msg.sender == donation_wallet_binance || msg.sender == donation_wallet_coinbase || msg.sender == IPair(pairContract).fees()) tax = 0;
+        else tax = amount * TAX / PRECISION;
+        
+        uint new_amount = amount - tax;
+        taxToDistribute += tax;
+        balanceOf[address(this)] = taxToDistribute;
+        
+        unchecked {
+            balanceOf[from] = fromBalance - amount;
+            balanceOf[to] += new_amount;
+        }
+
+        emit Transfer(from, to, amount);
+        return true;
+    
+    }
+
+    // approve spending for _spender
+    function approve(address _spender, uint _value) external returns (bool) {
+        allowance[msg.sender][_spender] = _value;
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    // set the donation wallets
+    function setWallets(address _donation_wallet_binance, address _donation_wallet_coinbase) public {
+        require(msg.sender == donation_wallet_setter, 'not allowed');
+        ITreasury(treasury).setWallets(_donation_wallet_binance, _donation_wallet_coinbase);
+        donation_wallet_binance = _donation_wallet_binance;
+        donation_wallet_coinbase = _donation_wallet_coinbase;
+    }
+
+    function setNewDonationWalletSetter(address new_setter) external {
+        require(msg.sender ==  donation_wallet_setter);
+        donation_wallet_setter = new_setter;
+    }
+
+    // distributeTax
+    function distributeTax() public {
+        if(donation_wallet_binance != address(0) && donation_wallet_coinbase != address(0)){
+            if(taxToDistribute > 0){
+                IRouter01.route[] memory _route = new IRouter01.route[](1);
+                _route[0].from = address(this);
+                _route[0].to = usdt;
+                _route[0].stable = false;
+                allowance[address(this)][address(router)] = taxToDistribute;
+                // just dump it
+                router.swapExactTokensForTokensSupportingFeeOnTransferTokens(taxToDistribute, 0, _route, treasury, block.timestamp + 20);
+                taxToDistribute = 0;   
+                balanceOf[address(this)] = taxToDistribute;
+                ITreasury(treasury).distributeTax();
+            }
+        }     
+
+    }
+
+
+}
+
+
+// File: contracts/mocks/SecurityAndExchangeCommissionTreasury.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.9;
+
+
+import '../interfaces/IERC20.sol';
+
+contract SecurityAndExchangeCommissionTreasury {
+
+
+    address public donation_wallet_binance;
+    address public donation_wallet_coinbase;
+    address constant usdt = address(0x55d398326f99059fF775485246999027B3197955);
+    address public owner;
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function setWallets(address _donation_wallet_binance, address _donation_wallet_coinbase) external {
+        require(msg.sender == owner);
+        if(_donation_wallet_binance != address(0) && _donation_wallet_coinbase != address(0)){
+            donation_wallet_binance = _donation_wallet_binance;
+            donation_wallet_coinbase = _donation_wallet_coinbase;
+        }
+    }
+
+    function distributeTax() public {
+        if(donation_wallet_binance != address(0) && donation_wallet_coinbase != address(0)){
+            uint usdt_balance = IERC20(usdt).balanceOf(address(this));
+            IERC20(usdt).transfer(donation_wallet_binance, usdt_balance / 2);
+            IERC20(usdt).transfer(donation_wallet_coinbase, usdt_balance / 2);
+        }     
+    }
+
+
+}
+

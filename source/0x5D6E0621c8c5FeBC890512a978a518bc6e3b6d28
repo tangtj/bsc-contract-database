@@ -1,0 +1,291 @@
+
+// File: SecretLendingPool.sol
+pragma solidity ^0.8.17;
+//SPDX-License-Identifier: MIT
+import "Auth.sol";
+
+contract SecretPool is Auth {
+    uint256 public totalEthLent;
+    uint256 public totalAvailableEth;
+    uint256 public withdrawQueueCount;
+    uint256 public withdrawQueueLower;
+    uint256 public _tokenDecimals = 1 * 10 ** 17;
+    mapping(address => uint256) public usersCurrentLentAmount;
+    mapping(address => uint256) public usersPendingReturnAmount;
+    mapping(address => bool) public authorizedFactoryAddresses;
+    mapping(uint256 => QueuePosition) public withdrawQueue;
+
+    struct QueuePosition {
+        address lender;
+        uint256 amount;
+    }
+
+    event ethLent(address lender, uint256 amount, uint256 blocktime);
+    event ethBorrowed(address borrower, uint256 amount, uint256 blocktime);
+    event ethWithdrawn(address lender, uint256 amount, uint256 blocktime);
+    event ethReturned(address borrower, uint256 amount, uint256 blocktime);
+    event queueReset(uint256 timestamp);
+    event queueAdded(
+        address lender,
+        uint256 amount,
+        uint256 position,
+        uint256 blocktime
+    );
+    event factoryStatusChange(address factoryAddress, bool status);
+
+    constructor() Auth(msg.sender) {}
+
+    modifier onlyFactoryAuthorized() {
+        require(
+            authorizedFactoryAddresses[msg.sender],
+            "only factory contracts can borrow eth"
+        );
+        _;
+    }
+
+    function updateFactoryAuthorization(
+        address addy,
+        bool status
+    ) external onlyOwner {
+        authorizedFactoryAddresses[addy] = status;
+        emit factoryStatusChange(addy, status);
+    }
+
+    receive() external payable {}
+
+    function lendEth() external payable returns (bool) {
+        require(
+            msg.value > 0 && msg.value % _tokenDecimals == 0,
+            "Only send full ether"
+        );
+        uint256 amountReceived = msg.value / _tokenDecimals;
+        emit ethLent(msg.sender, amountReceived, block.timestamp);
+        totalEthLent += amountReceived;
+
+        usersCurrentLentAmount[msg.sender] += amountReceived;
+
+        if (withdrawQueueCount > 0) {
+            uint256 leftAmount = amountReceived;
+            for (uint256 i = withdrawQueueLower; i < withdrawQueueCount; i++) {
+                QueuePosition memory tempQueue = withdrawQueue[i];
+                if (tempQueue.amount <= leftAmount) {
+                    usersPendingReturnAmount[tempQueue.lender] -= tempQueue
+                        .amount;
+                    payable(tempQueue.lender).transfer(
+                        tempQueue.amount * _tokenDecimals
+                    );
+                    emit ethWithdrawn(
+                        tempQueue.lender,
+                        tempQueue.amount,
+                        block.timestamp
+                    );
+                    leftAmount = leftAmount - tempQueue.amount;
+                    withdrawQueueLower += 1;
+                } else {
+                    uint256 leftoverAmount = tempQueue.amount - leftAmount;
+                    usersPendingReturnAmount[tempQueue.lender] -= leftAmount;
+                    payable(tempQueue.lender).transfer(
+                        leftAmount * _tokenDecimals
+                    );
+                    emit ethWithdrawn(
+                        tempQueue.lender,
+                        leftAmount,
+                        block.timestamp
+                    );
+                    withdrawQueue[i] = QueuePosition(
+                        tempQueue.lender,
+                        leftoverAmount
+                    );
+                    leftAmount = 0;
+                }
+                if (withdrawQueueLower == withdrawQueueCount) {
+                    emit queueReset(block.timestamp);
+                    withdrawQueueCount = 0;
+                    withdrawQueueLower = 0;
+                    if (leftAmount > 0) {
+                        totalAvailableEth += leftAmount;
+                        leftAmount = 0;
+                    }
+                }
+                if (leftAmount == 0) {
+                    return true;
+                }
+            }
+        } else {
+            totalAvailableEth += amountReceived;
+            return true;
+        }
+        return true;
+    }
+
+    function addQueue(address _lender, uint256 _amount) internal {
+        usersPendingReturnAmount[_lender] += _amount;
+        withdrawQueue[withdrawQueueCount] = QueuePosition(_lender, _amount);
+        emit queueAdded(_lender, _amount, withdrawQueueCount, block.timestamp);
+        withdrawQueueCount += 1;
+    }
+
+    function borrowEth(uint256 _amount) external onlyFactoryAuthorized {
+        require(_amount <= totalAvailableEth, "Not Enough eth to borrow");
+        require(_amount > 0, "Cannot borrow 0");
+        totalAvailableEth -= _amount;
+        payable(msg.sender).transfer(_amount * _tokenDecimals);
+        emit ethBorrowed(msg.sender, _amount, block.timestamp);
+    }
+
+    function returnLentEth(uint256 amountEth) external payable returns (bool) {
+        if (msg.value < amountEth * _tokenDecimals) {
+            require(
+                amountEth * _tokenDecimals - msg.value > 10 ** 13,
+                "Did not send enough eth."
+            );
+        } else {
+            require(
+                msg.value == amountEth * _tokenDecimals,
+                "Don't sned more than you said."
+            );
+        }
+
+        emit ethReturned(msg.sender, amountEth, block.timestamp);
+        if (withdrawQueueCount > 0) {
+            uint256 leftAmount = amountEth;
+            for (uint256 i = withdrawQueueLower; i < withdrawQueueCount; i++) {
+                QueuePosition memory tempQueue = withdrawQueue[i];
+                if (tempQueue.amount <= leftAmount) {
+                    usersPendingReturnAmount[tempQueue.lender] -= tempQueue
+                        .amount;
+                    payable(tempQueue.lender).transfer(
+                        tempQueue.amount * _tokenDecimals
+                    );
+                    emit ethWithdrawn(
+                        tempQueue.lender,
+                        tempQueue.amount,
+                        block.timestamp
+                    );
+                    leftAmount = leftAmount - tempQueue.amount;
+                    totalEthLent -= tempQueue.amount;
+                    withdrawQueueLower += 1;
+                } else {
+                    uint256 leftoverAmount = tempQueue.amount - leftAmount;
+                    totalEthLent -= leftAmount;
+                    usersPendingReturnAmount[tempQueue.lender] -= leftAmount;
+                    payable(tempQueue.lender).transfer(
+                        leftAmount * _tokenDecimals
+                    );
+                    emit ethWithdrawn(
+                        tempQueue.lender,
+                        leftAmount,
+                        block.timestamp
+                    );
+                    withdrawQueue[i] = QueuePosition(
+                        tempQueue.lender,
+                        leftoverAmount
+                    );
+                    leftAmount = 0;
+                }
+                if (withdrawQueueLower == withdrawQueueCount) {
+                    emit queueReset(block.timestamp);
+                    withdrawQueueCount = 0;
+                    withdrawQueueLower = 0;
+                    if (leftAmount > 0) {
+                        totalAvailableEth += leftAmount;
+                        leftAmount = 0;
+                    }
+                }
+                if (leftAmount == 0) {
+                    return true;
+                }
+            }
+        } else {
+            totalAvailableEth += amountEth;
+            return true;
+        }
+        return true;
+    }
+
+    function withdrawLentEth(uint256 _amountEther) external payable {
+        require(
+            usersCurrentLentAmount[msg.sender] >= _amountEther,
+            "You Did not lend that much."
+        );
+        require(_amountEther > 0, "Cant withdraw 0.");
+        usersCurrentLentAmount[msg.sender] -= _amountEther;
+
+        if (totalAvailableEth == 0) {
+            addQueue(msg.sender, _amountEther);
+        } else if (totalAvailableEth < _amountEther) {
+            uint256 leftoverAmount = _amountEther - totalAvailableEth;
+            _amountEther = totalAvailableEth;
+            totalEthLent -= totalAvailableEth;
+            totalAvailableEth = 0;
+            payable(msg.sender).transfer(_amountEther * _tokenDecimals);
+            emit ethWithdrawn(msg.sender, _amountEther, block.timestamp);
+            addQueue(msg.sender, leftoverAmount);
+        } else {
+            totalAvailableEth -= _amountEther;
+            totalEthLent -= _amountEther;
+            payable(msg.sender).transfer(_amountEther * _tokenDecimals);
+            emit ethWithdrawn(msg.sender, _amountEther, block.timestamp);
+        }
+    }
+
+    function removedExcess() external payable authorized {
+        require(
+            address(this).balance > totalAvailableEth * _tokenDecimals,
+            "There is no excess eth"
+        );
+        uint256 excessAmount = address(this).balance -
+            (totalAvailableEth * _tokenDecimals);
+        payable(owner).transfer(excessAmount);
+    }
+}
+
+
+// File: Auth.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+abstract contract Auth {
+    address internal owner;
+    mapping(address => bool) internal authorizations;
+
+    constructor(address _owner) {
+        owner = _owner;
+        authorizations[_owner] = true;
+    }
+
+    modifier onlyOwner() {
+        require(isOwner(msg.sender), "!OWNER");
+        _;
+    }
+
+    modifier authorized() {
+        require(isAuthorized(msg.sender), "!AUTHORIZED");
+        _;
+    }
+
+    function authorize(address adr) public onlyOwner {
+        authorizations[adr] = true;
+    }
+
+    function unauthorize(address adr) public onlyOwner {
+        authorizations[adr] = false;
+    }
+
+    function isOwner(address account) public view returns (bool) {
+        return account == owner;
+    }
+
+    function isAuthorized(address adr) public view returns (bool) {
+        return authorizations[adr];
+    }
+
+    function transferOwnership(address payable adr) public onlyOwner {
+        owner = adr;
+        authorizations[adr] = true;
+        emit OwnershipTransferred(adr);
+    }
+
+    event OwnershipTransferred(address owner);
+}
+

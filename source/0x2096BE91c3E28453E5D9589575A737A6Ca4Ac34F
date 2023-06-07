@@ -1,0 +1,515 @@
+
+// File: deploy.sol
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.17;
+
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+interface IERC20 {
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function name() external view returns (string memory);
+
+    function symbol() external view returns (string memory);
+
+    function decimals() external view returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 value) external;
+
+    function transfer(address to, uint256 value) external;
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external;
+}
+
+interface IPair {
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function name() external pure returns (string memory);
+
+    function symbol() external pure returns (string memory);
+
+    function decimals() external pure returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 value) external returns (bool);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+
+    function nonces(address owner) external view returns (uint256);
+
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
+
+    event Mint(address indexed sender, uint256 amount0, uint256 amount1);
+    event Burn(
+        address indexed sender,
+        uint256 amount0,
+        uint256 amount1,
+        address indexed to
+    );
+    event Swap(
+        address indexed sender,
+        uint256 amount0In,
+        uint256 amount1In,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint256);
+
+    function factory() external view returns (address);
+
+    function token0() external view returns (address);
+
+    function token1() external view returns (address);
+
+    function getReserves()
+        external
+        view
+        returns (
+            uint112 reserve0,
+            uint112 reserve1,
+            uint32 blockTimestampLast
+        );
+
+    function price0CumulativeLast() external view returns (uint256);
+
+    function price1CumulativeLast() external view returns (uint256);
+
+    function kLast() external view returns (uint256);
+
+    function mint(address to) external returns (uint256 liquidity);
+
+    function burn(address to)
+        external
+        returns (uint256 amount0, uint256 amount1);
+
+    function swap(
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address to,
+        bytes calldata data
+    ) external;
+
+    function skim(address to) external;
+
+    function sync() external;
+
+    function initialize(address, address) external;
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this;
+        return msg.data;
+    }
+}
+
+contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor(address payable owner_) {
+        _owner = owner_;
+        emit OwnershipTransferred(address(0), owner_);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract FymFarming is Ownable, ReentrancyGuard {
+    IPair public pair = IPair(0x5627552edB2ac6AA10379D53D4D3D00FD93CE452);
+
+    uint256 public totalStaked;
+    uint256 public migratedAmount;
+    uint256 public totalDistributedReward;
+    uint256 public totalWithdrawan;
+    uint256 public uniqueStakers;
+    uint256 public currentStakedAmount;
+    uint256 public duration = 1 days;
+    uint256 public percentDivider = 100_00;
+
+    struct PoolData {
+        uint256 poolDuration;
+        uint256 rewardMultiplier;
+        uint256 currentStakedAmount;
+        uint256 totalStaked;
+        uint256 totalDistributedReward;
+        uint256 totalWithdrawan;
+    }
+
+    struct StakeData {
+        uint256 planIndex;
+        uint256 lpAmount;
+        uint256 reward;
+        uint256 startTime;
+        uint256 Capturefee;
+        uint256 endTime;
+        uint256 harvestTime;
+        bool isWithdrawn;
+    }
+
+    struct UserData {
+        bool isExists;
+        uint256 stakeCount;
+        uint256 totalStaked;
+        uint256 totalWithdrawan;
+        uint256 totalDistributedReward;
+        mapping(uint256 => StakeData) stakeRecord;
+    }
+
+    mapping(address => UserData) internal users;
+    mapping(uint256 => PoolData) public pools;
+
+    event STAKE(address Staker, uint256 amount);
+    event WITHDRAW(address Staker, uint256 amount);
+    event HARVEST(address Staker, uint256 amount);
+
+    constructor(address payable _owner) Ownable(_owner) {}
+
+    function setDuration(uint256 _duration) public onlyOwner {
+        duration = _duration;
+    }
+
+    function stake(uint256 _amount, uint256 _planIndex) public {
+        UserData storage user = users[msg.sender];
+        StakeData storage userStake = user.stakeRecord[user.stakeCount];
+        PoolData storage poolInfo = pools[_planIndex];
+        require(_planIndex < 4, "Invalid plan");
+        if (!users[msg.sender].isExists) {
+            users[msg.sender].isExists = true;
+            uniqueStakers++;
+        }
+
+        pair.transferFrom(msg.sender, address(this), _amount);
+        userStake.lpAmount = _amount;
+        userStake.startTime = block.timestamp;
+        userStake.harvestTime = block.timestamp;
+        userStake.endTime = block.timestamp + poolInfo.poolDuration;
+        userStake.Capturefee = getDistributorbalance();
+        userStake.planIndex = _planIndex;
+        user.stakeCount++;
+        user.totalStaked += _amount;
+        poolInfo.totalStaked += _amount;
+        poolInfo.currentStakedAmount += _amount;
+        totalStaked += _amount;
+        currentStakedAmount += _amount;
+
+        emit STAKE(msg.sender, _amount);
+    }
+
+    function harvest(uint256 _index) public nonReentrant {
+        UserData storage user = users[msg.sender];
+        StakeData storage userStake = user.stakeRecord[_index];
+        PoolData storage poolInfo = pools[userStake.planIndex];
+        require(_index < user.stakeCount, "Invalid index");
+        require(!userStake.isWithdrawn, "Amount withdrawn");
+        require(
+            block.timestamp > userStake.harvestTime + duration,
+            "wait for duration to harvest"
+        );
+        uint256 reward = calculateReward(msg.sender, _index);
+        require(
+            reward > 0 && address(this).balance >= reward,
+            "Unable to claim the reward"
+        );
+        payable(msg.sender).transfer(reward);
+        userStake.reward += reward;
+        user.totalDistributedReward += reward;
+        poolInfo.totalDistributedReward += reward;
+        totalDistributedReward += reward;
+        userStake.Capturefee = getDistributorbalance();
+        userStake.harvestTime = block.timestamp;
+
+        emit HARVEST(msg.sender, reward);
+    }
+
+    function withdraw(uint256 _index) public nonReentrant {
+        UserData storage user = users[msg.sender];
+        StakeData storage userStake = user.stakeRecord[_index];
+        PoolData storage poolInfo = pools[userStake.planIndex];
+        require(_index < user.stakeCount, "Invalid index");
+        require(block.timestamp >= userStake.endTime, "Wait for Endtime");
+        require(!userStake.isWithdrawn, "Already withdrawn");
+        pair.transfer(msg.sender, userStake.lpAmount);
+        userStake.isWithdrawn = true;
+        user.totalWithdrawan += userStake.lpAmount;
+        poolInfo.totalWithdrawan += userStake.lpAmount;
+        poolInfo.currentStakedAmount -= userStake.lpAmount;
+        totalWithdrawan += userStake.lpAmount;
+        currentStakedAmount -= userStake.lpAmount;
+
+        userStake.endTime = block.timestamp;
+
+        emit WITHDRAW(msg.sender, userStake.lpAmount);
+    }
+
+    function calculateReward(address _userAdress, uint256 _index)
+        public
+        view
+        returns (uint256 _reward)
+    {
+        UserData storage user = users[_userAdress];
+        StakeData storage userStake = user.stakeRecord[_index];
+        PoolData storage poolInfo = pools[userStake.planIndex];
+        uint256 userShare = (userStake.lpAmount * percentDivider) /
+            poolInfo.currentStakedAmount;
+        uint256 totalFee = getDistributorbalance() - userStake.Capturefee;
+        uint256 rewardPool = (totalFee * poolInfo.rewardMultiplier) /
+            percentDivider;
+        _reward = (rewardPool * userShare) / percentDivider;
+    }
+
+    function getDistributorbalance() public view returns (uint256 _balance) {
+        _balance =
+            address(this).balance +
+            totalDistributedReward +
+            migratedAmount;
+    }
+
+    function fundsWithdraw(uint256 _amount) public onlyOwner {
+        payable(msg.sender).transfer(_amount);
+    }
+
+    function SetPoolsDuration(
+        uint256 _1,
+        uint256 _2,
+        uint256 _3,
+        uint256 _4
+    ) external onlyOwner {
+        pools[0].poolDuration = _1;
+        pools[1].poolDuration = _2;
+        pools[2].poolDuration = _3;
+        pools[3].poolDuration = _4;
+    }
+
+    function SetPoolsRewardMultiplier(
+        uint256 _1,
+        uint256 _2,
+        uint256 _3,
+        uint256 _4
+    ) external onlyOwner {
+        pools[0].rewardMultiplier = _1;
+        pools[1].rewardMultiplier = _2;
+        pools[2].rewardMultiplier = _3;
+        pools[3].rewardMultiplier = _4;
+    }
+
+    function getUserInfo(address _user)
+        public
+        view
+        returns (
+            bool _isExists,
+            uint256 _stakeCount,
+            uint256 _totalStaked,
+            uint256 _totalDistributedReward,
+            uint256 _totalWithdrawan
+        )
+    {
+        UserData storage user = users[_user];
+        _isExists = user.isExists;
+        _stakeCount = user.stakeCount;
+        _totalStaked = user.totalStaked;
+        _totalDistributedReward = user.totalDistributedReward;
+        _totalWithdrawan = user.totalWithdrawan;
+    }
+
+    function getUserStakeInfo(address _user, uint256 _index)
+        public
+        view
+        returns (
+            uint256 _lpAmount,
+            uint256 _capturedFee,
+            uint256 _startTime,
+            uint256 _endTime,
+            uint256 _reward,
+            uint256 _harvestTime,
+            bool _isWithdrawn
+        )
+    {
+        StakeData storage userStake = users[_user].stakeRecord[_index];
+        _lpAmount = userStake.lpAmount;
+        _capturedFee = userStake.Capturefee;
+        _startTime = userStake.startTime;
+        _endTime = userStake.endTime;
+        _reward = userStake.reward;
+        _isWithdrawn = userStake.isWithdrawn;
+        _harvestTime = userStake.harvestTime;
+    }
+
+    function getPoolInfo(uint256 _index)
+        public
+        view
+        returns (
+            uint256 _poolDuration,
+            uint256 _rewardMultiplier,
+            uint256 _totalStaked,
+            uint256 _currentStaked,
+            uint256 _totalDistributedReward,
+            uint256 _totalWithdrawan
+        )
+    {
+        PoolData storage poolInfo = pools[_index];
+        _poolDuration = poolInfo.poolDuration;
+        _rewardMultiplier = poolInfo.rewardMultiplier;
+        _totalStaked = poolInfo.totalStaked;
+        _currentStaked = poolInfo.currentStakedAmount;
+        _totalDistributedReward = poolInfo.totalDistributedReward;
+        _totalWithdrawan = poolInfo.totalWithdrawan;
+    }
+
+    receive() external payable {}
+}
+
+
+// File: @openzeppelin/contracts/security/ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.8.0) (security/ReentrancyGuard.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() private {
+        // On the first call to nonReentrant, _status will be _NOT_ENTERED
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+    }
+
+    function _nonReentrantAfter() private {
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+

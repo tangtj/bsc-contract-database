@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.6;
+
+interface IPancakeCallee {
+    function pancakeCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external;
+}
+
+interface IPancakePair {
+    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
+}
+
+interface IWBNB {
+    function deposit() external payable;
+    function transfer(address recipient, uint256 amount) external returns (bool);
+}
+
+contract FlashLoan is IPancakeCallee {
+    uint256 fee = 0;
+    uint256 amount = 0;
+    IWBNB wbnb = IWBNB(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);
+    IPancakePair LP = IPancakePair(0xACB8f52DC63BB752a51186D1c55868ADbFfEe9C1);
+    
+    event LoanCompleted(uint256 amount);
+  
+    function loan() public payable {
+        fee = msg.value;
+        amount = fee * 9975 / 10000; // Giảm phí gas từ 25/10000 thành 1/10000
+        LP.swap(amount, 0, address(this), new bytes(0)); // Vay tiền
+    }   
+  
+    function pancakeCall(address /*sender*/, uint256 /*amount0*/, uint256 /*amount1*/, bytes calldata /*data*/) external override {
+        // Đang có tiền, số dư là amount + fee
+        wbnb.deposit{value: fee}();
+        require(wbnb.transfer(address(LP), amount + fee), "Transfer failed");
+        emit LoanCompleted(amount);
+    }
+}

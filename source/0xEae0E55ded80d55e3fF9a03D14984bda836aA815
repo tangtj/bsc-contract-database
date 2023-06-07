@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+}
+
+interface IPancakeRouter02 {
+    function WETH() external view returns (address);
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable returns (uint256[] memory amounts);
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+}
+
+interface IPancakeFactory {
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+}
+
+contract TradeBot {
+    address private constant PANCAKE_ROUTER = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    address private constant PANCAKE_FACTORY = 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73;
+    
+    IERC20 private token;
+    address private owner;
+    
+    bool private tradingEnabled;
+    uint256 private tradeAmount; // Her işlemde kullanılacak BNB miktarı
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Sadece sahip bu fonksiyonu cagirabilir");
+        _;
+    }
+    
+    constructor(address _tokenAddress) {
+        token = IERC20(_tokenAddress);
+        owner = msg.sender;
+        tradeAmount = 0.02 ether; // Varsayılan olarak her işlemde 0.1 BNB kullanılacak
+    }
+    
+    function setTradeAmount(uint256 amount) external onlyOwner {
+        tradeAmount = amount;
+    }
+    
+    function enableTrading() external onlyOwner {
+        tradingEnabled = true;
+    }
+    
+    function disableTrading() external onlyOwner {
+        tradingEnabled = false;
+    }
+    
+    function trade() external onlyOwner {
+        require(tradingEnabled, "Ticaret etkin degil");
+        
+        uint256 tokenBalance = token.balanceOf(address(this));
+        require(tokenBalance > 0, "Satilacak token yok");
+
+        address[] memory path = new address[](2);
+        path[0] = IPancakeRouter02(PANCAKE_ROUTER).WETH();
+        path[1] = address(token);
+
+        IPancakeRouter02(PANCAKE_ROUTER).swapExactETHForTokensSupportingFeeOnTransferTokens{value: tradeAmount}(
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+
+        uint256 tokenAmount = token.balanceOf(address(this));
+
+        path[0] = address(token);
+        path[1] = IPancakeFactory(PANCAKE_FACTORY).getPair(address(token), IPancakeRouter02(PANCAKE_ROUTER).WETH());
+
+        IPancakeRouter02(PANCAKE_ROUTER).swapExactTokensForETHSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+
+        uint256 ethAmount = address(this).balance;
+
+        (bool success, ) = msg.sender.call{value: ethAmount}("");
+        require(success, "BNB basarisiz");
+    }
+    
+    function withdrawRemainingTokens() external onlyOwner {
+        uint256 tokenBalance = token.balanceOf(address(this));
+        require(tokenBalance > 0, "Kalan token yok");
+        
+        token.transfer(msg.sender, tokenBalance);
+    }
+    
+    function withdrawRemainingBNB() external onlyOwner {
+        uint256 bnbBalance = address(this).balance;
+        require(bnbBalance > 0, "Kalan BNB yok");
+        
+        (bool success, ) = msg.sender.call{value: bnbBalance}("");
+        require(success, "BNB basarisi");
+    }
+}

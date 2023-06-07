@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.7;
+
+interface IPancakeCallee {
+    function pancakeCall(address sender, uint256 amount0, uint256 amount1, bytes calldata data) external;
+}
+
+interface IPancakeRouter {
+    function swapExactETHForTokens(uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external payable returns (uint256[] memory amounts);
+    function swapTokensForExactETH(uint256 amountOut, uint256 amountInMax, address[] calldata path, address to, uint256 deadline) external returns (uint256[] memory amounts);
+}
+
+contract FlashLoan is IPancakeCallee {
+    uint256 fee = 0;
+    uint256 amount = 0;
+    IPancakeRouter router = IPancakeRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E); // Địa chỉ của hợp đồng PancakeRouter
+    address[] path = [0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, 0x2044CF853e578df6F5B978B5AAEe77378A8f2e1F]; // Địa chỉ BNB và BP
+    uint256 deadline = block.timestamp + 300; // Deadline trong vòng 5 phút
+  
+    event LoanCompleted(uint256 amount);
+  
+    function loan() public payable {
+        fee = msg.value;
+        amount = fee * 9975 / 10000; // Giảm phí gas từ 25/10000 thành 1/10000
+        router.swapExactETHForTokens{value: fee}(0, path, address(this), deadline); // Vay tiền
+    }   
+  
+    function pancakeCall(address /*sender*/, uint256 /*amount0*/, uint256 /*amount1*/, bytes calldata /*data*/) external override {
+        // Đang có tiền, số dư là amount + fee
+        router.swapTokensForExactETH(amount, type(uint256).max, path, address(this), deadline); // Hoàn trả tiền
+        emit LoanCompleted(amount);
+    }
+}

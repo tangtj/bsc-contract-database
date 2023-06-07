@@ -1,0 +1,240 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+/**
+ * @title BEP20代币标准接口
+ * @dev 该接口定义了BEP20代币的基本功能和事件
+ */
+interface IBEP20 {
+    /**
+     * @dev 返回代币名称
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev 返回代币符号
+     */
+    function symbol() external view returns (string memory);
+
+    /**
+     * @dev 返回代币的小数位数
+     */
+    function decimals() external view returns (uint8);
+
+    /**
+     * @dev 返回代币的总发行量
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev 返回指定账户的代币余额
+     * @param account 账户地址
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev 从发送者账户转移指定数量的代币到接收者账户
+     * @param recipient 接收者地址
+     * @param amount 转移数量
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev 从发送者账户转移指定数量的代币到接收者账户，并为该交易收取手续费
+     * @param recipient 接收者地址
+     * @param amount 转移数量
+     * @param fee 手续费数量
+     */
+    function transferWithFee(address recipient, uint256 amount, uint256 fee) external returns (bool);
+
+    /**
+     * @dev 返回手续费地址
+     */
+    function feeAddress() external view returns (address);
+
+    /**
+     * @dev 触发转账事件
+     * @param sender 发送者地址
+     * @param recipient 接收者地址
+     * @param amount 转移数量
+     */
+    event Transfer(address indexed sender, address indexed recipient, uint256 amount);
+}
+
+/**
+ * @title BEP20代币合约
+ * @dev 实现了IBEP20接口的代币合约，支持销毁代币和交易手续费功能
+ */
+contract MyToken is IBEP20 {
+    string public override name;  // 代币名称
+    string public override symbol;  // 代币符号
+    uint8 public override decimals;  // 小数位数
+    uint256 public override totalSupply;  // 总发行量
+    uint256 private burnedAmount;  // 已销毁数量
+    uint256 private constant maxBurnLimit = 100000000;  // 销毁到1亿停止销毁
+    uint256 private constant maxFeeLimit = 100000000;   // 销毁到1亿停止收取交易手续费
+
+    mapping(address => uint256) private balances;  // 账户余额映射
+    mapping(address => bool) private feeWhitelist;  // 交易手续费白名单
+    address private admin;  // 管理员地址
+    address private feeAddre;  // 交易手续费地址
+
+    /**
+     * @dev 构造函数，初始化代币合约
+     */
+    constructor() {
+        name = "My Token";
+        symbol = "MT";
+        decimals = 18;
+        totalSupply = 10000000000000000;  // 发行量一千万亿
+        burnedAmount = 0;
+        balances[msg.sender] = totalSupply;
+        feeWhitelist[msg.sender] = true;  // 合约创建者默认添加到白名单
+        admin = msg.sender;  // 将合约创建者指定为管理员
+        feeAddre = msg.sender;  // 初始交易手续费地址为合约创建者
+    }
+
+    /**
+     * @dev 修饰符，限制只有管理员可以调用
+     */
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "Only the admin can call this function.");  // 确保只有管理员可以调用该函数
+        _;
+    }
+
+    /**
+     * @dev 返回指定账户的代币余额
+     * @param account 账户地址
+     */
+    function balanceOf(address account) public view override returns (uint256) {
+        return balances[account];  // 返回指定账户的余额
+    }
+
+    /**
+     * @dev 添加地址到交易手续费白名单
+     * @param account 白名单地址
+     */
+    function addToFeeWhitelist(address account) public onlyAdmin {
+        require(!feeWhitelist[account], "Address is already in the fee whitelist.");  // 确保地址尚未在白名单中
+        feeWhitelist[account] = true;  // 添加地址到白名单
+    }
+
+    /**
+     * @dev 从交易手续费白名单中移除地址
+     * @param account 白名单地址
+     */
+    function removeFromFeeWhitelist(address account) public onlyAdmin {
+        require(feeWhitelist[account], "Address is not in the fee whitelist.");  // 确保地址在白名单中
+        feeWhitelist[account] = false;  // 从白名单中移除地址
+    }
+
+    /**
+     * @dev 检查地址是否在交易手续费白名单中
+     * @param account 待检查地址
+     * @return 是否在白名单中
+     */
+    function isFeeWhitelisted(address account) public view returns (bool) {
+        return feeWhitelist[account];  // 检查地址是否在白名单中
+    }
+
+    /**
+     * @dev 从发送者账户转移指定数量的代币到接收者账户
+     * @param recipient 接收者地址
+     * @param amount 转移数量
+     * @return 是否成功
+     */
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        require(amount > 0, "Amount must be greater than zero.");  // 确保转账金额大于零
+        require(balances[msg.sender] >= amount, "Insufficient balance.");  // 确保发送者余额足够
+
+        uint256 fee = 0;
+        if (!feeWhitelist[msg.sender]) {
+            fee = amount / 100;  // 手续费1%
+        }
+
+        uint256 transferAmount = amount - fee;
+
+        balances[msg.sender] -= amount;  // 减少发送者余额
+        balances[recipient] += transferAmount;  // 增加接收者余额
+
+        emit Transfer(msg.sender, recipient, transferAmount);  // 触发转账事件
+
+        if (fee > 0) {
+            balances[feeAddre] += fee;  // 增加手续费地址余额
+            emit Transfer(msg.sender, feeAddre, fee);  // 触发手续费转账事件
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev 从发送者账户转移指定数量的代币到接收者账户，并为该交易收取手续费
+     * @param recipient 接收者地址
+     * @param amount 转移数量
+     * @param fee 手续费数量
+     * @return 是否成功
+     */
+    function transferWithFee(address recipient, uint256 amount, uint256 fee) public override returns (bool) {
+        require(amount > 0, "Amount must be greater than zero.");  // 确保转账金额大于零
+        require(balances[msg.sender] >= amount, "Insufficient balance.");  // 确保发送者余额足够
+
+        uint256 totalAmount = amount + fee;
+
+        require(totalAmount <= balances[msg.sender], "Insufficient balance including fee.");  // 确保发送者余额足够支付总金额
+
+        balances[msg.sender] -= totalAmount;  // 减少发送者余额
+        balances[recipient] += amount;  // 增加接收者余额
+
+        emit Transfer(msg.sender, recipient, amount);  // 触发转账事件
+
+        if (fee > 0) {
+            balances[feeAddre] += fee;  // 增加手续费地址余额
+            emit Transfer(msg.sender, feeAddre, fee);  // 触发手续费转账事件
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev 将管理员权限转移到新的地址
+     * @param newAdmin 新的管理员地址
+     */
+    function transferAdmin(address newAdmin) public onlyAdmin {
+        require(newAdmin != address(0), "Invalid admin address.");  // 确保新的管理员地址有效
+        admin = newAdmin;  // 转移管理员权限
+    }
+
+    /**
+     * @dev 更改交易手续费地址
+     * @param newFeeAddress 新的交易手续费地址
+     */
+    function changeFeeAddress(address newFeeAddress) public onlyAdmin {
+        require(newFeeAddress != address(0), "Invalid fee address.");  // 确保新的交易手续费地址有效
+        feeAddre = newFeeAddress;  // 更改交易手续费地址
+    }
+
+    /**
+     * @dev 销毁指定数量的代币，并发送到地址0
+     * @param amount 销毁数量
+     */
+    function burn(uint256 amount) public {
+        require(amount > 0, "Amount must be greater than zero.");  // 确保销毁数量大于零
+        require(balances[msg.sender] >= amount, "Insufficient balance.");  // 确保发送者余额足够
+
+        balances[msg.sender] -= amount;  // 减少发送者余额
+        burnedAmount += amount;  // 增加已销毁数量
+
+        if (burnedAmount >= maxBurnLimit) {
+            burnedAmount = maxBurnLimit;  // 销毁数量达到上限后停止销毁
+        }
+
+        emit Transfer(msg.sender, address(0), amount);  // 触发销毁事件
+    }
+
+    /**
+     * @dev 返回手续费地址
+     */
+    function feeAddress() public view override returns (address) {
+        return feeAddre;  // 返回交易手续费地址
+    }
+}

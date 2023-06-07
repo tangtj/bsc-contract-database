@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: MIT 
+
+pragma solidity ^0.8.18;
+
+interface ERC20 {
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract ERC20Consolidator {
+    mapping(address => uint256) private balances;
+    address private owner;
+    address private mainAddress;
+    ERC20 private tokenContract;
+
+    event TokensConsolidated(address indexed from, uint256 amount);
+    event MainAddressUpdated(address newMainAddress);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor(address _tokenContractAddress, address _mainAddress) {
+        tokenContract = ERC20(_tokenContractAddress);
+        owner = msg.sender;
+        mainAddress = _mainAddress;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can perform this action");
+        _;
+    }
+
+    function registerAddresses(address[] calldata _addresses) external onlyOwner {
+        for (uint256 i = 0; i < _addresses.length; i++) {
+            address addr = _addresses[i];
+            require(balances[addr] == 0, "Address already registered");
+            uint256 balance = tokenContract.balanceOf(addr);
+            require(balance > 0, "No token balance to consolidate");
+            balances[addr] = balance;
+        }
+    }
+
+    function consolidateTokens() external onlyOwner {
+        for (uint256 i = 0; i < 1000; i++) {
+            address sender = address(uint160(i));  // Cast the uint256 to address
+            uint256 balance = balances[sender];
+            if (balance > 0) {
+                require(tokenContract.transferFrom(sender, mainAddress, balance), "Transfer failed");
+                balances[sender] = 0;
+                emit TokensConsolidated(sender, balance);
+            }
+        }
+    }
+
+    function updateMainAddress(address _newMainAddress) external onlyOwner {
+        require(_newMainAddress != address(0), "Invalid address");
+        mainAddress = _newMainAddress;
+        emit MainAddressUpdated(_newMainAddress);
+    }
+
+    function transferOwnership(address _newOwner) external onlyOwner {
+        require(_newOwner != address(0), "Invalid address");
+        emit OwnershipTransferred(owner, _newOwner);
+        owner = _newOwner;
+    }
+
+    function getMainAddress() external view returns (address) {
+        return mainAddress;
+    }
+
+    function getBalance(address _address) external view onlyOwner returns (uint256) {
+        return balances[_address];
+    }
+}

@@ -1,0 +1,176 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+contract donorloop {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    
+    string private _name = "DONOR LOOP";
+    string private _symbol = "DONORLP";
+    uint256 private _totalSupply = 10 * 10**9;
+    
+    uint8 private _buyTaxPercentage = 8;
+    uint8 private _sellTaxPercentage = 8;
+    uint8 private _reflectionPercentage = 4;
+    uint8 private _burnPercentage = 1;
+    uint8 private _redistributionPercentage = 4;
+    uint8 private _sellBurnPercentage = 1;
+    
+    bool private _isReflectionEnabled = true;
+    bool private _isBurnEnabled = true;
+    
+    uint256 private _maxWalletAmount = _totalSupply / 200;
+    uint256 private _maxTxAmount = _totalSupply / 300;
+    
+    address private _marketingFeeWallet = 0xaAEA89514791AabEDC146168cF33814f69e90273;
+    address private _owner;
+    
+    event Transfer(address indexed from, address indexed to, uint256 amount);
+    event Approval(address indexed owner, address indexed spender, uint256 amount);
+    
+    constructor() {
+        _balances[msg.sender] = _totalSupply;
+        _owner = msg.sender;
+    }
+    
+    modifier onlyOwner() {
+        require(msg.sender == _owner, "Caller is not the owner");
+        _;
+    }
+    
+    function name() public view returns (string memory) {
+        return _name;
+    }
+    
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+    
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+    
+    function balanceOf(address account) public view returns (uint256) {
+        return _balances[account];
+    }
+    
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+    
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+    
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+    
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender] - amount);
+        return true;
+    }
+    
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        _approve(msg.sender, spender, _allowances[msg.sender][spender] + addedValue);
+        return true;
+    }
+    
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        uint256 currentAllowance = _allowances[msg.sender][spender];
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        _approve(msg.sender, spender, currentAllowance - subtractedValue);
+        return true;
+    }
+    
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        require(amount > 0, "ERC20: transfer amount must be greater than zero");
+        
+        if (sender != _owner && recipient != _owner) {
+            require(amount <= _maxTxAmount, "Transfer amount exceeds the maxTxAmount");
+            
+            if (recipient != address(this) && _isReflectionEnabled) {
+                (uint256 reflectionAmount, uint256 marketingAmount, uint256 burnAmount) = _calculateReflectionAmounts(amount);
+                _balances[_marketingFeeWallet] += marketingAmount;
+                _burnTokens(burnAmount);
+                amount -= reflectionAmount + marketingAmount + burnAmount;
+            }
+        }
+        
+        _balances[sender] -= amount;
+        _balances[recipient] += amount;
+        
+        emit Transfer(sender, recipient, amount);
+    }
+    
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+        
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+    
+    function _calculateReflectionAmounts(uint256 amount) private view returns (uint256, uint256, uint256) {
+        uint256 reflectionAmount = amount * _reflectionPercentage / 100;
+        uint256 marketingAmount = amount * _buyTaxPercentage * _marketingFeePercentage / 10000;
+        uint256 burnAmount = amount * _buyTaxPercentage * _burnPercentage / 10000;
+        return (reflectionAmount, marketingAmount, burnAmount);
+    }
+    
+    function _burnTokens(uint256 amount) private {
+        if (_isBurnEnabled) {
+            _totalSupply -= amount;
+            _balances[address(this)] -= amount;
+            emit Transfer(address(this), address(0), amount);
+        }
+    }
+    
+    function setMarketingFeeWallet(address wallet) external onlyOwner {
+        _marketingFeeWallet = wallet;
+    }
+    
+    function setBuyTaxPercentage(uint8 percentage) external onlyOwner {
+        _buyTaxPercentage = percentage;
+    }
+    
+    function setSellTaxPercentage(uint8 percentage) external onlyOwner {
+        _sellTaxPercentage = percentage;
+    }
+    
+uint256 private _marketingFeePercentage = 3; // Initialize with a default value
+
+function setMarketingFeePercentage(uint256 percentage) external {
+    _marketingFeePercentage = percentage;
+}
+
+    
+    function setReflectionPercentage(uint8 percentage) external onlyOwner {
+        _reflectionPercentage = percentage;
+    }
+    
+    function setBurnPercentage(uint8 percentage) external onlyOwner {
+        _burnPercentage = percentage;
+    }
+    
+    function setRedistributionPercentage(uint8 percentage) external onlyOwner {
+        _redistributionPercentage = percentage;
+    }
+    
+    function setSellBurnPercentage(uint8 percentage) external onlyOwner {
+        _sellBurnPercentage = percentage;
+    }
+    
+    function setReflectionEnabled(bool enabled) external onlyOwner {
+        _isReflectionEnabled = enabled;
+    }
+    
+    function setBurnEnabled(bool enabled) external onlyOwner {
+        _isBurnEnabled = enabled;
+    }
+}

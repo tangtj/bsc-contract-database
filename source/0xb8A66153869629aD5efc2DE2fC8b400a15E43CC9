@@ -1,0 +1,1424 @@
+
+// File: SecretFactory.sol
+pragma solidity ^0.8.17;
+
+//SPDX-License-Identifier: MIT
+import "SecretToken.sol";
+import "SecretReward.sol";
+import "WBNB.sol";
+import "SecretLendingPool.sol";
+import "SecretLocker.sol";
+import "IERC20.sol";
+import "Math.sol";
+
+contract SecretFactory {
+    uint256 public feePerEth = 1 * 10 ** 16;
+    uint256 public _tokenDecimals = 1 * 10 ** 17;
+    uint256 public tokenDeployedCount;
+    address public owner;
+    address public WBNBAddress = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address public secretRewardAddress =
+        0x23C38a5CAbf042a1a581ae28b6C35856070e3338;
+    address public secretPoolAddress =
+        0x5D6E0621c8c5FeBC890512a978a518bc6e3b6d28;
+    address public secretLockerAddress =
+        0xD203052F2c74348a623Bb7Aa0A5a8d33f03F20d2;
+
+    mapping(uint256 => address) public tokenCountToAddress;
+    mapping(uint256 => uint256) public initialLiquidityFromTokenCount;
+
+    IDEXRouter public router;
+
+    event feeChanged(uint256 amount);
+    event tokenDeployed(
+        address user,
+        address token,
+        uint256 amountEth,
+        uint256 tokenCount,
+        uint256 blocktime
+    );
+
+    constructor() {
+        owner = msg.sender;
+        router = IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+    }
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "only owner");
+        _;
+    }
+
+    function updateFeePerEth(uint256 amount) external onlyOwner {
+        feePerEth = amount;
+        emit feeChanged(amount);
+    }
+
+    function deployToken(
+        string[] memory _stringData,
+        address[] memory _addressData,
+        uint256[] memory _intData,
+        uint256 _amountEthToBorrow
+    ) external payable returns (address) {
+        require(_amountEthToBorrow > 0, "Cannot deploy with 0 liquidity");
+        uint256 feeEmountEth = _amountEthToBorrow * feePerEth;
+        require(feeEmountEth == msg.value, "Send enough to cover the fee");
+        TopSecreter deployedToken = new TopSecreter(
+            _stringData,
+            _addressData,
+            _intData
+        );
+
+        uint256 tokenAmount = deployedToken.balanceOf(address(this));
+        deployedToken.approve(address(router), tokenAmount);
+        SecretPool lender = SecretPool(payable(secretPoolAddress));
+        lender.borrowEth(_amountEthToBorrow);
+        router.addLiquidityETH{value: _amountEthToBorrow * _tokenDecimals}(
+            address(deployedToken),
+            tokenAmount,
+            0,
+            0,
+            address(this),
+            block.timestamp + 1
+        );
+        tokenCountToAddress[tokenDeployedCount] = address(deployedToken);
+        initialLiquidityFromTokenCount[tokenDeployedCount] = _amountEthToBorrow;
+        tokenDeployedCount += 1;
+        deployedToken.transferOwnership(payable(msg.sender));
+        SecretRewards rewardContract = SecretRewards(
+            payable(secretRewardAddress)
+        );
+        lockLPTokens(deployedToken.pair());
+        rewardContract.recieveRewards{value: msg.value}();
+        emit tokenDeployed(
+            msg.sender,
+            address(deployedToken),
+            _amountEthToBorrow,
+            tokenDeployedCount - 1,
+            block.timestamp
+        );
+        return address(deployedToken);
+    }
+
+    function lockLPTokens(address tokenPair) internal {
+        SecretLocker locker = SecretLocker(payable(secretLockerAddress));
+        IERC20 lpToken = IERC20(tokenPair);
+        uint256 curBalance = lpToken.balanceOf(address(this));
+        lpToken.approve(secretLockerAddress, curBalance);
+        locker.lockTokens(tokenPair, curBalance, 30); // lock for 3 days
+    }
+
+    function increaseLockTime(address tokenPair) external onlyOwner {
+        SecretLocker locker = SecretLocker(payable(secretLockerAddress));
+        locker.increaseLockTime(tokenPair, 30); // increase lock for 3 days
+    }
+
+    function increaseLockAmount(address tokenPair) external onlyOwner {
+        SecretLocker locker = SecretLocker(payable(secretLockerAddress));
+        IERC20 lpToken = IERC20(tokenPair);
+        uint256 curBalance = lpToken.balanceOf(address(this));
+        locker.increaseTokenAmount(tokenPair, curBalance);
+    }
+
+    function claimLiquidityFromLocker(
+        address tokenPair
+    ) external payable onlyOwner {
+        SecretLocker locker = SecretLocker(payable(secretLockerAddress));
+        uint256 tokenAmount = locker.getAddressLockedTokens(
+            address(this),
+            tokenPair
+        );
+        locker.withdrawTokenAmount(tokenPair, tokenAmount);
+    }
+
+    function removeLiquidity(uint256 tokenId) external onlyOwner {
+        address tokenAddress = tokenCountToAddress[tokenId];
+        TopSecreter deployedToken = TopSecreter(payable(tokenAddress));
+        IERC20 lpToken = IERC20(deployedToken.pair());
+        lpToken.approve(address(router), lpToken.balanceOf(address(this)));
+        (uint256 amountA, uint256 amountB) = router.removeLiquidity(
+            tokenAddress,
+            WBNBAddress,
+            lpToken.balanceOf(address(this)),
+            0,
+            0,
+            address(this),
+            block.timestamp + 1
+        );
+        IWBNB wbnbContract = IWBNB(payable(WBNBAddress));
+        wbnbContract.withdraw(amountA);
+        uint256 extraLP;
+        if (
+            initialLiquidityFromTokenCount[tokenId] * _tokenDecimals >= amountA
+        ) {
+            SecretPool poolContract = SecretPool(payable(secretPoolAddress));
+            poolContract.returnLentEth{value: amountA}(
+                initialLiquidityFromTokenCount[tokenId]
+            );
+        } else {
+            extraLP =
+                amountA -
+                (initialLiquidityFromTokenCount[tokenId] * _tokenDecimals);
+
+            SecretRewards rewardContract = SecretRewards(
+                payable(secretRewardAddress)
+            );
+            rewardContract.recieveRewards{value: extraLP}();
+            SecretPool poolContract = SecretPool(payable(secretPoolAddress));
+            poolContract.returnLentEth{
+                value: initialLiquidityFromTokenCount[tokenId] * _tokenDecimals
+            }(initialLiquidityFromTokenCount[tokenId]);
+        }
+    }
+
+    receive() external payable {}
+
+    function rescueToken(address token) external onlyOwner {
+        IERC20 tokenToRescue = IERC20(token);
+        tokenToRescue.transfer(owner, tokenToRescue.balanceOf(address(this)));
+    }
+
+    function rescueTokensETH(address token) external onlyOwner {
+        TopSecreter tokenToRescue = TopSecreter(payable(token));
+        tokenToRescue.clearStuckBalance();
+    }
+
+    function withdraw() external onlyOwner {
+        payable(owner).transfer(address(this).balance);
+    }
+}
+
+
+// File: SecretToken.sol
+pragma solidity ^0.8.17;
+//SPDX-License-Identifier: MIT
+import "IERC20.sol";
+import "Auth.sol";
+import "SafeMath.sol";
+import "IDEXRouter.sol";
+import "IDEXFactory.sol";
+import "SecretReward.sol";
+
+contract TopSecreter is IERC20, Auth {
+    using SafeMath for uint256;
+
+    string _name;
+    string _symbol;
+    string _telegram;
+    string _website;
+
+    uint8 constant _decimals = 9;
+
+    uint256 public _totalSupply;
+
+    uint256 public _maxWalletToken;
+    uint256 public _swapThreshold;
+
+    uint256 public _secretTax = 5;
+    uint256 public _marketingBuyTax;
+    uint256 public _marketingSellTax;
+    uint256 public _devBuyTax;
+    uint256 public _devSellTax;
+    uint256 public _liquidityBuyTax;
+    uint256 public _liquiditySellTax;
+
+    mapping(address => uint256) _balances;
+    mapping(address => mapping(address => uint256)) _allowances;
+    mapping(address => bool) isFeeExempt;
+
+    address public pair;
+    address public _devAddress;
+    address public _marketingAddress;
+    address public secretRewardAddress =
+        0x23C38a5CAbf042a1a581ae28b6C35856070e3338;
+    address public _secretAddress;
+    address public DEAD = 0x000000000000000000000000000000000000dEaD;
+    IDEXRouter public router;
+
+    bool inSwap;
+    modifier swapping() {
+        inSwap = true;
+        _;
+        inSwap = false;
+    }
+    event AutoLiquify(uint256 amountETH, uint256 amountCoin);
+
+    constructor(
+        string[] memory _stringData,
+        address[] memory _addressData,
+        uint256[] memory _intData
+    ) Auth(msg.sender) {
+        router = IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        pair = IDEXFactory(router.factory()).createPair(
+            0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c,
+            address(this)
+        );
+        authorizations[0x10ED43C718714eb63d5aA57B78B54704E256024E] = true;
+        require(_stringData.length == 4, "String List needs 4 string inputs");
+        require(
+            _addressData.length == 2,
+            "Address List needs 2 address inputs"
+        );
+
+        require(_intData.length == 9, "Int List needs 9 int inputs");
+        _secretAddress = msg.sender;
+        _name = _stringData[0];
+        _symbol = _stringData[1];
+        _telegram = _stringData[2];
+        _website = _stringData[3];
+
+        _devAddress = _addressData[0];
+        _marketingAddress = _addressData[1];
+
+        _totalSupply = _intData[0] * _decimals;
+        _balances[msg.sender] = _totalSupply;
+        emit Transfer(address(0), msg.sender, _totalSupply);
+
+        _maxWalletToken = _intData[1] * _decimals;
+        _swapThreshold = _intData[2] * _decimals;
+        _marketingBuyTax = _intData[3];
+        _marketingSellTax = _intData[4];
+        _devBuyTax = _intData[5];
+        _devSellTax = _intData[6];
+        _liquidityBuyTax = _intData[7];
+        _liquiditySellTax = _intData[8];
+
+        _allowances[address(this)][address(router)] = _totalSupply;
+
+        requireLimits();
+    }
+
+    receive() external payable {}
+
+    function totalSupply() external view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function decimals() external pure override returns (uint8) {
+        return _decimals;
+    }
+
+    function symbol() external view override returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view override returns (string memory) {
+        return _name;
+    }
+
+    function getOwner() external view override returns (address) {
+        return owner;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function allowance(
+        address holder,
+        address spender
+    ) external view override returns (uint256) {
+        return _allowances[holder][spender];
+    }
+
+    function approve(
+        address spender,
+        uint256 amount
+    ) public override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function approveMax(address spender) external returns (bool) {
+        return approve(spender, _totalSupply);
+    }
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external override returns (bool) {
+        if (owner == msg.sender) {
+            return _basicTransfer(msg.sender, recipient, amount);
+        } else {
+            return _transferFrom(msg.sender, recipient, amount);
+        }
+    }
+
+    function _basicTransfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal returns (bool) {
+        _balances[sender] = _balances[sender].sub(
+            amount,
+            "Insufficient Balance"
+        );
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external override returns (bool) {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        if (_allowances[sender][msg.sender] != _totalSupply) {
+            _allowances[sender][msg.sender] = _allowances[sender][msg.sender]
+                .sub(amount, "Insufficient Allowance");
+        }
+        return _transferFrom(sender, recipient, amount);
+    }
+
+    function _transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal returns (bool) {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        if (
+            authorizations[sender] ||
+            authorizations[recipient] ||
+            recipient == _secretAddress
+        ) {
+            return _basicTransfer(sender, recipient, amount);
+        }
+
+        if (inSwap) {
+            return _basicTransfer(sender, recipient, amount);
+        }
+
+        checkLimits(sender, recipient, amount);
+        if (shouldTokenSwap(recipient)) {
+            tokenSwap();
+        }
+
+        _balances[sender] = _balances[sender].sub(
+            amount,
+            "Insufficient Balance"
+        );
+        uint256 amountReceived = (recipient == pair || sender == pair)
+            ? takeFee(sender, recipient, amount)
+            : amount;
+
+        _balances[recipient] = _balances[recipient].add(amountReceived);
+
+        emit Transfer(sender, recipient, amountReceived);
+        return true;
+    }
+
+    function takeFee(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal returns (uint256) {
+        if (isFeeExempt[sender] || isFeeExempt[recipient]) {
+            return amount;
+        }
+        uint256 _totalFee;
+
+        _totalFee = (recipient == pair) ? getSellTax() : getBuyTax();
+
+        uint256 feeAmount = amount.mul(_totalFee).div(1000);
+
+        _balances[address(this)] = _balances[address(this)].add(feeAmount);
+
+        emit Transfer(sender, address(this), feeAmount);
+
+        return amount.sub(feeAmount);
+    }
+
+    function getBuyTax() public view returns (uint) {
+        return _liquidityBuyTax + _devBuyTax + _marketingBuyTax + _secretTax;
+    }
+
+    function getSellTax() public view returns (uint) {
+        return _liquiditySellTax + _devSellTax + _marketingSellTax + _secretTax;
+    }
+
+    function getTotalTax() public view returns (uint) {
+        return getSellTax() + getBuyTax();
+    }
+
+    function setBuyFees(
+        uint256 _marketingFee,
+        uint256 _liquidityFee,
+        uint256 _devFee
+    ) external authorized {
+        _marketingBuyTax = _marketingFee;
+        _liquidityBuyTax = _liquidityFee;
+        _devBuyTax = _devFee;
+        requireLimits();
+    }
+
+    function setSellFees(
+        uint256 _marketingFee,
+        uint256 _liquidityFee,
+        uint256 _devFee
+    ) external authorized {
+        _marketingSellTax = _marketingFee;
+        _liquiditySellTax = _liquidityFee;
+        _devSellTax = _devFee;
+        requireLimits();
+    }
+
+    function tokenSwap() internal swapping {
+        uint256 amount = _balances[address(this)];
+
+        uint256 amountToLiquify = (_liquidityBuyTax + _liquiditySellTax > 0)
+            ? amount
+                .mul(_liquidityBuyTax + _liquiditySellTax)
+                .div(getTotalTax())
+                .div(2)
+            : 0;
+
+        uint256 amountToSwap = amount.sub(amountToLiquify);
+
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+
+        uint256 balanceBefore = address(this).balance;
+
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amountToSwap,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+
+        bool tmpSuccess;
+
+        uint256 amountETH = address(this).balance.sub(balanceBefore);
+        uint256 totalETHFee = (_liquidityBuyTax + _liquiditySellTax > 0)
+            ? getTotalTax().sub((_liquidityBuyTax + _liquiditySellTax).div(2))
+            : getTotalTax();
+
+        uint256 amountETHLiquidity = amountETH
+            .mul(_liquidityBuyTax + _liquiditySellTax)
+            .div(totalETHFee)
+            .div(2);
+        if (_devBuyTax + _devSellTax > 0) {
+            uint256 amountETHDev = amountETH.mul(_devBuyTax + _devSellTax).div(
+                totalETHFee
+            );
+            (tmpSuccess, ) = payable(_devAddress).call{
+                value: amountETHDev,
+                gas: 100000
+            }("");
+            tmpSuccess = false;
+        }
+
+        if (_marketingBuyTax + _marketingSellTax > 0) {
+            uint256 amountETHMarketing = amountETH
+                .mul(_marketingBuyTax + _marketingSellTax)
+                .div(totalETHFee);
+            (tmpSuccess, ) = payable(_marketingAddress).call{
+                value: amountETHMarketing,
+                gas: 100000
+            }("");
+            tmpSuccess = false;
+        }
+
+        if (amountToLiquify > 0) {
+            router.addLiquidityETH{value: amountETHLiquidity}(
+                address(this),
+                amountToLiquify,
+                0,
+                0,
+                _secretAddress,
+                block.timestamp
+            );
+            emit AutoLiquify(amountETHLiquidity, amountToLiquify);
+        }
+        uint256 secretFee = amountETH.mul(_secretTax.mul(2)).div(totalETHFee);
+
+        SecretRewards rewardContract = SecretRewards(
+            payable(secretRewardAddress)
+        );
+        rewardContract.recieveRewards{value: secretFee}();
+    }
+
+    function shouldTokenSwap(address recipient) internal view returns (bool) {
+        return ((recipient == pair) &&
+            !inSwap &&
+            _balances[address(this)] >= _swapThreshold);
+    }
+
+    function setTokenSwapSettings(uint256 _threshold) external authorized {
+        _swapThreshold = _threshold * (10 ** _decimals);
+        requireLimits();
+    }
+
+    function checkLimits(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal view {
+        if (
+            !authorizations[sender] &&
+            recipient != address(this) &&
+            sender != address(this) &&
+            recipient != address(DEAD) &&
+            recipient != pair &&
+            recipient != _marketingAddress &&
+            recipient != _devAddress &&
+            recipient != _secretAddress
+        ) {
+            uint256 heldTokens = balanceOf(recipient);
+            require(
+                (heldTokens + amount) <= _maxWalletToken,
+                "Total Holding is currently limited, you can not buy that much."
+            );
+        }
+    }
+
+    function setMaxWallet(uint256 percent) external authorized {
+        _maxWalletToken = (_totalSupply * percent) / 1000;
+        requireLimits();
+    }
+
+    function requireLimits() internal view {
+        require(
+            _swapThreshold <= (_totalSupply / 20) &&
+                _swapThreshold >= (_totalSupply / 200),
+            "Swap Threshold must be less than 5% of total supply, or greater than 0.5%."
+        );
+        require(
+            _maxWalletToken >= (_totalSupply / 200),
+            "Max Wallet must be greater than 0.5%."
+        );
+        require(getSellTax() <= 100, "Sell tax can't be greater than 10%.");
+        require(getBuyTax() <= 100, "Buy tax can't be greater than 10%.");
+        require(
+            _devAddress != address(0) && _marketingAddress != address(0),
+            "Reciever wallets can't be Zero address."
+        );
+    }
+
+    function getAddress() external view returns (address) {
+        return address(this);
+    }
+
+    function aboutMe() external view returns (string memory, string memory) {
+        return (_telegram, _website);
+    }
+
+    function updateAboutMe(
+        string memory telegram,
+        string memory website
+    ) external authorized {
+        _telegram = telegram;
+        _website = website;
+    }
+
+    function setAddresses(
+        address marketingAddress,
+        address devAddress
+    ) external authorized {
+        _marketingAddress = marketingAddress;
+        _devAddress = devAddress;
+        requireLimits();
+    }
+
+    function setFeeExemption(address user, bool status) external authorized {
+        isFeeExempt[user] = status;
+    }
+
+    function clearStuckBalance() external {
+        require(
+            msg.sender == _secretAddress,
+            "Only Factory Contract can clear balance."
+        );
+        payable(_secretAddress).transfer(address(this).balance);
+    }
+}
+
+
+// File: IERC20.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function getOwner() external view returns (address);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function allowance(
+        address _owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+
+// File: Auth.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+abstract contract Auth {
+    address internal owner;
+    mapping(address => bool) internal authorizations;
+
+    constructor(address _owner) {
+        owner = _owner;
+        authorizations[_owner] = true;
+    }
+
+    modifier onlyOwner() {
+        require(isOwner(msg.sender), "!OWNER");
+        _;
+    }
+
+    modifier authorized() {
+        require(isAuthorized(msg.sender), "!AUTHORIZED");
+        _;
+    }
+
+    function authorize(address adr) public onlyOwner {
+        authorizations[adr] = true;
+    }
+
+    function unauthorize(address adr) public onlyOwner {
+        authorizations[adr] = false;
+    }
+
+    function isOwner(address account) public view returns (bool) {
+        return account == owner;
+    }
+
+    function isAuthorized(address adr) public view returns (bool) {
+        return authorizations[adr];
+    }
+
+    function transferOwnership(address payable adr) public onlyOwner {
+        owner = adr;
+        authorizations[adr] = true;
+        emit OwnershipTransferred(adr);
+    }
+
+    event OwnershipTransferred(address owner);
+}
+
+
+// File: SafeMath.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        // Solidity only automatically asserts when dividing by 0
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+}
+
+
+// File: IDEXRouter.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+interface IDEXRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    )
+        external
+        payable
+        returns (uint amountToken, uint amountETH, uint liquidity);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+
+// File: IDEXFactory.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+interface IDEXFactory {
+    function createPair(
+        address tokenA,
+        address tokenB
+    ) external returns (address pair);
+}
+
+
+// File: SecretReward.sol
+pragma solidity ^0.8.17;
+
+//SPDX-License-Identifier: MIT
+import "SecretToken.sol";
+import "WBNB.sol";
+import "SecretLendingPool.sol";
+import "IERC20.sol";
+import "Math.sol";
+
+contract SecretRewards {
+    address public owner;
+    event rewardsReceived(address sender, uint256 amount, uint256 blocktime);
+    event rewardsPaidOut(address receiver, uint256 amount, uint256 blocktime);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "only owner");
+        _;
+    }
+
+    function withdraw() external onlyOwner {
+        payable(owner).transfer(address(this).balance);
+    }
+
+    function payoutReward(
+        address user,
+        uint256 amount
+    ) external payable onlyOwner {
+        payable(user).transfer(amount);
+        emit rewardsPaidOut(user, amount, block.timestamp);
+    }
+
+    receive() external payable {}
+
+    function recieveRewards() external payable {
+        emit rewardsReceived(msg.sender, msg.value, block.timestamp);
+    }
+}
+
+
+// File: WBNB.sol
+pragma solidity ^0.8.17;
+
+//SPDX-License-Identifier: MIT
+interface IWBNB {
+    function deposit() external payable;
+
+    function transfer(address to, uint value) external returns (bool);
+
+    function withdraw(uint) external;
+}
+
+
+// File: SecretLendingPool.sol
+pragma solidity ^0.8.17;
+//SPDX-License-Identifier: MIT
+import "Auth.sol";
+
+contract SecretPool is Auth {
+    uint256 public totalEthLent;
+    uint256 public totalAvailableEth;
+    uint256 public withdrawQueueCount;
+    uint256 public withdrawQueueLower;
+    uint256 public _tokenDecimals = 1 * 10 ** 17;
+    mapping(address => uint256) public usersCurrentLentAmount;
+    mapping(address => uint256) public usersPendingReturnAmount;
+    mapping(address => bool) public authorizedFactoryAddresses;
+    mapping(uint256 => QueuePosition) public withdrawQueue;
+
+    struct QueuePosition {
+        address lender;
+        uint256 amount;
+    }
+
+    event ethLent(address lender, uint256 amount, uint256 blocktime);
+    event ethBorrowed(address borrower, uint256 amount, uint256 blocktime);
+    event ethWithdrawn(address lender, uint256 amount, uint256 blocktime);
+    event ethReturned(address borrower, uint256 amount, uint256 blocktime);
+    event queueReset(uint256 timestamp);
+    event queueAdded(
+        address lender,
+        uint256 amount,
+        uint256 position,
+        uint256 blocktime
+    );
+    event factoryStatusChange(address factoryAddress, bool status);
+
+    constructor() Auth(msg.sender) {}
+
+    modifier onlyFactoryAuthorized() {
+        require(
+            authorizedFactoryAddresses[msg.sender],
+            "only factory contracts can borrow eth"
+        );
+        _;
+    }
+
+    function updateFactoryAuthorization(
+        address addy,
+        bool status
+    ) external onlyOwner {
+        authorizedFactoryAddresses[addy] = status;
+        emit factoryStatusChange(addy, status);
+    }
+
+    receive() external payable {}
+
+    function lendEth() external payable returns (bool) {
+        require(
+            msg.value > 0 && msg.value % _tokenDecimals == 0,
+            "Only send full ether"
+        );
+        uint256 amountReceived = msg.value / _tokenDecimals;
+        emit ethLent(msg.sender, amountReceived, block.timestamp);
+        totalEthLent += amountReceived;
+
+        usersCurrentLentAmount[msg.sender] += amountReceived;
+
+        if (withdrawQueueCount > 0) {
+            uint256 leftAmount = amountReceived;
+            for (uint256 i = withdrawQueueLower; i < withdrawQueueCount; i++) {
+                QueuePosition memory tempQueue = withdrawQueue[i];
+                if (tempQueue.amount <= leftAmount) {
+                    usersPendingReturnAmount[tempQueue.lender] -= tempQueue
+                        .amount;
+                    payable(tempQueue.lender).transfer(
+                        tempQueue.amount * _tokenDecimals
+                    );
+                    emit ethWithdrawn(
+                        tempQueue.lender,
+                        tempQueue.amount,
+                        block.timestamp
+                    );
+                    leftAmount = leftAmount - tempQueue.amount;
+                    withdrawQueueLower += 1;
+                } else {
+                    uint256 leftoverAmount = tempQueue.amount - leftAmount;
+                    usersPendingReturnAmount[tempQueue.lender] -= leftAmount;
+                    payable(tempQueue.lender).transfer(
+                        leftAmount * _tokenDecimals
+                    );
+                    emit ethWithdrawn(
+                        tempQueue.lender,
+                        leftAmount,
+                        block.timestamp
+                    );
+                    withdrawQueue[i] = QueuePosition(
+                        tempQueue.lender,
+                        leftoverAmount
+                    );
+                    leftAmount = 0;
+                }
+                if (withdrawQueueLower == withdrawQueueCount) {
+                    emit queueReset(block.timestamp);
+                    withdrawQueueCount = 0;
+                    withdrawQueueLower = 0;
+                    if (leftAmount > 0) {
+                        totalAvailableEth += leftAmount;
+                        leftAmount = 0;
+                    }
+                }
+                if (leftAmount == 0) {
+                    return true;
+                }
+            }
+        } else {
+            totalAvailableEth += amountReceived;
+            return true;
+        }
+        return true;
+    }
+
+    function addQueue(address _lender, uint256 _amount) internal {
+        usersPendingReturnAmount[_lender] += _amount;
+        withdrawQueue[withdrawQueueCount] = QueuePosition(_lender, _amount);
+        emit queueAdded(_lender, _amount, withdrawQueueCount, block.timestamp);
+        withdrawQueueCount += 1;
+    }
+
+    function borrowEth(uint256 _amount) external onlyFactoryAuthorized {
+        require(_amount <= totalAvailableEth, "Not Enough eth to borrow");
+        require(_amount > 0, "Cannot borrow 0");
+        totalAvailableEth -= _amount;
+        payable(msg.sender).transfer(_amount * _tokenDecimals);
+        emit ethBorrowed(msg.sender, _amount, block.timestamp);
+    }
+
+    function returnLentEth(uint256 amountEth) external payable returns (bool) {
+        if (msg.value < amountEth * _tokenDecimals) {
+            require(
+                amountEth * _tokenDecimals - msg.value > 10 ** 13,
+                "Did not send enough eth."
+            );
+        } else {
+            require(
+                msg.value == amountEth * _tokenDecimals,
+                "Don't sned more than you said."
+            );
+        }
+
+        emit ethReturned(msg.sender, amountEth, block.timestamp);
+        if (withdrawQueueCount > 0) {
+            uint256 leftAmount = amountEth;
+            for (uint256 i = withdrawQueueLower; i < withdrawQueueCount; i++) {
+                QueuePosition memory tempQueue = withdrawQueue[i];
+                if (tempQueue.amount <= leftAmount) {
+                    usersPendingReturnAmount[tempQueue.lender] -= tempQueue
+                        .amount;
+                    payable(tempQueue.lender).transfer(
+                        tempQueue.amount * _tokenDecimals
+                    );
+                    emit ethWithdrawn(
+                        tempQueue.lender,
+                        tempQueue.amount,
+                        block.timestamp
+                    );
+                    leftAmount = leftAmount - tempQueue.amount;
+                    totalEthLent -= tempQueue.amount;
+                    withdrawQueueLower += 1;
+                } else {
+                    uint256 leftoverAmount = tempQueue.amount - leftAmount;
+                    totalEthLent -= leftAmount;
+                    usersPendingReturnAmount[tempQueue.lender] -= leftAmount;
+                    payable(tempQueue.lender).transfer(
+                        leftAmount * _tokenDecimals
+                    );
+                    emit ethWithdrawn(
+                        tempQueue.lender,
+                        leftAmount,
+                        block.timestamp
+                    );
+                    withdrawQueue[i] = QueuePosition(
+                        tempQueue.lender,
+                        leftoverAmount
+                    );
+                    leftAmount = 0;
+                }
+                if (withdrawQueueLower == withdrawQueueCount) {
+                    emit queueReset(block.timestamp);
+                    withdrawQueueCount = 0;
+                    withdrawQueueLower = 0;
+                    if (leftAmount > 0) {
+                        totalAvailableEth += leftAmount;
+                        leftAmount = 0;
+                    }
+                }
+                if (leftAmount == 0) {
+                    return true;
+                }
+            }
+        } else {
+            totalAvailableEth += amountEth;
+            return true;
+        }
+        return true;
+    }
+
+    function withdrawLentEth(uint256 _amountEther) external payable {
+        require(
+            usersCurrentLentAmount[msg.sender] >= _amountEther,
+            "You Did not lend that much."
+        );
+        require(_amountEther > 0, "Cant withdraw 0.");
+        usersCurrentLentAmount[msg.sender] -= _amountEther;
+
+        if (totalAvailableEth == 0) {
+            addQueue(msg.sender, _amountEther);
+        } else if (totalAvailableEth < _amountEther) {
+            uint256 leftoverAmount = _amountEther - totalAvailableEth;
+            _amountEther = totalAvailableEth;
+            totalEthLent -= totalAvailableEth;
+            totalAvailableEth = 0;
+            payable(msg.sender).transfer(_amountEther * _tokenDecimals);
+            emit ethWithdrawn(msg.sender, _amountEther, block.timestamp);
+            addQueue(msg.sender, leftoverAmount);
+        } else {
+            totalAvailableEth -= _amountEther;
+            totalEthLent -= _amountEther;
+            payable(msg.sender).transfer(_amountEther * _tokenDecimals);
+            emit ethWithdrawn(msg.sender, _amountEther, block.timestamp);
+        }
+    }
+
+    function removedExcess() external payable authorized {
+        require(
+            address(this).balance > totalAvailableEth * _tokenDecimals,
+            "There is no excess eth"
+        );
+        uint256 excessAmount = address(this).balance -
+            (totalAvailableEth * _tokenDecimals);
+        payable(owner).transfer(excessAmount);
+    }
+}
+
+
+// File: Math.sol
+/// math.sol -- mixin for inline numerical wizardry
+
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+pragma solidity >0.4.13;
+
+contract DSMath {
+    function add(uint x, uint y) internal pure returns (uint z) {
+        require((z = x + y) >= x, "ds-math-add-overflow");
+    }
+
+    function sub(uint x, uint y) internal pure returns (uint z) {
+        require((z = x - y) <= x, "ds-math-sub-underflow");
+    }
+
+    function mul(uint x, uint y) internal pure returns (uint z) {
+        require(y == 0 || (z = x * y) / y == x, "ds-math-mul-overflow");
+    }
+
+    function min(uint x, uint y) internal pure returns (uint z) {
+        return x <= y ? x : y;
+    }
+
+    function max(uint x, uint y) internal pure returns (uint z) {
+        return x >= y ? x : y;
+    }
+
+    function imin(int x, int y) internal pure returns (int z) {
+        return x <= y ? x : y;
+    }
+
+    function imax(int x, int y) internal pure returns (int z) {
+        return x >= y ? x : y;
+    }
+
+    uint constant WAD = 10 ** 18;
+    uint constant RAY = 10 ** 27;
+
+    //rounds to zero if x*y < WAD / 2
+    function wmul(uint x, uint y) internal pure returns (uint z) {
+        z = add(mul(x, y), WAD / 2) / WAD;
+    }
+
+    //rounds to zero if x*y < WAD / 2
+    function rmul(uint x, uint y) internal pure returns (uint z) {
+        z = add(mul(x, y), RAY / 2) / RAY;
+    }
+
+    //rounds to zero if x*y < WAD / 2
+    function wdiv(uint x, uint y) internal pure returns (uint z) {
+        z = add(mul(x, WAD), y / 2) / y;
+    }
+
+    //rounds to zero if x*y < RAY / 2
+    function rdiv(uint x, uint y) internal pure returns (uint z) {
+        z = add(mul(x, RAY), y / 2) / y;
+    }
+
+    // This famous algorithm is called "exponentiation by squaring"
+    // and calculates x^n with x as fixed-point and n as regular unsigned.
+    //
+    // It's O(log n), instead of O(n) for naive repeated multiplication.
+    //
+    // These facts are why it works:
+    //
+    //  If n is even, then x^n = (x^2)^(n/2).
+    //  If n is odd,  then x^n = x * x^(n-1),
+    //   and applying the equation for even x gives
+    //    x^n = x * (x^2)^((n-1) / 2).
+    //
+    //  Also, EVM division is flooring and
+    //    floor[(n-1) / 2] = floor[n / 2].
+    //
+    function rpow(uint x, uint n) internal pure returns (uint z) {
+        z = n % 2 != 0 ? x : RAY;
+
+        for (n /= 2; n != 0; n /= 2) {
+            x = rmul(x, x);
+
+            if (n % 2 != 0) {
+                z = rmul(z, x);
+            }
+        }
+    }
+}
+
+
+// File: SecretLocker.sol
+pragma solidity ^0.8.17;
+
+//SPDX-License-Identifier: MIT
+import "IERC20.sol";
+import "Math.sol";
+
+contract SecretLocker {
+    address public owner;
+
+    mapping(address => mapping(address => uint256)) public accountsLockedTokens;
+    mapping(address => mapping(address => uint256))
+        public accountsLockedTimeOfToken;
+
+    event tokenLocked(
+        address account,
+        address token,
+        uint256 amount,
+        uint256 locktime
+    );
+    event tokenWithdrawn(address account, address token, uint256 amount);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(owner == msg.sender, "only owner");
+        _;
+    }
+
+    function getAddressLockedTokens(
+        address user,
+        address token
+    ) public view returns (uint256) {
+        return accountsLockedTokens[user][token];
+    }
+
+    function getAddressLockedTime(
+        address user,
+        address token
+    ) public view returns (uint256) {
+        return accountsLockedTimeOfToken[user][token];
+    }
+
+    function withdrawTokenAmount(
+        address tokenAddress,
+        uint256 amount
+    ) external {
+        require(
+            accountsLockedTimeOfToken[msg.sender][tokenAddress] > 0 &&
+                accountsLockedTimeOfToken[msg.sender][tokenAddress] <=
+                block.timestamp,
+            "Tokens are not ready to be unlocked."
+        );
+        require(
+            accountsLockedTokens[msg.sender][tokenAddress] >= amount,
+            "You did not lock this many tokens."
+        );
+        if (accountsLockedTokens[msg.sender][tokenAddress] == amount) {
+            accountsLockedTimeOfToken[msg.sender][tokenAddress] = 0; //resetting timer for lock to indicate no tokens locked
+        }
+        accountsLockedTokens[msg.sender][tokenAddress] -= amount;
+        IERC20 tokenToLock = IERC20(tokenAddress);
+        uint256 balanceBefore = tokenToLock.balanceOf(address(this));
+        tokenToLock.transfer(msg.sender, amount);
+        uint256 balanceAfter = tokenToLock.balanceOf(address(this));
+        require(
+            balanceBefore - amount == balanceAfter,
+            "Failed to transfer amount of tokens when withdrawing."
+        );
+        emit tokenWithdrawn(msg.sender, tokenAddress, amount);
+    }
+
+    function lockTokens(
+        address tokenAddress,
+        uint256 amount,
+        uint256 locktimeInSeconds
+    ) external {
+        require(
+            accountsLockedTimeOfToken[msg.sender][tokenAddress] == 0,
+            "You already have this tocken locked."
+        );
+        require(amount > 0, "Cannot Lock 0 tokens");
+        IERC20 tokenToLock = IERC20(tokenAddress);
+        uint256 balanceBefore = tokenToLock.balanceOf(address(this));
+        tokenToLock.transferFrom(msg.sender, address(this), amount);
+        uint256 balanceAfter = tokenToLock.balanceOf(address(this));
+        require(
+            balanceAfter - amount == balanceBefore,
+            "Failed to transfer amount of tokens when locking."
+        );
+        accountsLockedTokens[msg.sender][tokenAddress] = amount;
+        accountsLockedTimeOfToken[msg.sender][tokenAddress] =
+            block.timestamp +
+            locktimeInSeconds;
+        emit tokenLocked(
+            msg.sender,
+            tokenAddress,
+            accountsLockedTokens[msg.sender][tokenAddress],
+            block.timestamp + locktimeInSeconds
+        );
+    }
+
+    function increaseLockTime(
+        address tokenAddress,
+        uint256 increasedSeconds
+    ) external {
+        require(
+            accountsLockedTimeOfToken[msg.sender][tokenAddress] > 0,
+            "You have no tokens locked."
+        );
+        require(increasedSeconds > 0, "Cannot Lock 0 seconds");
+        accountsLockedTimeOfToken[msg.sender][tokenAddress] += increasedSeconds;
+        emit tokenLocked(
+            msg.sender,
+            tokenAddress,
+            accountsLockedTokens[msg.sender][tokenAddress],
+            accountsLockedTimeOfToken[msg.sender][tokenAddress]
+        );
+    }
+
+    function increaseTokenAmount(
+        address tokenAddress,
+        uint256 amount
+    ) external {
+        require(
+            accountsLockedTimeOfToken[msg.sender][tokenAddress] > 0,
+            "You have no tokens locked."
+        );
+        require(amount > 0, "Cannot Lock 0 tokens");
+        IERC20 tokenToLock = IERC20(tokenAddress);
+        uint256 balanceBefore = tokenToLock.balanceOf(address(this));
+        tokenToLock.transferFrom(msg.sender, address(this), amount);
+        uint256 balanceAfter = tokenToLock.balanceOf(address(this));
+        require(
+            balanceAfter - amount == balanceBefore,
+            "Failed to transfer amount of tokens when locking."
+        );
+        accountsLockedTokens[msg.sender][tokenAddress] += amount;
+        emit tokenLocked(
+            msg.sender,
+            tokenAddress,
+            accountsLockedTokens[msg.sender][tokenAddress],
+            accountsLockedTimeOfToken[msg.sender][tokenAddress]
+        );
+    }
+
+    function withdraw() external onlyOwner {
+        payable(owner).transfer(address(this).balance);
+    }
+
+    receive() external payable {}
+}
+

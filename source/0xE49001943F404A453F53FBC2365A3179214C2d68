@@ -1,0 +1,475 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.10;
+
+interface IERC20 {
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function name() external view returns (string memory);
+
+    function symbol() external view returns (string memory);
+
+    function decimals() external view returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 value) external;
+
+    function transfer(address to, uint256 value) external;
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external;
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this;
+        return msg.data;
+    }
+}
+
+contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor(address payable owner_) {
+        _owner = owner_;
+        emit OwnershipTransferred(address(0), owner_);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract miningDapp is Ownable {
+    bool public launched;
+    uint256 public launchTime;
+    uint256 public weekTime;
+    uint256 public currentWeek;
+    uint256 public uniqueStakers;
+    uint256 public rewardDistributed;
+    uint256 public totalWithdrawanNodes;
+    uint256 public currentStakedNodes;
+    uint256 forNextWeek;
+
+    IERC20 public Fym = IERC20(0x1b3e2293E64f021a81Fd83c72beAC8169FBd52F9);
+    uint256 public timeStep = 1 days;
+    uint256 public poolPercent = 30_00;
+    address public miningPool = 0x718C9fe62563fBB2D0f2fB2c923693e0e579dEe3;
+    uint256 public minDeposit = 100*10**Fym.decimals();
+    uint256 public maxDeposit = 1500000000*10**Fym.decimals();
+    uint256 public percentDivider = 100_00;
+    uint256 public totalComputingPower = 210000;
+    uint256 public claimDuration = 1 days;
+    uint256[10] bonus = [
+        25_00,
+        18_00,
+        14_00,
+        10_00,
+        8_00,
+        7_00,
+        6_00,
+        5_00,
+        4_00,
+        3_00
+    ];
+    uint256[9] uplinebonus = [
+        10_00,
+        9_00,
+        8_00,
+        7_00,
+        6_00,
+        5_00,
+        4_00,
+        3_00,
+        2_00
+    ];
+
+    struct User {
+        uint256 startTime;
+        address referrer;
+        uint256 checkpoint;
+        uint256 referrals;
+        uint256 claimedReward;
+        uint256 claimablePrizePoolIncome;
+        uint256 referralsReward;
+        uint256 claimedReferralReward;
+        uint256 prizePoolIncome;
+        uint256 nodes;
+        bool isExists;
+        bool isActive;
+        bool isStaked;
+    }
+
+    struct UserInfo {
+        uint256[9] teamPower;
+        uint256[9] referrals;
+    }
+
+    struct Week {
+        address[10] Depositor;
+        uint256[10] usersAmount;
+    }
+
+    mapping(address => User) internal users;
+    mapping(uint256 => Week) internal weeklyData;
+    mapping(address => UserInfo) internal UserInfos;
+
+    event STAKE(address Staker, uint256 amount);
+    event CLAIM(address Staker, uint256 amount);
+    event WITHDRAW(address Staker, uint256 amount);
+    event Distribute(address Staker, uint256 amount);
+
+    constructor(address payable _owner) Ownable(_owner) {}
+
+    function launch() external onlyOwner {
+        require(!launched, "Already launched");
+        launched = true;
+        launchTime = block.timestamp;
+        weekTime = block.timestamp;
+    }
+
+    function calculateWeek() public view returns (uint256) {
+        return (block.timestamp - launchTime) / (7 * timeStep);
+    }
+
+    function updateWeekly() public {
+        if (currentWeek != calculateWeek()) {
+            distributePrize();
+            currentWeek = calculateWeek();
+            weekTime = block.timestamp; 
+        }
+    }
+
+    function stake(address _referrer, uint256 _node) public {
+        User storage user = users[msg.sender];
+        uint256 amount = _node * 100*10**Fym.decimals();
+        require(launched, "Wait for launch");
+        require(amount >= minDeposit, "Amount less than min amount");
+        require(amount <= maxDeposit, "More than max amount");
+        updateWeekly();
+        if (!user.isExists) {
+            user.isExists = true;
+            user.startTime = block.timestamp;
+            uniqueStakers++;
+        }
+        user.nodes += _node;
+        user.checkpoint = block.timestamp;
+        user.isActive = true;
+        currentStakedNodes += _node;
+        setReferrer(msg.sender, _referrer, _node);
+        user.isStaked = true;
+        Fym.transferFrom(msg.sender, address(this), amount);
+        emit STAKE(msg.sender, amount);
+    }
+
+    function setReferrer(
+        address _user,
+        address _referrer,
+        uint256 _amount
+    ) internal {
+        User storage user = users[_user];
+        if (user.referrer == address(0)) {
+            if (_referrer != _user && users[_referrer].isStaked) {
+                user.referrer = _referrer;
+                if (_referrer != address(0)) {
+                    users[_referrer].referrals++;
+                }
+            } else {
+                user.referrer = address(0);
+            }
+        }
+        address referrer = user.referrer;
+        for (uint256 i = 0; i < 9; i++) {
+            if (referrer != address(0)) {
+                UserInfos[referrer].referrals[i]++;
+                UserInfos[referrer].teamPower[i] += _amount;
+                referrer = users[referrer].referrer;
+            } else {
+                break;
+            }
+        }
+
+        for (uint256 i; i < weeklyData[currentWeek].Depositor.length; i++) {
+            if (weeklyData[currentWeek].Depositor[i] == _referrer) {
+                break;
+            }
+            if (
+                users[_referrer].referrals >
+                users[weeklyData[currentWeek].Depositor[i]].referrals
+            ) {
+                address x = _referrer;
+                address y;
+                for (
+                    uint256 j = i;
+                    j < weeklyData[currentWeek].Depositor.length;
+                    j++
+                ) {
+                    y = weeklyData[currentWeek].Depositor[j];
+                    weeklyData[currentWeek].Depositor[j] = x;
+                    x = y;
+                    if (y == _referrer) break;
+                }
+                break;
+            }
+        }
+    }
+
+    function claim() public {
+        User storage user = users[msg.sender];
+        require(user.isStaked, "User has no stake");
+        require(user.isActive, "Already withdrawn");
+        require(
+            block.timestamp >= claimDuration + user.checkpoint,
+            "Wait for atleast 24 hours"
+        );
+        require(launched, "Wait for launch");
+        updateWeekly();
+        uint256 rewardAmount;
+        rewardAmount = calculateReward(msg.sender, user.checkpoint);
+        require(rewardAmount > 0, "Can't claim 0");
+        Fym.transferFrom(miningPool, msg.sender, rewardAmount);
+        Fym.transferFrom(miningPool, msg.sender, user.referralsReward);
+        payable(msg.sender).transfer(user.claimablePrizePoolIncome);
+        user.claimedReferralReward += user.referralsReward;
+        setRefferalsReward(msg.sender, rewardAmount);
+        user.claimedReward += rewardAmount;
+        user.prizePoolIncome += user.claimablePrizePoolIncome;
+        user.checkpoint = block.timestamp;
+        rewardDistributed += rewardAmount;
+        user.referralsReward = 0;
+        user.claimablePrizePoolIncome = 0;
+        emit CLAIM(msg.sender, rewardAmount);
+    }
+
+    function setRefferalsReward(address _user, uint256 _amount) private {
+        address userReferral = _user;
+
+        for (uint256 i = 0; i < uplinebonus.length; i++) {
+            {
+                userReferral = users[userReferral].referrer;
+                if (userReferral == address(0)) {
+                    break;
+                }
+                uint256 amount = (_amount * uplinebonus[i]) / percentDivider;
+                users[userReferral].referralsReward += amount;
+            }
+        }
+    }
+
+    function withdraw(uint256 _node) public {
+        User storage user = users[msg.sender];
+        address referrer = users[msg.sender].referrer;
+        require(user.isStaked, "User has no stake");
+        require(user.isActive, "Already withdrawn");
+        uint256 amount = _node * 100*10**Fym.decimals();
+        require(launched, "Wait for launch");
+        require(
+            _node <= user.nodes,
+            "nodes Should be less than current staked nodes"
+        );
+
+        updateWeekly();
+        Fym.transfer(msg.sender, amount);
+        user.nodes -= _node;
+        currentStakedNodes -= _node;
+        totalWithdrawanNodes += _node;
+        if (user.nodes == 0) {
+            user.isActive = false;
+        }
+
+        for (uint256 i = 0; i < 9; i++) {
+            if (referrer != address(0)) {
+                UserInfos[referrer].teamPower[i] -= _node;
+                referrer = users[referrer].referrer;
+            } else {
+                break;
+            }
+        }
+
+        emit WITHDRAW(msg.sender, amount);
+    }
+
+    function calculateReward(address _user, uint256 _time)
+        public
+        view
+        returns (uint256 _reward)
+    {
+        User storage user = users[_user];
+        uint256 duration = block.timestamp - _time;
+        uint256 interval = (duration * 100) / claimDuration;
+        uint256 actualComputingPower = currentStakedNodes;
+        uint256 pledgeRate = ((totalComputingPower * 100) /
+            actualComputingPower);
+        uint256 miningOutput = ((Fym.balanceOf(miningPool) * pledgeRate) /
+            (actualComputingPower));
+        _reward =
+            ((miningOutput / actualComputingPower) * (user.nodes * interval)) /
+            10000;
+    }
+
+    function amountToDistribute() public view returns (uint256) {
+        uint256 prizePoolBalance = address(this).balance + forNextWeek;
+        uint256 _prize = (prizePoolBalance * poolPercent) / percentDivider;
+        return _prize;
+    }
+
+    function distributePrize() private {
+        uint256 _amount = amountToDistribute();
+        forNextWeek = address(this).balance - _amount;
+        for (uint256 i = 0; i < weeklyData[currentWeek].Depositor.length; i++) {
+            if (weeklyData[currentWeek].Depositor[i] == address(0)) {
+                break;
+            }
+            uint256 amount = (_amount * bonus[i]) / percentDivider;
+            weeklyData[currentWeek].usersAmount[i] = amount;
+            users[weeklyData[currentWeek].Depositor[i]]
+                .claimablePrizePoolIncome += amount;
+            emit Distribute(weeklyData[currentWeek].Depositor[i], amount);
+        }
+    }
+
+    function getWeekData(uint256 _index)
+        public
+        view
+        returns (address[10] memory _users, uint256[10] memory _amounts)
+    {
+        _users = weeklyData[_index].Depositor;
+        _amounts = weeklyData[_index].usersAmount;
+    }
+
+    function withdrawStuckToken(address _token, uint256 _amount) public onlyOwner {
+        IERC20(_token).transfer(msg.sender, _amount);
+    }
+
+    function setTime(uint256 _step, uint256 _claimDuration) external onlyOwner {
+        timeStep = _step;
+        claimDuration = _claimDuration;
+    }
+
+    function changeToken(address _token) public onlyOwner {
+        Fym = IERC20(_token);
+    }
+
+    function setDepositLimits(uint256 _minDeposit, uint256 _maxDeposit)
+        public
+        onlyOwner
+    {
+        minDeposit = _minDeposit;
+        maxDeposit = _maxDeposit;
+    }
+
+    function getUserPower(address _user)
+        public
+        view
+        returns (uint256[9] memory _teampower)
+    {
+        for (uint256 i = 0; i < 9; i++) {
+            _teampower[i] = UserInfos[_user].teamPower[i];
+        }
+        return _teampower;
+    }
+
+    function getUserReferrersPower(address _user)
+        public
+        view
+        returns (uint256[9] memory _teampower)
+    {
+        for (uint256 i = 0; i < 9; i++) {
+            _teampower[i] = UserInfos[_user].referrals[i];
+        }
+        return _teampower;
+    }
+
+    function getCurrentYield(address _user) public view returns (uint256 _apy) {
+        User storage user = users[_user];
+        uint256 time = block.timestamp - claimDuration;
+        uint256 perDay = calculateReward(_user, time);
+        _apy = ((perDay * 365) / user.nodes) * 100;
+    }
+
+    function changeMiningPool(address _miningPool) public onlyOwner {
+        miningPool = _miningPool;
+    }
+
+    function withdrawStuckBNBAmount(uint256 _amount) public onlyOwner {
+        payable(msg.sender).transfer(_amount);
+    }
+
+    function getUserInfo(address _user)
+        public
+        view
+        returns (
+            uint256 _nodes,
+            uint256 _claimedReward,
+            uint256 _checkpoint,
+            uint256 _referralsReward,
+            uint256 _prizePoolIncome,
+            uint256 _claimedReferralReward,
+            uint256 _claimablePrizePoolIncome,
+            uint256 _startTime,
+            address _referrer,
+            bool _isActive,
+            bool _isStaked,
+            uint256 _referrals
+        )
+    {
+        User storage user = users[_user];
+        _nodes = user.nodes;
+        _claimedReward = user.claimedReward;
+        _checkpoint = user.checkpoint;
+        _startTime = user.startTime;
+        _referrer = user.referrer;
+        _isActive = user.isActive;
+        _prizePoolIncome = user.prizePoolIncome;
+        _isStaked = user.isStaked;
+        _referrals = user.referrals;
+        _referralsReward = user.referralsReward;
+        _claimedReferralReward = user.claimedReferralReward;
+        _claimablePrizePoolIncome = user.claimablePrizePoolIncome;
+    }
+    receive() external payable {}
+}

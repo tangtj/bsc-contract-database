@@ -1,0 +1,1550 @@
+
+// File: contracts/standard/rent/PadiRent.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
+import "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
+import "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Receiver.sol";
+import "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Context.sol";
+import "../../shared/WhitelistShared.sol";
+import "../../interfaces/IPadiRent.sol";
+import "../../interfaces/ICurrency.sol";
+
+// import "hardhat/console.sol";
+
+contract PadiRent is
+    ERC721Holder,
+    ERC1155Receiver,
+    ERC1155Holder,
+    WhitelistShared,
+    ReentrancyGuard,
+    Context,
+    IPadiRent
+{
+    uint32 public MAX_PERCENTAGE;
+    uint32 public SECONDS_PER_DAY;
+    uint32 public LIMIT_SECONDS_TO_CLAIM;
+    uint32 public LIMIT_SECONDS_TO_RETURN;
+    uint32 public rentFee; // 10000 is 100%
+    uint256 private lendingId;
+
+    struct Lending {
+        address payable lenderAddress;
+        uint256 dailyRentPrice;
+        uint256 nftPrice;
+        uint32 maxRentDuration;
+        uint32 lentAmount;
+        address contractERC20;
+    }
+
+    struct Renting {
+        address payable renterAddress;
+        uint32 rentDuration;
+        uint32 rentedAt;
+    }
+
+    struct LendingRenting {
+        Lending lending;
+        Renting renting;
+    }
+
+    mapping(bytes32 => LendingRenting) public lendingRenting;
+    address private _currencyAddress;
+    address private _treasuryAddress;
+
+    struct CallData {
+        uint256 left;
+        uint256 right;
+        address[] nfts;
+        uint256[] tokenIds;
+        uint256[] dailyRentPrices;
+        uint256[] nftPrices;
+        uint256[] lendingIds;
+        uint32[] lendAmounts;
+        uint32[] maxRentDurations;
+        uint32[] rentDurations;
+        address[] contractERC20s;
+    }
+
+    constructor(address _whitelistAddress) {
+        _treasuryAddress = _msgSender();
+        MAX_PERCENTAGE = 10000;
+        SECONDS_PER_DAY = 86400;
+        rentFee = 500; // 5%
+        LIMIT_SECONDS_TO_CLAIM = 86400;
+        LIMIT_SECONDS_TO_RETURN = 3600; // Can late till 6h after
+        _setWhitelistAddress(_whitelistAddress);
+    }
+
+    function setCurrencyAddress(address _address) external validateAdmin {
+        _currencyAddress = _address;
+    }
+
+    function setTreasuryAddress(address _address) external validateAdmin {
+        _treasuryAddress = _address;
+    }
+
+    function setWhitelistAddress(address _address) external validateAdmin {
+        _setWhitelistAddress(_address);
+    }
+
+    function setRentFee(uint32 _rentFee) external validateAdmin {
+        rentFee = _rentFee;
+    }
+
+    function setLimitClaimTime(uint32 _time) external validateAdmin {
+        LIMIT_SECONDS_TO_CLAIM = _time;
+    }
+
+    function setLimitReturnTime(uint32 _time) external validateAdmin {
+        LIMIT_SECONDS_TO_RETURN = _time;
+    }
+
+    function lend(
+        address[] memory _nfts,
+        uint256[] memory _tokenIds,
+        uint32[] memory _lendAmounts,
+        uint32[] memory _maxRentDurations,
+        uint256[] memory _dailyRentPrices,
+        uint256[] memory _nftPrices,
+        address[] memory _contractERC20s
+    ) external nonReentrant {
+        bundleCall(
+            handleLend,
+            createLendCallData(
+                _nfts,
+                _tokenIds,
+                _lendAmounts,
+                _maxRentDurations,
+                _dailyRentPrices,
+                _nftPrices,
+                _contractERC20s
+            )
+        );
+    }
+
+    function rent(
+        address[] memory _nfts,
+        uint256[] memory _tokenIds,
+        uint256[] memory _lendingIds,
+        uint32[] memory _rentDurations
+    ) external nonReentrant {
+        bundleCall(
+            handleRent,
+            createRentCallData(_nfts, _tokenIds, _lendingIds, _rentDurations)
+        );
+    }
+
+    function claimCollateral(
+        address[] memory _nfts,
+        uint256[] memory _tokenIds,
+        uint256[] memory _lendingIds
+    ) external nonReentrant {
+        bundleCall(
+            handleClaimCollateral,
+            createActionCallData(_nfts, _tokenIds, _lendingIds)
+        );
+    }
+
+    function stopLending(
+        address[] memory _nfts,
+        uint256[] memory _tokenIds,
+        uint256[] memory _lendingIds
+    ) external nonReentrant {
+        bundleCall(
+            handleStopLending,
+            createActionCallData(_nfts, _tokenIds, _lendingIds)
+        );
+    }
+
+    function stopRenting(
+        address[] memory _nfts,
+        uint256[] memory _tokenIds,
+        uint256[] memory _lendingIds
+    ) external nonReentrant {
+        bundleCall(
+            handleReturn,
+            createActionCallData(_nfts, _tokenIds, _lendingIds)
+        );
+    }
+
+    function bundleCall(
+        function(CallData memory) _handler,
+        CallData memory _cd
+    ) private {
+        require(_cd.nfts.length > 0, "PadiRent: no nfts");
+        while (_cd.right != _cd.nfts.length) {
+            if (
+                (_cd.nfts[_cd.left] == _cd.nfts[_cd.right]) &&
+                (is1155(_cd.nfts[_cd.right]))
+            ) {
+                _cd.right++;
+            } else {
+                _handler(_cd);
+                _cd.left = _cd.right;
+                _cd.right++;
+            }
+        }
+        _handler(_cd);
+    }
+
+    function handleLend(CallData memory _cd) private {
+        for (uint256 i = _cd.left; i < _cd.right; i++) {
+            ensureIsLendable(_cd, i);
+
+            LendingRenting storage item = lendingRenting[
+                keccak256(
+                    abi.encodePacked(
+                        _cd.nfts[_cd.left],
+                        _cd.tokenIds[i],
+                        lendingId
+                    )
+                )
+            ];
+
+            ensureIsNull(item.lending);
+            ensureIsNull(item.renting);
+
+            bool nftIs721 = is721(_cd.nfts[i]);
+
+            if (nftIs721) {
+                require(
+                    _cd.lendAmounts[i] == 1,
+                    "PadiRent: lent amount has to be one!"
+                );
+            }
+
+            item.lending = Lending({
+                lenderAddress: payable(_msgSender()),
+                lentAmount: nftIs721 ? 1 : uint32(_cd.lendAmounts[i]),
+                maxRentDuration: _cd.maxRentDurations[i],
+                dailyRentPrice: _cd.dailyRentPrices[i],
+                nftPrice: _cd.nftPrices[i],
+                contractERC20: _cd.contractERC20s[i]
+            });
+
+            emit Lent(
+                _cd.nfts[_cd.left],
+                _cd.tokenIds[i],
+                nftIs721 ? 1 : uint32(_cd.lendAmounts[i]),
+                lendingId,
+                _msgSender(),
+                _cd.maxRentDurations[i],
+                _cd.dailyRentPrices[i],
+                _cd.nftPrices[i],
+                nftIs721,
+                _cd.contractERC20s[i]
+            );
+
+            lendingId++;
+        }
+
+        safeTransfer(
+            _cd,
+            _msgSender(),
+            address(this),
+            sliceArr(_cd.tokenIds, _cd.left, _cd.right, 0),
+            sliceArrUint32(_cd.lendAmounts, _cd.left, _cd.right, 0)
+        );
+    }
+
+    function handleRent(CallData memory _cd) private {
+        bool success;
+        uint32[] memory lendAmounts = new uint32[](_cd.right - _cd.left);
+
+        for (uint256 i = _cd.left; i < _cd.right; i++) {
+            LendingRenting storage item = lendingRenting[
+                keccak256(
+                    abi.encodePacked(
+                        _cd.nfts[_cd.left],
+                        _cd.tokenIds[i],
+                        _cd.lendingIds[i]
+                    )
+                )
+            ];
+
+            ensureIsNotNull(item.lending);
+            ensureIsNull(item.renting);
+            ensureIsRentable(item.lending, _cd, i);
+
+            {
+                uint256 rentPrice = (_cd.rentDurations[i] *
+                    item.lending.dailyRentPrice *
+                    item.lending.lentAmount) / SECONDS_PER_DAY;
+                uint256 nftPrice = item.lending.lentAmount *
+                    item.lending.nftPrice;
+
+                require(rentPrice > 0, "PadiRent: rent price is zero");
+                require(nftPrice > 0, "PadiRent: nft price is zero");
+
+                success = IERC20(item.lending.contractERC20).transferFrom(
+                    _msgSender(),
+                    address(this),
+                    rentPrice + nftPrice
+                );
+                require(success, "PadiRent: transfer erc20 failed!");
+            }
+
+            lendAmounts[i - _cd.left] = item.lending.lentAmount;
+
+            item.renting.renterAddress = payable(_msgSender());
+            item.renting.rentDuration = _cd.rentDurations[i];
+            item.renting.rentedAt = uint32(block.timestamp);
+
+            emit Rent(
+                _cd.lendingIds[i],
+                _msgSender(),
+                _cd.rentDurations[i],
+                item.renting.rentedAt
+            );
+        }
+
+        safeTransfer(
+            _cd,
+            address(this),
+            _msgSender(),
+            sliceArr(_cd.tokenIds, _cd.left, _cd.right, 0),
+            sliceArrUint32(lendAmounts, _cd.left, _cd.right, _cd.left)
+        );
+    }
+
+    function handleClaimCollateral(CallData memory _cd) private {
+        for (uint256 i = _cd.left; i < _cd.right; i++) {
+            LendingRenting storage item = lendingRenting[
+                keccak256(
+                    abi.encodePacked(
+                        _cd.nfts[_cd.left],
+                        _cd.tokenIds[i],
+                        _cd.lendingIds[i]
+                    )
+                )
+            ];
+
+            ensureIsNotNull(item.lending);
+            ensureIsNotNull(item.renting);
+            ensureIsClaimable(item.renting, block.timestamp);
+
+            distributeClaimPayment(item);
+
+            emit CollateralClaimed(_cd.lendingIds[i], uint32(block.timestamp));
+
+            delete item.lending;
+            delete item.renting;
+        }
+    }
+
+    function handleStopLending(CallData memory _cd) private {
+        uint32[] memory lendAmounts = new uint32[](_cd.right - _cd.left);
+
+        for (uint256 i = _cd.left; i < _cd.right; i++) {
+            LendingRenting storage item = lendingRenting[
+                keccak256(
+                    abi.encodePacked(
+                        _cd.nfts[_cd.left],
+                        _cd.tokenIds[i],
+                        _cd.lendingIds[i]
+                    )
+                )
+            ];
+
+            ensureIsNotNull(item.lending);
+            ensureIsNull(item.renting);
+            ensureIsStoppable(item.lending);
+
+            lendAmounts[i - _cd.left] = item.lending.lentAmount;
+
+            emit LendingStopped(_cd.lendingIds[i], uint32(block.timestamp));
+
+            delete item.lending;
+        }
+
+        safeTransfer(
+            _cd,
+            address(this),
+            msg.sender,
+            sliceArr(_cd.tokenIds, _cd.left, _cd.right, 0),
+            sliceArrUint32(lendAmounts, _cd.left, _cd.right, _cd.left)
+        );
+    }
+
+    function createLendCallData(
+        address[] memory _nfts,
+        uint256[] memory _tokenIds,
+        uint32[] memory _lendAmounts,
+        uint32[] memory _maxRentDurations,
+        uint256[] memory _dailyRentPrices,
+        uint256[] memory _nftPrices,
+        address[] memory _contractERC20s
+    ) private pure returns (CallData memory cd) {
+        cd = CallData({
+            left: 0,
+            right: 1,
+            nfts: _nfts,
+            tokenIds: _tokenIds,
+            lendAmounts: _lendAmounts,
+            lendingIds: new uint256[](0),
+            rentDurations: new uint32[](0),
+            maxRentDurations: _maxRentDurations,
+            dailyRentPrices: _dailyRentPrices,
+            nftPrices: _nftPrices,
+            contractERC20s: _contractERC20s
+        });
+    }
+
+    function createRentCallData(
+        address[] memory _nfts,
+        uint256[] memory _tokenIds,
+        uint256[] memory _lendingIds,
+        uint32[] memory _rentDurations
+    ) private pure returns (CallData memory cd) {
+        cd = CallData({
+            left: 0,
+            right: 1,
+            nfts: _nfts,
+            tokenIds: _tokenIds,
+            lendAmounts: new uint32[](0),
+            lendingIds: _lendingIds,
+            rentDurations: _rentDurations,
+            maxRentDurations: new uint32[](0),
+            dailyRentPrices: new uint256[](0),
+            nftPrices: new uint256[](0),
+            contractERC20s: new address[](0)
+        });
+    }
+
+    function createActionCallData(
+        address[] memory _nfts,
+        uint256[] memory _tokenIds,
+        uint256[] memory _lendingIds
+    ) private pure returns (CallData memory cd) {
+        cd = CallData({
+            left: 0,
+            right: 1,
+            nfts: _nfts,
+            tokenIds: _tokenIds,
+            lendAmounts: new uint32[](0),
+            lendingIds: _lendingIds,
+            rentDurations: new uint32[](0),
+            maxRentDurations: new uint32[](0),
+            dailyRentPrices: new uint256[](0),
+            nftPrices: new uint256[](0),
+            contractERC20s: new address[](0)
+        });
+    }
+
+    function handleReturn(CallData memory _cd) private {
+        uint32[] memory lendAmounts = new uint32[](_cd.right - _cd.left);
+
+        for (uint256 i = _cd.left; i < _cd.right; i++) {
+            LendingRenting storage item = lendingRenting[
+                keccak256(
+                    abi.encodePacked(
+                        _cd.nfts[_cd.left],
+                        _cd.tokenIds[i],
+                        _cd.lendingIds[i]
+                    )
+                )
+            ];
+
+            ensureIsNotNull(item.lending);
+            ensureIsReturnable(item.renting, block.timestamp);
+
+            uint256 secondsSinceRentStart = block.timestamp -
+                item.renting.rentedAt;
+            distributePayments(item, secondsSinceRentStart);
+
+            lendAmounts[i - _cd.left] = item.lending.lentAmount;
+
+            emit Returned(_cd.lendingIds[i], uint32(block.timestamp));
+
+            delete item.renting;
+        }
+
+        safeTransfer(
+            _cd,
+            msg.sender,
+            address(this),
+            sliceArr(_cd.tokenIds, _cd.left, _cd.right, 0),
+            sliceArrUint32(lendAmounts, _cd.left, _cd.right, _cd.left)
+        );
+    }
+
+    function distributeClaimPayment(
+        LendingRenting memory _lendingRenting
+    ) private {
+        uint256 nftPrice = _lendingRenting.lending.lentAmount *
+            _lendingRenting.lending.nftPrice;
+        uint256 rentPrice = _lendingRenting.lending.lentAmount *
+            _lendingRenting.lending.dailyRentPrice;
+        uint256 maxRentPayment = (rentPrice *
+            _lendingRenting.renting.rentDuration) / SECONDS_PER_DAY;
+        uint256 takenFee = takeFee(
+            maxRentPayment,
+            _lendingRenting.lending.contractERC20
+        );
+        uint256 finalAmt = maxRentPayment + nftPrice;
+
+        require(maxRentPayment > 0, "PadiRent: collateral plus rent is zero");
+
+        bool success = IERC20(_lendingRenting.lending.contractERC20).transfer(
+            _lendingRenting.lending.lenderAddress,
+            finalAmt - takenFee
+        );
+        require(success, "PadiRent: Transfer ERC20 not success!");
+    }
+
+    function distributePayments(
+        LendingRenting storage _lendingRenting,
+        uint256 _secondsSinceRentStart
+    ) private {
+        uint256 nftPrice = _lendingRenting.lending.lentAmount *
+            _lendingRenting.lending.nftPrice;
+        uint256 rentPrice = _lendingRenting.lending.dailyRentPrice *
+            _lendingRenting.lending.lentAmount;
+
+        uint256 totalRentPricePerDuration = (rentPrice *
+            _lendingRenting.renting.rentDuration) / SECONDS_PER_DAY;
+        uint256 sendLenderAmt = (_secondsSinceRentStart * rentPrice) /
+            SECONDS_PER_DAY;
+        require(
+            totalRentPricePerDuration > 0,
+            "PadiRent: total payment collateral is zero"
+        );
+        require(sendLenderAmt > 0, "PadiRent: lender payment is zero");
+
+        uint256 sendRenterAmt = 0;
+        if (totalRentPricePerDuration > sendLenderAmt) {
+            sendRenterAmt = totalRentPricePerDuration - sendLenderAmt;
+        }
+
+        uint256 takenFee = takeFee(
+            sendLenderAmt,
+            _lendingRenting.lending.contractERC20
+        );
+
+        sendLenderAmt -= takenFee;
+        sendRenterAmt += nftPrice;
+
+        bool success = IERC20(_lendingRenting.lending.contractERC20).transfer(
+            _lendingRenting.lending.lenderAddress,
+            sendLenderAmt
+        );
+        require(success, "PadiRent: transfer erc20 failed!");
+
+        success = IERC20(_lendingRenting.lending.contractERC20).transfer(
+            _lendingRenting.renting.renterAddress,
+            sendRenterAmt
+        );
+        require(success, "PadiRent: transfer erc20 failed!");
+    }
+
+    function takeFee(
+        uint256 _rent,
+        address _contractERC20
+    ) private returns (uint256 fee) {
+        fee = (_rent * rentFee) / MAX_PERCENTAGE;
+        bool success = IERC20(_contractERC20).transfer(_treasuryAddress, fee);
+        require(success, "PadiRent: transfer erc20 failed!");
+    }
+
+    function is721(address _nft) private view returns (bool) {
+        return IERC165(_nft).supportsInterface(type(IERC721).interfaceId);
+    }
+
+    function is1155(address _nft) private view returns (bool) {
+        return IERC165(_nft).supportsInterface(type(IERC1155).interfaceId);
+    }
+
+    function sliceArr(
+        uint256[] memory _arr,
+        uint256 _fromIx,
+        uint256 _toIx,
+        uint256 _arrOffset
+    ) private pure returns (uint256[] memory r) {
+        r = new uint256[](_toIx - _fromIx);
+        for (uint256 i = _fromIx; i < _toIx; i++) {
+            r[i - _fromIx] = _arr[i - _arrOffset];
+        }
+    }
+
+    function sliceArrUint32(
+        uint32[] memory _arr,
+        uint256 _fromIx,
+        uint256 _toIx,
+        uint256 _arrOffset
+    ) private pure returns (uint32[] memory r) {
+        r = new uint32[](_toIx - _fromIx);
+        for (uint256 i = _fromIx; i < _toIx; i++) {
+            r[i - _fromIx] = _arr[i - _arrOffset];
+        }
+    }
+
+    function convertUint32ArrayToUint256Array(
+        uint32[] memory _arr
+    ) private pure returns (uint256[] memory r) {
+        r = new uint256[](_arr.length);
+        for (uint256 i = 0; i < _arr.length; i++) {
+            r[i] = uint256(_arr[i]);
+        }
+    }
+
+    function getPaymentPrice(
+        LendingRenting calldata _lendingRenting
+    ) private view returns (uint256, uint256) {
+        uint256 nftPrice = _lendingRenting.lending.lentAmount *
+            _lendingRenting.lending.nftPrice;
+        uint256 rentPrice = (_lendingRenting.lending.dailyRentPrice *
+            _lendingRenting.lending.lentAmount *
+            _lendingRenting.lending.maxRentDuration) / SECONDS_PER_DAY;
+        return (nftPrice, rentPrice);
+    }
+
+    function safeTransfer(
+        CallData memory _cd,
+        address _from,
+        address _to,
+        uint256[] memory _tokenIds,
+        uint32[] memory _lentAmounts
+    ) private {
+        if (is721(_cd.nfts[_cd.left])) {
+            IERC721(_cd.nfts[_cd.left]).transferFrom(
+                _from,
+                _to,
+                _cd.tokenIds[_cd.left]
+            );
+        } else if (is1155(_cd.nfts[_cd.left])) {
+            IERC1155(_cd.nfts[_cd.left]).safeBatchTransferFrom(
+                _from,
+                _to,
+                _tokenIds,
+                convertUint32ArrayToUint256Array(_lentAmounts),
+                ""
+            );
+        } else {
+            revert("PadiRent: unsupported token type");
+        }
+    }
+
+    function ensureIsNotZeroAddr(address _addr) private pure {
+        require(_addr != address(0), "PadiRent: zero address");
+    }
+
+    function ensureIsZeroAddr(address _addr) private pure {
+        require(_addr == address(0), "PadiRent: not a zero address");
+    }
+
+    function ensureIsNull(Lending memory _lending) private pure {
+        ensureIsZeroAddr(_lending.lenderAddress);
+        require(_lending.maxRentDuration == 0, "PadiRent: duration not zero");
+        require(_lending.dailyRentPrice == 0, "PadiRent: rent price not zero");
+        require(_lending.nftPrice == 0, "PadiRent: nft price not zero");
+    }
+
+    function ensureIsNotNull(Lending memory _lending) private pure {
+        ensureIsNotZeroAddr(_lending.lenderAddress);
+        require(_lending.maxRentDuration != 0, "PadiRent: duration zero");
+        require(_lending.dailyRentPrice != 0, "PadiRent: rent price is zero");
+        require(_lending.nftPrice != 0, "PadiRent: nft price is zero");
+    }
+
+    function ensureIsNull(Renting memory _renting) private pure {
+        ensureIsZeroAddr(_renting.renterAddress);
+        require(_renting.rentDuration == 0, "PadiRent: duration not zero");
+        require(_renting.rentedAt == 0, "PadiRent: rented at not zero");
+    }
+
+    function ensureIsNotNull(Renting memory _renting) private pure {
+        ensureIsNotZeroAddr(_renting.renterAddress);
+        require(_renting.rentDuration != 0, "PadiRent: duration is zero");
+        require(_renting.rentedAt != 0, "PadiRent: rented at is zero");
+    }
+
+    function ensureIsLendable(CallData memory _cd, uint256 _i) private {
+        require(_cd.lendAmounts[_i] > 0, "PadiRent: lend amount is zero");
+        require(
+            _cd.lendAmounts[_i] <= type(uint32).max,
+            "PadiRent: not uint32"
+        );
+        require(_cd.maxRentDurations[_i] > 0, "PadiRent: duration is zero");
+        require(
+            _cd.maxRentDurations[_i] <= type(uint32).max,
+            "PadiRent: not uint32"
+        );
+        require(
+            uint32(_cd.dailyRentPrices[_i]) > 0,
+            "PadiRent: rent price is zero"
+        );
+        require(
+            ICurrency(_currencyAddress).currencyState(_cd.contractERC20s[_i]),
+            "Not valid erc20 address"
+        );
+        require(uint32(_cd.nftPrices[_i]) > 0, "PadiRent: nft price is zero");
+    }
+
+    function ensureIsRentable(
+        Lending memory _lending,
+        CallData memory _cd,
+        uint256 _i
+    ) private view {
+        require(
+            _msgSender() != _lending.lenderAddress,
+            "PadiRent: cant rent own nft"
+        );
+        require(
+            _cd.rentDurations[_i] <= type(uint32).max,
+            "PadiRent: not uint32"
+        );
+        require(_cd.rentDurations[_i] > 0, "PadiRent: duration is zero");
+        require(
+            _cd.rentDurations[_i] <= _lending.maxRentDuration,
+            "PadiRent: rent duration exceeds allowed max"
+        );
+    }
+
+    function isPastReturnDate(
+        Renting memory _renting,
+        uint256 _now
+    ) private view returns (bool) {
+        require(_now > _renting.rentedAt, "PadiRent: now before rented");
+        return
+            _now - _renting.rentedAt >
+            _renting.rentDuration + LIMIT_SECONDS_TO_RETURN;
+    }
+
+    function isPastClaimCollateralDate(
+        Renting memory _renting,
+        uint256 _now
+    ) private view returns (bool) {
+        require(_now > _renting.rentedAt, "PadiRent: now before rented");
+        return
+            _now - _renting.rentedAt >
+            _renting.rentDuration + LIMIT_SECONDS_TO_CLAIM;
+    }
+
+    function ensureIsStoppable(Lending memory _lending) private view {
+        require(_lending.lenderAddress == _msgSender(), "PadiRent: not lender");
+    }
+
+    function ensureIsClaimable(
+        Renting memory _renting,
+        uint256 _blockTimestamp
+    ) private view {
+        require(
+            isPastClaimCollateralDate(_renting, _blockTimestamp),
+            "PadiRent: claim date not passed"
+        );
+    }
+
+    function ensureIsReturnable(
+        Renting memory _renting,
+        uint256 _blockTimestamp
+    ) private view {
+        require(_renting.renterAddress == _msgSender(), "PadiRent: not renter");
+        require(
+            !isPastReturnDate(_renting, _blockTimestamp),
+            "PadiRent: not valid time to return nft"
+        );
+    }
+}
+
+
+// File: contracts/shared/WhitelistShared.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "../interfaces/IWhitelist.sol";
+
+contract WhitelistShared {
+  address private _whitelistAddress;
+
+  event WhitelistChanged(address indexed newOwner);
+
+  modifier validateAdmin() {
+    bytes32 ADMIN_ROLE = IWhitelist(_whitelistAddress).ADMIN_ROLE();
+    require (IWhitelist(_whitelistAddress).hasRole(ADMIN_ROLE, msg.sender), "WhitelistWrapper: You don't have admin role");
+    _;
+  }
+
+  modifier validateGranter() {
+    bytes32 GRANT_ROLE = IWhitelist(_whitelistAddress).GRANT_ROLE();
+    require (IWhitelist(_whitelistAddress).hasRole(GRANT_ROLE, msg.sender), "WhitelistWrapper: You don't have admin role");
+    _;
+  }
+
+  modifier validateGranterOnPerson(address _address){
+    bytes32 GRANT_ROLE = IWhitelist(_whitelistAddress).GRANT_ROLE();
+    require(IWhitelist(_whitelistAddress).hasRole(GRANT_ROLE, _address), "WhitelistWrapper: You don't have grant role");
+    _;
+  }
+
+  modifier validateAdminOnPerson(address _address){
+    bytes32 ADMIN_ROLE = IWhitelist(_whitelistAddress).ADMIN_ROLE();
+    require(IWhitelist(_whitelistAddress).hasRole(ADMIN_ROLE, _address), "WhitelistWrapper: You don't have admin role");
+    _;
+  }
+
+  function _setWhitelistAddress(address whitelistAddress_) internal virtual {
+    _whitelistAddress = whitelistAddress_;
+    emit WhitelistChanged(_whitelistAddress);
+  }
+}
+
+// File: contracts/interfaces/ICurrency.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface ICurrency {
+    function currencyState(address _contractERC20) external returns (bool);
+}
+
+
+// File: contracts/interfaces/IPadiRent.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IPadiRent {
+    event Lent(
+        address indexed nftAddress,
+        uint256 indexed tokenId,
+        uint32 lentAmount,
+        uint256 lendingId,
+        address indexed lenderAddress,
+        uint32 maxRentDuration,
+        uint256 dailyRentPrice,
+        uint256 nftPrice,
+        bool isERC721,
+        address currencyAddress
+    );
+
+    event Rent(
+        uint256 lendingId,
+        address indexed renterAddress,
+        uint32 rentDuration,
+        uint32 rentedAt
+    );
+
+    event Returned(uint256 indexed lendingId, uint32 returnedAt);
+
+    event CollateralClaimed(uint256 indexed lendingId, uint32 claimedAt);
+
+    event LendingStopped(uint256 indexed lendingId, uint32 stoppedAt);
+
+}
+
+// File: @openzeppelin/contracts/security/ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (security/ReentrancyGuard.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+// File: @openzeppelin/contracts/token/ERC1155/IERC1155.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.7.0) (token/ERC1155/IERC1155.sol)
+
+pragma solidity ^0.8.0;
+
+import "../../utils/introspection/IERC165.sol";
+
+/**
+ * @dev Required interface of an ERC1155 compliant contract, as defined in the
+ * https://eips.ethereum.org/EIPS/eip-1155[EIP].
+ *
+ * _Available since v3.1._
+ */
+interface IERC1155 is IERC165 {
+    /**
+     * @dev Emitted when `value` tokens of token type `id` are transferred from `from` to `to` by `operator`.
+     */
+    event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value);
+
+    /**
+     * @dev Equivalent to multiple {TransferSingle} events, where `operator`, `from` and `to` are the same for all
+     * transfers.
+     */
+    event TransferBatch(
+        address indexed operator,
+        address indexed from,
+        address indexed to,
+        uint256[] ids,
+        uint256[] values
+    );
+
+    /**
+     * @dev Emitted when `account` grants or revokes permission to `operator` to transfer their tokens, according to
+     * `approved`.
+     */
+    event ApprovalForAll(address indexed account, address indexed operator, bool approved);
+
+    /**
+     * @dev Emitted when the URI for token type `id` changes to `value`, if it is a non-programmatic URI.
+     *
+     * If an {URI} event was emitted for `id`, the standard
+     * https://eips.ethereum.org/EIPS/eip-1155#metadata-extensions[guarantees] that `value` will equal the value
+     * returned by {IERC1155MetadataURI-uri}.
+     */
+    event URI(string value, uint256 indexed id);
+
+    /**
+     * @dev Returns the amount of tokens of token type `id` owned by `account`.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     */
+    function balanceOf(address account, uint256 id) external view returns (uint256);
+
+    /**
+     * @dev xref:ROOT:erc1155.adoc#batch-operations[Batched] version of {balanceOf}.
+     *
+     * Requirements:
+     *
+     * - `accounts` and `ids` must have the same length.
+     */
+    function balanceOfBatch(address[] calldata accounts, uint256[] calldata ids)
+        external
+        view
+        returns (uint256[] memory);
+
+    /**
+     * @dev Grants or revokes permission to `operator` to transfer the caller's tokens, according to `approved`,
+     *
+     * Emits an {ApprovalForAll} event.
+     *
+     * Requirements:
+     *
+     * - `operator` cannot be the caller.
+     */
+    function setApprovalForAll(address operator, bool approved) external;
+
+    /**
+     * @dev Returns true if `operator` is approved to transfer ``account``'s tokens.
+     *
+     * See {setApprovalForAll}.
+     */
+    function isApprovedForAll(address account, address operator) external view returns (bool);
+
+    /**
+     * @dev Transfers `amount` tokens of token type `id` from `from` to `to`.
+     *
+     * Emits a {TransferSingle} event.
+     *
+     * Requirements:
+     *
+     * - `to` cannot be the zero address.
+     * - If the caller is not `from`, it must have been approved to spend ``from``'s tokens via {setApprovalForAll}.
+     * - `from` must have a balance of tokens of type `id` of at least `amount`.
+     * - If `to` refers to a smart contract, it must implement {IERC1155Receiver-onERC1155Received} and return the
+     * acceptance magic value.
+     */
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 id,
+        uint256 amount,
+        bytes calldata data
+    ) external;
+
+    /**
+     * @dev xref:ROOT:erc1155.adoc#batch-operations[Batched] version of {safeTransferFrom}.
+     *
+     * Emits a {TransferBatch} event.
+     *
+     * Requirements:
+     *
+     * - `ids` and `amounts` must have the same length.
+     * - If `to` refers to a smart contract, it must implement {IERC1155Receiver-onERC1155BatchReceived} and return the
+     * acceptance magic value.
+     */
+    function safeBatchTransferFrom(
+        address from,
+        address to,
+        uint256[] calldata ids,
+        uint256[] calldata amounts,
+        bytes calldata data
+    ) external;
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+// File: @openzeppelin/contracts/token/ERC721/IERC721.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.7.0) (token/ERC721/IERC721.sol)
+
+pragma solidity ^0.8.0;
+
+import "../../utils/introspection/IERC165.sol";
+
+/**
+ * @dev Required interface of an ERC721 compliant contract.
+ */
+interface IERC721 is IERC165 {
+    /**
+     * @dev Emitted when `tokenId` token is transferred from `from` to `to`.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+
+    /**
+     * @dev Emitted when `owner` enables `approved` to manage the `tokenId` token.
+     */
+    event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+
+    /**
+     * @dev Emitted when `owner` enables or disables (`approved`) `operator` to manage all of its assets.
+     */
+    event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+
+    /**
+     * @dev Returns the number of tokens in ``owner``'s account.
+     */
+    function balanceOf(address owner) external view returns (uint256 balance);
+
+    /**
+     * @dev Returns the owner of the `tokenId` token.
+     *
+     * Requirements:
+     *
+     * - `tokenId` must exist.
+     */
+    function ownerOf(uint256 tokenId) external view returns (address owner);
+
+    /**
+     * @dev Safely transfers `tokenId` token from `from` to `to`.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `tokenId` token must exist and be owned by `from`.
+     * - If the caller is not `from`, it must be approved to move this token by either {approve} or {setApprovalForAll}.
+     * - If `to` refers to a smart contract, it must implement {IERC721Receiver-onERC721Received}, which is called upon a safe transfer.
+     *
+     * Emits a {Transfer} event.
+     */
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId,
+        bytes calldata data
+    ) external;
+
+    /**
+     * @dev Safely transfers `tokenId` token from `from` to `to`, checking first that contract recipients
+     * are aware of the ERC721 protocol to prevent tokens from being forever locked.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `tokenId` token must exist and be owned by `from`.
+     * - If the caller is not `from`, it must have been allowed to move this token by either {approve} or {setApprovalForAll}.
+     * - If `to` refers to a smart contract, it must implement {IERC721Receiver-onERC721Received}, which is called upon a safe transfer.
+     *
+     * Emits a {Transfer} event.
+     */
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) external;
+
+    /**
+     * @dev Transfers `tokenId` token from `from` to `to`.
+     *
+     * WARNING: Usage of this method is discouraged, use {safeTransferFrom} whenever possible.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `tokenId` token must be owned by `from`.
+     * - If the caller is not `from`, it must be approved to move this token by either {approve} or {setApprovalForAll}.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) external;
+
+    /**
+     * @dev Gives permission to `to` to transfer `tokenId` token to another account.
+     * The approval is cleared when the token is transferred.
+     *
+     * Only a single account can be approved at a time, so approving the zero address clears previous approvals.
+     *
+     * Requirements:
+     *
+     * - The caller must own the token or be an approved operator.
+     * - `tokenId` must exist.
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address to, uint256 tokenId) external;
+
+    /**
+     * @dev Approve or remove `operator` as an operator for the caller.
+     * Operators can call {transferFrom} or {safeTransferFrom} for any token owned by the caller.
+     *
+     * Requirements:
+     *
+     * - The `operator` cannot be the caller.
+     *
+     * Emits an {ApprovalForAll} event.
+     */
+    function setApprovalForAll(address operator, bool _approved) external;
+
+    /**
+     * @dev Returns the account approved for `tokenId` token.
+     *
+     * Requirements:
+     *
+     * - `tokenId` must exist.
+     */
+    function getApproved(uint256 tokenId) external view returns (address operator);
+
+    /**
+     * @dev Returns if the `operator` is allowed to manage all of the assets of `owner`.
+     *
+     * See {setApprovalForAll}
+     */
+    function isApprovedForAll(address owner, address operator) external view returns (bool);
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+
+// File: @openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (token/ERC721/utils/ERC721Holder.sol)
+
+pragma solidity ^0.8.0;
+
+import "../IERC721Receiver.sol";
+
+/**
+ * @dev Implementation of the {IERC721Receiver} interface.
+ *
+ * Accepts all token transfers.
+ * Make sure the contract is able to use its token with {IERC721-safeTransferFrom}, {IERC721-approve} or {IERC721-setApprovalForAll}.
+ */
+contract ERC721Holder is IERC721Receiver {
+    /**
+     * @dev See {IERC721Receiver-onERC721Received}.
+     *
+     * Always returns `IERC721Receiver.onERC721Received.selector`.
+     */
+    function onERC721Received(
+        address,
+        address,
+        uint256,
+        bytes memory
+    ) public virtual override returns (bytes4) {
+        return this.onERC721Received.selector;
+    }
+}
+
+
+// File: @openzeppelin/contracts/token/ERC1155/utils/ERC1155Receiver.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (token/ERC1155/utils/ERC1155Receiver.sol)
+
+pragma solidity ^0.8.0;
+
+import "../IERC1155Receiver.sol";
+import "../../../utils/introspection/ERC165.sol";
+
+/**
+ * @dev _Available since v3.1._
+ */
+abstract contract ERC1155Receiver is ERC165, IERC1155Receiver {
+    /**
+     * @dev See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, IERC165) returns (bool) {
+        return interfaceId == type(IERC1155Receiver).interfaceId || super.supportsInterface(interfaceId);
+    }
+}
+
+
+// File: @openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.5.0) (token/ERC1155/utils/ERC1155Holder.sol)
+
+pragma solidity ^0.8.0;
+
+import "./ERC1155Receiver.sol";
+
+/**
+ * Simple implementation of `ERC1155Receiver` that will allow a contract to hold ERC1155 tokens.
+ *
+ * IMPORTANT: When inheriting this contract, you must include a way to use the received tokens, otherwise they will be
+ * stuck.
+ *
+ * @dev _Available since v3.1._
+ */
+contract ERC1155Holder is ERC1155Receiver {
+    function onERC1155Received(
+        address,
+        address,
+        uint256,
+        uint256,
+        bytes memory
+    ) public virtual override returns (bytes4) {
+        return this.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] memory,
+        uint256[] memory,
+        bytes memory
+    ) public virtual override returns (bytes4) {
+        return this.onERC1155BatchReceived.selector;
+    }
+}
+
+
+// File: contracts/interfaces/IWhitelist.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+interface IWhitelist {
+    function hasRole(
+        bytes32 role,
+        address account
+    ) external view returns (bool);
+
+    function GRANT_ROLE() external view returns (bytes32);
+
+    function ADMIN_ROLE() external view returns (bytes32);
+
+}
+
+
+// File: @openzeppelin/contracts/utils/introspection/IERC165.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/introspection/IERC165.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC165 standard, as defined in the
+ * https://eips.ethereum.org/EIPS/eip-165[EIP].
+ *
+ * Implementers can declare support of contract interfaces, which can then be
+ * queried by others ({ERC165Checker}).
+ *
+ * For an implementation, see {ERC165}.
+ */
+interface IERC165 {
+    /**
+     * @dev Returns true if this contract implements the interface defined by
+     * `interfaceId`. See the corresponding
+     * https://eips.ethereum.org/EIPS/eip-165#how-interfaces-are-identified[EIP section]
+     * to learn more about how these ids are created.
+     *
+     * This function call must use less than 30 000 gas.
+     */
+    function supportsInterface(bytes4 interfaceId) external view returns (bool);
+}
+
+
+// File: @openzeppelin/contracts/token/ERC721/IERC721Receiver.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC721/IERC721Receiver.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @title ERC721 token receiver interface
+ * @dev Interface for any contract that wants to support safeTransfers
+ * from ERC721 asset contracts.
+ */
+interface IERC721Receiver {
+    /**
+     * @dev Whenever an {IERC721} `tokenId` token is transferred to this contract via {IERC721-safeTransferFrom}
+     * by `operator` from `from`, this function is called.
+     *
+     * It must return its Solidity selector to confirm the token transfer.
+     * If any other value is returned or the interface is not implemented by the recipient, the transfer will be reverted.
+     *
+     * The selector can be obtained in Solidity with `IERC721Receiver.onERC721Received.selector`.
+     */
+    function onERC721Received(
+        address operator,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external returns (bytes4);
+}
+
+
+// File: @openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.5.0) (token/ERC1155/IERC1155Receiver.sol)
+
+pragma solidity ^0.8.0;
+
+import "../../utils/introspection/IERC165.sol";
+
+/**
+ * @dev _Available since v3.1._
+ */
+interface IERC1155Receiver is IERC165 {
+    /**
+     * @dev Handles the receipt of a single ERC1155 token type. This function is
+     * called at the end of a `safeTransferFrom` after the balance has been updated.
+     *
+     * NOTE: To accept the transfer, this must return
+     * `bytes4(keccak256("onERC1155Received(address,address,uint256,uint256,bytes)"))`
+     * (i.e. 0xf23a6e61, or its own function selector).
+     *
+     * @param operator The address which initiated the transfer (i.e. msg.sender)
+     * @param from The address which previously owned the token
+     * @param id The ID of the token being transferred
+     * @param value The amount of tokens being transferred
+     * @param data Additional data with no specified format
+     * @return `bytes4(keccak256("onERC1155Received(address,address,uint256,uint256,bytes)"))` if transfer is allowed
+     */
+    function onERC1155Received(
+        address operator,
+        address from,
+        uint256 id,
+        uint256 value,
+        bytes calldata data
+    ) external returns (bytes4);
+
+    /**
+     * @dev Handles the receipt of a multiple ERC1155 token types. This function
+     * is called at the end of a `safeBatchTransferFrom` after the balances have
+     * been updated.
+     *
+     * NOTE: To accept the transfer(s), this must return
+     * `bytes4(keccak256("onERC1155BatchReceived(address,address,uint256[],uint256[],bytes)"))`
+     * (i.e. 0xbc197c81, or its own function selector).
+     *
+     * @param operator The address which initiated the batch transfer (i.e. msg.sender)
+     * @param from The address which previously owned the token
+     * @param ids An array containing ids of each token being transferred (order and length must match values array)
+     * @param values An array containing amounts of each token being transferred (order and length must match ids array)
+     * @param data Additional data with no specified format
+     * @return `bytes4(keccak256("onERC1155BatchReceived(address,address,uint256[],uint256[],bytes)"))` if transfer is allowed
+     */
+    function onERC1155BatchReceived(
+        address operator,
+        address from,
+        uint256[] calldata ids,
+        uint256[] calldata values,
+        bytes calldata data
+    ) external returns (bytes4);
+}
+
+
+// File: @openzeppelin/contracts/utils/introspection/ERC165.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/introspection/ERC165.sol)
+
+pragma solidity ^0.8.0;
+
+import "./IERC165.sol";
+
+/**
+ * @dev Implementation of the {IERC165} interface.
+ *
+ * Contracts that want to implement ERC165 should inherit from this contract and override {supportsInterface} to check
+ * for the additional interface id that will be supported. For example:
+ *
+ * ```solidity
+ * function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+ *     return interfaceId == type(MyInterface).interfaceId || super.supportsInterface(interfaceId);
+ * }
+ * ```
+ *
+ * Alternatively, {ERC165Storage} provides an easier to use but more expensive implementation.
+ */
+abstract contract ERC165 is IERC165 {
+    /**
+     * @dev See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return interfaceId == type(IERC165).interfaceId;
+    }
+}
+

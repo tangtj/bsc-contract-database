@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract FTCToken is IBEP20 {
+    string public name = "FTC";
+    string public symbol = "FTC";
+    uint8 public decimals = 18;
+    uint256 public override totalSupply = 100000000 ether;
+
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) private allowances;
+    mapping(address => bool) private blacklisted;
+    bool public tradingEnabled = false;
+
+    address public pancakePair;
+    address public usdtToken = 0x55d398326f99059fF775485246999027B3197955; // USDT token address on BSC
+
+    event BlacklistAddress(address indexed account, bool isBlacklisted);
+    event TradingEnabled(bool enabled);
+
+    modifier onlyTradingEnabled() {
+        require(tradingEnabled || msg.sender == pancakePair, "Trading is currently disabled");
+        _;
+    }
+
+    constructor() {
+        balances[msg.sender] = totalSupply;
+        emit Transfer(address(0), msg.sender, totalSupply);
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override onlyTradingEnabled returns (bool) {
+        require(recipient != address(0), "Invalid recipient address");
+        require(amount > 0, "Amount must be greater than zero");
+        require(!blacklisted[msg.sender], "Sender is blacklisted");
+
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        require(spender != address(0), "Invalid spender address");
+
+        allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override onlyTradingEnabled returns (bool) {
+        require(sender != address(0), "Invalid sender address");
+        require(recipient != address(0), "Invalid recipient address");
+        require(amount > 0, "Amount must be greater than zero");
+        require(!blacklisted[sender], "Sender is blacklisted");
+
+        uint256 currentAllowance = allowances[sender][msg.sender];
+        require(currentAllowance >= amount, "Amount exceeds allowance");
+
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, amount);
+        _approve(sender, msg.sender, currentAllowance - amount);
+    return true;
+}
+
+function enableTrading() external {
+    require(!tradingEnabled, "Trading is already enabled");
+    tradingEnabled = true;
+    emit TradingEnabled(true);
+}
+
+function disableTrading() external {
+    require(tradingEnabled, "Trading is already disabled");
+    tradingEnabled = false;
+    emit TradingEnabled(false);
+}
+
+function blacklistAddress(address account, bool isBlacklisted) external {
+    require(account != address(0), "Invalid account address");
+    require(blacklisted[account] != isBlacklisted, "Account blacklisting status is already set");
+
+    blacklisted[account] = isBlacklisted;
+    emit BlacklistAddress(account, isBlacklisted);
+}
+
+function setPancakePair(address _pancakePair) external {
+    require(_pancakePair != address(0), "Invalid PancakeSwap pair address");
+    pancakePair = _pancakePair;
+}
+
+function _transfer(address sender, address recipient, uint256 amount) private {
+    balances[sender] -= amount;
+    balances[recipient] += amount;
+    emit Transfer(sender, recipient, amount);
+}
+
+function _approve(address owner, address spender, uint256 amount) private {
+    allowances[owner][spender] = amount;
+    emit Approval(owner, spender, amount);
+}
+
+}
