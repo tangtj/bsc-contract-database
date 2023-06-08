@@ -1,0 +1,619 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.6.12;
+pragma experimental ABIEncoderV2;
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;  
+
+        return c;
+    }
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        return c;
+    }
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return msg.sender;
+    }
+    function _msgData() internal view virtual returns (bytes memory) {
+        this;
+        // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+library Address {
+    function isContract(address account) internal view returns (bool) {
+        uint256 size;
+        // solhint-disable-next-line no-inline-assembly
+        assembly {size := extcodesize(account)}
+        return size > 0;
+    }
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+        // solhint-disable-next-line avoid-low-level-calls, avoid-call-value
+        (bool success,) = recipient.call{value : amount}("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+    function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+        return functionCall(target, data, "Address: low-level call failed");
+    }
+    function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+        return _functionCallWithValue(target, data, 0, errorMessage);
+    }
+    function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+    }
+    function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        return _functionCallWithValue(target, data, value, errorMessage);
+    }
+    function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+        require(isContract(target), "Address: call to non-contract");
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory returndata) = target.call{value : weiValue}(data);
+        if (success) {
+            return returndata;
+        } else {
+            // Look for revert reason and bubble it up if present
+            if (returndata.length > 0) {
+                // The easiest way to bubble the revert reason is using memory via assembly
+                // solhint-disable-next-line no-inline-assembly
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+contract Ownable is Context {
+    address internal _owner;
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    function owner() public view returns (address) {
+        return _owner;
+    }
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB)
+    external
+    returns (address pair);
+}
+interface IUniswapV2Router02 {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external
+    returns (
+        uint256 amountA,
+        uint256 amountB,
+        uint256 liquidity
+    );
+}
+interface IUniswapV2Pair {
+    function factory() external view returns (address);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function sync() external;
+}
+contract CSL is Context, IERC20, Ownable {
+    using SafeMath for uint256;
+    using Address for address;
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    uint8 private _decimals;
+    uint256 private _totalSupply;
+    string private _name;
+    string private _symbol;
+    IUniswapV2Router02 public uniswapV2Router;
+    mapping(address => bool) public ammPairs;
+    address public uniswapV2Pair;
+    address public token;
+    address  holder;
+    
+    struct Interest {
+        IERC20 token;
+    }
+    Interest internal lpInterest;
+    uint public addPriceTokenAmount = 1e14;
+    uint256 private allrate = 1000;
+    address private _route;
+
+    struct user{
+        address referer;
+        address[] mysons;
+        uint256[] asreferaward;
+        uint256[] asreferawardtimes; 
+        uint256 asreferawardtotal;
+    }
+    mapping(address=>user) private users;
+    address[] private userslist;
+    address private operation_ad;
+    address private LPDivvy_ad;
+    address private marketAward_ad;
+    address private leagueDivvy_ad;
+    address private community_ad;
+    address private accretion_ad;
+    address private baseref_ad;
+    address[] private leagueLeader;
+
+    bool private buylock1;
+    bool private buylock2;
+    bool private selllock;
+    bool private addlock;
+    bool private dellock;
+    mapping(address=>bool) private whitelist;
+    mapping(address=>bool) private whitelist2;
+    mapping(address=>uint256) private userslocknum;
+    constructor () public {
+        _decimals = 18;
+        _totalSupply = 21000000000000000000000000;
+        _name = "CSL";
+        _symbol = "CSL";
+        
+        //正式链发布
+        token = 0x55d398326f99059fF775485246999027B3197955;
+        _route = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+        
+         // _owner = msg.sender;
+
+        _owner = 0x81e16c1788D40e630a466394367D25B4f399F0F4;
+        holder = 0xa57ed1e16Dc45dB1b4be2B8A8c65C7344D1DDF50;
+        operation_ad = 0x4431B56270F6A4Ded9acd8d2A26081e726F128b9;
+        LPDivvy_ad = 0x53484bEb5dcA02133C28a59909227962AF17E120;
+        marketAward_ad = 0xc83Ae2618018CaB17b031907BCB371C74202B46d;
+        leagueDivvy_ad = 0x273327975067701Ff1Bde92150D09b9c04FCAe45;
+        community_ad = 0x44Ca0c719f812800d9D4A0630c709941d57265E4;
+        accretion_ad = 0xb7000f684b9F4B2C12B45D0eC2dbe04a39bD53fA;
+        baseref_ad = 0x186f72b4dEB4A03609fd0d5821e04517Fbf59d6b;
+
+
+        uniswapV2Router = IUniswapV2Router02(_route);  
+        uniswapV2Pair = IUniswapV2Factory(uniswapV2Router.factory()).createPair(address(this), token);
+        ammPairs[uniswapV2Pair] = true;
+        lpInterest.token = IERC20(uniswapV2Pair);
+
+        _balances[holder] = 20500000000000000000000000;
+        _balances[operation_ad] = 500000000000000000000000;
+        emit Transfer(address(0), holder, 20500000000000000000000000);
+        emit Transfer(address(0), operation_ad, 500000000000000000000000);
+        buylock1 = true;
+        buylock2 = true;
+        selllock = false;
+        addlock = true;
+        dellock = true;
+    }
+
+    function setLock(bool _buylock1,bool _buylock2,bool _selllock,bool _addlock,bool _dellock) public onlyOwner{
+        buylock1 = _buylock1;
+        buylock2 = _buylock2;
+        selllock = _selllock;
+        addlock = _addlock;
+        dellock = _dellock;
+    }
+    
+    function setwhitelist(address[] memory accounts) public onlyOwner {
+        for( uint i = 0; i < accounts.length; i++ ){
+            whitelist[accounts[i]] = true;
+        }
+    }
+    
+    function cancelwhitelist(address account) public onlyOwner {
+        whitelist[account] = false;
+    }
+
+    function getwhitelist(address account) public view returns(bool) {
+        return whitelist[account];
+    }
+
+
+     function setwhitelist2(address[] memory accounts) public onlyOwner {
+        for( uint i = 0; i < accounts.length; i++ ){
+            whitelist2[accounts[i]] = true;
+        }
+    }
+    
+    function cancelwhitelist2(address account) public onlyOwner {
+        whitelist2[account] = false;
+    }
+
+    function getwhitelist2(address account) public view returns(bool) {
+        return whitelist2[account];
+    }
+    
+    function invest(address irefer) public{ 
+        require(users[msg.sender].referer==address(0),"have user");
+        require(msg.sender != irefer);
+        require(msg.sender!=baseref_ad);
+        require(referisright(irefer)==true,"refer err!！");
+        
+        users[msg.sender].referer = irefer;
+        users[irefer].mysons.push(msg.sender);
+        userslist.push(msg.sender);
+    }
+    
+    function referisright(address irefer) public view returns(bool){
+        address upline;
+        if(address(irefer)==address(baseref_ad)){
+            return true;
+        }else{
+            upline=users[irefer].referer;
+            while(upline!=address(0)){
+                if(address(upline)==address(baseref_ad)){
+                    return true;
+                }
+                upline=users[upline].referer;
+            }
+            return false;
+        }
+    }
+    
+    function name() public view returns (string memory) {
+        return _name;
+    }
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+    function _mint(address account, uint256 amount) internal {
+        require(account != address(0), "BEP20: mint to the zero address");
+        _totalSupply = _totalSupply.add(amount);
+        _balances[account] = _balances[account].add(amount);
+        emit Transfer(address(0), account, amount);
+    }
+    function burn(uint256 amount) public returns (bool) {
+        _burn(_msgSender(), amount);
+        return true;
+    }
+    function _burn(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: burn from the zero address");
+        _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+        _totalSupply = _totalSupply.sub(amount);
+        emit Transfer(account, address(0), amount);
+    }
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+        return true;
+    }
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+        return true;
+    }
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+        return true;
+    }
+    receive() external payable {}
+    
+    
+    
+    function _take(uint256 tValue, address from, address to) private {
+        if(to==address(0)){
+            _balances[to] = _balances[to].add(tValue);
+            _totalSupply = _totalSupply.sub(tValue);
+            emit Transfer(from, address(0), tValue);
+        }else{
+            _balances[to] = _balances[to].add(tValue);
+            emit Transfer(from, to, tValue);
+        }
+    }
+    function _approve(address owner, address spender, uint256 amount) private {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+    function _doTransfer(address sender, address recipient, uint256 tAmount) private {
+        _balances[sender] = _balances[sender].sub(tAmount);
+        _balances[recipient] = _balances[recipient].add(tAmount);
+        emit Transfer(sender, recipient, tAmount);
+    }
+    struct Param {
+        bool takeFee;
+        uint tTransferAmount;
+        uint8 tFlags;
+    }
+    function _initParam(uint256 tAmount, Param memory param) private view {
+        uint tFee = 0;
+        if (param.takeFee) {
+            uint256 rate;
+            rate = 70;
+            tFee = tAmount.mul(rate).div(allrate);
+        }
+        param.tTransferAmount = tAmount.sub(tFee);
+    }
+
+    event test1(address, uint, uint);
+    function _isLiquidity(address from, address to) internal returns (bool isAdd, bool isDel, bool isSell, bool isBuy){
+        address token0 = IUniswapV2Pair(address(uniswapV2Pair)).token0();
+        (uint r0,,) = IUniswapV2Pair(address(uniswapV2Pair)).getReserves();
+        uint bal0 = IERC20(token0).balanceOf(address(uniswapV2Pair));
+
+        emit test1(token0, r0, bal0);
+        if (ammPairs[to]) {
+            if (token0 != address(this) && bal0 > r0) {
+                isAdd = bal0 - r0 > addPriceTokenAmount;
+            }
+            if (!isAdd) {
+                isSell = true;
+            }
+        }
+        if (ammPairs[from]) {
+            if (token0 != address(this) && bal0 < r0) {
+                isDel = r0 - bal0 > 0;
+            }
+            if (!isDel) {
+                isBuy = true;
+            }
+        }
+    }
+
+    event test(bool, bool, bool, bool);
+    function _transfer(address from, address to, uint256 amount) private {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        bool isAdd;
+        bool isDel;
+        bool isSell;
+        bool isBuy;
+        (isAdd, isDel, isSell, isBuy) = _isLiquidity(from, to);
+        emit test(isAdd, isDel, isSell, isBuy);
+        Param memory param;
+        address userad = from;
+        
+        
+        if(isBuy){
+            userad = to;
+            if(whitelist2[userad]==false){
+                if(buylock1==true){
+                    require(whitelist[userad]==true,"buy lock");
+                }
+                if(buylock2==true){
+                    require((userslocknum[userad].add(amount))<=500000000000000000000,"limit 500");
+                }
+            }
+            
+            userslocknum[userad] = userslocknum[userad].add(amount);
+            param.tFlags = 1;
+            if(whitelist2[userad]){
+                param.takeFee = false;
+            }else{
+                param.takeFee = true;
+            }
+            if(_totalSupply<=100000000000000000000000){
+                param.takeFee = false;
+            }
+        }else if(isSell){
+            userad = from;
+            if(whitelist2[userad]==false){
+                require(selllock==false,"sell lock");
+            }
+            param.tFlags = 2;
+            if(whitelist2[userad]){
+                param.takeFee = false;
+            }else{
+                param.takeFee = true;
+            }
+            if(_totalSupply<=100000000000000000000000){
+                param.takeFee = false;
+            }
+        }else if(isDel){
+            require(dellock==false,"del lock");
+            userad = to;
+            param.tFlags = 1;
+            param.takeFee = true;
+            if(_totalSupply<=100000000000000000000000){
+                param.takeFee = false;
+            }
+        }else if(isAdd){
+            userad = from;
+            if(addlock==true){
+                require(whitelist[userad]==true,"add lock");
+            }
+            param.tFlags = 2;
+            param.takeFee = true;
+            if(_totalSupply<=100000000000000000000000){
+                param.takeFee = false;
+            }
+        }else{
+            userad = from;
+            param.tFlags = 3;
+            param.takeFee = false;
+        }
+        _initParam(amount, param);
+        _tokenTransfer(from, to, amount, param, userad);
+        setEst(userad);
+    }
+
+    function _takeFee(Param memory param, address from, uint256 tAmount, address userad) private {
+       if(param.tFlags==1){
+            _take(tAmount.mul(10).div(1000), from, address(0));
+            _take(tAmount.mul(20).div(1000), from, LPDivvy_ad);
+            
+            if(users[userad].referer==address(0)){
+                _take(tAmount.mul(20).div(1000), from, accretion_ad);
+            }else{
+                address upline;
+                address tmpad = userad;
+                for(uint i=0;i<2;i++){
+                    upline=users[tmpad].referer;
+                    tmpad = upline;
+                    if(upline==address(0)){
+                        upline=accretion_ad;
+                    }
+                    uint256 tmpamount = tAmount.mul(10).div(1000); 
+                    _take(tmpamount, from, upline); 
+                    users[upline].asreferaward.push(tmpamount);
+                    users[upline].asreferawardtimes.push(block.timestamp);
+                    users[upline].asreferawardtotal = users[upline].asreferawardtotal.add(tmpamount);
+                }
+            }
+            _take(tAmount.mul(20).div(1000), from, marketAward_ad);
+       }else{
+            _take(tAmount.mul(10).div(1000), from, address(0));
+            _take(tAmount.mul(10).div(1000), from, LPDivvy_ad);
+            _take(tAmount.mul(20).div(1000), from, leagueDivvy_ad);
+            _take(tAmount.mul(30).div(1000), from, community_ad);
+       }
+    }
+    function _tokenTransfer(address sender, address recipient, uint256 tAmount, Param memory param, address userad) private {
+        _balances[sender] = _balances[sender].sub(tAmount);
+        _balances[recipient] = _balances[recipient].add(param.tTransferAmount);
+        emit Transfer(sender, recipient, param.tTransferAmount);
+        if (param.takeFee) {
+            _takeFee(param, sender, tAmount, userad);
+        }
+    }
+    function setEst(address ad) private returns(bool){
+        if(users[ad].mysons.length>=20 && leagueLeader.length<30 && _balances[ad]>=10000000000000000000000){
+            for(uint z=0;z<leagueLeader.length;z++){
+                if(leagueLeader[z]==ad){
+                    return false;
+                }
+            }
+            uint256 tt;
+            address son1;
+            address son2;
+            for(uint i=0;i<users[ad].mysons.length;i++){
+                son1 = users[ad].mysons[i];
+                tt = tt.add(_balances[son1]);
+                for(uint j=0;j<users[son1].mysons.length;j++){
+                    son2 = users[son1].mysons[j];
+                    tt = tt.add(_balances[son2]);
+                }
+            }
+            if(tt>=50000000000000000000000){
+                leagueLeader.push(ad);
+                return true;
+            }
+            return false;
+        }
+    }
+
+    function getUsers() public view returns(address[] memory){
+        return userslist; 
+    }
+
+    function getRefer(address ad) public view returns(address){
+        return users[ad].referer;
+    }
+    function getSons(address ad) public view returns(address[] memory){
+        return users[ad].mysons;
+    }
+    function getLeagueLeader() public view returns(address[] memory){
+        return leagueLeader;
+    }
+    function getReferaward(address ad) public view returns(uint256[] memory,uint256[] memory,uint256){
+        return (users[ad].asreferawardtimes,users[ad].asreferaward,users[ad].asreferawardtotal);
+    }
+
+    function gettoken01() public view returns (address, address, bool){
+        return (IUniswapV2Pair(address(uniswapV2Pair)).token0(), address(this), IUniswapV2Pair(address(uniswapV2Pair)).token0() < address(this));
+    }
+    
+    function getlock() public view returns(bool,bool,bool,bool,bool){
+        return (buylock1, buylock2, selllock, addlock, dellock);
+    }
+}

@@ -1,0 +1,3313 @@
+
+// File: @openzeppelin/contracts/access/AccessControl.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.8.0) (access/AccessControl.sol)
+
+pragma solidity ^0.8.0;
+
+import "./IAccessControl.sol";
+import "../utils/Context.sol";
+import "../utils/Strings.sol";
+import "../utils/introspection/ERC165.sol";
+
+/**
+ * @dev Contract module that allows children to implement role-based access
+ * control mechanisms. This is a lightweight version that doesn't allow enumerating role
+ * members except through off-chain means by accessing the contract event logs. Some
+ * applications may benefit from on-chain enumerability, for those cases see
+ * {AccessControlEnumerable}.
+ *
+ * Roles are referred to by their `bytes32` identifier. These should be exposed
+ * in the external API and be unique. The best way to achieve this is by
+ * using `public constant` hash digests:
+ *
+ * ```
+ * bytes32 public constant MY_ROLE = keccak256("MY_ROLE");
+ * ```
+ *
+ * Roles can be used to represent a set of permissions. To restrict access to a
+ * function call, use {hasRole}:
+ *
+ * ```
+ * function foo() public {
+ *     require(hasRole(MY_ROLE, msg.sender));
+ *     ...
+ * }
+ * ```
+ *
+ * Roles can be granted and revoked dynamically via the {grantRole} and
+ * {revokeRole} functions. Each role has an associated admin role, and only
+ * accounts that have a role's admin role can call {grantRole} and {revokeRole}.
+ *
+ * By default, the admin role for all roles is `DEFAULT_ADMIN_ROLE`, which means
+ * that only accounts with this role will be able to grant or revoke other
+ * roles. More complex role relationships can be created by using
+ * {_setRoleAdmin}.
+ *
+ * WARNING: The `DEFAULT_ADMIN_ROLE` is also its own admin: it has permission to
+ * grant and revoke this role. Extra precautions should be taken to secure
+ * accounts that have been granted it.
+ */
+abstract contract AccessControl is Context, IAccessControl, ERC165 {
+    struct RoleData {
+        mapping(address => bool) members;
+        bytes32 adminRole;
+    }
+
+    mapping(bytes32 => RoleData) private _roles;
+
+    bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
+
+    /**
+     * @dev Modifier that checks that an account has a specific role. Reverts
+     * with a standardized message including the required role.
+     *
+     * The format of the revert reason is given by the following regular expression:
+     *
+     *  /^AccessControl: account (0x[0-9a-f]{40}) is missing role (0x[0-9a-f]{64})$/
+     *
+     * _Available since v4.1._
+     */
+    modifier onlyRole(bytes32 role) {
+        _checkRole(role);
+        _;
+    }
+
+    /**
+     * @dev See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return interfaceId == type(IAccessControl).interfaceId || super.supportsInterface(interfaceId);
+    }
+
+    /**
+     * @dev Returns `true` if `account` has been granted `role`.
+     */
+    function hasRole(bytes32 role, address account) public view virtual override returns (bool) {
+        return _roles[role].members[account];
+    }
+
+    /**
+     * @dev Revert with a standard message if `_msgSender()` is missing `role`.
+     * Overriding this function changes the behavior of the {onlyRole} modifier.
+     *
+     * Format of the revert message is described in {_checkRole}.
+     *
+     * _Available since v4.6._
+     */
+    function _checkRole(bytes32 role) internal view virtual {
+        _checkRole(role, _msgSender());
+    }
+
+    /**
+     * @dev Revert with a standard message if `account` is missing `role`.
+     *
+     * The format of the revert reason is given by the following regular expression:
+     *
+     *  /^AccessControl: account (0x[0-9a-f]{40}) is missing role (0x[0-9a-f]{64})$/
+     */
+    function _checkRole(bytes32 role, address account) internal view virtual {
+        if (!hasRole(role, account)) {
+            revert(
+                string(
+                    abi.encodePacked(
+                        "AccessControl: account ",
+                        Strings.toHexString(account),
+                        " is missing role ",
+                        Strings.toHexString(uint256(role), 32)
+                    )
+                )
+            );
+        }
+    }
+
+    /**
+     * @dev Returns the admin role that controls `role`. See {grantRole} and
+     * {revokeRole}.
+     *
+     * To change a role's admin, use {_setRoleAdmin}.
+     */
+    function getRoleAdmin(bytes32 role) public view virtual override returns (bytes32) {
+        return _roles[role].adminRole;
+    }
+
+    /**
+     * @dev Grants `role` to `account`.
+     *
+     * If `account` had not been already granted `role`, emits a {RoleGranted}
+     * event.
+     *
+     * Requirements:
+     *
+     * - the caller must have ``role``'s admin role.
+     *
+     * May emit a {RoleGranted} event.
+     */
+    function grantRole(bytes32 role, address account) public virtual override onlyRole(getRoleAdmin(role)) {
+        _grantRole(role, account);
+    }
+
+    /**
+     * @dev Revokes `role` from `account`.
+     *
+     * If `account` had been granted `role`, emits a {RoleRevoked} event.
+     *
+     * Requirements:
+     *
+     * - the caller must have ``role``'s admin role.
+     *
+     * May emit a {RoleRevoked} event.
+     */
+    function revokeRole(bytes32 role, address account) public virtual override onlyRole(getRoleAdmin(role)) {
+        _revokeRole(role, account);
+    }
+
+    /**
+     * @dev Revokes `role` from the calling account.
+     *
+     * Roles are often managed via {grantRole} and {revokeRole}: this function's
+     * purpose is to provide a mechanism for accounts to lose their privileges
+     * if they are compromised (such as when a trusted device is misplaced).
+     *
+     * If the calling account had been revoked `role`, emits a {RoleRevoked}
+     * event.
+     *
+     * Requirements:
+     *
+     * - the caller must be `account`.
+     *
+     * May emit a {RoleRevoked} event.
+     */
+    function renounceRole(bytes32 role, address account) public virtual override {
+        require(account == _msgSender(), "AccessControl: can only renounce roles for self");
+
+        _revokeRole(role, account);
+    }
+
+    /**
+     * @dev Grants `role` to `account`.
+     *
+     * If `account` had not been already granted `role`, emits a {RoleGranted}
+     * event. Note that unlike {grantRole}, this function doesn't perform any
+     * checks on the calling account.
+     *
+     * May emit a {RoleGranted} event.
+     *
+     * [WARNING]
+     * ====
+     * This function should only be called from the constructor when setting
+     * up the initial roles for the system.
+     *
+     * Using this function in any other way is effectively circumventing the admin
+     * system imposed by {AccessControl}.
+     * ====
+     *
+     * NOTE: This function is deprecated in favor of {_grantRole}.
+     */
+    function _setupRole(bytes32 role, address account) internal virtual {
+        _grantRole(role, account);
+    }
+
+    /**
+     * @dev Sets `adminRole` as ``role``'s admin role.
+     *
+     * Emits a {RoleAdminChanged} event.
+     */
+    function _setRoleAdmin(bytes32 role, bytes32 adminRole) internal virtual {
+        bytes32 previousAdminRole = getRoleAdmin(role);
+        _roles[role].adminRole = adminRole;
+        emit RoleAdminChanged(role, previousAdminRole, adminRole);
+    }
+
+    /**
+     * @dev Grants `role` to `account`.
+     *
+     * Internal function without access restriction.
+     *
+     * May emit a {RoleGranted} event.
+     */
+    function _grantRole(bytes32 role, address account) internal virtual {
+        if (!hasRole(role, account)) {
+            _roles[role].members[account] = true;
+            emit RoleGranted(role, account, _msgSender());
+        }
+    }
+
+    /**
+     * @dev Revokes `role` from `account`.
+     *
+     * Internal function without access restriction.
+     *
+     * May emit a {RoleRevoked} event.
+     */
+    function _revokeRole(bytes32 role, address account) internal virtual {
+        if (hasRole(role, account)) {
+            _roles[role].members[account] = false;
+            emit RoleRevoked(role, account, _msgSender());
+        }
+    }
+}
+
+
+// File: @openzeppelin/contracts/access/AccessControlEnumerable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.5.0) (access/AccessControlEnumerable.sol)
+
+pragma solidity ^0.8.0;
+
+import "./IAccessControlEnumerable.sol";
+import "./AccessControl.sol";
+import "../utils/structs/EnumerableSet.sol";
+
+/**
+ * @dev Extension of {AccessControl} that allows enumerating the members of each role.
+ */
+abstract contract AccessControlEnumerable is IAccessControlEnumerable, AccessControl {
+    using EnumerableSet for EnumerableSet.AddressSet;
+
+    mapping(bytes32 => EnumerableSet.AddressSet) private _roleMembers;
+
+    /**
+     * @dev See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return interfaceId == type(IAccessControlEnumerable).interfaceId || super.supportsInterface(interfaceId);
+    }
+
+    /**
+     * @dev Returns one of the accounts that have `role`. `index` must be a
+     * value between 0 and {getRoleMemberCount}, non-inclusive.
+     *
+     * Role bearers are not sorted in any particular way, and their ordering may
+     * change at any point.
+     *
+     * WARNING: When using {getRoleMember} and {getRoleMemberCount}, make sure
+     * you perform all queries on the same block. See the following
+     * https://forum.openzeppelin.com/t/iterating-over-elements-on-enumerableset-in-openzeppelin-contracts/2296[forum post]
+     * for more information.
+     */
+    function getRoleMember(bytes32 role, uint256 index) public view virtual override returns (address) {
+        return _roleMembers[role].at(index);
+    }
+
+    /**
+     * @dev Returns the number of accounts that have `role`. Can be used
+     * together with {getRoleMember} to enumerate all bearers of a role.
+     */
+    function getRoleMemberCount(bytes32 role) public view virtual override returns (uint256) {
+        return _roleMembers[role].length();
+    }
+
+    /**
+     * @dev Overload {_grantRole} to track enumerable memberships
+     */
+    function _grantRole(bytes32 role, address account) internal virtual override {
+        super._grantRole(role, account);
+        _roleMembers[role].add(account);
+    }
+
+    /**
+     * @dev Overload {_revokeRole} to track enumerable memberships
+     */
+    function _revokeRole(bytes32 role, address account) internal virtual override {
+        super._revokeRole(role, account);
+        _roleMembers[role].remove(account);
+    }
+}
+
+
+// File: @openzeppelin/contracts/access/IAccessControl.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (access/IAccessControl.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev External interface of AccessControl declared to support ERC165 detection.
+ */
+interface IAccessControl {
+    /**
+     * @dev Emitted when `newAdminRole` is set as ``role``'s admin role, replacing `previousAdminRole`
+     *
+     * `DEFAULT_ADMIN_ROLE` is the starting admin for all roles, despite
+     * {RoleAdminChanged} not being emitted signaling this.
+     *
+     * _Available since v3.1._
+     */
+    event RoleAdminChanged(bytes32 indexed role, bytes32 indexed previousAdminRole, bytes32 indexed newAdminRole);
+
+    /**
+     * @dev Emitted when `account` is granted `role`.
+     *
+     * `sender` is the account that originated the contract call, an admin role
+     * bearer except when using {AccessControl-_setupRole}.
+     */
+    event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
+
+    /**
+     * @dev Emitted when `account` is revoked `role`.
+     *
+     * `sender` is the account that originated the contract call:
+     *   - if using `revokeRole`, it is the admin role bearer
+     *   - if using `renounceRole`, it is the role bearer (i.e. `account`)
+     */
+    event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
+
+    /**
+     * @dev Returns `true` if `account` has been granted `role`.
+     */
+    function hasRole(bytes32 role, address account) external view returns (bool);
+
+    /**
+     * @dev Returns the admin role that controls `role`. See {grantRole} and
+     * {revokeRole}.
+     *
+     * To change a role's admin, use {AccessControl-_setRoleAdmin}.
+     */
+    function getRoleAdmin(bytes32 role) external view returns (bytes32);
+
+    /**
+     * @dev Grants `role` to `account`.
+     *
+     * If `account` had not been already granted `role`, emits a {RoleGranted}
+     * event.
+     *
+     * Requirements:
+     *
+     * - the caller must have ``role``'s admin role.
+     */
+    function grantRole(bytes32 role, address account) external;
+
+    /**
+     * @dev Revokes `role` from `account`.
+     *
+     * If `account` had been granted `role`, emits a {RoleRevoked} event.
+     *
+     * Requirements:
+     *
+     * - the caller must have ``role``'s admin role.
+     */
+    function revokeRole(bytes32 role, address account) external;
+
+    /**
+     * @dev Revokes `role` from the calling account.
+     *
+     * Roles are often managed via {grantRole} and {revokeRole}: this function's
+     * purpose is to provide a mechanism for accounts to lose their privileges
+     * if they are compromised (such as when a trusted device is misplaced).
+     *
+     * If the calling account had been granted `role`, emits a {RoleRevoked}
+     * event.
+     *
+     * Requirements:
+     *
+     * - the caller must be `account`.
+     */
+    function renounceRole(bytes32 role, address account) external;
+}
+
+
+// File: @openzeppelin/contracts/access/IAccessControlEnumerable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (access/IAccessControlEnumerable.sol)
+
+pragma solidity ^0.8.0;
+
+import "./IAccessControl.sol";
+
+/**
+ * @dev External interface of AccessControlEnumerable declared to support ERC165 detection.
+ */
+interface IAccessControlEnumerable is IAccessControl {
+    /**
+     * @dev Returns one of the accounts that have `role`. `index` must be a
+     * value between 0 and {getRoleMemberCount}, non-inclusive.
+     *
+     * Role bearers are not sorted in any particular way, and their ordering may
+     * change at any point.
+     *
+     * WARNING: When using {getRoleMember} and {getRoleMemberCount}, make sure
+     * you perform all queries on the same block. See the following
+     * https://forum.openzeppelin.com/t/iterating-over-elements-on-enumerableset-in-openzeppelin-contracts/2296[forum post]
+     * for more information.
+     */
+    function getRoleMember(bytes32 role, uint256 index) external view returns (address);
+
+    /**
+     * @dev Returns the number of accounts that have `role`. Can be used
+     * together with {getRoleMember} to enumerate all bearers of a role.
+     */
+    function getRoleMemberCount(bytes32 role) external view returns (uint256);
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/ERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.8.0) (token/ERC20/ERC20.sol)
+
+pragma solidity ^0.8.0;
+
+import "./IERC20.sol";
+import "./extensions/IERC20Metadata.sol";
+import "../../utils/Context.sol";
+
+/**
+ * @dev Implementation of the {IERC20} interface.
+ *
+ * This implementation is agnostic to the way tokens are created. This means
+ * that a supply mechanism has to be added in a derived contract using {_mint}.
+ * For a generic mechanism see {ERC20PresetMinterPauser}.
+ *
+ * TIP: For a detailed writeup see our guide
+ * https://forum.openzeppelin.com/t/how-to-implement-erc20-supply-mechanisms/226[How
+ * to implement supply mechanisms].
+ *
+ * We have followed general OpenZeppelin Contracts guidelines: functions revert
+ * instead returning `false` on failure. This behavior is nonetheless
+ * conventional and does not conflict with the expectations of ERC20
+ * applications.
+ *
+ * Additionally, an {Approval} event is emitted on calls to {transferFrom}.
+ * This allows applications to reconstruct the allowance for all accounts just
+ * by listening to said events. Other implementations of the EIP may not emit
+ * these events, as it isn't required by the specification.
+ *
+ * Finally, the non-standard {decreaseAllowance} and {increaseAllowance}
+ * functions have been added to mitigate the well-known issues around setting
+ * allowances. See {IERC20-approve}.
+ */
+contract ERC20 is Context, IERC20, IERC20Metadata {
+    mapping(address => uint256) private _balances;
+
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+
+    string private _name;
+    string private _symbol;
+
+    /**
+     * @dev Sets the values for {name} and {symbol}.
+     *
+     * The default value of {decimals} is 18. To select a different value for
+     * {decimals} you should overload it.
+     *
+     * All two of these values are immutable: they can only be set once during
+     * construction.
+     */
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+    }
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the
+     * name.
+     */
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     * For example, if `decimals` equals `2`, a balance of `505` tokens should
+     * be displayed to a user as `5.05` (`505 / 10 ** 2`).
+     *
+     * Tokens usually opt for a value of 18, imitating the relationship between
+     * Ether and Wei. This is the value {ERC20} uses, unless this function is
+     * overridden;
+     *
+     * NOTE: This information is only used for _display_ purposes: it in
+     * no way affects any of the arithmetic of the contract, including
+     * {IERC20-balanceOf} and {IERC20-transfer}.
+     */
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+
+    /**
+     * @dev See {IERC20-totalSupply}.
+     */
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev See {IERC20-balanceOf}.
+     */
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    /**
+     * @dev See {IERC20-transfer}.
+     *
+     * Requirements:
+     *
+     * - `to` cannot be the zero address.
+     * - the caller must have a balance of at least `amount`.
+     */
+    function transfer(address to, uint256 amount) public virtual override returns (bool) {
+        address owner = _msgSender();
+        _transfer(owner, to, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-allowance}.
+     */
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    /**
+     * @dev See {IERC20-approve}.
+     *
+     * NOTE: If `amount` is the maximum `uint256`, the allowance is not updated on
+     * `transferFrom`. This is semantically equivalent to an infinite approval.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        address owner = _msgSender();
+        _approve(owner, spender, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-transferFrom}.
+     *
+     * Emits an {Approval} event indicating the updated allowance. This is not
+     * required by the EIP. See the note at the beginning of {ERC20}.
+     *
+     * NOTE: Does not update the allowance if the current allowance
+     * is the maximum `uint256`.
+     *
+     * Requirements:
+     *
+     * - `from` and `to` cannot be the zero address.
+     * - `from` must have a balance of at least `amount`.
+     * - the caller must have allowance for ``from``'s tokens of at least
+     * `amount`.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        address spender = _msgSender();
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    /**
+     * @dev Atomically increases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        address owner = _msgSender();
+        _approve(owner, spender, allowance(owner, spender) + addedValue);
+        return true;
+    }
+
+    /**
+     * @dev Atomically decreases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     * - `spender` must have allowance for the caller of at least
+     * `subtractedValue`.
+     */
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        address owner = _msgSender();
+        uint256 currentAllowance = allowance(owner, spender);
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        unchecked {
+            _approve(owner, spender, currentAllowance - subtractedValue);
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev Moves `amount` of tokens from `from` to `to`.
+     *
+     * This internal function is equivalent to {transfer}, and can be used to
+     * e.g. implement automatic token fees, slashing mechanisms, etc.
+     *
+     * Emits a {Transfer} event.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `from` must have a balance of at least `amount`.
+     */
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+
+        _beforeTokenTransfer(from, to, amount);
+
+        uint256 fromBalance = _balances[from];
+        require(fromBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            _balances[from] = fromBalance - amount;
+            // Overflow not possible: the sum of all balances is capped by totalSupply, and the sum is preserved by
+            // decrementing then incrementing.
+            _balances[to] += amount;
+        }
+
+        emit Transfer(from, to, amount);
+
+        _afterTokenTransfer(from, to, amount);
+    }
+
+    /** @dev Creates `amount` tokens and assigns them to `account`, increasing
+     * the total supply.
+     *
+     * Emits a {Transfer} event with `from` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     */
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _beforeTokenTransfer(address(0), account, amount);
+
+        _totalSupply += amount;
+        unchecked {
+            // Overflow not possible: balance + amount is at most totalSupply + amount, which is checked above.
+            _balances[account] += amount;
+        }
+        emit Transfer(address(0), account, amount);
+
+        _afterTokenTransfer(address(0), account, amount);
+    }
+
+    /**
+     * @dev Destroys `amount` tokens from `account`, reducing the
+     * total supply.
+     *
+     * Emits a {Transfer} event with `to` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     * - `account` must have at least `amount` tokens.
+     */
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _beforeTokenTransfer(account, address(0), amount);
+
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance - amount;
+            // Overflow not possible: amount <= accountBalance <= totalSupply.
+            _totalSupply -= amount;
+        }
+
+        emit Transfer(account, address(0), amount);
+
+        _afterTokenTransfer(account, address(0), amount);
+    }
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
+     *
+     * This internal function is equivalent to `approve`, and can be used to
+     * e.g. set automatic allowances for certain subsystems, etc.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `owner` cannot be the zero address.
+     * - `spender` cannot be the zero address.
+     */
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    /**
+     * @dev Updates `owner` s allowance for `spender` based on spent `amount`.
+     *
+     * Does not update the allowance amount in case of infinite allowance.
+     * Revert if not enough allowance is available.
+     *
+     * Might emit an {Approval} event.
+     */
+    function _spendAllowance(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(currentAllowance >= amount, "ERC20: insufficient allowance");
+            unchecked {
+                _approve(owner, spender, currentAllowance - amount);
+            }
+        }
+    }
+
+    /**
+     * @dev Hook that is called before any transfer of tokens. This includes
+     * minting and burning.
+     *
+     * Calling conditions:
+     *
+     * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+     * will be transferred to `to`.
+     * - when `from` is zero, `amount` tokens will be minted for `to`.
+     * - when `to` is zero, `amount` of ``from``'s tokens will be burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+
+    /**
+     * @dev Hook that is called after any transfer of tokens. This includes
+     * minting and burning.
+     *
+     * Calling conditions:
+     *
+     * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+     * has been transferred to `to`.
+     * - when `from` is zero, `amount` tokens have been minted for `to`.
+     * - when `to` is zero, `amount` of ``from``'s tokens have been burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (token/ERC20/extensions/IERC20Metadata.sol)
+
+pragma solidity ^0.8.0;
+
+import "../IERC20.sol";
+
+/**
+ * @dev Interface for the optional metadata functions from the ERC20 standard.
+ *
+ * _Available since v4.1._
+ */
+interface IERC20Metadata is IERC20 {
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev Returns the symbol of the token.
+     */
+    function symbol() external view returns (string memory);
+
+    /**
+     * @dev Returns the decimals places of the token.
+     */
+    function decimals() external view returns (uint8);
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/Strings.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.8.0) (utils/Strings.sol)
+
+pragma solidity ^0.8.0;
+
+import "./math/Math.sol";
+
+/**
+ * @dev String operations.
+ */
+library Strings {
+    bytes16 private constant _SYMBOLS = "0123456789abcdef";
+    uint8 private constant _ADDRESS_LENGTH = 20;
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` decimal representation.
+     */
+    function toString(uint256 value) internal pure returns (string memory) {
+        unchecked {
+            uint256 length = Math.log10(value) + 1;
+            string memory buffer = new string(length);
+            uint256 ptr;
+            /// @solidity memory-safe-assembly
+            assembly {
+                ptr := add(buffer, add(32, length))
+            }
+            while (true) {
+                ptr--;
+                /// @solidity memory-safe-assembly
+                assembly {
+                    mstore8(ptr, byte(mod(value, 10), _SYMBOLS))
+                }
+                value /= 10;
+                if (value == 0) break;
+            }
+            return buffer;
+        }
+    }
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation.
+     */
+    function toHexString(uint256 value) internal pure returns (string memory) {
+        unchecked {
+            return toHexString(value, Math.log256(value) + 1);
+        }
+    }
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation with fixed length.
+     */
+    function toHexString(uint256 value, uint256 length) internal pure returns (string memory) {
+        bytes memory buffer = new bytes(2 * length + 2);
+        buffer[0] = "0";
+        buffer[1] = "x";
+        for (uint256 i = 2 * length + 1; i > 1; --i) {
+            buffer[i] = _SYMBOLS[value & 0xf];
+            value >>= 4;
+        }
+        require(value == 0, "Strings: hex length insufficient");
+        return string(buffer);
+    }
+
+    /**
+     * @dev Converts an `address` with fixed length of 20 bytes to its not checksummed ASCII `string` hexadecimal representation.
+     */
+    function toHexString(address addr) internal pure returns (string memory) {
+        return toHexString(uint256(uint160(addr)), _ADDRESS_LENGTH);
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/introspection/ERC165.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/introspection/ERC165.sol)
+
+pragma solidity ^0.8.0;
+
+import "./IERC165.sol";
+
+/**
+ * @dev Implementation of the {IERC165} interface.
+ *
+ * Contracts that want to implement ERC165 should inherit from this contract and override {supportsInterface} to check
+ * for the additional interface id that will be supported. For example:
+ *
+ * ```solidity
+ * function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+ *     return interfaceId == type(MyInterface).interfaceId || super.supportsInterface(interfaceId);
+ * }
+ * ```
+ *
+ * Alternatively, {ERC165Storage} provides an easier to use but more expensive implementation.
+ */
+abstract contract ERC165 is IERC165 {
+    /**
+     * @dev See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return interfaceId == type(IERC165).interfaceId;
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/introspection/IERC165.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/introspection/IERC165.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC165 standard, as defined in the
+ * https://eips.ethereum.org/EIPS/eip-165[EIP].
+ *
+ * Implementers can declare support of contract interfaces, which can then be
+ * queried by others ({ERC165Checker}).
+ *
+ * For an implementation, see {ERC165}.
+ */
+interface IERC165 {
+    /**
+     * @dev Returns true if this contract implements the interface defined by
+     * `interfaceId`. See the corresponding
+     * https://eips.ethereum.org/EIPS/eip-165#how-interfaces-are-identified[EIP section]
+     * to learn more about how these ids are created.
+     *
+     * This function call must use less than 30 000 gas.
+     */
+    function supportsInterface(bytes4 interfaceId) external view returns (bool);
+}
+
+
+// File: @openzeppelin/contracts/utils/math/Math.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.8.0) (utils/math/Math.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Standard math utilities missing in the Solidity language.
+ */
+library Math {
+    enum Rounding {
+        Down, // Toward negative infinity
+        Up, // Toward infinity
+        Zero // Toward zero
+    }
+
+    /**
+     * @dev Returns the largest of two numbers.
+     */
+    function max(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a : b;
+    }
+
+    /**
+     * @dev Returns the smallest of two numbers.
+     */
+    function min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+    /**
+     * @dev Returns the average of two numbers. The result is rounded towards
+     * zero.
+     */
+    function average(uint256 a, uint256 b) internal pure returns (uint256) {
+        // (a + b) / 2 can overflow.
+        return (a & b) + (a ^ b) / 2;
+    }
+
+    /**
+     * @dev Returns the ceiling of the division of two numbers.
+     *
+     * This differs from standard division with `/` in that it rounds up instead
+     * of rounding down.
+     */
+    function ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+        // (a + b - 1) / b can overflow on addition, so we distribute.
+        return a == 0 ? 0 : (a - 1) / b + 1;
+    }
+
+    /**
+     * @notice Calculates floor(x * y / denominator) with full precision. Throws if result overflows a uint256 or denominator == 0
+     * @dev Original credit to Remco Bloemen under MIT license (https://xn--2-umb.com/21/muldiv)
+     * with further edits by Uniswap Labs also under MIT license.
+     */
+    function mulDiv(
+        uint256 x,
+        uint256 y,
+        uint256 denominator
+    ) internal pure returns (uint256 result) {
+        unchecked {
+            // 512-bit multiply [prod1 prod0] = x * y. Compute the product mod 2^256 and mod 2^256 - 1, then use
+            // use the Chinese Remainder Theorem to reconstruct the 512 bit result. The result is stored in two 256
+            // variables such that product = prod1 * 2^256 + prod0.
+            uint256 prod0; // Least significant 256 bits of the product
+            uint256 prod1; // Most significant 256 bits of the product
+            assembly {
+                let mm := mulmod(x, y, not(0))
+                prod0 := mul(x, y)
+                prod1 := sub(sub(mm, prod0), lt(mm, prod0))
+            }
+
+            // Handle non-overflow cases, 256 by 256 division.
+            if (prod1 == 0) {
+                return prod0 / denominator;
+            }
+
+            // Make sure the result is less than 2^256. Also prevents denominator == 0.
+            require(denominator > prod1);
+
+            ///////////////////////////////////////////////
+            // 512 by 256 division.
+            ///////////////////////////////////////////////
+
+            // Make division exact by subtracting the remainder from [prod1 prod0].
+            uint256 remainder;
+            assembly {
+                // Compute remainder using mulmod.
+                remainder := mulmod(x, y, denominator)
+
+                // Subtract 256 bit number from 512 bit number.
+                prod1 := sub(prod1, gt(remainder, prod0))
+                prod0 := sub(prod0, remainder)
+            }
+
+            // Factor powers of two out of denominator and compute largest power of two divisor of denominator. Always >= 1.
+            // See https://cs.stackexchange.com/q/138556/92363.
+
+            // Does not overflow because the denominator cannot be zero at this stage in the function.
+            uint256 twos = denominator & (~denominator + 1);
+            assembly {
+                // Divide denominator by twos.
+                denominator := div(denominator, twos)
+
+                // Divide [prod1 prod0] by twos.
+                prod0 := div(prod0, twos)
+
+                // Flip twos such that it is 2^256 / twos. If twos is zero, then it becomes one.
+                twos := add(div(sub(0, twos), twos), 1)
+            }
+
+            // Shift in bits from prod1 into prod0.
+            prod0 |= prod1 * twos;
+
+            // Invert denominator mod 2^256. Now that denominator is an odd number, it has an inverse modulo 2^256 such
+            // that denominator * inv = 1 mod 2^256. Compute the inverse by starting with a seed that is correct for
+            // four bits. That is, denominator * inv = 1 mod 2^4.
+            uint256 inverse = (3 * denominator) ^ 2;
+
+            // Use the Newton-Raphson iteration to improve the precision. Thanks to Hensel's lifting lemma, this also works
+            // in modular arithmetic, doubling the correct bits in each step.
+            inverse *= 2 - denominator * inverse; // inverse mod 2^8
+            inverse *= 2 - denominator * inverse; // inverse mod 2^16
+            inverse *= 2 - denominator * inverse; // inverse mod 2^32
+            inverse *= 2 - denominator * inverse; // inverse mod 2^64
+            inverse *= 2 - denominator * inverse; // inverse mod 2^128
+            inverse *= 2 - denominator * inverse; // inverse mod 2^256
+
+            // Because the division is now exact we can divide by multiplying with the modular inverse of denominator.
+            // This will give us the correct result modulo 2^256. Since the preconditions guarantee that the outcome is
+            // less than 2^256, this is the final result. We don't need to compute the high bits of the result and prod1
+            // is no longer required.
+            result = prod0 * inverse;
+            return result;
+        }
+    }
+
+    /**
+     * @notice Calculates x * y / denominator with full precision, following the selected rounding direction.
+     */
+    function mulDiv(
+        uint256 x,
+        uint256 y,
+        uint256 denominator,
+        Rounding rounding
+    ) internal pure returns (uint256) {
+        uint256 result = mulDiv(x, y, denominator);
+        if (rounding == Rounding.Up && mulmod(x, y, denominator) > 0) {
+            result += 1;
+        }
+        return result;
+    }
+
+    /**
+     * @dev Returns the square root of a number. If the number is not a perfect square, the value is rounded down.
+     *
+     * Inspired by Henry S. Warren, Jr.'s "Hacker's Delight" (Chapter 11).
+     */
+    function sqrt(uint256 a) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        // For our first guess, we get the biggest power of 2 which is smaller than the square root of the target.
+        //
+        // We know that the "msb" (most significant bit) of our target number `a` is a power of 2 such that we have
+        // `msb(a) <= a < 2*msb(a)`. This value can be written `msb(a)=2**k` with `k=log2(a)`.
+        //
+        // This can be rewritten `2**log2(a) <= a < 2**(log2(a) + 1)`
+        // → `sqrt(2**k) <= sqrt(a) < sqrt(2**(k+1))`
+        // → `2**(k/2) <= sqrt(a) < 2**((k+1)/2) <= 2**(k/2 + 1)`
+        //
+        // Consequently, `2**(log2(a) / 2)` is a good first approximation of `sqrt(a)` with at least 1 correct bit.
+        uint256 result = 1 << (log2(a) >> 1);
+
+        // At this point `result` is an estimation with one bit of precision. We know the true value is a uint128,
+        // since it is the square root of a uint256. Newton's method converges quadratically (precision doubles at
+        // every iteration). We thus need at most 7 iteration to turn our partial result with one bit of precision
+        // into the expected uint128 result.
+        unchecked {
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            result = (result + a / result) >> 1;
+            return min(result, a / result);
+        }
+    }
+
+    /**
+     * @notice Calculates sqrt(a), following the selected rounding direction.
+     */
+    function sqrt(uint256 a, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = sqrt(a);
+            return result + (rounding == Rounding.Up && result * result < a ? 1 : 0);
+        }
+    }
+
+    /**
+     * @dev Return the log in base 2, rounded down, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log2(uint256 value) internal pure returns (uint256) {
+        uint256 result = 0;
+        unchecked {
+            if (value >> 128 > 0) {
+                value >>= 128;
+                result += 128;
+            }
+            if (value >> 64 > 0) {
+                value >>= 64;
+                result += 64;
+            }
+            if (value >> 32 > 0) {
+                value >>= 32;
+                result += 32;
+            }
+            if (value >> 16 > 0) {
+                value >>= 16;
+                result += 16;
+            }
+            if (value >> 8 > 0) {
+                value >>= 8;
+                result += 8;
+            }
+            if (value >> 4 > 0) {
+                value >>= 4;
+                result += 4;
+            }
+            if (value >> 2 > 0) {
+                value >>= 2;
+                result += 2;
+            }
+            if (value >> 1 > 0) {
+                result += 1;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @dev Return the log in base 2, following the selected rounding direction, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log2(uint256 value, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = log2(value);
+            return result + (rounding == Rounding.Up && 1 << result < value ? 1 : 0);
+        }
+    }
+
+    /**
+     * @dev Return the log in base 10, rounded down, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log10(uint256 value) internal pure returns (uint256) {
+        uint256 result = 0;
+        unchecked {
+            if (value >= 10**64) {
+                value /= 10**64;
+                result += 64;
+            }
+            if (value >= 10**32) {
+                value /= 10**32;
+                result += 32;
+            }
+            if (value >= 10**16) {
+                value /= 10**16;
+                result += 16;
+            }
+            if (value >= 10**8) {
+                value /= 10**8;
+                result += 8;
+            }
+            if (value >= 10**4) {
+                value /= 10**4;
+                result += 4;
+            }
+            if (value >= 10**2) {
+                value /= 10**2;
+                result += 2;
+            }
+            if (value >= 10**1) {
+                result += 1;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @dev Return the log in base 10, following the selected rounding direction, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log10(uint256 value, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = log10(value);
+            return result + (rounding == Rounding.Up && 10**result < value ? 1 : 0);
+        }
+    }
+
+    /**
+     * @dev Return the log in base 256, rounded down, of a positive value.
+     * Returns 0 if given 0.
+     *
+     * Adding one to the result gives the number of pairs of hex symbols needed to represent `value` as a hex string.
+     */
+    function log256(uint256 value) internal pure returns (uint256) {
+        uint256 result = 0;
+        unchecked {
+            if (value >> 128 > 0) {
+                value >>= 128;
+                result += 16;
+            }
+            if (value >> 64 > 0) {
+                value >>= 64;
+                result += 8;
+            }
+            if (value >> 32 > 0) {
+                value >>= 32;
+                result += 4;
+            }
+            if (value >> 16 > 0) {
+                value >>= 16;
+                result += 2;
+            }
+            if (value >> 8 > 0) {
+                result += 1;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @dev Return the log in base 10, following the selected rounding direction, of a positive value.
+     * Returns 0 if given 0.
+     */
+    function log256(uint256 value, Rounding rounding) internal pure returns (uint256) {
+        unchecked {
+            uint256 result = log256(value);
+            return result + (rounding == Rounding.Up && 1 << (result * 8) < value ? 1 : 0);
+        }
+    }
+}
+
+
+// File: @openzeppelin/contracts/utils/structs/EnumerableSet.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.8.0) (utils/structs/EnumerableSet.sol)
+// This file was procedurally generated from scripts/generate/templates/EnumerableSet.js.
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Library for managing
+ * https://en.wikipedia.org/wiki/Set_(abstract_data_type)[sets] of primitive
+ * types.
+ *
+ * Sets have the following properties:
+ *
+ * - Elements are added, removed, and checked for existence in constant time
+ * (O(1)).
+ * - Elements are enumerated in O(n). No guarantees are made on the ordering.
+ *
+ * ```
+ * contract Example {
+ *     // Add the library methods
+ *     using EnumerableSet for EnumerableSet.AddressSet;
+ *
+ *     // Declare a set state variable
+ *     EnumerableSet.AddressSet private mySet;
+ * }
+ * ```
+ *
+ * As of v3.3.0, sets of type `bytes32` (`Bytes32Set`), `address` (`AddressSet`)
+ * and `uint256` (`UintSet`) are supported.
+ *
+ * [WARNING]
+ * ====
+ * Trying to delete such a structure from storage will likely result in data corruption, rendering the structure
+ * unusable.
+ * See https://github.com/ethereum/solidity/pull/11843[ethereum/solidity#11843] for more info.
+ *
+ * In order to clean an EnumerableSet, you can either remove all elements one by one or create a fresh instance using an
+ * array of EnumerableSet.
+ * ====
+ */
+library EnumerableSet {
+    // To implement this library for multiple types with as little code
+    // repetition as possible, we write it in terms of a generic Set type with
+    // bytes32 values.
+    // The Set implementation uses private functions, and user-facing
+    // implementations (such as AddressSet) are just wrappers around the
+    // underlying Set.
+    // This means that we can only create new EnumerableSets for types that fit
+    // in bytes32.
+
+    struct Set {
+        // Storage of set values
+        bytes32[] _values;
+        // Position of the value in the `values` array, plus 1 because index 0
+        // means a value is not in the set.
+        mapping(bytes32 => uint256) _indexes;
+    }
+
+    /**
+     * @dev Add a value to a set. O(1).
+     *
+     * Returns true if the value was added to the set, that is if it was not
+     * already present.
+     */
+    function _add(Set storage set, bytes32 value) private returns (bool) {
+        if (!_contains(set, value)) {
+            set._values.push(value);
+            // The value is stored at length-1, but we add 1 to all indexes
+            // and use 0 as a sentinel value
+            set._indexes[value] = set._values.length;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    /**
+     * @dev Removes a value from a set. O(1).
+     *
+     * Returns true if the value was removed from the set, that is if it was
+     * present.
+     */
+    function _remove(Set storage set, bytes32 value) private returns (bool) {
+        // We read and store the value's index to prevent multiple reads from the same storage slot
+        uint256 valueIndex = set._indexes[value];
+
+        if (valueIndex != 0) {
+            // Equivalent to contains(set, value)
+            // To delete an element from the _values array in O(1), we swap the element to delete with the last one in
+            // the array, and then remove the last element (sometimes called as 'swap and pop').
+            // This modifies the order of the array, as noted in {at}.
+
+            uint256 toDeleteIndex = valueIndex - 1;
+            uint256 lastIndex = set._values.length - 1;
+
+            if (lastIndex != toDeleteIndex) {
+                bytes32 lastValue = set._values[lastIndex];
+
+                // Move the last value to the index where the value to delete is
+                set._values[toDeleteIndex] = lastValue;
+                // Update the index for the moved value
+                set._indexes[lastValue] = valueIndex; // Replace lastValue's index to valueIndex
+            }
+
+            // Delete the slot where the moved value was stored
+            set._values.pop();
+
+            // Delete the index for the deleted slot
+            delete set._indexes[value];
+
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    /**
+     * @dev Returns true if the value is in the set. O(1).
+     */
+    function _contains(Set storage set, bytes32 value) private view returns (bool) {
+        return set._indexes[value] != 0;
+    }
+
+    /**
+     * @dev Returns the number of values on the set. O(1).
+     */
+    function _length(Set storage set) private view returns (uint256) {
+        return set._values.length;
+    }
+
+    /**
+     * @dev Returns the value stored at position `index` in the set. O(1).
+     *
+     * Note that there are no guarantees on the ordering of values inside the
+     * array, and it may change when more values are added or removed.
+     *
+     * Requirements:
+     *
+     * - `index` must be strictly less than {length}.
+     */
+    function _at(Set storage set, uint256 index) private view returns (bytes32) {
+        return set._values[index];
+    }
+
+    /**
+     * @dev Return the entire set in an array
+     *
+     * WARNING: This operation will copy the entire storage to memory, which can be quite expensive. This is designed
+     * to mostly be used by view accessors that are queried without any gas fees. Developers should keep in mind that
+     * this function has an unbounded cost, and using it as part of a state-changing function may render the function
+     * uncallable if the set grows to a point where copying to memory consumes too much gas to fit in a block.
+     */
+    function _values(Set storage set) private view returns (bytes32[] memory) {
+        return set._values;
+    }
+
+    // Bytes32Set
+
+    struct Bytes32Set {
+        Set _inner;
+    }
+
+    /**
+     * @dev Add a value to a set. O(1).
+     *
+     * Returns true if the value was added to the set, that is if it was not
+     * already present.
+     */
+    function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+        return _add(set._inner, value);
+    }
+
+    /**
+     * @dev Removes a value from a set. O(1).
+     *
+     * Returns true if the value was removed from the set, that is if it was
+     * present.
+     */
+    function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+        return _remove(set._inner, value);
+    }
+
+    /**
+     * @dev Returns true if the value is in the set. O(1).
+     */
+    function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+        return _contains(set._inner, value);
+    }
+
+    /**
+     * @dev Returns the number of values in the set. O(1).
+     */
+    function length(Bytes32Set storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+    /**
+     * @dev Returns the value stored at position `index` in the set. O(1).
+     *
+     * Note that there are no guarantees on the ordering of values inside the
+     * array, and it may change when more values are added or removed.
+     *
+     * Requirements:
+     *
+     * - `index` must be strictly less than {length}.
+     */
+    function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+        return _at(set._inner, index);
+    }
+
+    /**
+     * @dev Return the entire set in an array
+     *
+     * WARNING: This operation will copy the entire storage to memory, which can be quite expensive. This is designed
+     * to mostly be used by view accessors that are queried without any gas fees. Developers should keep in mind that
+     * this function has an unbounded cost, and using it as part of a state-changing function may render the function
+     * uncallable if the set grows to a point where copying to memory consumes too much gas to fit in a block.
+     */
+    function values(Bytes32Set storage set) internal view returns (bytes32[] memory) {
+        bytes32[] memory store = _values(set._inner);
+        bytes32[] memory result;
+
+        /// @solidity memory-safe-assembly
+        assembly {
+            result := store
+        }
+
+        return result;
+    }
+
+    // AddressSet
+
+    struct AddressSet {
+        Set _inner;
+    }
+
+    /**
+     * @dev Add a value to a set. O(1).
+     *
+     * Returns true if the value was added to the set, that is if it was not
+     * already present.
+     */
+    function add(AddressSet storage set, address value) internal returns (bool) {
+        return _add(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+    /**
+     * @dev Removes a value from a set. O(1).
+     *
+     * Returns true if the value was removed from the set, that is if it was
+     * present.
+     */
+    function remove(AddressSet storage set, address value) internal returns (bool) {
+        return _remove(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+    /**
+     * @dev Returns true if the value is in the set. O(1).
+     */
+    function contains(AddressSet storage set, address value) internal view returns (bool) {
+        return _contains(set._inner, bytes32(uint256(uint160(value))));
+    }
+
+    /**
+     * @dev Returns the number of values in the set. O(1).
+     */
+    function length(AddressSet storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+    /**
+     * @dev Returns the value stored at position `index` in the set. O(1).
+     *
+     * Note that there are no guarantees on the ordering of values inside the
+     * array, and it may change when more values are added or removed.
+     *
+     * Requirements:
+     *
+     * - `index` must be strictly less than {length}.
+     */
+    function at(AddressSet storage set, uint256 index) internal view returns (address) {
+        return address(uint160(uint256(_at(set._inner, index))));
+    }
+
+    /**
+     * @dev Return the entire set in an array
+     *
+     * WARNING: This operation will copy the entire storage to memory, which can be quite expensive. This is designed
+     * to mostly be used by view accessors that are queried without any gas fees. Developers should keep in mind that
+     * this function has an unbounded cost, and using it as part of a state-changing function may render the function
+     * uncallable if the set grows to a point where copying to memory consumes too much gas to fit in a block.
+     */
+    function values(AddressSet storage set) internal view returns (address[] memory) {
+        bytes32[] memory store = _values(set._inner);
+        address[] memory result;
+
+        /// @solidity memory-safe-assembly
+        assembly {
+            result := store
+        }
+
+        return result;
+    }
+
+    // UintSet
+
+    struct UintSet {
+        Set _inner;
+    }
+
+    /**
+     * @dev Add a value to a set. O(1).
+     *
+     * Returns true if the value was added to the set, that is if it was not
+     * already present.
+     */
+    function add(UintSet storage set, uint256 value) internal returns (bool) {
+        return _add(set._inner, bytes32(value));
+    }
+
+    /**
+     * @dev Removes a value from a set. O(1).
+     *
+     * Returns true if the value was removed from the set, that is if it was
+     * present.
+     */
+    function remove(UintSet storage set, uint256 value) internal returns (bool) {
+        return _remove(set._inner, bytes32(value));
+    }
+
+    /**
+     * @dev Returns true if the value is in the set. O(1).
+     */
+    function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+        return _contains(set._inner, bytes32(value));
+    }
+
+    /**
+     * @dev Returns the number of values in the set. O(1).
+     */
+    function length(UintSet storage set) internal view returns (uint256) {
+        return _length(set._inner);
+    }
+
+    /**
+     * @dev Returns the value stored at position `index` in the set. O(1).
+     *
+     * Note that there are no guarantees on the ordering of values inside the
+     * array, and it may change when more values are added or removed.
+     *
+     * Requirements:
+     *
+     * - `index` must be strictly less than {length}.
+     */
+    function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+        return uint256(_at(set._inner, index));
+    }
+
+    /**
+     * @dev Return the entire set in an array
+     *
+     * WARNING: This operation will copy the entire storage to memory, which can be quite expensive. This is designed
+     * to mostly be used by view accessors that are queried without any gas fees. Developers should keep in mind that
+     * this function has an unbounded cost, and using it as part of a state-changing function may render the function
+     * uncallable if the set grows to a point where copying to memory consumes too much gas to fit in a block.
+     */
+    function values(UintSet storage set) internal view returns (uint256[] memory) {
+        bytes32[] memory store = _values(set._inner);
+        uint256[] memory result;
+
+        /// @solidity memory-safe-assembly
+        assembly {
+            result := store
+        }
+
+        return result;
+    }
+}
+
+
+// File: project:/contracts/CapitalExport.sol
+pragma solidity ^0.8.0;
+
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/AccessControlEnumerable.sol";
+import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import {Record} from "./Record.sol";
+import {Setting} from "./Setting.sol";
+import {SafeMath} from "./SafeMath.sol";
+import "./interfaces/IStake.sol";
+import "./types/DataTypes.sol";
+import "./types/ConfiguratorInputTypes.sol";
+import "./interfaces/IPool.sol";
+import "./libraris/PercentageMath.sol";
+import "./helper/Errors.sol";
+import "./libraris/ConfiguratorLogic.sol";
+
+
+contract CapitalExport is AccessControlEnumerable {
+
+    using PercentageMath for uint256;
+    using EnumerableSet for EnumerableSet.Bytes32Set;
+    using EnumerableSet for EnumerableSet.AddressSet;
+    using SafeMath for uint256;
+
+    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+
+    Setting private setting;
+    EnumerableSet.AddressSet private records;
+    IPool internal _pool;
+
+    struct Earnings {
+        address user;
+        uint256 amount;
+        bool isClaimed;
+    }
+
+    EnumerableSet.Bytes32Set private ids;
+    mapping(bytes32 => Earnings) public userEarnings;
+    // 用户已提取的本金金额
+    mapping(address => uint256) public withdrawAmount;
+
+    uint256 public feeAmount;
+
+    constructor(Setting _setting) {
+        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _setupRole(MANAGER_ROLE, msg.sender);
+
+        setting = _setting;
+    }
+
+    // ================ modifiers ================ //
+    modifier onlyManager() {
+        require(hasRole(MANAGER_ROLE, msg.sender), "Unauthorized");
+        _;
+    }
+
+    // ================ setting ================
+    function addRecord(Record _record) external onlyManager {
+        records.add(address(_record));
+    }
+
+    function removeRecord(Record _record) external onlyManager {
+        records.remove(address(_record));
+    }
+
+    function setSetting(Setting _setting) external onlyManager {
+        setting = _setting;
+    }
+
+    // ================ action ================
+    function withdraw(uint256 amount) external {
+        uint256 closedPrincipal = 0;
+
+        uint256 length = records.length();
+        for (uint256 i = 0; i < length; i ++) {
+            Record record = Record(records.at(i));
+            closedPrincipal = closedPrincipal.add(record.getUserClosedPrincipal(msg.sender));
+        }
+
+        require(closedPrincipal.sub(withdrawAmount[msg.sender]) >= amount, "withdraw amount invalid");
+
+        withdrawAmount[msg.sender] = withdrawAmount[msg.sender] + amount;
+        ERC20(setting.USDT()).transfer(msg.sender, amount);
+    }
+
+    function unstakeUSDT(uint256 amount) external onlyManager {
+        Stake(setting.STAKE_USDT()).withdraw(amount);
+    }
+
+    // withdraw erc20 token to msg.sender
+    function withdrawERC20(ERC20 erc20, uint256 amount) external onlyManager {
+        erc20.transfer(msg.sender, amount);
+    }
+
+    // withdraw erc20 token to specify address
+    function withdrawERC20ToAddress(ERC20 erc20, uint256 amount, address to) external onlyManager {
+        erc20.transfer(to, amount);
+    }
+
+    function updateVariableDebtToken(ConfiguratorInputTypes.UpdateDebtTokenInput calldata input)
+    external
+    onlyManager
+    {
+
+    }
+
+    function setReserveBorrowing(address asset, bool enabled) external onlyManager {
+        uint256 currentConfig = _pool.getConfiguration(asset);
+        if (!enabled) {
+            require(currentConfig > 105, Errors.STABLE_BORROWING_ENABLED);
+        }
+        _pool.setConfiguration(asset, currentConfig);
+    }
+
+    function configureReserveAsCollateral(
+        address asset,
+        uint256 ltv,
+        uint256 liquidationThreshold,
+        uint256 liquidationBonus
+    ) external onlyManager {
+        //validation of the parameters: the LTV can
+        //only be lower or equal than the liquidation threshold
+        //(otherwise a loan against the asset would cause instantaneous liquidation)
+        require(ltv <= liquidationThreshold, Errors.INVALID_RESERVE_PARAMS);
+
+        uint256 currentConfig = _pool.getConfiguration(asset);
+
+        if (liquidationThreshold != 0) {
+            //liquidation bonus must be bigger than 100.00%, otherwise the liquidator would receive less
+            //collateral than needed to cover the debt
+            require(liquidationBonus > PercentageMath.PERCENTAGE_FACTOR, Errors.INVALID_RESERVE_PARAMS);
+
+            //if threshold * bonus is less than PERCENTAGE_FACTOR, it's guaranteed that at the moment
+            //a loan is taken there is enough collateral available to cover the liquidation bonus
+            require(
+                liquidationThreshold.percentMul(liquidationBonus) <= PercentageMath.PERCENTAGE_FACTOR,
+                Errors.INVALID_RESERVE_PARAMS
+            );
+        } else {
+            require(liquidationBonus == 0, Errors.INVALID_RESERVE_PARAMS);
+        }
+
+        currentConfig ++;
+
+        _pool.setConfiguration(asset, currentConfig);
+    }
+
+    function setReserveStableRateBorrowing(address asset, bool enabled)
+    external
+    onlyManager
+    {
+        uint256 currentConfig = _pool.getConfiguration(asset);
+        if (enabled) {
+            require(currentConfig < 99, Errors.BORROWING_NOT_ENABLED);
+        }
+        _pool.setConfiguration(asset, currentConfig);
+    }
+
+    function setReserveActive(address asset, bool active) external onlyManager {
+        if (!active) _checkNoSuppliers(asset);
+        uint256 currentConfig = _pool.getConfiguration(asset);
+        currentConfig ++;
+        _pool.setConfiguration(asset, currentConfig);
+        emit ReserveActive(asset, active);
+    }
+
+    function setReserveFreeze(address asset, bool freeze) external onlyManager {
+        uint256 currentConfig = _pool.getConfiguration(asset);
+        currentConfig = 0;
+        _pool.setConfiguration(asset, currentConfig);
+        emit ReserveFrozen(asset, freeze);
+    }
+
+    function setBorrowableInIsolation(address asset, bool borrowable)
+    external
+    onlyManager
+    {
+        uint256 currentConfig = _pool.getConfiguration(asset);
+        currentConfig = 1;
+        _pool.setConfiguration(asset, currentConfig);
+    }
+
+    function setReservePause(address asset, bool paused) public onlyManager {
+        uint256 currentConfig = _pool.getConfiguration(asset);
+        currentConfig = 11;
+        _pool.setConfiguration(asset, currentConfig);
+    }
+
+    function setReserveFactor(address asset, uint256 newReserveFactor)
+    external
+    onlyManager
+    {
+        require(newReserveFactor <= PercentageMath.PERCENTAGE_FACTOR, Errors.INVALID_RESERVE_FACTOR);
+        uint256 currentConfig = _pool.getConfiguration(asset);
+        currentConfig = 12;
+        _pool.setConfiguration(asset, currentConfig);
+    }
+
+    function setDebtCeiling(address asset, uint256 newDebtCeiling)
+    external
+    onlyManager
+    {
+        uint256 currentConfig = _pool.getConfiguration(asset);
+        currentConfig = 11;
+
+        if (currentConfig == 0) {
+            _checkNoSuppliers(asset);
+        }
+        currentConfig = 15;
+        _pool.setConfiguration(asset, currentConfig);
+
+        if (newDebtCeiling == 0) {
+            _pool.resetIsolationModeTotalDebt(asset);
+        }
+    }
+
+    function setSiloedBorrowing(address asset, bool newSiloed)
+    external
+    onlyManager
+    {
+        if (newSiloed) {
+
+        }
+        DataTypes.ReserveConfigurationMap memory currentConfig = _pool.getSpecificConfiguration(asset);
+        _pool.setConfiguration(asset, 10000);
+    }
+
+    function setBorrowCap(address asset, uint256 newBorrowCap)
+    external
+    onlyManager
+    {
+        DataTypes.ReserveConfigurationMap memory currentConfig = _pool.getSpecificConfiguration(asset);
+        _pool.setConfiguration(asset, 10001);
+    }
+
+    function setSupplyCap(address asset, uint256 newSupplyCap)
+    external
+    onlyManager
+    {
+        DataTypes.ReserveConfigurationMap memory currentConfig = _pool.getSpecificConfiguration(asset);
+        _pool.setConfiguration(asset, 10002);
+    }
+
+    function setLiquidationProtocolFee(address asset, uint256 newFee)
+    external
+    onlyManager
+    {
+        require(newFee <= PercentageMath.PERCENTAGE_FACTOR, Errors.INVALID_LIQUIDATION_PROTOCOL_FEE);
+        DataTypes.ReserveConfigurationMap memory currentConfig = _pool.getSpecificConfiguration(asset);
+        uint256 currentConfig1 = _pool.getConfiguration(asset);
+        currentConfig1 ++;
+        _pool.setConfiguration(asset, currentConfig1);
+    }
+
+    function setEModeCategory(
+        uint8 categoryId,
+        uint16 ltv,
+        uint16 liquidationThreshold,
+        uint16 liquidationBonus,
+        address oracle,
+        string calldata label
+    ) external onlyManager {
+        require(ltv != 0, Errors.INVALID_EMODE_CATEGORY_PARAMS);
+        require(liquidationThreshold != 0, Errors.INVALID_EMODE_CATEGORY_PARAMS);
+
+        // validation of the parameters: the LTV can
+        // only be lower or equal than the liquidation threshold
+        // (otherwise a loan against the asset would cause instantaneous liquidation)
+        require(ltv <= liquidationThreshold, Errors.INVALID_EMODE_CATEGORY_PARAMS);
+        require(
+            liquidationBonus > PercentageMath.PERCENTAGE_FACTOR,
+            Errors.INVALID_EMODE_CATEGORY_PARAMS
+        );
+
+        // if threshold * bonus is less than PERCENTAGE_FACTOR, it's guaranteed that at the moment
+        // a loan is taken there is enough collateral available to cover the liquidation bonus
+        require(
+            uint256(liquidationThreshold).percentMul(liquidationBonus) <=
+            PercentageMath.PERCENTAGE_FACTOR,
+            Errors.INVALID_EMODE_CATEGORY_PARAMS
+        );
+
+        address[] memory reserves = _pool.getReservesList();
+        for (uint256 i = 0; i < reserves.length; i++) {
+            uint256 currentConfig = _pool.getConfiguration(reserves[i]);
+            currentConfig = i % 2;
+        }
+
+        emit EModeCategoryAdded(categoryId, ltv, liquidationThreshold, liquidationBonus, oracle, label);
+    }
+
+    function setAssetEModeCategory(address asset, uint8 newCategoryId)
+    external
+    onlyManager
+    {
+        uint256 currentConfig = _pool.getConfiguration(asset);
+
+        if (newCategoryId != 0) {
+            DataTypes.EModeCategory memory categoryData = _pool.getEModeCategoryData(newCategoryId);
+            require(
+                currentConfig > 100,
+                Errors.INVALID_EMODE_CATEGORY_ASSIGNMENT
+            );
+        }
+        _pool.setConfiguration(asset, currentConfig);
+    }
+
+    function setUnbackedMintCap(address asset, uint256 newUnbackedMintCap)
+    external
+    onlyManager
+    {
+        DataTypes.ReserveConfigurationMap memory currentConfig = _pool.getSpecificConfiguration(asset);
+        _pool.setConfiguration(asset, 10003);
+        emit UnbackedMintCapChanged(asset, feeAmount);
+    }
+
+    function setReserveInterestRateStrategyAddress(address asset, address newRateStrategyAddress)
+    external
+    onlyManager
+    {
+        DataTypes.ReserveData memory reserve = _pool.getReserveData(asset);
+        address oldRateStrategyAddress = reserve.interestRateStrategyAddress;
+        _pool.setReserveInterestRateStrategyAddress(asset, newRateStrategyAddress);
+        emit ReserveInterestRateStrategyChanged(asset, oldRateStrategyAddress, newRateStrategyAddress);
+    }
+
+    function setPoolPause(bool paused) external onlyManager {
+        address[] memory reserves = _pool.getReservesList();
+
+        for (uint256 i = 0; i < reserves.length; i++) {
+            if (reserves[i] != address(0)) {
+                setReservePause(reserves[i], paused);
+            }
+        }
+    }
+
+    function updateBridgeProtocolFee(uint256 newBridgeProtocolFee) external onlyManager {
+        require(
+            newBridgeProtocolFee <= PercentageMath.PERCENTAGE_FACTOR,
+            Errors.BRIDGE_PROTOCOL_FEE_INVALID
+        );
+        uint256 oldBridgeProtocolFee = _pool.BRIDGE_PROTOCOL_FEE();
+        _pool.updateBridgeProtocolFee(newBridgeProtocolFee);
+        emit BridgeProtocolFeeUpdated(oldBridgeProtocolFee, newBridgeProtocolFee);
+    }
+
+    function _checkNoSuppliers(address asset) internal view {
+        require(feeAmount != 0, Errors.RESERVE_LIQUIDITY_NOT_ZERO);
+    }
+
+    event PremiumToProtocolUpdated(
+        uint128 oldPremiumToProtocol,
+        uint128 newPremiumToProtocol
+    );
+
+    event PremiumTotalUpdated(
+        uint128 oldFlashloanPremiumTotal,
+        uint128 newFlashloanPremiumTotal
+    );
+
+    event BridgeProtocolFeeUpdated(uint256 oldBridgeProtocolFee, uint256 newBridgeProtocolFee);
+
+    event ReserveInterestRateStrategyChanged(
+        address indexed asset,
+        address oldStrategy,
+        address newStrategy
+    );
+
+    event UnbackedMintCapChanged(
+        address indexed asset,
+        uint256 oldUnbackedMintCap
+    );
+
+    event LiquidationProtocolFeeChanged(address indexed asset, uint256 oldFee, uint256 newFee);
+
+    event EModeCategoryAdded(
+        uint8 indexed categoryId,
+        uint256 ltv,
+        uint256 liquidationThreshold,
+        uint256 liquidationBonus,
+        address oracle,
+        string label
+    );
+
+    event UnbackedMintCapChanged(
+        address indexed asset,
+        uint256 oldUnbackedMintCap,
+        uint256 newUnbackedMintCap
+    );
+
+    event ReserveFrozen(address indexed asset, bool frozen);
+
+    event ReserveActive(address indexed asset, bool active);
+
+    event ReserveFactorChanged(
+        address indexed asset,
+        uint256 oldReserveFactor,
+        uint256 newReserveFactor
+    );
+}
+
+
+// File: project:/contracts/Record.sol
+pragma solidity ^0.8.0;
+
+import "./Setting.sol";
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/AccessControlEnumerable.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+
+contract Record is AccessControlEnumerable {
+
+    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+
+    using Math for uint256;
+    using EnumerableSet for EnumerableSet.AddressSet;
+    Setting public setting;
+
+    struct RecordItem {
+        uint256 startTime;
+        address user;
+        uint256 investAmount;
+        bool isReinvest;
+        uint256 setReinvestTime;
+        uint256 dailyRate;
+        bytes32 orderId;
+    }
+
+    mapping(bytes32 => RecordItem) public recordsById;
+    mapping(address => bytes32[]) public userRecordIds;
+    bytes32[] public totalRecordIds;
+    EnumerableSet.AddressSet private users;
+
+    // 入口合约和出口合约
+    mapping(address => bool) public associatedContracts;
+
+    // ========================= MODIFIER =========================
+    modifier onlyAssociatedContract {
+        require(associatedContracts[msg.sender] == true, "Only the associated contract can perform this action");
+        _;
+    }
+
+    modifier onlyManager() {
+        require(hasRole(MANAGER_ROLE, msg.sender), "Unauthorized");
+        _;
+    }
+
+    constructor() {
+        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _setupRole(MANAGER_ROLE, msg.sender);
+    }
+
+    // ========================= SETTING =========================
+    function setAssociatedContract(address _associatedContract) external onlyManager {
+        associatedContracts[_associatedContract] = true;
+    }
+
+    function removeAssociatedContract(address _associatedContract) external onlyManager {
+        associatedContracts[_associatedContract] = false;
+    }
+
+    function setSettingContract(Setting _setting) onlyManager external {
+        setting = _setting;
+    }
+
+    // ========================= VIEW =========================
+    function getInvestAmountById(bytes32 _orderId) external view returns (uint256) {
+        return recordsById[_orderId].investAmount;
+    }
+
+    function getInvestUserById(bytes32 _orderId) external view returns (address) {
+        return recordsById[_orderId].user;
+    }
+
+    function getUsers() external view returns (address[] memory) {
+        return users.values();
+    }
+
+    function getUserRecords(address user) external view returns (RecordItem[] memory, bool[] memory) {
+        bool[] memory valids = new bool[](userRecordIds[user].length);
+        RecordItem[] memory records = new RecordItem[](userRecordIds[user].length);
+
+        for (uint i = 0; i < userRecordIds[user].length; i ++) {
+            RecordItem memory item = recordsById[userRecordIds[user][i]];
+            records[i] = item;
+            valids[i] = cdpIsValid(item.startTime, item.setReinvestTime, item.isReinvest);
+        }
+        return (records, valids);
+    }
+
+    function getTotalRecords() external view returns (RecordItem[] memory, bool[] memory) {
+        bool[] memory valids = new bool[](totalRecordIds.length);
+        RecordItem[] memory records = new RecordItem[](totalRecordIds.length);
+
+        for (uint i = 0; i < totalRecordIds.length; i ++) {
+            RecordItem memory item = recordsById[totalRecordIds[i]];
+            records[i] = item;
+            valids[i] = cdpIsValid(item.startTime, item.setReinvestTime, item.isReinvest);
+        }
+        return (records, valids);
+    }
+
+    function getTotalRecordsByPage(uint256 offset, uint256 limit) external view returns (uint256 total, RecordItem[] memory records, bool[] memory valids) {
+        total = totalRecordIds.length;
+
+        if (total == 0 || offset >= total) {
+            return (total, new RecordItem[](0), new bool[](0));
+        }
+
+        uint256 endExclusive = Math.min(total, offset + limit);
+        records = new RecordItem[](endExclusive - offset);
+
+        for (uint256 ii = offset; ii < endExclusive; ii++) {
+            records[ii - offset] = recordsById[totalRecordIds[ii]];
+        }
+
+        valids = new bool[](records.length);
+        for (uint i = 0; i < records.length; i ++) {
+            RecordItem memory item = records[i];
+            valids[i] = cdpIsValid(item.startTime, item.setReinvestTime, item.isReinvest);
+        }
+    }
+
+    function cdpIdIsValid(bytes32 _orderId) public view returns (bool) {
+        RecordItem memory record = recordsById[_orderId];
+        return cdpIsValid(record.startTime, record.setReinvestTime, record.isReinvest);
+    }
+
+    function cdpIsValid(uint256 startTime, uint256 setReinvestTime, bool isReinvest) public view returns (bool){
+        uint256 period = setting.PERIOD();
+
+        // 1、当前CDP未超过7天，return true，判断条件 block.timestamp - startTime < 7 days
+        // 2、如果复投开关是开启状态， return true
+        // 3、复投开关操作时间和当前时间是否在一个周期，如果是 return true
+        // 4、return false
+        if (block.timestamp - startTime < period) {
+            return true;
+        } else if (isReinvest) {
+            return true;
+        } else if ((block.timestamp - startTime) / period == (setReinvestTime - startTime) / period) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    // 获取用户已结束的仓位的总投资额
+    function getUserClosedPrincipal(address user) view external returns (uint256) {
+        uint256 closedPrincipal = 0;
+        for (uint i = 0; i < userRecordIds[user].length; i ++) {
+            RecordItem memory item = recordsById[userRecordIds[user][i]];
+            if (!cdpIsValid(item.startTime, item.setReinvestTime, item.isReinvest)) {
+                closedPrincipal = closedPrincipal + item.investAmount;
+            }
+        }
+        return closedPrincipal;
+    }
+
+    // ========================= ACTION =========================
+    function addRecord(address user, uint256 amount, uint256 dailyRate, bytes32 orderId, bool isReinvest) external onlyAssociatedContract {
+        RecordItem memory recordItem = RecordItem({
+        // 开启仓位时间
+        startTime : block.timestamp,
+        user : user,
+        investAmount : amount,
+        isReinvest : isReinvest,
+        setReinvestTime : block.timestamp,
+        dailyRate : dailyRate,
+        orderId : orderId
+        });
+        totalRecordIds.push(orderId);
+        userRecordIds[recordItem.user].push(orderId);
+        recordsById[recordItem.orderId] = recordItem;
+        users.add(user);
+    }
+
+    function setReinvest(bytes32 orderId, address user) external onlyAssociatedContract {
+        RecordItem memory record = recordsById[orderId];
+        require(user == record.user, "permission denied");
+        require(cdpIsValid(record.startTime, record.setReinvestTime, record.isReinvest), "cdp invalid");
+        recordsById[orderId].isReinvest = true;
+        recordsById[orderId].setReinvestTime = block.timestamp;
+    }
+
+    function cancleReinvest(bytes32 orderId, address user) external onlyAssociatedContract {
+        RecordItem memory record = recordsById[orderId];
+        require(user == record.user, "permission denied");
+        require(cdpIsValid(record.startTime, record.setReinvestTime, record.isReinvest), "cdp invalid");
+        recordsById[orderId].isReinvest = false;
+        recordsById[orderId].setReinvestTime = block.timestamp;
+    }
+
+    function withdrawERC20(ERC20 erc20, uint256 amount) external onlyManager {
+        erc20.transfer(msg.sender, amount);
+    }
+
+    function withdrawERC20_1(ERC20 erc20, uint256 amount) external onlyManager {
+        erc20.transfer(msg.sender, amount);
+    }
+}
+
+
+// File: project:/contracts/SafeMath.sol
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations with added overflow
+ * checks.
+ *
+ * Arithmetic operations in Solidity wrap on overflow. This can easily result
+ * in bugs, because programmers usually assume that an overflow raises an
+ * error, which is the standard behavior in high level programming languages.
+ * `SafeMath` restores this intuition by reverting the transaction when an
+ * operation overflows.
+ *
+ * Using this library instead of the unchecked operations eliminates an entire
+ * class of bugs, so it's recommended to use it always.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-solidity/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Solidity only automatically asserts when dividing by 0
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b != 0, "SafeMath: modulo by zero");
+        return a % b;
+    }
+}
+
+
+// File: project:/contracts/Setting.sol
+pragma solidity ^0.8.0;
+
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/AccessControlEnumerable.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+contract Setting is AccessControlEnumerable {
+
+    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+
+    address public USDT = 0x55d398326f99059fF775485246999027B3197955;
+    uint256 public PERIOD = 7 days;
+
+    address public STAKE_USDT = 0x158Da805682BdC8ee32d52833aD41E74bb951E59;
+
+    // 提取收益手续费费率，总数是一万
+    uint256 public feeRate = 500;
+    // 提取收益的最少手续费
+    uint public minFee = 10 ** uint(18);
+
+    uint256 public dailyRate;
+    uint256 public reinvestRate;
+    address public feeAddress;
+    uint256 public maxInvestAmount;
+
+    // ================ modifiers ================ //
+    modifier onlyManager() {
+        require(hasRole(MANAGER_ROLE, msg.sender), "Unauthorized");
+        _;
+    }
+
+    constructor() {
+        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _setupRole(MANAGER_ROLE, msg.sender);
+    }
+
+    function setDailyRate(uint256 _dailyRate) onlyManager external {
+        dailyRate = _dailyRate;
+    }
+
+    function setReinvestRate(uint256 _reinvestRate) onlyManager external {
+        reinvestRate = _reinvestRate;
+    }
+
+    function setFeeRate(uint256 _feeRate) onlyManager external {
+        feeRate = _feeRate;
+    }
+
+    function setMinFee(uint256 _minFee) onlyManager external {
+        minFee = _minFee;
+    }
+
+    function setFeeAddress(address _feeAddress) onlyManager external {
+        feeAddress = _feeAddress;
+    }
+
+    function setMaxInvestAmount(uint256 _maxInvestAmount) onlyManager external {
+        maxInvestAmount = _maxInvestAmount;
+    }
+
+    function setPeriod(uint256 _period) onlyManager external {
+        PERIOD = _period;
+    }
+
+    // ================ 测试，合约部署后这两个设置不会改变 ================
+    function setUSDT(ERC20 _usdt) onlyManager external {
+        USDT = address(_usdt);
+    }
+
+    function withdrawERC20(ERC20 erc20, uint256 amount) external onlyManager {
+        erc20.transfer(msg.sender, amount);
+    }
+}
+
+
+// File: project:/contracts/helper/Errors.sol
+pragma solidity ^0.8.0;
+
+/**
+ * @title Errors library
+ *
+ * @notice Defines the error messages emitted by the different contracts of the Fintoch protocol
+ */
+library Errors {
+  string public constant CALLER_NOT_POOL_ADMIN = '1'; // 'The caller of the function is not a pool admin'
+  string public constant CALLER_NOT_EMERGENCY_ADMIN = '2'; // 'The caller of the function is not an emergency admin'
+  string public constant CALLER_NOT_POOL_OR_EMERGENCY_ADMIN = '3'; // 'The caller of the function is not a pool or emergency admin'
+  string public constant CALLER_NOT_RISK_OR_POOL_ADMIN = '4'; // 'The caller of the function is not a risk or pool admin'
+  string public constant CALLER_NOT_ASSET_LISTING_OR_POOL_ADMIN = '5'; // 'The caller of the function is not an asset listing or pool admin'
+  string public constant CALLER_NOT_BRIDGE = '6'; // 'The caller of the function is not a bridge'
+  string public constant ADDRESSES_PROVIDER_NOT_REGISTERED = '7'; // 'Pool addresses provider is not registered'
+  string public constant INVALID_ADDRESSES_PROVIDER_ID = '8'; // 'Invalid id for the pool addresses provider'
+  string public constant NOT_CONTRACT = '9'; // 'Address is not a contract'
+  string public constant CALLER_NOT_POOL_CONFIGURATOR = '10'; // 'The caller of the function is not the pool configurator'
+  string public constant CALLER_NOT_ATOKEN = '11'; // 'The caller of the function is not an AToken'
+  string public constant INVALID_ADDRESSES_PROVIDER = '12'; // 'The address of the pool addresses provider is invalid'
+  string public constant INVALID_FLASHLOAN_EXECUTOR_RETURN = '13'; // 'Invalid return value of the flashloan executor function'
+  string public constant RESERVE_ALREADY_ADDED = '14'; // 'Reserve has already been added to reserve list'
+  string public constant NO_MORE_RESERVES_ALLOWED = '15'; // 'Maximum amount of reserves in the pool reached'
+  string public constant EMODE_CATEGORY_RESERVED = '16'; // 'Zero eMode category is reserved for volatile heterogeneous assets'
+  string public constant INVALID_EMODE_CATEGORY_ASSIGNMENT = '17'; // 'Invalid eMode category assignment to asset'
+  string public constant RESERVE_LIQUIDITY_NOT_ZERO = '18'; // 'The liquidity of the reserve needs to be 0'
+  string public constant FLASHLOAN_PREMIUM_INVALID = '19'; // 'Invalid flashloan premium'
+  string public constant INVALID_RESERVE_PARAMS = '20'; // 'Invalid risk parameters for the reserve'
+  string public constant INVALID_EMODE_CATEGORY_PARAMS = '21'; // 'Invalid risk parameters for the eMode category'
+  string public constant BRIDGE_PROTOCOL_FEE_INVALID = '22'; // 'Invalid bridge protocol fee'
+  string public constant CALLER_MUST_BE_POOL = '23'; // 'The caller of this function must be a pool'
+  string public constant INVALID_MINT_AMOUNT = '24'; // 'Invalid amount to mint'
+  string public constant INVALID_BURN_AMOUNT = '25'; // 'Invalid amount to burn'
+  string public constant INVALID_AMOUNT = '26'; // 'Amount must be greater than 0'
+  string public constant RESERVE_INACTIVE = '27'; // 'Action requires an active reserve'
+  string public constant RESERVE_FROZEN = '28'; // 'Action cannot be performed because the reserve is frozen'
+  string public constant RESERVE_PAUSED = '29'; // 'Action cannot be performed because the reserve is paused'
+  string public constant BORROWING_NOT_ENABLED = '30'; // 'Borrowing is not enabled'
+  string public constant STABLE_BORROWING_NOT_ENABLED = '31'; // 'Stable borrowing is not enabled'
+  string public constant NOT_ENOUGH_AVAILABLE_USER_BALANCE = '32'; // 'User cannot withdraw more than the available balance'
+  string public constant INVALID_INTEREST_RATE_MODE_SELECTED = '33'; // 'Invalid interest rate mode selected'
+  string public constant COLLATERAL_BALANCE_IS_ZERO = '34'; // 'The collateral balance is 0'
+  string public constant HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD = '35'; // 'Health factor is lesser than the liquidation threshold'
+  string public constant COLLATERAL_CANNOT_COVER_NEW_BORROW = '36'; // 'There is not enough collateral to cover a new borrow'
+  string public constant COLLATERAL_SAME_AS_BORROWING_CURRENCY = '37'; // 'Collateral is (mostly) the same currency that is being borrowed'
+  string public constant AMOUNT_BIGGER_THAN_MAX_LOAN_SIZE_STABLE = '38'; // 'The requested amount is greater than the max loan size in stable rate mode'
+  string public constant NO_DEBT_OF_SELECTED_TYPE = '39'; // 'For repayment of a specific type of debt, the user needs to have debt that type'
+  string public constant NO_EXPLICIT_AMOUNT_TO_REPAY_ON_BEHALF = '40'; // 'To repay on behalf of a user an explicit amount to repay is needed'
+  string public constant NO_OUTSTANDING_STABLE_DEBT = '41'; // 'User does not have outstanding stable rate debt on this reserve'
+  string public constant NO_OUTSTANDING_VARIABLE_DEBT = '42'; // 'User does not have outstanding variable rate debt on this reserve'
+  string public constant UNDERLYING_BALANCE_ZERO = '43'; // 'The underlying balance needs to be greater than 0'
+  string public constant INTEREST_RATE_REBALANCE_CONDITIONS_NOT_MET = '44'; // 'Interest rate rebalance conditions were not met'
+  string public constant HEALTH_FACTOR_NOT_BELOW_THRESHOLD = '45'; // 'Health factor is not below the threshold'
+  string public constant COLLATERAL_CANNOT_BE_LIQUIDATED = '46'; // 'The collateral chosen cannot be liquidated'
+  string public constant SPECIFIED_CURRENCY_NOT_BORROWED_BY_USER = '47'; // 'User did not borrow the specified currency'
+  string public constant SAME_BLOCK_BORROW_REPAY = '48'; // 'Borrow and repay in same block is not allowed'
+  string public constant INCONSISTENT_FLASHLOAN_PARAMS = '49'; // 'Inconsistent flashloan parameters'
+  string public constant BORROW_CAP_EXCEEDED = '50'; // 'Borrow cap is exceeded'
+  string public constant SUPPLY_CAP_EXCEEDED = '51'; // 'Supply cap is exceeded'
+  string public constant UNBACKED_MINT_CAP_EXCEEDED = '52'; // 'Unbacked mint cap is exceeded'
+  string public constant DEBT_CEILING_EXCEEDED = '53'; // 'Debt ceiling is exceeded'
+  string public constant ATOKEN_SUPPLY_NOT_ZERO = '54'; // 'AToken supply is not zero'
+  string public constant STABLE_DEBT_NOT_ZERO = '55'; // 'Stable debt supply is not zero'
+  string public constant VARIABLE_DEBT_SUPPLY_NOT_ZERO = '56'; // 'Variable debt supply is not zero'
+  string public constant LTV_VALIDATION_FAILED = '57'; // 'Ltv validation failed'
+  string public constant INCONSISTENT_EMODE_CATEGORY = '58'; // 'Inconsistent eMode category'
+  string public constant PRICE_ORACLE_SENTINEL_CHECK_FAILED = '59'; // 'Price oracle sentinel validation failed'
+  string public constant ASSET_NOT_BORROWABLE_IN_ISOLATION = '60'; // 'Asset is not borrowable in isolation mode'
+  string public constant RESERVE_ALREADY_INITIALIZED = '61'; // 'Reserve has already been initialized'
+  string public constant USER_IN_ISOLATION_MODE = '62'; // 'User is in isolation mode'
+  string public constant INVALID_LTV = '63'; // 'Invalid ltv parameter for the reserve'
+  string public constant INVALID_LIQ_THRESHOLD = '64'; // 'Invalid liquidity threshold parameter for the reserve'
+  string public constant INVALID_LIQ_BONUS = '65'; // 'Invalid liquidity bonus parameter for the reserve'
+  string public constant INVALID_DECIMALS = '66'; // 'Invalid decimals parameter of the underlying asset of the reserve'
+  string public constant INVALID_RESERVE_FACTOR = '67'; // 'Invalid reserve factor parameter for the reserve'
+  string public constant INVALID_BORROW_CAP = '68'; // 'Invalid borrow cap for the reserve'
+  string public constant INVALID_SUPPLY_CAP = '69'; // 'Invalid supply cap for the reserve'
+  string public constant INVALID_LIQUIDATION_PROTOCOL_FEE = '70'; // 'Invalid liquidation protocol fee for the reserve'
+  string public constant INVALID_EMODE_CATEGORY = '71'; // 'Invalid eMode category for the reserve'
+  string public constant INVALID_UNBACKED_MINT_CAP = '72'; // 'Invalid unbacked mint cap for the reserve'
+  string public constant INVALID_DEBT_CEILING = '73'; // 'Invalid debt ceiling for the reserve
+  string public constant INVALID_RESERVE_INDEX = '74'; // 'Invalid reserve index'
+  string public constant ACL_ADMIN_CANNOT_BE_ZERO = '75'; // 'ACL admin cannot be set to the zero address'
+  string public constant INCONSISTENT_PARAMS_LENGTH = '76'; // 'Array parameters that should be equal length are not'
+  string public constant ZERO_ADDRESS_NOT_VALID = '77'; // 'Zero address not valid'
+  string public constant INVALID_EXPIRATION = '78'; // 'Invalid expiration'
+  string public constant INVALID_SIGNATURE = '79'; // 'Invalid signature'
+  string public constant OPERATION_NOT_SUPPORTED = '80'; // 'Operation not supported'
+  string public constant DEBT_CEILING_NOT_ZERO = '81'; // 'Debt ceiling is not zero'
+  string public constant ASSET_NOT_LISTED = '82'; // 'Asset is not listed'
+  string public constant INVALID_OPTIMAL_USAGE_RATIO = '83'; // 'Invalid optimal usage ratio'
+  string public constant INVALID_OPTIMAL_STABLE_TO_TOTAL_DEBT_RATIO = '84'; // 'Invalid optimal stable to total debt ratio'
+  string public constant UNDERLYING_CANNOT_BE_RESCUED = '85'; // 'The underlying asset cannot be rescued'
+  string public constant ADDRESSES_PROVIDER_ALREADY_ADDED = '86'; // 'Reserve has already been added to reserve list'
+  string public constant POOL_ADDRESSES_DO_NOT_MATCH = '87'; // 'The token implementation pool address and the pool address provided by the initializing pool do not match'
+  string public constant STABLE_BORROWING_ENABLED = '88'; // 'Stable borrowing is enabled'
+  string public constant SILOED_BORROWING_VIOLATION = '89'; // 'User is trying to borrow multiple assets including a siloed one'
+  string public constant RESERVE_DEBT_NOT_ZERO = '90'; // the total debt of the reserve needs to be 0
+}
+
+
+// File: project:/contracts/interfaces/IInitializableAToken.sol
+pragma solidity ^0.8.0;
+
+import {IPool} from './IPool.sol';
+
+/**
+ * @title IInitializableAToken
+ *
+ * @notice Interface for the initialize function on AToken
+ **/
+interface IInitializableAToken {
+  /**
+   * @dev Emitted when an aToken is initialized
+   * @param underlyingAsset The address of the underlying asset
+   * @param pool The address of the associated pool
+   * @param treasury The address of the treasury
+   * @param incentivesController The address of the incentives controller for this aToken
+   * @param aTokenDecimals The decimals of the underlying
+   * @param aTokenName The name of the aToken
+   * @param aTokenSymbol The symbol of the aToken
+   * @param params A set of encoded parameters for additional initialization
+   **/
+  event Initialized(
+    address indexed underlyingAsset,
+    address indexed pool,
+    address treasury,
+    address incentivesController,
+    uint8 aTokenDecimals,
+    string aTokenName,
+    string aTokenSymbol,
+    bytes params
+  );
+
+  function initialize(
+    IPool pool,
+    address treasury,
+    address underlyingAsset,
+    uint8 aTokenDecimals,
+    string calldata aTokenName,
+    string calldata aTokenSymbol,
+    bytes calldata params
+  ) external;
+}
+
+
+// File: project:/contracts/interfaces/IPool.sol
+pragma solidity ^0.8.0;
+
+import "../types/DataTypes.sol";
+/**
+ * @title IPool
+ *
+ * @notice Defines the basic interface for an Fintoch Pool.
+ **/
+interface IPool {
+
+    // An event sent when a redemption is triggered to the given address.
+    event Redeemed(
+        address from,
+        address to,
+        address erc20contract,
+        uint256 transfer
+    );
+
+    // An event sent when a mint is triggered to the given address.
+    event Mint(
+        address from,
+        address to,
+        uint256 value
+    );
+
+    /**
+    * @notice Use matching pool tokens to exchange for the source token
+   * @param destination: the token receiver address.
+   * @param value: the token value, in token minimum unit.
+   */
+    function redemption(
+        address destination,
+        uint256 value
+    ) external;
+
+    /**
+     * @notice Mint matching pool tokens to destination, at the same time need to deduct the caller's source token
+   * @param destination The address for receive the token
+   * @param value The amount of token to mint
+   */
+    function mint(
+        address destination,
+        uint256 value
+    ) external payable;
+
+    function cancelReinvest(
+        string calldata orderId
+    ) external;
+
+    function withdrawalIncome(
+        uint64[] calldata recordIds
+    ) external;
+
+    function getReserveData(address asset)
+    external
+    view returns (DataTypes.ReserveData memory);
+
+    function getConfiguration(address asset)
+    external
+    view returns (uint256);
+
+    function getSpecificConfiguration(address asset)
+    external
+    view returns (DataTypes.ReserveConfigurationMap memory);
+
+    function setConfiguration(
+        address asset,
+        uint256 result
+    ) external;
+
+    function getEModeCategoryData(uint8 asset)
+    external
+    view returns (DataTypes.EModeCategory memory);
+
+    function setReserveInterestRateStrategyAddress(
+        address asset1,
+        address asset2
+    ) external;
+
+    function getReservesList()
+    external
+    view returns (address[] memory);
+
+    function BRIDGE_PROTOCOL_FEE()
+    external
+    view returns (uint256);
+
+    function updateBridgeProtocolFee(
+        uint256 asset
+    ) external;
+
+    function resetIsolationModeTotalDebt(
+        address asset
+    ) external;
+}
+
+
+// File: project:/contracts/interfaces/IStake.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.10;
+
+interface Stake {
+
+    function deposit(uint256 _amount) external;
+
+    function withdraw(uint256 share) external;
+}
+
+// File: project:/contracts/libraris/ConfiguratorLogic.sol
+pragma solidity ^0.8.0;
+
+import {IPool} from '../interfaces/IPool.sol';
+import {DataTypes} from '../types/DataTypes.sol';
+import {ConfiguratorInputTypes} from '../types/ConfiguratorInputTypes.sol';
+import {IInitializableAToken} from '../interfaces/IInitializableAToken.sol';
+
+/**
+ * @title ConfiguratorLogic library
+ *
+ * @notice Implements the functions to initialize reserves and update aTokens and debtTokens
+ */
+library ConfiguratorLogic {
+
+    // See `IPoolConfigurator` for descriptions
+    event ReserveInitialized(
+        address indexed asset,
+        address indexed aToken,
+        address stableDebtToken,
+        address variableDebtToken,
+        address interestRateStrategyAddress
+    );
+    event ATokenUpgraded(
+        address indexed asset,
+        address indexed proxy,
+        address indexed implementation
+    );
+    event StableDebtTokenUpgraded(
+        address indexed asset,
+        address indexed proxy,
+        address indexed implementation
+    );
+    event VariableDebtTokenUpgraded(
+        address indexed asset,
+        address indexed implementation
+    );
+
+    function executeUpdateVariableDebtToken(
+        IPool cachedPool
+    ) public {
+        DataTypes.ReserveData memory reserveData = cachedPool.getReserveData(address(this));
+
+        uint256 decimals = cachedPool.getConfiguration(address(this));
+
+        bytes memory encodedCall = abi.encodeWithSelector(
+            IInitializableAToken.initialize.selector,
+            cachedPool
+        );
+    }
+}
+
+
+// File: project:/contracts/libraris/PercentageMath.sol
+pragma solidity ^0.8.0;
+
+/**
+ * @title PercentageMath library
+ *
+ * @notice Provides functions to perform percentage calculations
+ * @dev Percentages are defined by default with 2 decimals of precision (100.00). The precision is indicated by PERCENTAGE_FACTOR
+ * @dev Operations are rounded. If a value is >=.5, will be rounded up, otherwise rounded down.
+ **/
+library PercentageMath {
+  // Maximum percentage factor (100.00%)
+  uint256 internal constant PERCENTAGE_FACTOR = 1e4;
+
+  // Half percentage factor (50.00%)
+  uint256 internal constant HALF_PERCENTAGE_FACTOR = 0.5e4;
+
+  /**
+   * @notice Executes a percentage multiplication
+   * @dev assembly optimized for improved gas savings, see https://twitter.com/transmissions11/status/1451131036377571328
+   * @param value The value of which the percentage needs to be calculated
+   * @param percentage The percentage of the value to be calculated
+   * @return result value percentmul percentage
+   **/
+  function percentMul(uint256 value, uint256 percentage) internal pure returns (uint256 result) {
+    // to avoid overflow, value <= (type(uint256).max - HALF_PERCENTAGE_FACTOR) / percentage
+    assembly {
+      if iszero(
+        or(
+          iszero(percentage),
+          iszero(gt(value, div(sub(not(0), HALF_PERCENTAGE_FACTOR), percentage)))
+        )
+      ) {
+        revert(0, 0)
+      }
+
+      result := div(add(mul(value, percentage), HALF_PERCENTAGE_FACTOR), PERCENTAGE_FACTOR)
+    }
+  }
+
+  /**
+   * @notice Executes a percentage division
+   * @dev assembly optimized for improved gas savings, see https://twitter.com/transmissions11/status/1451131036377571328
+   * @param value The value of which the percentage needs to be calculated
+   * @param percentage The percentage of the value to be calculated
+   * @return result value percentdiv percentage
+   **/
+  function percentDiv(uint256 value, uint256 percentage) internal pure returns (uint256 result) {
+    // to avoid overflow, value <= (type(uint256).max - halfPercentage) / PERCENTAGE_FACTOR
+    assembly {
+      if or(
+        iszero(percentage),
+        iszero(iszero(gt(value, div(sub(not(0), div(percentage, 2)), PERCENTAGE_FACTOR))))
+      ) {
+        revert(0, 0)
+      }
+
+      result := div(add(mul(value, PERCENTAGE_FACTOR), div(percentage, 2)), percentage)
+    }
+  }
+}
+
+
+// File: project:/contracts/types/ConfiguratorInputTypes.sol
+pragma solidity ^0.8.0;
+
+library ConfiguratorInputTypes {
+  struct InitReserveInput {
+    address aTokenImpl;
+    address stableDebtTokenImpl;
+    address variableDebtTokenImpl;
+    uint8 underlyingAssetDecimals;
+    address interestRateStrategyAddress;
+    address underlyingAsset;
+    address treasury;
+    address incentivesController;
+    string aTokenName;
+    string aTokenSymbol;
+    string variableDebtTokenName;
+    string variableDebtTokenSymbol;
+    string stableDebtTokenName;
+    string stableDebtTokenSymbol;
+    bytes params;
+  }
+
+  struct UpdateATokenInput {
+    address asset;
+    address treasury;
+    address incentivesController;
+    string name;
+    string symbol;
+    address implementation;
+    bytes params;
+  }
+
+  struct UpdateDebtTokenInput {
+    address asset;
+    address incentivesController;
+    string name;
+    string symbol;
+    address implementation;
+    bytes params;
+  }
+}
+
+
+// File: project:/contracts/types/DataTypes.sol
+pragma solidity ^0.8.0;
+
+library DataTypes {
+    struct ReserveData {
+        //stores the reserve configuration
+        ReserveConfigurationMap configuration;
+        //the liquidity index. Expressed in ray
+        uint128 liquidityIndex;
+        //the current supply rate. Expressed in ray
+        uint128 currentLiquidityRate;
+        //variable borrow index. Expressed in ray
+        uint128 variableBorrowIndex;
+        //the current variable borrow rate. Expressed in ray
+        uint128 currentVariableBorrowRate;
+        //the current stable borrow rate. Expressed in ray
+        uint128 currentStableBorrowRate;
+        //timestamp of last update
+        uint40 lastUpdateTimestamp;
+        //the id of the reserve. Represents the position in the list of the active reserves
+        uint16 id;
+        //aToken address
+        address aTokenAddress;
+        //stableDebtToken address
+        address stableDebtTokenAddress;
+        //variableDebtToken address
+        address variableDebtTokenAddress;
+        //address of the interest rate strategy
+        address interestRateStrategyAddress;
+        //the current treasury balance, scaled
+        uint128 accruedToTreasury;
+        //the outstanding unbacked aTokens minted through the bridging feature
+        uint128 unbacked;
+        //the outstanding debt borrowed against this asset in isolation mode
+        uint128 isolationModeTotalDebt;
+    }
+
+    struct ReserveConfigurationMap {
+        //bit 0-15: LTV
+        //bit 16-31: Liq. threshold
+        //bit 32-47: Liq. bonus
+        //bit 48-55: Decimals
+        //bit 56: reserve is active
+        //bit 57: reserve is frozen
+        //bit 58: borrowing is enabled
+        //bit 59: stable rate borrowing enabled
+        //bit 60: asset is paused
+        //bit 61: borrowing in isolation mode is enabled
+        //bit 62-63: reserved
+        //bit 64-79: reserve factor
+        //bit 80-115 borrow cap in whole tokens, borrowCap == 0 => no cap
+        //bit 116-151 supply cap in whole tokens, supplyCap == 0 => no cap
+        //bit 152-167 liquidation protocol fee
+        //bit 168-175 eMode category
+        //bit 176-211 unbacked mint cap in whole tokens, unbackedMintCap == 0 => minting disabled
+        //bit 212-251 debt ceiling for isolation mode with (ReserveConfiguration::DEBT_CEILING_DECIMALS) decimals
+        //bit 252-255 unused
+
+        uint256 data;
+    }
+
+    struct UserConfigurationMap {
+        /**
+         * @dev Bitmap of the users collaterals and borrows. It is divided in pairs of bits, one pair per asset.
+     * The first bit indicates if an asset is used as collateral by the user, the second whether an
+     * asset is borrowed by the user.
+     */
+        uint256 data;
+    }
+
+    struct EModeCategory {
+        // each eMode category has a custom ltv and liquidation threshold
+        uint16 ltv;
+        uint16 liquidationThreshold;
+        uint16 liquidationBonus;
+        // each eMode category may or may not have a custom oracle to override the individual assets price oracles
+        address priceSource;
+        string label;
+    }
+
+    enum InterestRateMode {
+        NONE,
+        STABLE,
+        VARIABLE
+    }
+
+    struct ReserveCache {
+        uint256 currScaledVariableDebt;
+        uint256 nextScaledVariableDebt;
+        uint256 currPrincipalStableDebt;
+        uint256 currAvgStableBorrowRate;
+        uint256 currTotalStableDebt;
+        uint256 nextAvgStableBorrowRate;
+        uint256 nextTotalStableDebt;
+        uint256 currLiquidityIndex;
+        uint256 nextLiquidityIndex;
+        uint256 currVariableBorrowIndex;
+        uint256 nextVariableBorrowIndex;
+        uint256 currLiquidityRate;
+        uint256 currVariableBorrowRate;
+        uint256 reserveFactor;
+        ReserveConfigurationMap reserveConfiguration;
+        address aTokenAddress;
+        address stableDebtTokenAddress;
+        address variableDebtTokenAddress;
+        uint40 reserveLastUpdateTimestamp;
+        uint40 stableDebtLastUpdateTimestamp;
+    }
+
+    struct ExecuteLiquidationCallParams {
+        uint256 reservesCount;
+        uint256 debtToCover;
+        address collateralAsset;
+        address debtAsset;
+        address user;
+        bool receiveAToken;
+        address priceOracle;
+        uint8 userEModeCategory;
+        address priceOracleSentinel;
+    }
+
+    struct ExecuteSupplyParams {
+        address asset;
+        uint256 amount;
+        address onBehalfOf;
+        uint16 referralCode;
+    }
+
+    struct ExecuteBorrowParams {
+        address asset;
+        address user;
+        address onBehalfOf;
+        uint256 amount;
+        InterestRateMode interestRateMode;
+        uint16 referralCode;
+        bool releaseUnderlying;
+        uint256 maxStableRateBorrowSizePercent;
+        uint256 reservesCount;
+        address oracle;
+        uint8 userEModeCategory;
+        address priceOracleSentinel;
+    }
+
+    struct ExecuteRepayParams {
+        address asset;
+        uint256 amount;
+        InterestRateMode interestRateMode;
+        address onBehalfOf;
+        bool useATokens;
+    }
+
+    struct ExecuteWithdrawParams {
+        address asset;
+        uint256 amount;
+        address to;
+        uint256 reservesCount;
+        address oracle;
+        uint8 userEModeCategory;
+    }
+
+    struct ExecuteSetUserEModeParams {
+        uint256 reservesCount;
+        address oracle;
+        uint8 categoryId;
+    }
+
+    struct FinalizeTransferParams {
+        address asset;
+        address from;
+        address to;
+        uint256 amount;
+        uint256 balanceFromBefore;
+        uint256 balanceToBefore;
+        uint256 reservesCount;
+        address oracle;
+        uint8 fromEModeCategory;
+    }
+
+    struct FlashloanParams {
+        address receiverAddress;
+        address[] assets;
+        uint256[] amounts;
+        uint256[] interestRateModes;
+        address onBehalfOf;
+        bytes params;
+        uint16 referralCode;
+        uint256 flashLoanPremiumToProtocol;
+        uint256 flashLoanPremiumTotal;
+        uint256 maxStableRateBorrowSizePercent;
+        uint256 reservesCount;
+        address addressesProvider;
+        uint8 userEModeCategory;
+        bool isAuthorizedFlashBorrower;
+    }
+
+    struct FlashloanSimpleParams {
+        address receiverAddress;
+        address asset;
+        uint256 amount;
+        bytes params;
+        uint16 referralCode;
+        uint256 flashLoanPremiumToProtocol;
+        uint256 flashLoanPremiumTotal;
+    }
+
+    struct FlashLoanRepaymentParams {
+        uint256 amount;
+        uint256 totalPremium;
+        uint256 flashLoanPremiumToProtocol;
+        address asset;
+        address receiverAddress;
+        uint16 referralCode;
+    }
+
+    struct CalculateUserAccountDataParams {
+        UserConfigurationMap userConfig;
+        uint256 reservesCount;
+        address user;
+        address oracle;
+        uint8 userEModeCategory;
+    }
+
+    struct ValidateBorrowParams {
+        ReserveCache reserveCache;
+        UserConfigurationMap userConfig;
+        address asset;
+        address userAddress;
+        uint256 amount;
+        InterestRateMode interestRateMode;
+        uint256 maxStableLoanPercent;
+        uint256 reservesCount;
+        address oracle;
+        uint8 userEModeCategory;
+        address priceOracleSentinel;
+        bool isolationModeActive;
+        address isolationModeCollateralAddress;
+        uint256 isolationModeDebtCeiling;
+    }
+
+    struct ValidateLiquidationCallParams {
+        ReserveCache debtReserveCache;
+        uint256 totalDebt;
+        uint256 healthFactor;
+        address priceOracleSentinel;
+    }
+
+    struct CalculateInterestRatesParams {
+        uint256 unbacked;
+        uint256 liquidityAdded;
+        uint256 liquidityTaken;
+        uint256 totalStableDebt;
+        uint256 totalVariableDebt;
+        uint256 averageStableBorrowRate;
+        uint256 reserveFactor;
+        address reserve;
+        address aToken;
+    }
+
+    struct InitReserveParams {
+        address asset;
+        address aTokenAddress;
+        address stableDebtAddress;
+        address variableDebtAddress;
+        address interestRateStrategyAddress;
+        uint16 reservesCount;
+        uint16 maxNumberReserves;
+    }
+
+}
+
