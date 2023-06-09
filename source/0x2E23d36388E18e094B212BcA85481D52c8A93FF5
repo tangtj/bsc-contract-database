@@ -1,0 +1,558 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor (){
+        _status = _NOT_ENTERED;//
+    }
+
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        _status = _NOT_ENTERED;
+    }
+}
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+interface IERC20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract BUSD_Lottery is ReentrancyGuard {
+
+    using SafeMath for uint256;
+
+    uint public adminShare = 20;
+    uint public winShare = 70;
+    uint public uplineShare = 10;
+
+    uint public BusdAmountPerBet = 1;
+
+    uint public ticketID = 8720; //count +1 for each day draw
+    //must be changed to provided address
+    address public admin = msg.sender; //address(0xb96d20d8D39EaE63DBc0b785825ffDE7603692bd);//admin address
+    uint public playerID = 5436; //user id, also count +1
+    
+    bytes32 public currentDraw;
+
+    //busd testnet: 0xaB1a4d4f1D656d2450692D237fdD6C7f9146e814
+    //bust mainnet: 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56
+
+    address public BUSD = address(0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9);
+
+    function updateBUSDAddress(address _busd) external onlyOwner{
+        BUSD = _busd;
+    }
+
+    struct lotteryFeatures {
+        uint inPlay; //0 default, 1 - currentplaying, 2 - completed playing
+        bool drawClosed;//false default
+        uint ticketID;
+        uint balance;
+        uint startTime;
+        uint endTime;
+        bytes32 nonce1;//random nonce 1
+        bytes32 nonce2;//random nonce 2
+        bytes32 finalOutput;//final outcome to verify correctness at close of lottery
+        string luckyNumber;//the lucky number that will be revealed later after lottery close
+        bool used; 
+        bool claimedAd;
+        uint totalBetForThisTicket;
+    }
+
+    mapping(bytes32 => lotteryFeatures) public eachLottery;
+    mapping(uint => bytes32) public ticketIdToLotteryBytes32;
+
+    function getKeyDatas() external view returns (  bool registered, 
+                                                    bool regFree, 
+                                                    uint _amountToReg,
+                                                    uint currentLottery, 
+                                                    uint startLotteryTime, 
+                                                    uint endLotteryTime, 
+                                                    uint lotteryBalance,
+                                                    uint lastLottery,
+                                                    string memory lastLotteryNumber,
+                                                    uint amountPerBet,
+                                                    uint userID,
+                                                    uint ongoing,
+                                                    uint totalBetForEachTicket
+                                                    ){
+        //regFee(free/pay), current lottery ID, start lottery, end lottery, lottery balance, contract balance,
+        //yesterday lottery details, admin contact, etc.
+        //users details, reg status, played current game, show details, check time before etc.
+        registered = Players[msg.sender].registered;
+        amountPerBet = BusdAmountPerBet;
+        currentLottery = eachLottery[currentDraw].ticketID;
+        regFree = regIsFree;
+        _amountToReg = amountToReg;
+        startLotteryTime = eachLottery[currentDraw].startTime;
+        endLotteryTime = eachLottery[currentDraw].endTime;
+        lotteryBalance = IERC20(BUSD).balanceOf(address(this));
+        userID = Players[msg.sender].ID;
+        ongoing = eachLottery[currentDraw].inPlay;
+        totalBetForEachTicket = eachLottery[currentDraw].totalBetForThisTicket;
+        
+        if(currentLottery > 8720){
+            lastLottery = ticketID - 1;
+            bytes32 prevLotteryBytes32 = ticketIdToLotteryBytes32[lastLottery];
+            lastLotteryNumber = eachLottery[prevLotteryBytes32].luckyNumber;
+        } 
+        else{
+            lastLottery = 111;
+            lastLotteryNumber = "not yet";
+        }
+            
+    }
+
+    // see if time can also automatically be used to start lottery even if admin is yet to use this function
+    function startLottery(bytes32 lotteryIdentifier, 
+                          uint timeLotteryStarts,
+                          bytes32 nonce1,
+                          bytes32 finalOutput,
+                          uint timeLotteryEnds
+                          ) 
+                          external onlyOwner{
+        require(lotteryIdentifier != bytes32(0), "lottery Identifier cannot be default 0x0000 bytes32 value");
+
+        bool used = eachLottery[lotteryIdentifier].used;//false by default, true for already used bytes32 lotteryID
+        require(!used, "Lottery Identifier must be Unique");
+
+        uint inPlay = eachLottery[currentDraw].inPlay;
+        require(inPlay != 1, "Cannot start Lottery when a Lottery is still playing");
+        
+        eachLottery[lotteryIdentifier].used = true;
+        eachLottery[lotteryIdentifier].inPlay = 1; //0 default, 1 - currentplaying, 2 - completed playing
+        eachLottery[lotteryIdentifier].startTime = timeLotteryStarts;
+        eachLottery[lotteryIdentifier].endTime = timeLotteryEnds;
+        eachLottery[lotteryIdentifier].nonce1 = nonce1;
+        eachLottery[lotteryIdentifier].finalOutput = finalOutput;
+        eachLottery[lotteryIdentifier].ticketID = ticketID;
+        ticketIdToLotteryBytes32[ticketID] = lotteryIdentifier;
+        ticketID += 1;//increase by 1 for next lottery round.
+        currentDraw = lotteryIdentifier;
+
+        emit StartLottery(lotteryIdentifier, timeLotteryStarts, timeLotteryEnds);
+    }
+
+    //if time also elapsed, it is as good as a particular lottery has ended. when lottery ends,
+    // number revealed, and players can know their status.
+    function endLottery() external onlyOwner{//do this first successfully to stop accepting bets
+        require(currentDraw != bytes32(0), "No active Draw yet");
+        uint kk = eachLottery[currentDraw].inPlay;
+        if(kk == 2)
+            revert("Draw Ended for this Lottery ID");
+        eachLottery[currentDraw].inPlay = 2;//completed play
+        eachLottery[currentDraw].drawClosed = true; //draw is closed
+    }
+
+    function reveal(    bytes32 nonce1, 
+                        bytes32 nonce2, 
+                        string memory luckyNumber, 
+                        bytes32 finalOutput) private pure returns (bool) {
+
+        bytes32 firstHash = keccak256(abi.encodePacked(nonce1, nonce2, luckyNumber));
+        bytes32 secondHash = keccak256(abi.encodePacked(firstHash));
+        return (secondHash == finalOutput);
+    }
+
+    //do this second to reveal the bets and automate processing to winners etal.
+    function revealDraw(bytes32 _nonce2, string memory _luckyNumber) external onlyOwner nonReentrant{//anyone can call this.
+        string memory kk = eachLottery[currentDraw].luckyNumber;
+        require(bytes(kk).length == 0, 'Lottery already Revealed');
+        bool isDrawClosed = eachLottery[currentDraw].drawClosed;
+        require(isDrawClosed, "Draw not yet Closed");// you can't reveal luckynumber for draw not yet closed.
+        bytes32 nonce1 = eachLottery[currentDraw].nonce1;
+        bytes32 nonce2 = _nonce2;
+        string memory luckyNumber = _luckyNumber;
+        bytes32 finalOutput = eachLottery[currentDraw].finalOutput;
+
+        bool reveal_ = reveal(nonce1, nonce2, luckyNumber, finalOutput);
+        require(reveal_, "Combination is not valid");
+        
+        eachLottery[currentDraw].nonce2 = nonce2;
+        eachLottery[currentDraw].luckyNumber = luckyNumber;
+
+    }
+
+    mapping(uint => address) public PlayerByID;
+
+    struct playersFeatures{
+        bool registered;
+        uint ID;
+        uint refID; //if refID does not exist or default to 0, then user didn't reg with upline and no payment for upline.
+    }
+
+    mapping(address => playersFeatures) public Players;
+    
+    modifier onlyOwner() {
+        require(msg.sender == admin, "Ownable: caller is not the Admin");
+        _;
+    }
+
+    //allow contract to recieve ether from EOA or other contract
+    receive () payable external {}
+
+    event UpdateBusdAmountPerBet(uint newBusdAmount, uint oldBusdAmount);
+    function updateBusdAmountPerBet(uint busdAmount) external onlyOwner{
+        emit UpdateBusdAmountPerBet(busdAmount, BusdAmountPerBet);
+        BusdAmountPerBet = busdAmount;
+    }
+
+    function emergency() onlyOwner external {
+        payable(msg.sender).transfer(address(this).balance);
+    }
+
+    function emergencyTokens(address _token, uint amount) onlyOwner external{
+        IERC20(_token).transfer(msg.sender, amount);
+    }
+
+    event SetAdminShare(uint newAdminShare, uint oldAdminShare, uint time);
+    function setAdminShare(uint newAdminShare) external onlyOwner{
+        emit SetAdminShare(newAdminShare, adminShare, block.timestamp);
+        adminShare = newAdminShare;
+    }
+
+    event SetWinningShare(uint newWinningShare, uint oldWinningShare, uint time);
+    function setWinningShare(uint newWinningShare) external onlyOwner{
+        emit SetWinningShare(newWinningShare, winShare, block.timestamp);
+        winShare = newWinningShare;
+    }
+
+    event SetUplineShare(uint newUplineShare, uint oldUplineShare);
+    function setUplineShare(uint newUplineShare) external onlyOwner{
+        emit SetUplineShare(newUplineShare, uplineShare);
+        uplineShare = newUplineShare;
+    }
+
+    event ChangeAdmin(address currentAddress, address newAddress);
+    function changeAdmin(address addy) external onlyOwner{
+        emit ChangeAdmin(admin, addy);
+        admin = addy;
+    }
+
+    event StartLottery(bytes32 indexed lotteryID, uint startTime, uint endTime);
+    event TicketsPurchase(address indexed buyer, uint256 indexed lotteryId, uint256 numberTickets);
+    event LotteryClose(uint256 indexed lotteryId, uint256 firstTicketIdNextLottery);
+
+    uint public amountToReg = 1;
+
+    event UpdateAmountToReg(uint newAmount, uint oldAmount);
+    function updateAmountToReg(uint _amountToReg) external onlyOwner{
+        emit UpdateAmountToReg(amountToReg, _amountToReg);
+        amountToReg = _amountToReg;
+    }
+
+    //can be reg free or pay busd
+    bool regIsFree = true;
+
+    function updateIfRegFree(bool _regIsFree) external onlyOwner{
+        regIsFree = _regIsFree;
+    }
+
+    function registerPlayer(uint refereeID) external{
+        if(!regIsFree){//if reg is not free, then collect fee
+            bool receiveRegBusd = collectBusd(amountToReg);
+            require(receiveRegBusd, "Unable to receive Busd");
+        }
+        
+        require(!Players[msg.sender].registered, "This address already registered");
+
+        //require(refereeID != 5436, "Referee ID must be different from default ID");
+        require(refereeID != playerID, "You cannot refer yourself");
+        
+        Players[msg.sender].registered = true;
+        Players[msg.sender].ID = playerID;
+        Players[msg.sender].refID = refereeID;//0 is for user that didn't indicate referee ID from frontend etal.
+        /*address _addyRef = PlayerByID[refereeID];
+        if(_addyRef != address(0)){//valid 
+            PlayerByID[refereeID] = refereeID;//store 
+        }*/
+        PlayerByID[playerID] = msg.sender;//store new user ID in the uint => address mapping
+        //if(refe)
+        //PlayerByI
+        
+        playerID += 1;
+    }
+
+    function collectBusd(uint _amount) public returns (bool){
+        uint amount = BusdAmountPerBet.mul(_amount).mul(10**18); // 1 or more busd
+
+        //bool approved = IERC20(BUSD).approve(address(this), amount);//user have to call this approve for safety reasons
+        //require(approved, "BUSD amount not approved by user to this Contract");
+
+        uint allowance = IERC20(BUSD).allowance(msg.sender, address(this));//check the allowance(amount) here
+        require(allowance >= amount, "Allowance must be equal or more than amount");
+
+        bool success = IERC20(BUSD).transferFrom(msg.sender, address(this), amount);//perform the transfer here.
+        require(success, "BUSD transfer not successful");
+
+        return true;
+    }
+
+    //for referee, they can be the one to claim their winnings by checking or emitting event to outside
+    //listing the winner and their referee. 1-1 relationship, but one account can have many downline.
+    //gas fee, for loops have to be carefully considered to prevent very high gas fees or transaction getting stucked.
+
+    // see if time can also automatically be used to start lottery even if admin is yet to use this function
+    //bool public isPlayActive;//if true, game play is active, at endlottery and claim/autoclaim, it is set false, until completed.
+    /*
+    modifier notContract() {
+        require(!_isContract(msg.sender), "Contract not allowed");
+        require(msg.sender == tx.origin, "Proxy contract not allowed");
+        _;
+    }
+    function _isContract(address _addr) internal view returns (bool) {
+        uint256 size;
+        assembly {
+            size := extcodesize(_addr)
+        }
+        return size > 0;
+    }
+    */
+    /*
+    mapping(uint256 => Lottery) private _lotteries;
+    mapping(uint256 => Ticket) private _tickets;
+    */
+
+    // Keeps track of number of ticket per unique combination for each lotteryId
+    //mapping(uint256 => mapping(uint32 => uint256)) private _numberTicketsPerLotteryId;
+
+    // Keep track of user ticket ids for a given lotteryId
+    //mapping(address => mapping(uint256 => uint256[])) private _userTicketIdsPerLotteryId;
+
+    //_userTicketIdsPerLotteryId[msg.sender][_lotteryId].push(currentTicketId);
+
+    //_tickets[currentTicketId] = Ticket({number: thisTicketNumber, owner: msg.sender});
+    /*
+    struct Ticket {
+        uint32 number;
+        address owner;
+    }*/
+
+    struct storeEachTicketDetails{
+        //uint ticketID;
+        address playedBy;
+        string playerChoice;
+        bool claimed; //false, true
+        bool winOrLose;// 0-default, 1-lose, 2-win
+        //bytes32 playerChoice;
+        //uint correctNumber;
+    }
+
+    uint public playCounter = 0;
+    //mapping
+    mapping(uint256 => mapping(uint32 => uint256)) private _numberTicketsPerLotteryId;
+
+    mapping(uint => mapping(uint => storeEachTicketDetails)) public StoreEachPlayed;
+
+    uint public noOfTicketPerTx = 200;
+
+    function setMaxNumberTicketsPerTx(uint _maxNumberTicketsPerTx) external onlyOwner {
+        require(_maxNumberTicketsPerTx > 0, "Must be > 0");
+        noOfTicketPerTx = _maxNumberTicketsPerTx;
+    }
+
+    /*uint _ticketID, */
+    function buyTickets(string[] calldata _playerChoices) external nonReentrant{
+        uint noOfChoice = _playerChoices.length;
+
+        require(noOfChoice <= noOfTicketPerTx, "Cannot place more than noOfTicketPerTx bets value");
+        require(Players[msg.sender].registered, "Unregistered user cannot Play");
+
+        require(eachLottery[currentDraw].inPlay == 1, "No ongoing Draw");
+
+        require(currentDraw != bytes32(0), "No active Draw yet");
+
+        uint currentTicketId = eachLottery[currentDraw].ticketID;
+
+        bool drawClosed = eachLottery[currentDraw].drawClosed;
+
+        require(!drawClosed, "Draw closed for this Ticket");//check if ticket is still for sale for this ticketID
+        //require(_ticketID != 0, "ticket ID cannot be equal to 0, which is default");
+        //require(currentTicketId == _ticketID, "ticket ID has to match with current playing Ticket");
+
+        bool receiveBusd = collectBusd(noOfChoice);
+        require(receiveBusd, "Unable to receive Busd");
+
+        for(uint x=0; x<noOfChoice; x++){
+            playCounter += 1; //general counter for this contract
+            eachLottery[currentDraw].totalBetForThisTicket += 1;//store totalbet for each ticket. needed when claim/autoclaim
+            uint totalBet = eachLottery[currentDraw].totalBetForThisTicket;
+            StoreEachPlayed[currentTicketId][totalBet].playedBy = msg.sender;
+            StoreEachPlayed[currentTicketId][totalBet].playerChoice = _playerChoices[x];
+        }
+
+        eachLottery[currentDraw].balance += noOfChoice.mul(10**18);
+        emit TicketsPurchase(msg.sender, currentTicketId, noOfChoice);
+    }
+
+    /*function claimTicketByOneUser(uint _ticketID) external nonReentrant{//claim by any user
+        bool drawClosed = eachLottery[_ticketID].drawClosed;
+        uint totalBetForTicket = eachLottery[_ticketID].totalBetForThisTicket;
+        uint currentTicketId = eachLottery[_ticketID].ticketID;
+        bytes32 nonce2 = eachLottery[_ticketID].nonce2;
+
+        require(drawClosed, "Game still ongoing, yet to be closed."); //draw is still ongoing.
+        require(nonce2 != bytes32(0), "Game has to be revealed before claiming");//d luckynumber and nonce2 not yet revealed
+
+        bool checkClaimed = StoreEachPlayed[currentTicketId][x].claimed;
+        require(!checkClaimed, "This ticket is already autoclaimed");
+
+
+    }*/
+
+    address[] storeWinAddress;
+    address[] storeUplineAddressForWinner;
+
+    function claimTicketForDailyDrawAll() external nonReentrant{//claim by any user or admin, automated. for just concluded draw.
+        bool drawClosed = eachLottery[currentDraw].drawClosed;
+        require(drawClosed, "Game still ongoing, yet to be closed."); //lottery is still ongoing.
+
+        uint totalBetForTicket = eachLottery[currentDraw].totalBetForThisTicket;
+        uint currentTicketId = eachLottery[currentDraw].ticketID;
+        bytes32 nonce2 = eachLottery[currentDraw].nonce2;
+        
+        require(nonce2 != bytes32(0), "Game has to be revealed before claiming");//d luckynumber and nonce2 not yet revealed
+
+        string memory luckyNumber_ = eachLottery[currentDraw].luckyNumber;
+        bytes32 luckKeccak = keccak256(abi.encodePacked(luckyNumber_));
+        string memory holdNum;
+        bool checkClaimed;
+        bytes32 store1;
+        for(uint x=1; x<=totalBetForTicket; x++){
+            holdNum = StoreEachPlayed[currentTicketId][x].playerChoice; 
+            store1 = keccak256(abi.encodePacked(holdNum));
+            checkClaimed = StoreEachPlayed[currentTicketId][x].claimed;
+
+            if(store1 == luckKeccak && !checkClaimed){//correct prediction and not yet claimed
+                storeWinAddress.push(StoreEachPlayed[currentTicketId][x].playedBy);
+                StoreEachPlayed[currentTicketId][x].winOrLose = true;
+            }
+            StoreEachPlayed[currentTicketId][x].claimed = true; 
+        }
+        
+        address[] memory newStoreWinAddress = storeWinAddress;
+        delete storeWinAddress;
+
+        uint noOfWinners = newStoreWinAddress.length;
+        uint currentBalance = IERC20(BUSD).balanceOf(address(this));
+
+        uint eachOfWinnerGets = 0;
+        uint _adminShare = 0;
+
+        if(currentBalance > 0){
+
+            if(noOfWinners > 0){
+                eachOfWinnerGets = currentBalance.mul(winShare).div(100).div(noOfWinners);
+            }
+
+            _adminShare = currentBalance.mul(adminShare).div(100);
+
+            bool adClaimed = eachLottery[currentDraw].claimedAd;
+
+            require(!adClaimed, "Auto Claim already done for this lottery");//since 
+            eachLottery[currentDraw].claimedAd = true;
+
+            if(!adClaimed && _adminShare > 0){//admin claim here
+                eachLottery[currentDraw].claimedAd = true;
+                IERC20(BUSD).transfer(admin, _adminShare);
+            }
+
+            address[] memory newUplineStoreAddress;
+            
+            if(noOfWinners > 0){//winners claim here
+                address _addy;
+                for(uint x=0; x<noOfWinners; x++){
+                    IERC20(BUSD).transfer(newStoreWinAddress[x], eachOfWinnerGets);
+                    uint _refID = Players[newStoreWinAddress[x]].refID;
+                    _addy = PlayerByID[_refID];
+                    if (_addy != address(0))//valid address resolving ID to valid address not zero address
+                        storeUplineAddressForWinner.push(_addy);
+                }
+
+                newUplineStoreAddress = storeUplineAddressForWinner;
+                delete storeUplineAddressForWinner;
+
+                uint totalUpline = newUplineStoreAddress.length;
+                uint _uplineShare;
+                uint _eachUplineGets;
+
+                if(totalUpline > 0){
+                    _uplineShare = currentBalance.mul(uplineShare).div(100);
+                    _eachUplineGets = _uplineShare.div(totalUpline);
+
+                    for(uint x=0; x<totalUpline; x++){
+                        IERC20(BUSD).transfer(newUplineStoreAddress[x], _eachUplineGets);//send to uplines
+                    }
+                }
+            }
+        }      
+    }
+
+}

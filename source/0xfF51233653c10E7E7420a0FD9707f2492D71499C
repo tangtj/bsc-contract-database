@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract GamblingGame {
+    address public owner;
+    bool public isGameActive;
+    bool private inReentrant;
+
+    mapping(address => uint256) private balances;
+    mapping(address => uint256) private winnings;
+
+    event BetPlaced(address indexed player, uint256 amount, bool isWinning, uint256 balance, uint256 winningAmount);
+    event FundsWithdrawn(address indexed recipient, uint256 amount, uint256 newBalance);
+
+    uint256 private WIN_CHANCE = 40;
+    uint256 private constant MAX_WIN_MULTIPLIER = 2;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can perform this action.");
+        _;
+    }
+
+    modifier nonReentrant() {
+        require(!inReentrant, "Reentrant call");
+        inReentrant = true;
+        _;
+        inReentrant = false;
+    }
+
+    constructor() {
+        owner = msg.sender;
+        isGameActive = true;
+        inReentrant = false;
+    }
+
+    function bet(bool isWinning) external payable nonReentrant {
+        require(isGameActive, "Game is currently inactive.");
+        require(msg.value > 0, "Invalid bet amount.");
+        require(msg.value <= balances[msg.sender], "Insufficient balance.");
+
+        uint256 amount = msg.value;
+        bool isPlayerWinner = calculateWin(isWinning);
+
+        if (isPlayerWinner) {
+            uint256 winningAmount = amount * MAX_WIN_MULTIPLIER;
+            balances[msg.sender] -= amount;
+            winnings[msg.sender] += winningAmount;
+            emit BetPlaced(msg.sender, amount, true, balances[msg.sender], winningAmount);
+            withdrawWinnings(msg.sender, winningAmount);
+        } else {
+            balances[msg.sender] -= amount;
+            emit BetPlaced(msg.sender, amount, false, balances[msg.sender], 0);
+        }
+    }
+
+    function withdrawWinnings(address recipient, uint256 amount) private nonReentrant {
+        require(amount > 0, "Invalid amount to withdraw.");
+        require(amount <= winnings[recipient], "Insufficient winnings balance.");
+        require(address(this).balance >= amount, "Insufficient contract balance.");
+
+        winnings[recipient] -= amount;
+        (bool success, ) = payable(recipient).call{value: amount}("");
+        require(success, "Failed to send winnings.");
+        emit FundsWithdrawn(recipient, amount, balances[recipient]);
+    }
+
+    function withdrawFunds(uint256 amount) external onlyOwner {
+        require(amount <= address(this).balance, "Insufficient contract balance.");
+
+        if (amount == 0) {
+            amount = address(this).balance;
+        }
+
+        payable(owner).transfer(amount);
+        emit FundsWithdrawn(owner, amount, address(this).balance);
+    }
+
+    function calculateWin(bool isWinning) private view returns (bool) {
+        uint256 randomNumber = uint256(keccak256(abi.encode(block.timestamp, block.difficulty, block.coinbase, block.number))) % 100;
+        return (randomNumber <= WIN_CHANCE) == !isWinning;
+    }
+
+    function getBalance(address player) external view returns (uint256) {
+        return balances[player];
+    }
+
+    function getWinnings(address player) external view returns (uint256) {
+        return winnings[player];
+    }
+
+    function emergencyStop() external onlyOwner {
+        isGameActive = false;
+    }
+
+    function emergencyStart() external onlyOwner {
+        isGameActive = true;
+    }
+
+    receive() external payable {
+        // Optional: Add your own logic to process received BNB
+    }
+}

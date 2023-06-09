@@ -1,0 +1,626 @@
+
+// File: contracts/Powerball/PowerballSafuu.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.8.7;
+
+import '@openzeppelin/contracts/security/ReentrancyGuard.sol';
+import '../interfaces/IPancakeRouter.sol';
+import '../interfaces/IPRC20.sol';
+import '../interfaces/IPotContract.sol';
+
+contract PowerBallSafuuGo is ReentrancyGuard {
+    enum STATE {
+        WAITING,
+        STARTED,
+        LIVE,
+        CALCULATING_WINNER
+    }
+
+    struct Entry {
+        address player;
+        uint256 amount;
+    }
+
+    address public owner;
+    address public admin;
+    address public tokenAddress;
+    uint8 public tokenDecimal;
+
+    address internal constant pancakeRouterAddr = 0x10ED43C718714eb63d5aA57B78B54704E256024E; // testnet: 0xD99D1c33F9fC3444f8101754aBC46c52416550D1, mainnet: 0x10ED43C718714eb63d5aA57B78B54704E256024E
+    IPancakeRouter02 public router;
+
+    STATE public roundStatus;
+    uint256 public entryIds;
+    uint256 public roundIds;
+    uint256 public roundDuration;
+    uint256 public roundStartTime;
+    uint256 public roundLiveTime;
+    uint256 public minEntranceAmount;
+    uint256 public currentEntryCount;
+    Entry[] public currentEntries;
+
+    uint256 public totalEntryAmount;
+    uint256 public nonce;
+    uint256 public calculateIndex;
+
+    uint256 public platformFee = 100;
+    uint256 public treasuryFee = 100;
+    uint256 public burnFee = 100;
+    uint256 constant upperLimit = 400;
+
+    address public BNBPAddr = 0x4D9927a8Dc4432B93445dA94E4084D292438931F; // mainnet: 0x4D9927a8Dc4432B93445dA94E4084D292438931F, testnet: 0xcAf4f8C9f1e511B3FEb3226Dc3534E4c4b2f3D70
+    address public potContractAddr;
+    address public treasuryAddress;
+    address public burnAddress;
+
+    constructor(address _tokenAddress, address _potContractAddr, address _treasuryAddr, address _burnAddr) {
+        owner = msg.sender;
+        admin = msg.sender;
+        tokenAddress = _tokenAddress;
+        treasuryAddress = _treasuryAddr;
+        burnAddress = _burnAddr;
+        tokenDecimal = IPRC20(tokenAddress).decimals();
+        roundStatus = STATE.WAITING;
+        roundDuration = 60; // 5 secs
+        roundIds = 1;
+
+        minEntranceAmount = 1700000 * 10 ** tokenDecimal; // 1 USD Volt
+
+        router = IPancakeRouter02(pancakeRouterAddr);
+        potContractAddr = _potContractAddr;
+    }
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin || msg.sender == owner, '!admin');
+        _;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, '!owner');
+        _;
+    }
+
+    modifier validBNBP() {
+        require(BNBPAddr != address(0), '!BNBP Addr');
+        _;
+    }
+
+    modifier excludeContract() {
+        require(tx.origin == msg.sender, 'Contract');
+        _;
+    }
+
+    event EnteredPot(uint256 indexed roundId, uint256 indexed entryId, address indexed player, uint256 amount);
+    event StartedCalculating(uint256 indexed roundId);
+    event CalculateWinner(
+        uint256 indexed roundId,
+        address indexed winner,
+        uint256 reward,
+        uint256 total,
+        uint256 index,
+        uint256 treasury,
+        uint256 burn,
+        uint256 platform
+    );
+
+    event TokenSwapFailedString(string tokenName, string reason);
+    event TokenSwapFailedBytes(string tokenName, bytes reason);
+
+    function changeOwner(address _owner) public onlyOwner {
+        owner = _owner;
+    }
+
+    function changeAdmin(address _adminAddress) public onlyOwner {
+        admin = _adminAddress;
+    }
+
+    function setBNBPAddress(address _address) public onlyAdmin {
+        BNBPAddr = _address;
+    }
+
+    function enterPot(uint256 _amount) external excludeContract {
+        unchecked {
+            require(_amount >= minEntranceAmount, 'Min');
+            require(roundLiveTime == 0 || block.timestamp <= roundLiveTime + roundDuration, 'ended');
+
+            IPRC20 token = IPRC20(tokenAddress);
+            uint256 beforeBalance = token.balanceOf(address(this));
+            token.transferFrom(msg.sender, address(this), _amount);
+            uint256 rAmount = token.balanceOf(address(this)) - beforeBalance;
+
+            uint256 count = currentEntryCount;
+            if (currentEntries.length == count) {
+                currentEntries.push();
+            }
+
+            Entry storage entry = currentEntries[count];
+            entry.player = msg.sender;
+            entry.amount = rAmount;
+            ++currentEntryCount;
+            ++entryIds;
+            totalEntryAmount = totalEntryAmount + rAmount;
+
+            if (
+                currentEntryCount >= 2 && currentEntries[count - 1].player != msg.sender && roundStatus == STATE.STARTED
+            ) {
+                roundStatus = STATE.LIVE;
+                roundLiveTime = block.timestamp;
+            } else if (currentEntryCount == 1) {
+                roundStatus = STATE.STARTED;
+                roundStartTime = block.timestamp;
+            }
+
+            emit EnteredPot(roundIds, entryIds, msg.sender, rAmount);
+        }
+    }
+
+    function calculateWinner() public {
+        bool isRoundEnded = roundStatus == STATE.LIVE && roundLiveTime + roundDuration < block.timestamp;
+        require(isRoundEnded || roundStatus == STATE.CALCULATING_WINNER, 'Not ended');
+
+        if (isRoundEnded) {
+            nonce = fullFillRandomness() % (totalEntryAmount + 1);
+            calculateIndex = 0;
+        }
+        (address winner, uint256 index) = determineWinner();
+        if (winner != address(0)) {
+            IPRC20 token = IPRC20(tokenAddress);
+            uint256 totalFeePercent = platformFee + treasuryFee + burnFee;
+            uint256 totalFeeAmount = (totalEntryAmount * totalFeePercent) / 1000;
+            uint256 reward = totalEntryAmount - totalFeeAmount;
+            uint256 treasuryAmount = (totalFeeAmount * treasuryFee) / totalFeePercent;
+            uint256 burnAmount = (totalFeeAmount * burnFee) / totalFeePercent;
+            uint256 amount = totalFeeAmount - treasuryAmount - burnAmount;
+
+            token.transfer(winner, reward);
+            token.transfer(treasuryAddress, treasuryAmount);
+            token.transfer(burnAddress, burnAmount);
+            emit CalculateWinner(roundIds, winner, reward, totalEntryAmount, index, treasuryAmount, burnAmount, amount);
+
+            swapAccumulatedFees(amount);
+            initializeRound();
+        } else {
+            roundStatus = STATE.CALCULATING_WINNER;
+            emit StartedCalculating(roundIds);
+        }
+    }
+
+    /**
+     * @dev Attempts to select a random winner
+     */
+    function determineWinner() internal returns (address winner, uint256 winnerIndex) {
+        uint256 start = calculateIndex;
+        uint256 length = currentEntryCount;
+        uint256 _nonce = nonce;
+        for (uint256 index = 0; index < 3000 && (start + index) < length; index++) {
+            uint256 amount = currentEntries[start + index].amount;
+            if (_nonce <= amount) {
+                //That means that the winner has been found here
+                winner = currentEntries[start + index].player;
+                winnerIndex = start + index;
+                return (winner, winnerIndex);
+            }
+            _nonce -= amount;
+        }
+        nonce = _nonce;
+        calculateIndex = start + 3000;
+    }
+
+    function initializeRound() internal {
+        delete currentEntryCount;
+        delete roundLiveTime;
+        delete roundStartTime;
+        delete totalEntryAmount;
+        roundStatus = STATE.WAITING;
+        ++roundIds;
+    }
+
+    /**   @dev generates a random number
+     */
+    function fullFillRandomness() internal view returns (uint256) {
+        return uint256(uint128(bytes16(keccak256(abi.encodePacked(block.difficulty, block.timestamp)))));
+    }
+
+    /**
+     * @dev Swaps accumulated fees into BNB, and then to BNBP
+     */
+    function swapAccumulatedFees(uint256 amount) internal validBNBP {
+        address[] memory path = new address[](3);
+        path[0] = tokenAddress;
+        path[1] = router.WETH();
+        path[2] = BNBPAddr;
+        IPRC20(tokenAddress).approve(address(router), amount);
+        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(amount, 0, path, address(this), block.timestamp);
+        uint256 balance = IPRC20(BNBPAddr).balanceOf(address(this));
+        IPRC20(BNBPAddr).approve(potContractAddr, balance);
+        IPotLottery(potContractAddr).addAdminTokenValue(balance);
+    }
+
+    /**
+     * @dev returns status of current round
+     */
+    function getRoundStatus()
+        external
+        view
+        returns (
+            uint256 _roundIds,
+            STATE _roundStatus,
+            uint256 _roundStartTime,
+            uint256 _roundLiveTime,
+            uint256 _roundDuration,
+            uint256 _totalAmount,
+            uint256 _entryCount,
+            uint256 _minEntranceAmount,
+            uint256 _treasuryFee,
+            uint256 _burnFee,
+            uint256 _platformFee
+        )
+    {
+        _roundIds = roundIds;
+        _roundStatus = roundStatus;
+        _roundLiveTime = roundLiveTime;
+        _roundStartTime = roundStartTime;
+        _roundDuration = roundDuration;
+        _minEntranceAmount = minEntranceAmount;
+        _totalAmount = totalEntryAmount;
+        _entryCount = currentEntryCount;
+        _treasuryFee = treasuryFee;
+        _burnFee = burnFee;
+        _platformFee = platformFee;
+    }
+
+    function setRoundDuration(uint256 value) external onlyAdmin {
+        roundDuration = value;
+    }
+
+    function setTreasuryAddress(address addr) external onlyAdmin {
+        treasuryAddress = addr;
+    }
+
+    function setBurnAddress(address addr) external onlyAdmin {
+        burnAddress = addr;
+    }
+
+    function setPotContractAddress(address addr) external onlyAdmin {
+        potContractAddr = addr;
+    }
+
+    function setTokenAddress(address addr) external onlyAdmin {
+        tokenAddress = addr;
+    }
+
+    function setMinimumEntranceAmount(uint256 amount) external onlyAdmin {
+        minEntranceAmount = amount;
+    }
+
+    function setFeePercent(uint256 _treasury, uint256 _burn, uint256 _platform) external onlyAdmin {
+        require(_treasury + _burn + _platform < upperLimit, 'Upper limit');
+        treasuryFee = _treasury;
+        burnFee = _burn;
+        platformFee = _platform;
+    }
+
+    function withdrawETH(address receiver, uint256 amount) external onlyAdmin {
+        bool sent = payable(receiver).send(amount);
+        require(sent, 'fail');
+    }
+
+    function withdrawToken(address receiver, address _tokenAddr, uint256 amount) external onlyAdmin {
+        if (_tokenAddr == tokenAddress) {
+            uint256 balance = IPRC20(_tokenAddr).balanceOf(address(this));
+            require(balance >= totalEntryAmount + amount, 'f');
+        }
+
+        IPRC20(_tokenAddr).transfer(receiver, amount);
+    }
+}
+
+
+// File: contracts/interfaces/IPRC20.sol
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0;
+
+interface IPRC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function decimals() external view returns (uint8);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+// File: contracts/interfaces/IPotContract.sol
+/**
+ *Submitted for verification at Etherscan.io on 2022-04-18
+ */
+
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.8.0;
+
+// File: PotContract.sol
+
+interface IPotLottery {
+    struct Token {
+        address tokenAddress;
+        string tokenSymbol;
+        uint256 tokenDecimal;
+    }
+
+    enum POT_STATE {
+        PAUSED,
+        WAITING,
+        STARTED,
+        LIVE,
+        CALCULATING_WINNER
+    }
+
+    event EnteredPot(
+        string tokenName,
+        address indexed userAddress,
+        uint256 indexed potRound,
+        uint256 usdValue,
+        uint256 amount,
+        uint256 indexed enteryCount,
+        bool hasEntryInCurrentPot
+    );
+    event CalculateWinner(
+        address indexed winner,
+        uint256 indexed potRound,
+        uint256 potValue,
+        uint256 amount,
+        uint256 amountWon,
+        uint256 participants
+    );
+
+    event PotStateChange(uint256 indexed potRound, POT_STATE indexed potState, uint256 indexed time);
+    event TokenSwapFailed(string tokenName);
+
+    function getRefund() external;
+
+    function airdropPool() external view returns (uint256);
+
+    function lotteryPool() external view returns (uint256);
+
+    function burnPool() external view returns (uint256);
+
+    function airdropInterval() external view returns (uint256);
+
+    function burnInterval() external view returns (uint256);
+
+    function lotteryInterval() external view returns (uint256);
+
+    function fullFillRandomness() external view returns (uint256);
+
+    function getBNBPrice() external view returns (uint256 price);
+
+    function swapAccumulatedFees() external;
+
+    function burnAccumulatedBNBP() external;
+
+    function airdropAccumulatedBNBP() external returns (uint256);
+
+    function addAdminTokenValue(uint256 value) external;
+}
+
+
+// File: contracts/interfaces/IPancakeRouter.sol
+//SPDX-License-Identifier: MIT
+pragma solidity >=0.6.2;
+
+interface IPancakeRouter01 {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETH(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountToken, uint amountETH);
+    function removeLiquidityWithPermit(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETHWithPermit(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountToken, uint amountETH);
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapTokensForExactTokens(
+        uint amountOut,
+        uint amountInMax,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+    function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+
+    function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+interface IPancakeRouter02 is IPancakeRouter01 {
+    function removeLiquidityETHSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountETH);
+    function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountETH);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+// File: @openzeppelin/contracts/security/ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (security/ReentrancyGuard.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+

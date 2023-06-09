@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.2;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract CryptoNuwunSewu is IBEP20 {
+    string public name = "Crypto Nuwun Sewu";
+    string public symbol = "NS";
+    uint8 public decimals = 18;
+    uint256 public override totalSupply = 4200000000000000 * 10 ** uint256(decimals);
+    mapping(address => uint256) balances;
+    mapping(address => mapping(address => uint256)) allowances;
+    
+    // Address of the BNB token contract on the BSC network
+    address private constant BNB_TOKEN_ADDRESS = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    
+    // Reward rate of 5%
+    uint256 private constant REWARD_RATE = 500;
+    uint256 private constant REWARD_RATE_BASE = 10000;
+    
+    // Total BNB rewards distributed
+    uint256 private totalBNBRewards;
+    
+    // Event for BNB rewards
+    event BNBReward(address indexed recipient, uint256 amount);
+    event BNBRewardClaimed(address indexed recipient, uint256 amount);
+
+    constructor() {
+        balances[msg.sender] = totalSupply;
+    }
+    
+    function balanceOf(address account) public view override returns (uint256) {
+        return balances[account];
+    }
+    
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        require(balances[msg.sender] >= amount, "Insufficient balance");
+        
+        // Calculate the BNB reward for the sender and recipient
+        uint256 senderBNBReward = amount * REWARD_RATE / REWARD_RATE_BASE;
+        uint256 recipientBNBReward = senderBNBReward;
+        
+        // Update the total BNB rewards distributed
+        totalBNBRewards += senderBNBReward + recipientBNBReward;
+        
+        // Transfer the tokens
+        balances[msg.sender] -= amount;
+        balances[recipient] += amount;
+        
+        // Emit the transfer event and the BNB reward event
+        emit Transfer(msg.sender, recipient, amount);
+        emit BNBReward(msg.sender, senderBNBReward);
+        emit BNBReward(recipient, recipientBNBReward);
+        
+        return true;
+    }
+    
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return allowances[owner][spender];
+    }
+    
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        allowances[msg.sender][spender] = amount;
+        
+        emit Approval(msg.sender, spender, amount);
+        
+        return true;
+    }
+    
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        require(balances[sender] >= amount, "Insufficient balance");
+        require(allowances[sender][msg.sender] >= amount, "Insufficient allowance");
+        
+        // Calculate the BNB reward for the sender and recipient
+        uint256 senderBNBReward = amount * REWARD_RATE / REWARD_RATE_BASE;
+        uint256 recipientBNBReward = senderBNBReward;
+        
+        // Update the total BNB rewards distributed
+        totalBNBRewards += senderBNBReward + recipientBNBReward;
+        
+        // Transfer the tokens
+        balances[sender] -= amount;
+        balances[recipient] += amount;
+        allowances[sender][msg.sender] -= amount;
+        
+        // Emit the transfer event and the BNB reward event
+        emit Transfer(sender, recipient, amount);
+        emit BNBReward(sender, senderBNBReward);
+        emit BNBReward(recipient, recipientBNBReward);
+        
+        return true;
+    }
+    
+    // Function to claim BNB rewards
+    function claimBNBRewards() public {
+        uint256 unclaimedRewards = getBNBRewards(msg.sender);
+        
+        require(unclaimedRewards > 0, "No rewards to claim");
+        
+        // Mark the claimed rewards as claimed
+        claimedRewards[msg.sender] += unclaimedRewards;
+        
+        // Transfer the BNB rewards to the sender
+        (bool success,) = msg.sender.call{value: unclaimedRewards}("");
+        require(success, "BNB transfer failed");
+        
+        // Emit the BNB reward event
+        emit BNBRewardClaimed(msg.sender, unclaimedRewards);
+    }
+    
+    // Function to get the BNB rewards for a given holder
+    function getBNBRewards(address holder) public view returns (uint256) {
+        uint256 holderBalance = balanceOf(holder);
+        uint256 holderShare = holderBalance * REWARD_RATE_BASE / totalSupply;
+        uint256 holderRewards = totalBNBRewards * holderShare / REWARD_RATE_BASE;
+        uint256 unclaimedRewards = holderRewards - claimedRewards[holder];
+        
+        return unclaimedRewards;
+    }
+    
+    // Mapping to keep track of claimed BNB rewards
+    mapping(address => uint256) private claimedRewards;
+}

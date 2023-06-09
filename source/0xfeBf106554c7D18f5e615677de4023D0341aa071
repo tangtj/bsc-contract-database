@@ -1,0 +1,236 @@
+/*                                                                                                                                                                                      
+ * ARK Legacy Savings Account
+ * 
+ * Written by: MrGreenCrypto
+ * Co-Founder of CodeCraftrs.com
+ * 
+ * SPDX-License-Identifier: None
+ */
+
+pragma solidity 0.8.19;
+
+interface IBEP20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount ) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
+}
+
+interface ISWAP {
+    function getCurrentPriceInUSD() external view returns (uint256);
+    function removeLiquidity(uint256 amount, uint256 minimumBusd) external;
+}
+
+interface IBOND {
+    function unstake(address investor, uint256 amount) external;
+    function stake(address investor, uint256 amount) external;
+    function claimRewardsFor(address investor) external;
+    function distributeRewards() external;
+    function addToRewardsPool(uint256 busdAmount) external;
+    function sendRewards(uint256 busdAmount) external;
+    function getBondBalance(address investor) external view returns(uint256);
+    function shares(address investor) external view returns(uint256);
+}
+
+interface ILEGACY {
+    function ownerOf(uint256 id) external view returns (address);
+    function levelOfNft(uint256 id) external view returns (uint256);
+    function nftPriceOfLevel(uint256 level) external view returns (uint256);
+    function excluded(uint256 id) external view returns (uint256);
+    function claimedRewards(uint256 id) external view returns (uint256);
+    function totalRewardsPerShare() external view returns (uint256);
+    function rewardsPool() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function tokenOfOwnerByIndex(address account, uint256 index) external view returns (uint256);
+    function mintAndLockToWallet(address to, uint256 level, bool isPaid) external;
+    function getPriceForLevelUp(uint256 id) external view returns(uint256);
+    function levelUp(uint256 id) external;
+}
+
+interface ILSA {
+    function depositBUSDForSomeone(address investor, uint256 amount) external;
+    function balance(address account) external view returns (uint256);
+}
+
+interface IVAULT {
+    function addSparkPlayer(address investor) external;
+}
+
+contract ARK_Savings_Account {
+    address public constant CEO = 0xdf0048DF98A749ED36553788B4b449eA7a7BAA88;
+    address public constant VAULT = 0x13fD16538FF8B3AeA324BC4d2863eb9EA78E1691;
+    ISWAP public constant SWAP = ISWAP(0xE9Aa536D373ADc29D0A40788EB29b706eA101413);
+    IBEP20 public constant ARK = IBEP20(0x111120a4cFacF4C78e0D6729274fD5A5AE2B1111);
+    IBEP20 public constant BUSD = IBEP20(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);
+    ILEGACY public constant LEGACY = ILEGACY(0x6733a95654fF739e6058247Dd7556BF9Ce2dEdf6);
+    ILSA public constant OLD = ILSA(0xECC09FB183bCBfF9DF18Ce14ea5feeD2fcCb3F13);
+
+    mapping(address => bool) public isArk;
+
+    mapping(address => Deposit[]) public deposits;
+    mapping(address => uint256) public balance;
+
+    uint256 public totalDepositsARK;
+    uint256 public totalDepositsBUSD;
+    bool public isClosed = false;
+
+    struct Deposit{
+        uint256 valueInBusd;
+        uint256 timestamp;
+    }
+    
+    address[] public savingsAccounts;
+
+    modifier onlyCEO() {
+        require(msg.sender == CEO, "Only CEO");
+        _;
+    }
+
+    modifier onlyArk() {
+        require(isArk[msg.sender], "Only ARK can do that");
+        _;
+    }
+
+	constructor() {
+        isArk[CEO] = true;
+        IBEP20(BUSD).approve(address(LEGACY), type(uint256).max);
+    }
+
+    function getUsdValue(uint256 amount) public view returns (uint256) {
+        uint256 usdEquivalent = amount * SWAP.getCurrentPriceInUSD() / 10**18;
+        return usdEquivalent;
+    }
+
+    function addAccount(address account) internal {
+        if(balance[account] == 0) {
+            savingsAccounts.push(account);
+            IVAULT(VAULT).addSparkPlayer(account);
+        }
+    }
+
+    function depositBUSD(uint256 amount) external {
+        if(amount == 0) return;
+        addAccount(msg.sender);
+        if(balance[msg.sender] + amount > checkMaxBalance(msg.sender)) amount = checkMaxBalance(msg.sender) - balance[msg.sender];
+        BUSD.transferFrom(msg.sender,address(this),amount);
+        totalDepositsBUSD += amount;
+        Deposit memory thisDeposit;
+        thisDeposit.valueInBusd = amount;
+        thisDeposit.timestamp = block.timestamp;
+        deposits[msg.sender].push(thisDeposit);
+        balance[msg.sender] += amount;
+        checkBalance(msg.sender);
+    }    
+    
+    function depositBUSDForSomeone(address investor, uint256 amount) public {
+        if(amount == 0) return;
+        addAccount(msg.sender);
+        if(balance[investor] + amount > checkMaxBalance(investor)) amount = checkMaxBalance(investor) - balance[investor];
+        BUSD.transferFrom(msg.sender, address(this), amount);
+        totalDepositsBUSD += amount;
+        Deposit memory thisDeposit;
+        thisDeposit.valueInBusd = amount;
+        thisDeposit.timestamp = block.timestamp;
+        deposits[investor].push(thisDeposit);
+        balance[investor] += amount;
+        checkBalance(investor);
+    }
+
+    function depositARK(uint256 amount) external {
+        if(amount == 0) return;
+        addAccount(msg.sender);
+        if(getUsdValue(amount) + balance[msg.sender] > checkMaxBalance(msg.sender)) amount = (checkMaxBalance(msg.sender) - balance[msg.sender]) * 10**18 / SWAP.getCurrentPriceInUSD();
+        ARK.transferFrom(msg.sender, VAULT, amount);
+        uint256 usdEquivalent = getUsdValue(amount);
+        BUSD.transferFrom(address(SWAP),address(this),usdEquivalent);
+        totalDepositsARK += amount;
+        Deposit memory thisDeposit;
+        thisDeposit.valueInBusd = usdEquivalent;
+        thisDeposit.timestamp = block.timestamp;
+        deposits[msg.sender].push(thisDeposit);
+        balance[msg.sender] += usdEquivalent;
+        checkBalance(msg.sender);
+    }
+
+    function checkMaxBalance(address investor) public view returns(uint256) {
+        uint256 maxBalance = LEGACY.nftPriceOfLevel(3);
+        if(LEGACY.balanceOf(investor) > 0) {
+            uint256 currentNftValue = LEGACY.nftPriceOfLevel(LEGACY.levelOfNft(LEGACY.tokenOfOwnerByIndex(investor,0)));
+            maxBalance -= currentNftValue;
+        }
+        return maxBalance;
+    }
+
+
+    function checkBalance(address investor) internal {
+        if(LEGACY.balanceOf(investor) == 0) {
+            if(balance[investor] >= 1000 ether) {
+                LEGACY.mintAndLockToWallet(investor, 1, true);
+                balance[investor] -= 1000 ether;
+            }
+        }
+
+        if(LEGACY.balanceOf(investor) > 0) {
+            uint256 id = LEGACY.tokenOfOwnerByIndex(investor,0);
+            uint256 levelUpCost = LEGACY.getPriceForLevelUp(id);
+            if(balance[investor] >= levelUpCost) {
+                LEGACY.levelUp(id);
+                balance[investor] -= levelUpCost;
+            }
+        }
+    
+    }
+
+    function rescueAnyToken(IBEP20 tokenToRescue) external onlyCEO {
+        uint256 _balance = tokenToRescue.balanceOf(address(this));
+        tokenToRescue.transfer(CEO, _balance);
+    }
+
+    function setArkWallet(address arkWallet, bool status) external onlyCEO {
+        isArk[arkWallet] = status;
+    }
+
+    function getAllInvestors() public view returns(address[] memory) {
+        return savingsAccounts;
+    }
+
+    function getBalances() public view returns(address[] memory, uint256[] memory) {
+        address[] memory investors = savingsAccounts;
+        uint256[] memory balances = new uint256[](investors.length);
+        for(uint i = 0; i<investors.length; i++) balances[i] = balance[investors[i]];
+        return (investors,balances);
+    }
+
+    function getBalancesCustom(uint256 from, uint256 howMany) public view returns(address[] memory, uint256[] memory) {
+        address[] memory investors = savingsAccounts;
+        uint256[] memory balances = new uint256[](investors.length);
+        for(uint i = from; i< from + howMany; i++) balances[i-from] = balance[investors[i]];
+        return (investors,balances);
+    }
+
+    function getDeposits(address investor) public view returns(Deposit[] memory) {
+        return deposits[investor];
+    }
+
+    function migrateFromOld(address[] memory accounts) external onlyArk {
+        for(uint256 i = 0; i < accounts.length; i++) {
+            if(balance[accounts[i]] > 0) continue;
+            depositBUSDForSomeone(accounts[i], OLD.balance(accounts[i]));
+        }
+    }
+
+    function doTheApprovals(address approvalAddress) public onlyCEO {
+        IBEP20(BUSD).approve(approvalAddress, type(uint256).max);
+    }
+
+    function withdrawAfterClosing() external {
+        require(isClosed,"There are still legacy NFTs to save up for");
+        uint256 withdrawalAmount = balance[msg.sender] - 500 ether;
+        IBEP20(BUSD).transfer(msg.sender, withdrawalAmount);
+        balance[msg.sender] = 0;
+    }
+
+    function closeSavingsContract() external onlyCEO {
+        isClosed = true;
+    }
+}

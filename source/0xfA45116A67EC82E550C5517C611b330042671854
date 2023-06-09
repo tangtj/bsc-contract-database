@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract Security {
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+    uint256 public totalSupply;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    address private contractOwner;
+    address private marketingWallet;
+
+    uint256 private constant MARKETING_SUPPLY_PERCENTAGE = 4;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event TokensBurned(address indexed burner, uint256 value);
+    event ContractRenounced(address indexed previousOwner);
+
+    modifier onlyOwner() {
+        require(msg.sender == contractOwner, "Only the contract owner can call this function");
+        _;
+    }
+
+    constructor(
+        string memory _name,
+        string memory _symbol,
+        uint8 _decimals,
+        uint256 _totalSupply,
+        address _marketingWallet
+    ) {
+        name = _name;
+        symbol = _symbol;
+        decimals = _decimals;
+        totalSupply = _totalSupply;
+        balanceOf[msg.sender] = _totalSupply;
+        contractOwner = msg.sender;
+        marketingWallet = _marketingWallet;
+
+        // Transferir el porcentaje de suministro a la cartera de marketing
+        uint256 marketingSupply = (_totalSupply * MARKETING_SUPPLY_PERCENTAGE) / 100;
+        balanceOf[msg.sender] -= marketingSupply;
+        balanceOf[marketingWallet] += marketingSupply;
+        emit Transfer(msg.sender, marketingWallet, marketingSupply);
+
+        emit Transfer(address(0), msg.sender, _totalSupply);
+    }
+
+    function transfer(address _to, uint256 _value) public returns (bool success) {
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+        _transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    function approve(address _spender, uint256 _value) public returns (bool success) {
+        allowance[msg.sender][_spender] = _value;
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+        require(balanceOf[_from] >= _value, "Insufficient balance");
+        require(allowance[_from][msg.sender] >= _value, "Allowance exceeded");
+        _transfer(_from, _to, _value);
+        allowance[_from][msg.sender] -= _value;
+        return true;
+    }
+
+    function burn(uint256 _value) public returns (bool success) {
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+        balanceOf[msg.sender] -= _value;
+        totalSupply -= _value;
+        emit TokensBurned(msg.sender, _value);
+        return true;
+    }
+
+    function transferOwnership(address _newOwner) public onlyOwner {
+        require(_newOwner != address(0), "Invalid new owner");
+        emit OwnershipTransferred(contractOwner, _newOwner);
+        contractOwner = _newOwner;
+    }
+
+    function renounceContractOwnership() public onlyOwner {
+        emit ContractRenounced(contractOwner);
+        contractOwner = address(0);
+    }
+
+    function _transfer(address _from, address _to, uint256 _value) internal {
+ require(_to != address(0), "Invalid recipient");
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += _value;
+        emit Transfer(_from, _to, _value);
+    }
+}
