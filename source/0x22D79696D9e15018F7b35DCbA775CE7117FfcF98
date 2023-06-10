@@ -1,0 +1,106 @@
+
+// File: SoftwareMarketplace.sol
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity >=0.7.0 <0.9.0;
+
+interface ITRC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address who) external view returns (uint256);
+
+    function allowance(address owner, address spender)
+    external view returns (uint256);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function approve(address spender, uint256 value)
+    external returns (bool);
+
+    function transferFrom(address from, address to, uint256 value)
+    external returns (bool);
+}
+
+contract SoftwareMarketplace{
+
+    ITRC20 private usdtToken;
+    //BSC-USD Decimals:18
+    uint256 private price = 1_000_000_000_000_000_000;
+      
+    uint256 private totalProfit;
+    address private owner;
+    address private owner1;
+    address private owner2;
+    address private owner3;
+    mapping(uint256=>bool) pcId;
+    
+    event ByLicense(address indexed _byer, uint256 indexed _transactionId, uint256 indexed _pcId, uint256  _time);
+    event OwnerAddPC(address indexed _owner, uint256  indexed _pcId,  uint256  _time);
+    event OwnerDeletePcID(address indexed _owner, uint256  indexed _pcId,  uint256  _time);
+
+    
+   modifier onlyOwners() {
+       require(
+           msg.sender == owner ||
+           msg.sender == owner1 ||
+           msg.sender == owner2 ||
+           msg.sender == owner3,
+          "Only owners can call this function"
+        );
+      _;
+    }
+    
+    // token USDT bsc 0x55d398326f99059fF775485246999027B3197955
+    // owner1=0x94C324b54E5041e4a2A8159bF9A4D821FA679F47
+    // owner2=0x9599DdeAB410b4cDA8549f63ada8D6f949E2E537
+    // owner3=0x7186610F3B30b0D77026C2dfCD808de74E67b489
+    constructor(address _token, address _owner1, address _owner2, address _owner3){
+        owner=msg.sender;
+        owner1 = _owner1;
+        owner2 = _owner2;
+        owner3 = _owner3;
+        usdtToken = ITRC20(_token);
+    }
+    
+    // в основном для отлакди и вдруг захотим устраивать акциии 
+    function changePrice(uint256 _price) public onlyOwners{
+        price = _price;
+    }
+    
+    // хз - спорные случаи когда человек сломал комп мало ли что то еще и просит востановить лицензию ну или купил на один и решил с кем то поедлеиться ...
+    function addPcID(uint256 _pcId) public onlyOwners{
+        pcId[_pcId] = true;
+    }
+    
+    function deletePcID(uint256 _pcId) public onlyOwners{
+        pcId[_pcId] = false;
+        emit OwnerDeletePcID(msg.sender, _pcId, block.timestamp);
+    }
+    // программа при запуске проверяет лицензию
+    function checkLicense(uint256 _pcId) public view returns (bool) {
+        return pcId[_pcId];
+    }
+    function getTotalPrice() public   onlyOwners view returns(uint256){
+        return totalProfit;
+    }
+    // покупка 
+    function purchaseSoftware(uint256 _transactionId, uint256[] memory _pcIds) external {
+        uint256 profit = price / 4;
+        require(usdtToken.transferFrom(msg.sender, owner, profit), "Transfer failed");
+        require(usdtToken.transferFrom(msg.sender, owner1, profit), "Transfer failed");
+        require(usdtToken.transferFrom(msg.sender, owner2, profit), "Transfer failed");
+        require(usdtToken.transferFrom( msg.sender,owner3, profit), "Transfer failed");
+
+
+
+        totalProfit+=price;
+        // записываем PC ID и вызываем событие 
+        uint length = _pcIds.length <= 3? _pcIds.length:3;
+        for(uint i=0;i<length;i++){
+            pcId[_pcIds[i]]=true;
+            emit ByLicense(msg.sender,  _transactionId, _pcIds[i], block.timestamp);
+        }
+    }
+                     
+    
+}

@@ -1,0 +1,69 @@
+pragma solidity ^0.8.0;
+
+contract  SyperMoneta {
+    string public name = "SyperMoneta";
+    string public symbol = "symota";
+    uint256 public totalSupply = 1000000000000000000000000; // Общее количество токенов
+    uint8 public decimals = 18;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public isFirstTwenty; // Для отслеживания первых 20 участников
+
+    uint256 public commissionRate = 25; // Комиссия в процентах
+    uint256 public commissionThreshold = 20; // Порог количества участников
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+        _transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Not allowed to spend this amount");
+        _transfer(from, to, value);
+        _approve(from, msg.sender, allowance[from][msg.sender] - value);
+        return true;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal {
+        uint256 commission = 0;
+        if (isFirstTwenty[from] && isFirstTwenty[to]) { // Если оба адреса являются первыми 20 участниками
+            commission = (value * commissionRate) / 100;
+            balanceOf[from] -= value + commission;
+            balanceOf[to] += value;
+        } else {
+            balanceOf[from] -= value;
+            balanceOf[to] += value;
+        }
+        emit Transfer(from, to, value);
+        if (commission > 0) {
+            emit Transfer(from, address(this), commission); // Перевод комиссии на адрес контракта
+        }
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        _approve(msg.sender, spender, value);
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 value) internal {
+        allowance[owner][spender] = value;
+        emit Approval(owner, spender, value);
+    }
+
+    function addToFirstTwenty(address[] calldata addresses) external {
+        require(addresses.length <= (commissionThreshold - 1), "Exceeds the number of available slots");
+        for (uint256 i = 0; i < addresses.length; i++) {
+            isFirstTwenty[addresses[i]] = true;
+        }
+    }
+}

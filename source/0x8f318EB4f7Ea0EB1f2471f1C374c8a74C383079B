@@ -1,0 +1,888 @@
+// SPDX-License-Identifier: MIT
+    pragma solidity ^0.8.0;
+
+    interface IBEP20 {
+        /**
+        * @dev Returns the amount of tokens in existence.
+        */
+        function totalSupply() external view returns (uint256);
+        /**
+        * @dev Returns the amount of tokens owned by `account`.
+        */
+        function balanceOf(address account) external view returns (uint256);
+        /**
+        * @dev Moves `amount` tokens from the caller's account to `recipient`.
+        *
+        * Returns a boolean value indicating whether the operation succeeded.
+        *
+        * Emits a {Transfer} event.
+        */
+        function transfer(address recipient, uint256 amount) external returns (bool);
+        /**
+        * @dev Returns the remaining number of tokens that `spender` will be
+        * allowed to spend on behalf of `owner` through {transferFrom}. This is
+        * zero by default.
+        *
+        * This value changes when {approve} or {transferFrom} are called.
+        */
+        function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+        /**
+        * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+        *
+        * Returns a boolean value indicating whether the operation succeeded.
+        *
+        * IMPORTANT: Beware that changing an allowance with this method brings the risk
+        * that someone may use both the old and the new allowance by unfortunate
+        * transaction ordering. One possible solution to mitigate this race
+        * condition is to first reduce the spender's allowance to 0 and set the
+        * desired value afterwards:
+        * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+        *
+        * Emits an {Approval} event.
+        */
+        function approve(address spender, uint256 amount) external returns (bool);
+
+        /**
+        * @dev Moves `amount` tokens from `sender` to `recipient` using the
+        * allowance mechanism. `amount` is then deducted from the caller's
+        * allowance.
+        *
+        * Returns a boolean value indicating whether the operation succeeded.
+        *
+        * Emits a {Transfer} event.
+        */
+        function transferFrom(
+            address sender,
+            address recipient,
+            uint256 amount
+        ) external returns (bool);
+
+        /**
+        * @dev Emitted when `value` tokens are moved from one account (`from`) to
+        * another (`to`).
+        *
+        * Note that `value` may be zero.
+        */
+        event Transfer(address indexed from, address indexed to, uint256 value);
+
+        /**
+        * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+        * a call to {approve}. `value` is the new allowance.
+        */
+        event Approval(
+            address indexed owner,
+            address indexed spender,
+            uint256 value
+        );
+    }
+
+    interface IBEP20Metadata is IBEP20 {
+        /**
+        * @dev Returns the name of the token.
+        */
+        function name() external view returns (string memory);
+
+        /**
+        * @dev Returns the symbol of the token.
+        */
+        function symbol() external view returns (string memory);
+
+        /**
+        * @dev Returns the decimals places of the token.
+        */
+        function decimals() external view returns (uint256);
+    }
+
+   
+
+    contract BEP20 is IBEP20, IBEP20Metadata {
+        using SafeMath for uint256;
+
+        mapping(address => uint256) private _balances;
+
+        mapping(address => mapping(address => uint256)) private _allowances;
+        address internal burnAddress = address(0x000000000000000000000000000000000000dEaD);
+        uint256 private _totalSupply;
+
+        string private _name;
+        string private _symbol;
+        uint256 private _decimals;
+
+
+        /**
+        * @dev Sets the values for {name} and {symbol}.
+        *
+        * The default value of {decimals} is 18. To select a different value for
+        * {decimals} you should overload it.
+        *
+        * All two of these values are immutable: they can only be set once during
+        * construction.
+        */
+        constructor(string memory name_, string memory symbol_,uint256 decimals_) {
+            _name = name_;
+            _symbol = symbol_;
+            _decimals = decimals_;
+        }
+
+        function _msgSender() internal view returns(address) {
+            return msg.sender;
+        }
+        /**
+        * @dev Returns the name of the token.
+        */
+        function name() public view virtual override returns (string memory) {
+            return _name;
+        }
+
+        /**
+        * @dev Returns the symbol of the token, usually a shorter version of the
+        * name.
+        */
+        function symbol() public view virtual override returns (string memory) {
+            return _symbol;
+        }
+
+        /**
+        * @dev Returns the number of decimals used to get its user representation.
+        * For example, if `decimals` equals `2`, a balance of `505` tokens should
+        * be displayed to a user as `5,05` (`505 / 10 ** 2`).
+        *
+        * Tokens usually opt for a value of 18, imitating the relationship between
+        * Ether and Wei. This is the value {BEP20} uses, unless this function is
+        * overridden;
+        *
+        * NOTE: This information is only used for _display_ purposes: it in
+        * no way affects any of the arithmetic of the contract, including
+        * {IBEP20-balanceOf} and {IBEP20-transfer}.
+        */
+        function decimals() public view virtual override returns (uint256) {
+            return _decimals;
+        }
+
+        /**
+        * @dev See {IBEP20-totalSupply}.
+        */
+        function totalSupply() public view virtual override returns (uint256) {
+            return _totalSupply;
+        }
+
+        /**
+        * @dev See {IBEP20-balanceOf}.
+        */
+        function balanceOf(address account)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+        {
+            return _balances[account];
+        }
+
+        /**
+        * @dev See {IBEP20-transfer}.
+        *
+        * Requirements:
+        *
+        * - `recipient` cannot be the zero address.
+        * - the caller must have a balance of at least `amount`.
+        */
+        function transfer(address recipient, uint256 amount)
+        public
+        virtual
+        override
+        returns (bool)
+        {
+            _transfer(_msgSender(), recipient, amount);
+            return true;
+        }
+
+        /**
+        * @dev See {IBEP20-allowance}.
+        */
+        function allowance(address owner, address spender)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+        {
+            return _allowances[owner][spender];
+        }
+
+        /**
+        * @dev See {IBEP20-approve}.
+        *
+        * Requirements:
+        *
+        * - `spender` cannot be the zero address.
+        */
+        function approve(address spender, uint256 amount)
+        public
+        virtual
+        override
+        returns (bool)
+        {
+            _approve(_msgSender(), spender, amount);
+            return true;
+        }
+
+        /**
+        * @dev See {IBEP20-transferFrom}.
+        *
+        * Emits an {Approval} event indicating the updated allowance. This is not
+        * required by the EIP. See the note at the beginning of {BEP20}.
+        *
+        * Requirements:
+        *
+        * - `sender` and `recipient` cannot be the zero address.
+        * - `sender` must have a balance of at least `amount`.
+        * - the caller must have allowance for ``sender``'s tokens of at least
+        * `amount`.
+        */
+        function transferFrom(
+            address sender,
+            address recipient,
+            uint256 amount
+        ) public virtual override returns (bool) {
+            _transfer(sender, recipient, amount);
+            _approve(
+                sender,
+                _msgSender(),
+                _allowances[sender][_msgSender()].sub(
+                    amount,
+                    "BEP20: transfer amount exceeds allowance"
+                )
+            );
+            return true;
+        }
+
+        /**
+        * @dev Atomically increases the allowance granted to `spender` by the caller.
+        *
+        * This is an alternative to {approve} that can be used as a mitigation for
+        * problems described in {IBEP20-approve}.
+        *
+        * Emits an {Approval} event indicating the updated allowance.
+        *
+        * Requirements:
+        *
+        * - `spender` cannot be the zero address.
+        */
+        function increaseAllowance(address spender, uint256 addedValue)
+        public
+        virtual
+        returns (bool)
+        {
+            _approve(
+                _msgSender(),
+                spender,
+                _allowances[_msgSender()][spender].add(addedValue)
+            );
+            return true;
+        }
+
+        /**
+        * @dev Atomically decreases the allowance granted to `spender` by the caller.
+        *
+        * This is an alternative to {approve} that can be used as a mitigation for
+        * problems described in {IBEP20-approve}.
+        *
+        * Emits an {Approval} event indicating the updated allowance.
+        *
+        * Requirements:
+        *
+        * - `spender` cannot be the zero address.
+        * - `spender` must have allowance for the caller of at least
+        * `subtractedValue`.
+        */
+        function decreaseAllowance(address spender, uint256 subtractedValue)
+        public
+        virtual
+        returns (bool)
+        {
+            _approve(
+                _msgSender(),
+                spender,
+                _allowances[_msgSender()][spender].sub(
+                    subtractedValue,
+                    "BEP20: decreased allowance below zero"
+                )
+            );
+            return true;
+        }
+
+        /**
+        * @dev Moves tokens `amount` from `sender` to `recipient`.
+        *
+        * This is internal function is equivalent to {transfer}, and can be used to
+        * e.g. implement automatic token fees, slashing mechanisms, etc.
+        *
+        * Emits a {Transfer} event.
+        *
+        * Requirements:
+        *
+        * - `sender` cannot be the zero address.
+        * - `recipient` cannot be the zero address.
+        * - `sender` must have a balance of at least `amount`.
+        */
+        function _transfer(
+            address sender,
+            address recipient,
+            uint256 amount
+        ) internal virtual {
+            require(sender != address(0), "BEP20: transfer from the zero address");
+            require(recipient != address(0), "BEP20: transfer to the zero address");
+
+            _beforeTokenTransfer(sender, recipient, amount);
+            
+            _transferToken(sender,recipient,amount);
+        }
+        
+        function _transferToken(
+            address sender,
+            address recipient,
+            uint256 amount
+        ) internal virtual {
+            _balances[sender] = _balances[sender].sub(
+                amount,
+                "BEP20: transfer amount exceeds balance"
+            );
+            _balances[recipient] = _balances[recipient].add(amount);
+            emit Transfer(sender, recipient, amount);
+        }
+        
+
+        /** @dev Creates `amount` tokens and assigns them to `account`, increasing
+        * the total supply.
+        *
+        * Emits a {Transfer} event with `from` set to the zero address.
+        *
+        * Requirements:
+        *
+        * - `account` cannot be the zero address.
+        */
+        function _mint(address account, uint256 amount) internal virtual {
+            require(account != address(0), "BEP20: mint to the zero address");
+
+            _beforeTokenTransfer(address(0), account, amount);
+
+            _totalSupply = _totalSupply.add(amount);
+            _balances[account] = _balances[account].add(amount);
+            emit Transfer(address(0), account, amount);
+        }
+
+        /**
+        * @dev Destroys `amount` tokens from `account`, reducing the
+        * total supply.
+        *
+        * Emits a {Transfer} event with `to` set to the zero address.
+        *
+        * Requirements:
+        *
+        * - `account` cannot be the zero address.
+        * - `account` must have at least `amount` tokens.
+        */
+        function _burn(address account, uint256 amount) internal virtual {
+            require(account != address(0), "BEP20: burn from the zero address");
+
+            _beforeTokenTransfer(account, burnAddress, amount);
+
+            _balances[account] = _balances[account].sub(
+                amount,
+                "BEP20: burn amount exceeds balance"
+            );
+            _balances[burnAddress] = _balances[burnAddress].add(amount);
+            emit Transfer(account, burnAddress, amount);
+        }
+        
+        
+
+        /**
+        * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
+        *
+        * This internal function is equivalent to `approve`, and can be used to
+        * e.g. set automatic allowances for certain subsystems, etc.
+        *
+        * Emits an {Approval} event.
+        *
+        * Requirements:
+        *
+        * - `owner` cannot be the zero address.
+        * - `spender` cannot be the zero address.
+        */
+        function _approve(
+            address owner,
+            address spender,
+            uint256 amount
+        ) internal virtual {
+            require(owner != address(0), "BEP20: approve from the zero address");
+            require(spender != address(0), "BEP20: approve to the zero address");
+
+            _allowances[owner][spender] = amount;
+            emit Approval(owner, spender, amount);
+        }
+
+        /**
+        * @dev Hook that is called before any transfer of tokens. This includes
+        * minting and burning.
+        *
+        * Calling conditions:
+        *
+        * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+        * will be to transferred to `to`.
+        * - when `from` is zero, `amount` tokens will be minted for `to`.
+        * - when `to` is zero, `amount` of ``from``'s tokens will be burned.
+        * - `from` and `to` are never both zero.
+        *
+        * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+        */
+        function _beforeTokenTransfer(
+            address from,
+            address to,
+            uint256 amount
+        ) internal virtual {}
+    }
+
+
+    library SafeMath {
+        /**
+        * @dev Returns the addition of two unsigned integers, reverting on
+        * overflow.
+        *
+        * Counterpart to Solidity's `+` operator.
+        *
+        * Requirements:
+        *
+        * - Addition cannot overflow.
+        */
+        function add(uint256 a, uint256 b) internal pure returns (uint256) {
+            uint256 c = a + b;
+            require(c >= a, "SafeMath: addition overflow");
+
+            return c;
+        }
+
+        /**
+        * @dev Returns the subtraction of two unsigned integers, reverting on
+        * overflow (when the result is negative).
+        *
+        * Counterpart to Solidity's `-` operator.
+        *
+        * Requirements:
+        *
+        * - Subtraction cannot overflow.
+        */
+        function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+            return sub(a, b, "SafeMath: subtraction overflow");
+        }
+
+        /**
+        * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+        * overflow (when the result is negative).
+        *
+        * Counterpart to Solidity's `-` operator.
+        *
+        * Requirements:
+        *
+        * - Subtraction cannot overflow.
+        */
+        function sub(
+            uint256 a,
+            uint256 b,
+            string memory errorMessage
+        ) internal pure returns (uint256) {
+            require(b <= a, errorMessage);
+            uint256 c = a - b;
+
+            return c;
+        }
+
+        /**
+        * @dev Returns the multiplication of two unsigned integers, reverting on
+        * overflow.
+        *
+        * Counterpart to Solidity's `*` operator.
+        *
+        * Requirements:
+        *
+        * - Multiplication cannot overflow.
+        */
+        function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+            // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) {
+                return 0;
+            }
+
+            uint256 c = a * b;
+            require(c / a == b, "SafeMath: multiplication overflow");
+
+            return c;
+        }
+
+        /**
+        * @dev Returns the integer division of two unsigned integers. Reverts on
+        * division by zero. The result is rounded towards zero.
+        *
+        * Counterpart to Solidity's `/` operator. Note: this function uses a
+        * `revert` opcode (which leaves remaining gas untouched) while Solidity
+        * uses an invalid opcode to revert (consuming all remaining gas).
+        *
+        * Requirements:
+        *
+        * - The divisor cannot be zero.
+        */
+        function div(uint256 a, uint256 b) internal pure returns (uint256) {
+            return div(a, b, "SafeMath: division by zero");
+        }
+
+        /**
+        * @dev Returns the integer division of two unsigned integers. Reverts with custom message on
+        * division by zero. The result is rounded towards zero.
+        *
+        * Counterpart to Solidity's `/` operator. Note: this function uses a
+        * `revert` opcode (which leaves remaining gas untouched) while Solidity
+        * uses an invalid opcode to revert (consuming all remaining gas).
+        *
+        * Requirements:
+        *
+        * - The divisor cannot be zero.
+        */
+        function div(
+            uint256 a,
+            uint256 b,
+            string memory errorMessage
+        ) internal pure returns (uint256) {
+            require(b > 0, errorMessage);
+            uint256 c = a / b;
+            // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+            return c;
+        }
+    }
+
+    interface IUniswapV2Factory {
+        function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+    }
+
+    interface IUniswapV2Router01 {
+        function factory() external pure returns (address);
+
+        function WETH() external pure returns (address);
+
+        function addLiquidityETH(
+            address token,
+            uint256 amountTokenDesired,
+            uint256 amountTokenMin,
+            uint256 amountETHMin,
+            address to,
+            uint256 deadline
+        )
+        external
+        payable
+        returns (
+            uint256 amountToken,
+            uint256 amountETH,
+            uint256 liquidity
+        );
+    }
+    
+    library Address {
+    /**
+     * @dev Returns true if `account` is a contract.
+     *
+     * [IMPORTANT]
+     * ====
+     * It is unsafe to assume that an address for which this function returns
+     * false is an externally-owned account (EOA) and not a contract.
+     *
+     * Among others, `isContract` will return false for the following
+     * types of addresses:
+     *
+     *  - an externally-owned account
+     *  - a contract in construction
+     *  - an address where a contract will be created
+     *  - an address where a contract lived, but was destroyed
+     * ====
+     */
+    function isContract(address account) internal view returns (bool) {
+        // This method relies on extcodesize, which returns 0 for contracts in
+        // construction, since the code is only stored at the end of the
+        // constructor execution.
+
+        uint256 size;
+        assembly {
+            size := extcodesize(account)
+        }
+        return size > 0;
+    }
+}
+
+    contract JusticeCore {
+        uint256 tokenId;
+        uint256 deployTime;
+        //收取手续费地址
+        address payable internal immutable jBEP20Factory;
+        //合约地址
+        address internal immutable jBEP20Contract;
+        //1次mint代币数量
+        uint256 internal immutable singleAmount;
+        //总共可以mint次数
+        uint256 public immutable mintTotalNum;
+        //当前mint总次数 
+        uint256 public thisMintTotalNum;
+        //初始冻结期额外mint费用
+        uint256 public freezeMintFee = 5 * 10 ** 13;
+        //距离上次mint冷却(默认0秒)
+        uint256 public freezeSecond;
+        //一个账户最多可以mint次数(默认无上限0,但是只能单次mint)
+        uint256 internal accountMaxMintNum;
+        //私募手续费百分比
+        uint256 internal manageFee = 2; 
+        //开启私募
+        bool isRate = false;
+        Rate internal rate;
+        //私募
+        struct Rate {
+            //单次费用
+            uint256 funding;
+            //收款账户地址
+            address payable account;
+            //是否公平开盘(公平开盘收款账户不能填写,直接为当前代币合约地址)
+            bool justiceOpen;
+            //达到指定mint次数开盘(创建时拖动进度条选择百分比,剩余未mint的直接添加流动性)
+            uint256 openMintNum;
+        }
+        
+        
+        constructor(uint256 _tokenId,address payable _jBEP20Factory,address _jBEP20Contract,uint256 _singleAmount,uint256 _mintTotalNum) {
+            tokenId = _tokenId;
+            deployTime = block.timestamp;
+            jBEP20Factory = _jBEP20Factory; 
+            jBEP20Contract = _jBEP20Contract;
+            singleAmount = _singleAmount;
+            mintTotalNum = _mintTotalNum;
+        }
+        //高级功能设置
+        function seniorInit(uint256 _freezeSecond,uint256 _accountMaxMintNum,
+                            bool _isRate,uint256 _funding,address payable _account,
+                            bool _justiceOpen,uint256 _openMintNum) external {
+            require(msg.sender == jBEP20Factory);
+            freezeSecond = _freezeSecond;
+            accountMaxMintNum = _accountMaxMintNum;
+            isRate = _isRate;
+            rate.funding = _funding;
+            rate.account = _account;
+            rate.justiceOpen = _justiceOpen;
+            rate.openMintNum = _openMintNum;
+        }
+        
+        function updateMint(uint256 _num) internal {
+            thisMintTotalNum += _num;
+        }
+
+        //获取实际可以mint的数量
+        function getRealityMintTotalNum() public view returns(uint256) {
+            //如果有私募
+            if(isRate) {
+                //公平开盘
+                if(rate.justiceOpen){
+                    //mint次数
+                    return rate.openMintNum; 
+                }
+            }
+            return mintTotalNum;
+        }
+
+        //获取剩余mint数量
+        function getRemainMintNum() public view returns(uint256){
+            return getRealityMintTotalNum() < thisMintTotalNum ? 0 : getRealityMintTotalNum() - thisMintTotalNum ;
+        }
+
+    }
+
+    contract JusticeToken is BEP20, JusticeCore {
+        using SafeMath for uint256;
+        using Address for address;
+        uint256 maxTotal;
+        uint256 decimal = 18; 
+        mapping(address => MintData) public mintDatas;
+        
+        struct MintData {
+            //当前mint次数
+            uint256 num;
+            //上一次mint时间
+            uint256 lastTime;
+            //上次额外费用(每次*2)
+            uint256 lastFreezeFee;
+        }
+        IUniswapV2Router01 private immutable uniswapV2Router = IUniswapV2Router01(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        address public immutable uniswapV2Pair;
+
+        //mint信息
+        event MintDescript(address account,uint256 num,uint256 amount,uint256 time);
+        //开盘时间
+        event JusticeOpen(uint256 token,uint256 eth,uint256 time);
+
+        constructor(uint256 _tokenId,string memory _name,string memory _symbol,
+                    uint256 _singleAmount,uint256 _mintTotalNum) 
+        
+                    BEP20(_name,_symbol,decimal) 
+                    JusticeCore(_tokenId,payable(_msgSender()),address(this),_singleAmount * 10 ** decimal ,_mintTotalNum) {
+            maxTotal = (_singleAmount * 10 ** decimal) * _mintTotalNum;
+            uniswapV2Pair = IUniswapV2Factory(uniswapV2Router.factory()).createPair(address(this),uniswapV2Router.WETH()); 
+        }
+        
+        function Mint(uint256 _num) external payable {
+            //mint地址不是合约
+            require(!_msgSender().isContract(),"Cannot be a contract address");
+            //是否mint结束
+            require(_num <= getRemainMintNum(),"Mint is over");
+            MintData storage _mintData = mintDatas[_msgSender()];
+            //如果最大可以mint是0那么每次只可以mint,1次,如果最大不是0的话就需要计算已经mint的数量加上现在mint的次数是否超出
+            require(accountMaxMintNum == 0 ? _num == 1 : _num > 0 && accountMaxMintNum - _mintData.num >= _num,"You don't have so many Mint opportunities");
+            uint256 _msgEth = msg.value;
+            (uint256 _thisFreezeFee,uint256 _rateFee,uint256 _countFee) = getFreezeAndRateFee(_msgSender(),_num);
+            require(_msgEth >= _countFee,"fee not!");
+            //在冻结费用
+            if(_thisFreezeFee > 0){
+                jBEP20Factory.transfer(_thisFreezeFee);
+                //更新最后费用
+                _mintData.lastFreezeFee = _thisFreezeFee;
+            }
+            //私募费用
+            if(_rateFee > 0) {
+                (uint256 _manageAmount,uint256 _lastRateFee) = getManageFee(_rateFee);
+                jBEP20Factory.transfer(_manageAmount);
+                rate.account.transfer(_lastRateFee);
+            }
+            //mint代币
+            _mint(_msgSender(),_num);
+            //TODO 私募满了开盘
+            justiceLaunch();    
+        }
+
+        function _transfer(
+            address sender,
+            address recipient,
+            uint256 amount
+        ) internal override {
+            _openVerification(sender,recipient);
+            super._transfer(sender,recipient, amount);
+        }
+        
+        function _openVerification(
+            address from,
+            address to
+        ) internal view {
+            if(!isRate) return;
+            if(!rate.justiceOpen) return;  
+            if(IBEP20(uniswapV2Pair).totalSupply() == 0 && to == uniswapV2Pair) {
+                require(from == address(this));
+            }
+        } 
+
+        function _mint(address _account, uint256 _num) internal override {
+            uint256 _mintAmount = singleAmount * _num;
+            super._mint(_account, _mintAmount);
+            MintData storage _mintData = mintDatas[_account];
+            updateMint(_num);
+            _mintData.lastTime = block.timestamp;
+            _mintData.num += _num;
+            emit MintDescript(_account,_num,_mintAmount,block.timestamp); 
+        }
+
+        //开盘
+        function justiceLaunch() internal {
+            if(!isRate) return;
+            if(!rate.justiceOpen) return;
+            if(thisMintTotalNum != rate.openMintNum) return;
+            uint256 _remainNum = mintTotalNum - thisMintTotalNum;
+            _mint(address(this),_remainNum);
+            uint256 _tokenAmount = _remainNum * singleAmount;
+            uint256 _ethAmount = address(this).balance;
+            addLiquidity(_tokenAmount,_ethAmount);
+            emit JusticeOpen(_tokenAmount,_ethAmount,block.timestamp);
+        } 
+
+        function addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
+            _approve(address(this), address(uniswapV2Router), tokenAmount);
+            uniswapV2Router.addLiquidityETH{value: ethAmount}(
+                address(this),
+                tokenAmount,
+                0,
+                0,
+                address(this),
+                block.timestamp
+            );
+        }
+        
+        //获取账户是否需要支付冻结期费用(前端需要提醒)
+        function getFreezeFee(address _account) private view returns(uint256) {
+            if(block.timestamp - mintDatas[_account].lastTime < freezeSecond){
+                uint256 _lastFee = mintDatas[_account].lastFreezeFee;
+                if(_lastFee == 0) return freezeMintFee;
+                return _lastFee * 2;
+            }
+            return 0;
+        }
+
+        //获取是否需要支付私募费用
+        function getRateFee(uint256 _num) private view returns(uint256) {
+            if(isRate) {
+               return rate.funding * _num;
+            }
+            return 0;
+        }
+        //获取冻结费和私募费用,总费用
+        function getFreezeAndRateFee(address _account,uint256 _num) public view returns(uint256 _freezeFee,uint256 _rateFee,uint256 _countFee){
+            _freezeFee = getFreezeFee(_account);
+            _rateFee = getRateFee(_num);
+            _countFee = _freezeFee + _rateFee;
+        }
+
+        //获取手续费和私募费用
+        function getManageFee(uint256 _rateFee) public view returns(uint256,uint256) {
+            uint256 _manageAmount = calculateFee(_rateFee,manageFee);
+            return(_manageAmount,_rateFee-_manageAmount);
+        }
+
+        //获取当前最大可以mint
+        function getThisMaxMint(address _account) public view returns(uint256) {
+            if(accountMaxMintNum == 0) return 1;
+            uint256 _thisNum = mintDatas[_account].num;
+            uint256 _accountRemainNum = accountMaxMintNum - _thisNum;
+            return _accountRemainNum > getRemainMintNum() ? getRemainMintNum() : _accountRemainNum;
+        }
+
+        receive() external payable {}       
+
+        function calculateFee(uint256 _amount,uint256 _fee) internal pure returns(uint256){
+            return _amount.mul(_fee).div(10**2);
+        }    
+
+        function isOver() public view returns(bool) {
+            if(rate.openMintNum == 0){
+                return (mintTotalNum == thisMintTotalNum);  
+            }
+            return (thisMintTotalNum >= rate.openMintNum);
+        }
+        
+        function getJusticeInfo() public view returns
+                                (uint256 _tokenId,
+                                string memory _symbol,string memory _name,
+                                uint256 _deployTime,uint256 _singleAmount,uint256 _mintTotalNum,
+                                uint256 _accountMaxMintNum,uint256 _freezeSecond,uint256 _funding,
+                                uint256 _thisMintTotalNum,uint256 _openMintNum,bool _over){
+            return(tokenId,symbol(),name(),deployTime,singleAmount,mintTotalNum,accountMaxMintNum,freezeSecond,rate.funding,thisMintTotalNum,rate.openMintNum,isOver());
+        }
+
+}

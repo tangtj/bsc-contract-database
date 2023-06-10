@@ -1,0 +1,235 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0 <0.9.0;
+
+interface IERC20 {
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+
+    function totalSupply() external view returns (uint256);
+
+
+    function balanceOf(address account) external view returns (uint256);
+
+
+    function transfer(address to, uint256 amount) external returns (bool);
+
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+
+    constructor(address initialOwner) {
+        _transferOwnership(initialOwner);
+    }
+
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+interface IPancakeRouter {
+    function getAmountsOut(uint amountIn, address[] memory path) external view returns (uint[] memory amounts);
+}
+
+contract TokenVoting is Ownable {
+    IERC20 public votingToken = IERC20(0xA3378bd30f9153aC12AFF64743841f4AFa29bC57);
+    IPancakeRouter public router;
+    uint public voteCost;  // Cost of voting in voting tokens
+    uint public listingFee;  // Fee to list a token in voting tokens
+
+    struct TokenData {
+        string website;
+        string whitelist;
+        string icon;
+    }
+
+    struct Vote {
+        int256 score;
+        uint256 endTimestamp;
+        TokenData data;
+        mapping(address => bool) voters;
+    }
+
+    mapping(address => uint8) public tokenExists;
+    mapping(address => Vote) public tokenVotes;
+    mapping(address => Vote) public listingTokenVotes;
+    address[] public tokens;
+    address[] public listingTokens;
+    address[] public newTokens;
+
+    constructor(IPancakeRouter _router, address initialOwner) Ownable(initialOwner) {
+        router = _router;
+        updateVoteCost();
+        updateListingFee();
+    }
+
+
+
+    function updateVoteCost() public onlyOwner {
+        address[] memory path = new address[](3);
+        path[0] = 0x55d398326f99059fF775485246999027B3197955;  // USDT
+        path[1] = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;  // WBNB
+        path[2] = address(votingToken);
+
+        uint[] memory amounts = router.getAmountsOut(1e17, path);  // Get cost of $0.10 in voting tokens
+        voteCost = amounts[2];
+    }
+
+    function updateListingFee() public onlyOwner {
+        address[] memory path = new address[](3);
+        path[0] = 0x55d398326f99059fF775485246999027B3197955;  // USDT
+        path[1] = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;  // WBNB
+        path[2] = address(votingToken);
+
+        uint[] memory amounts = router.getAmountsOut(100e18, path);  // Get cost of $100 in voting tokens
+        listingFee = amounts[2];
+    }
+
+    function addToken(
+        address token, 
+        string calldata website, 
+        string calldata whitelist, 
+        string calldata icon
+    ) external {
+        require(tokenExists[token] == 0, "This token already exists");
+        require(votingToken.balanceOf(msg.sender) >= listingFee, "Not enough voting tokens");
+        require(votingToken.transferFrom(msg.sender, address(this), listingFee), "Transfer of listing fee failed");
+
+        tokenExists[token] = 1;
+        listingTokens.push(token);
+        listingTokenVotes[token].score = 0;
+        listingTokenVotes[token].endTimestamp = block.timestamp + 7 days;
+        listingTokenVotes[token].data.website = website;
+        listingTokenVotes[token].data.whitelist = whitelist;
+        listingTokenVotes[token].data.icon = icon;
+    }
+
+    function addTokenToAll(address token) private {
+        tokens.push(token);
+        tokenVotes[token].score = 1000;
+    }
+
+    function vote(address token, bool support) external {
+        require(tokenExists[token] == 1, "This token does not exist");
+        require(!tokenVotes[token].voters[msg.sender], "You have already voted for this token");
+        require(votingToken.balanceOf(msg.sender) >= voteCost, "Not enough voting tokens");
+        
+        require(votingToken.transferFrom(msg.sender, address(this), voteCost), "Transfer of voting tokens failed");
+        
+        tokenVotes[token].voters[msg.sender] = true;
+        if (support) {
+            tokenVotes[token].score += 1;
+        } else {
+            if (tokenVotes[token].score > 0) {
+                tokenVotes[token].score -= 1;
+            }
+        }
+    }
+
+    function voteForListingToken(address token, bool support) external {
+        require(tokenExists[token] == 1, "This token does not exist");
+        require(!listingTokenVotes[token].voters[msg.sender], "You have already voted for this token");
+        require(votingToken.balanceOf(msg.sender) >= voteCost, "Not enough voting tokens");
+        require(listingTokenVotes[token].endTimestamp > block.timestamp, "Voting for this token has ended");
+
+        require(votingToken.transferFrom(msg.sender, address(this), voteCost), "Transfer of voting tokens failed");
+
+        listingTokenVotes[token].voters[msg.sender] = true;
+        if (support) {
+            listingTokenVotes[token].score += 1;
+        } else {
+            if (listingTokenVotes[token].score > 0) {
+                listingTokenVotes[token].score -= 1;
+            }
+        }
+
+        if (listingTokenVotes[token].score >= 1000) {
+            addTokenToAll(token);
+            newTokens.push(token);
+            if (newTokens.length > 20) {
+                newTokens.pop();
+            }
+        }
+    }
+
+    function getTokens() external view returns (address[] memory) {
+        return tokens;
+    }
+
+    function getNewTokens() external view returns (address[] memory) {
+        return newTokens;
+    }
+
+    function getListingTokens() external view returns (address[] memory) {
+        return listingTokens;
+    }
+
+    function getScore(address token) external view returns (int256) {
+        return tokenVotes[token].score;
+    }
+
+    function getListingScore(address token) external view returns (int256) {
+        return listingTokenVotes[token].score;
+    }
+
+    function drainTokensToDeadAddress() external onlyOwner {
+        uint256 balance = votingToken.balanceOf(address(this));
+        address deadAddress = 0x000000000000000000000000000000000000dEaD;
+        require(votingToken.transfer(deadAddress, balance), "Transfer to dead address failed");
+    }
+}

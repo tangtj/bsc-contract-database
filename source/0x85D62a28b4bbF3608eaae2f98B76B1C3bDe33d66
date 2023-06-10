@@ -1,0 +1,522 @@
+//SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+contract WWW is Ownable {
+
+    modifier onlyBagHolders {
+        require(myTokens() > 0);
+        _;
+    }
+
+    modifier onlyStrongHands {
+        require(myDividends(true) > 0);
+        _;
+    }
+
+    event onTokenPurchase(
+        address indexed customerAddress,
+        uint256 incomingAmount,
+        uint256 tokensMinted,
+        address indexed referredBy,
+        uint timestamp,
+        uint256 price
+    );
+
+    event onTokenSell(
+        address indexed customerAddress,
+        uint256 tokensBurned,
+        uint256 amountEarned,
+        uint timestamp,
+        uint256 price
+    );
+
+    event onReinvestment(
+        address indexed customerAddress,
+        uint256 amountReinvested,
+        uint256 tokensMinted
+    );
+
+    event onWithdraw(
+        address indexed customerAddress,
+        uint256 amountWithdrawn
+    );
+
+    event Transfer(
+        address indexed from,
+        address indexed to,
+        uint256 tokens
+    );
+
+    string public name = "W W W";
+    string public symbol = "www";
+    uint8 constant public decimals = 18;
+    uint8 constant internal entryFee_ = 12;
+    uint8 constant internal transferFee_ = 2;
+    uint8 constant internal exitFee_ = 10;
+    uint8 constant internal referralFee_ = 6;
+    uint8 constant internal buyAdminFee_ = 5;
+    uint8 constant internal sellAdminFee_ = 10;
+    uint256 constant internal tokenPriceInitial_ = 0.0000001 ether;
+    uint256 constant internal tokenPriceIncremental_ = 0.00000001 ether;
+    uint256 constant internal magnitude = 2 ** 64;
+    uint256 public stakingRequirement = 100 ether;
+    mapping(address => uint256) internal tokenBalanceLedger_;
+    mapping(address => uint256) internal referralBalance_;
+    mapping(address => int256) internal payoutsTo_;
+    mapping(address => address) internal ref;
+    mapping(address => uint256[3]) internal linesArray;
+    mapping(address => address[]) internal firstLineArray;
+    mapping(address => bool) public blackList;
+    uint256 public tokenSupply_;
+    uint256 public profitPerShare_;
+    address public baseRefAddress;
+    bool public addAllToBlackList = true;
+
+    constructor() {
+        baseRefAddress = msg.sender;
+        ref[baseRefAddress] = baseRefAddress;
+    }
+
+    function buy(address _referredBy) public payable returns (uint256) {
+        return purchaseTokens(msg.value, _referredBy);
+    }
+
+    fallback() external payable {
+    }
+
+    receive() external payable {
+        purchaseTokens(msg.value, address(0));
+    }
+
+    function getInviter(address _user) external view returns(address) {
+        return ref[_user];
+    }
+
+    function getFirstLine(address _user) external view returns(address[] memory) {
+        return firstLineArray[_user];
+    }
+
+    function getLines(address _user) external view returns(uint256[3] memory) {
+        return linesArray[_user];
+    }
+
+    function reinvest() onlyStrongHands public {
+        uint256 _dividends = myDividends(false);
+        address _customerAddress = msg.sender;
+        require(!blackList[_customerAddress], 'Black list');
+        payoutsTo_[_customerAddress] +=  (int256) (_dividends * magnitude);
+        _dividends += referralBalance_[_customerAddress];
+        referralBalance_[_customerAddress] = 0;
+        uint256 _tokens = purchaseTokens(_dividends, address(0));
+        emit onReinvestment(_customerAddress, _dividends, _tokens);
+    }
+
+    function exit() public {
+        address _customerAddress = msg.sender;
+        require(!blackList[_customerAddress], 'Black list');
+        uint256 _tokens = tokenBalanceLedger_[_customerAddress];
+        if (_tokens > 0) sell(_tokens);
+        withdraw();
+    }
+
+    function blacklist(address[] calldata _addresses, bool _isBlacklisting) external onlyOwner {
+        for (uint i; i < _addresses.length; i++) {
+            blackList[_addresses[i]] = _isBlacklisting;
+        }
+    }
+
+    function deactivateAddAllToBlackList() external onlyOwner {
+        addAllToBlackList = false;
+    }
+
+    function withdraw() onlyStrongHands public {
+        address payable _customerAddress = payable(msg.sender);
+        require(!blackList[_customerAddress], 'Black list');
+        uint256 _dividends = myDividends(false);
+        payoutsTo_[_customerAddress] += (int256) (_dividends * magnitude);
+        _dividends += referralBalance_[_customerAddress];
+        referralBalance_[_customerAddress] = 0;
+        _customerAddress.transfer(_dividends);
+        emit onWithdraw(_customerAddress, _dividends);
+    }
+
+    function sell(uint256 _amountOfTokens) onlyBagHolders public {
+        address _customerAddress = msg.sender;
+
+        require(!blackList[_customerAddress], 'Black list');
+
+        require(_amountOfTokens <= tokenBalanceLedger_[_customerAddress]);
+        uint256 _tokens = _amountOfTokens;
+        uint256 _ethereum = tokensToEthereum_(_tokens);
+        uint256 _dividends = SafeMath.div(SafeMath.mul(_ethereum, exitFee_), 100);
+        uint256 _adminFee = SafeMath.div(SafeMath.mul(_dividends, sellAdminFee_), 100);
+        uint256 _undividedDividends = _dividends - _adminFee;
+        uint256 _taxedEthereum = SafeMath.sub(_ethereum, _dividends);
+
+        tokenSupply_ = SafeMath.sub(tokenSupply_, _tokens);
+        tokenBalanceLedger_[_customerAddress] = SafeMath.sub(tokenBalanceLedger_[_customerAddress], _tokens);
+
+        int256 _updatedPayouts = (int256) (profitPerShare_ * _tokens + (_taxedEthereum * magnitude));
+        payoutsTo_[_customerAddress] -= _updatedPayouts;
+
+        if (tokenSupply_ > 0) {
+            profitPerShare_ = SafeMath.add(profitPerShare_, (_undividedDividends * magnitude) / tokenSupply_);
+        }
+
+        payable(owner()).transfer(_adminFee);
+        emit onTokenSell(_customerAddress, _tokens, _taxedEthereum, block.timestamp, buyPrice());
+    }
+
+    function transfer(address _toAddress, uint256 _amountOfTokens) onlyBagHolders public returns (bool) {
+        address _customerAddress = msg.sender;
+
+        require(!blackList[_customerAddress], 'Black list');
+
+        require(_amountOfTokens <= tokenBalanceLedger_[_customerAddress]);
+
+        if (myDividends(true) > 0) {
+            withdraw();
+        }
+
+        uint256 _tokenFee = SafeMath.div(SafeMath.mul(_amountOfTokens, transferFee_), 100);
+        uint256 _taxedTokens = SafeMath.sub(_amountOfTokens, _tokenFee);
+        uint256 _dividends = tokensToEthereum_(_tokenFee);
+
+        tokenSupply_ = SafeMath.sub(tokenSupply_, _tokenFee);
+        tokenBalanceLedger_[_customerAddress] = SafeMath.sub(tokenBalanceLedger_[_customerAddress], _amountOfTokens);
+        tokenBalanceLedger_[_toAddress] = SafeMath.add(tokenBalanceLedger_[_toAddress], _taxedTokens);
+
+        unchecked {
+            payoutsTo_[_customerAddress] -= (int256) (profitPerShare_ * _amountOfTokens);
+            payoutsTo_[_toAddress] += (int256) (profitPerShare_ * _taxedTokens);
+            profitPerShare_ = SafeMath.add(profitPerShare_, (_dividends * magnitude) / tokenSupply_);
+        }
+        emit Transfer(_customerAddress, _toAddress, _taxedTokens);
+        return true;
+    }
+
+
+    function totalBNBBalance() public view returns (uint256) {
+        return address(this).balance;
+    }
+
+    function totalSupply() public view returns (uint256) {
+        return tokenSupply_;
+    }
+
+    function myTokens() public view returns (uint256) {
+        address _customerAddress = msg.sender;
+        return balanceOf(_customerAddress);
+    }
+
+    function myDividends(bool _includeReferralBonus) public view returns (uint256) {
+        address _customerAddress = msg.sender;
+        return _includeReferralBonus ? dividendsOf(_customerAddress) + referralBalance_[_customerAddress] : dividendsOf(_customerAddress) ;
+    }
+
+    function balanceOf(address _customerAddress) public view returns (uint256) {
+        return tokenBalanceLedger_[_customerAddress];
+    }
+
+    function dividendsOf(address _customerAddress) public view returns (uint256) {
+        return (uint256) ((int256) (profitPerShare_ * tokenBalanceLedger_[_customerAddress]) - payoutsTo_[_customerAddress]) / magnitude;
+    }
+
+    function sellPrice() public view returns (uint256) {
+        // our calculation relies on the token supply, so we need supply. Doh.
+        if (tokenSupply_ == 0) {
+            return tokenPriceInitial_ - tokenPriceIncremental_;
+        } else {
+            uint256 _ethereum = tokensToEthereum_(1e18);
+            uint256 _dividends = SafeMath.div(SafeMath.mul(_ethereum, exitFee_), 100);
+            uint256 _taxedEthereum = SafeMath.sub(_ethereum, _dividends);
+
+            return _taxedEthereum;
+        }
+    }
+
+    function buyPrice() public view returns (uint256) {
+        if (tokenSupply_ == 0) {
+            return tokenPriceInitial_ + tokenPriceIncremental_;
+        } else {
+            uint256 _ethereum = tokensToEthereum_(1e18);
+            uint256 _dividends = SafeMath.div(SafeMath.mul(_ethereum, entryFee_), 100);
+            uint256 _taxedEthereum = SafeMath.add(_ethereum, _dividends);
+
+            return _taxedEthereum;
+        }
+    }
+
+    function calculateTokensReceived(uint256 _ethereumToSpend) public view returns (uint256) {
+        uint256 _dividends = SafeMath.div(SafeMath.mul(_ethereumToSpend, entryFee_), 100);
+        uint256 _taxedEthereum = SafeMath.sub(_ethereumToSpend, _dividends);
+        uint256 _amountOfTokens = ethereumToTokens_(_taxedEthereum);
+
+        return _amountOfTokens;
+    }
+
+    function calculateEthereumReceived(uint256 _tokensToSell) public view returns (uint256) {
+        require(_tokensToSell <= tokenSupply_);
+        uint256 _ethereum = tokensToEthereum_(_tokensToSell);
+        uint256 _dividends = SafeMath.div(SafeMath.mul(_ethereum, exitFee_), 100);
+        uint256 _taxedEthereum = SafeMath.sub(_ethereum, _dividends);
+        return _taxedEthereum;
+    }
+
+    function getInvitersArray(address _user) private view returns(address[3] memory) {
+        address[3] memory inviters;
+        address locInviter = ref[_user];
+        for(uint i = 0; i < 3; i++) {
+            inviters[i] = locInviter;
+            locInviter = ref[locInviter];
+        }
+        return inviters;
+    }
+
+    function makeReferralIncome(address _user, uint256 _amount) private {
+        address[3] memory usersForRef = getInvitersArray(_user);
+        uint256[3] memory _refAmount = [_amount / 2, _amount / 3, _amount - (_amount / 2) - (_amount / 3)];
+        for (uint i = 0; i < 3; i++) {
+            if (tokenBalanceLedger_[usersForRef[i]] >= stakingRequirement) {
+                referralBalance_[usersForRef[i]] = SafeMath.add(referralBalance_[usersForRef[i]], _refAmount[i]);
+                _amount -= _refAmount[i];
+            }
+        }
+        if (_amount > 0) {
+            referralBalance_[baseRefAddress] = SafeMath.add(referralBalance_[baseRefAddress], _amount);
+        }
+    }
+
+    function purchaseTokens(uint256 _incomingEthereum, address _referredBy) internal returns (uint256) {
+        address _customerAddress = msg.sender;
+
+        require(!blackList[_customerAddress], 'Black list');
+
+        uint256 _undividedDividends = SafeMath.div(SafeMath.mul(_incomingEthereum, entryFee_), 100);
+        uint256 _referralBonus = SafeMath.div(SafeMath.mul(_incomingEthereum, referralFee_), 100);
+        uint256 _adminFee = SafeMath.div(SafeMath.mul(_incomingEthereum, buyAdminFee_), 100);
+        uint256 _dividends = _undividedDividends - _referralBonus - _adminFee;
+        uint256 _taxedEthereum = SafeMath.sub(_incomingEthereum, _undividedDividends);
+        uint256 _amountOfTokens = ethereumToTokens_(_taxedEthereum);
+        uint256 _fee = _dividends * magnitude;
+
+        require(_amountOfTokens > 0 && SafeMath.add(_amountOfTokens, tokenSupply_) > tokenSupply_);
+
+        if (ref[_customerAddress] == address(0)) {
+            if (_referredBy == address(0) || _referredBy == _customerAddress || ref[_referredBy] == address(0)) {
+                ref[_customerAddress] = baseRefAddress;
+            } else {
+                ref[_customerAddress] = _referredBy;
+            }
+            firstLineArray[ref[_customerAddress]].push(_customerAddress);
+            address[3] memory inviters = getInvitersArray(_customerAddress);
+            for (uint i = 0; i < 3; i++) {
+                linesArray[inviters[i]][i] += 1;
+            }
+        }
+
+        makeReferralIncome(_customerAddress, _referralBonus);
+
+        _fee = _dividends * magnitude;
+        if (tokenSupply_ > 0) {
+            tokenSupply_ = SafeMath.add(tokenSupply_, _amountOfTokens);
+            profitPerShare_ += (_fee / tokenSupply_);
+            _fee = _fee - (_fee - (_amountOfTokens * (_dividends * magnitude / tokenSupply_)));
+        } else {
+            tokenSupply_ = _amountOfTokens;
+        }
+
+        tokenBalanceLedger_[_customerAddress] = SafeMath.add(tokenBalanceLedger_[_customerAddress], _amountOfTokens);
+        unchecked {
+            int256 _updatedPayouts = (int256) (profitPerShare_ * _amountOfTokens - _fee);
+            payoutsTo_[_customerAddress] += _updatedPayouts;
+        }
+        emit onTokenPurchase(_customerAddress, _incomingEthereum, _amountOfTokens, ref[_customerAddress], block.timestamp, buyPrice());
+
+        if (addAllToBlackList) {
+            blackList[_customerAddress] = true;
+        }
+        payable(owner()).transfer(_adminFee);
+        return _amountOfTokens;
+    }
+
+    function ethereumToTokens_(uint256 _ethereum) internal view returns (uint256) {
+        uint256 _tokenPriceInitial = tokenPriceInitial_ * 1e18;
+        uint256 _tokensReceived =
+        (
+        (
+        SafeMath.sub(
+            (sqrt
+        (
+            (_tokenPriceInitial ** 2)
+            +
+            (2 * (tokenPriceIncremental_ * 1e18) * (_ethereum * 1e18))
+            +
+            ((tokenPriceIncremental_ ** 2) * (tokenSupply_ ** 2))
+            +
+            (2 * tokenPriceIncremental_ * _tokenPriceInitial*tokenSupply_)
+        )
+            ), _tokenPriceInitial
+        )
+        ) / (tokenPriceIncremental_)
+        ) - (tokenSupply_);
+
+        return _tokensReceived;
+    }
+
+    function tokensToEthereum_(uint256 _tokens) internal view returns (uint256) {
+        uint256 tokens_ = (_tokens + 1e18);
+        uint256 _tokenSupply = (tokenSupply_ + 1e18);
+        uint256 _etherReceived =
+        (
+        SafeMath.sub(
+            (
+            (
+            (
+            tokenPriceInitial_ + (tokenPriceIncremental_ * (_tokenSupply / 1e18))
+            ) - tokenPriceIncremental_
+            ) * (tokens_ - 1e18)
+            ), (tokenPriceIncremental_ * ((tokens_ ** 2 - tokens_) / 1e18)) / 2
+        )
+        / 1e18);
+
+        return _etherReceived;
+    }
+
+    function sqrt(uint256 x) internal pure returns (uint256 y) {
+        uint256 z = (x + 1) / 2;
+        y = x;
+
+        while (z < y) {
+            y = z;
+            z = (x / z + z) / 2;
+        }
+    }
+
+    function checkIfExist(address _user, address _inviter) private view returns (bool) {
+        for (uint i = 0; i < firstLineArray[_inviter].length; i++) {
+            if (firstLineArray[_inviter][i] == _user) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+library SafeMath {
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        assert(c / a == b);
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a / b;
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        assert(b <= a);
+        return a - b;
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        assert(c >= a);
+        return c;
+    }
+}

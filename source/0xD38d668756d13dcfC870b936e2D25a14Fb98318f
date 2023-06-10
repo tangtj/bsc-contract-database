@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: UNLICENSED
+
+pragma solidity ^0.8.4;
+
+contract SAFUAI {
+    string public name = "SAFUAI";
+    string public symbol = "SAFI";
+    uint8 public decimals = 18;
+    uint256 private constant _totalSupply = 1000000000000000000000000; // 1 million tokens
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    address private constant _burnAddress = 0x000000000000000000000000000000000000dEaD;
+    address private constant _liquidityAddress = 0x1234567890123456789012345678901234567890;
+
+    uint256 private constant _liquidityLockDuration = 10;
+    uint256 private _liquidityLockTimestamp;
+    uint256 private _totalBurnedTokens;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Burn(address indexed from, uint256 value);
+
+    constructor() {
+        balanceOf[msg.sender] = _totalSupply;
+        _liquidityLockTimestamp = block.timestamp;
+    }
+
+    function totalSupply() public pure returns (uint256) {
+        return _totalSupply;
+    }
+
+    function burn(uint256 value) public returns (bool) {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+        balanceOf[msg.sender] -= value;
+        balanceOf[_burnAddress] += value;
+        _totalBurnedTokens += value;
+        emit Transfer(msg.sender, _burnAddress, value);
+        emit Burn(msg.sender, value);
+        return true;
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += value;
+        emit Transfer(msg.sender, to, value);
+        _handleTax(value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Insufficient allowance");
+        balanceOf[from] -= value;
+        balanceOf[to] += value;
+        allowance[from][msg.sender] -= value;
+        emit Transfer(from, to, value);
+        _handleTax(value);
+        return true;
+    }
+
+    function _handleTax(uint256 value) private {
+        uint256 liquidityTax = value * 4 / 100;
+        uint256 burnTax = value * 4 / 100;
+
+        balanceOf[_liquidityAddress] += liquidityTax;
+        balanceOf[_burnAddress] += burnTax;
+        emit Transfer(address(this), _liquidityAddress, liquidityTax);
+        emit Transfer(address(this), _burnAddress, burnTax);
+    }
+
+    function isLiquidityLocked() public view returns (bool) {
+        return (block.timestamp < _liquidityLockTimestamp + _liquidityLockDuration);
+    }
+}

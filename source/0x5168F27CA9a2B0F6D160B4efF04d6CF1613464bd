@@ -1,0 +1,373 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, 'SafeMath: addition overflow');
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, 'SafeMath: subtraction overflow');
+    }
+
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, 'SafeMath: multiplication overflow');
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, 'SafeMath: division by zero');
+    }
+
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, 'SafeMath: modulo by zero');
+    }
+
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+
+    function min(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = x < y ? x : y;
+    }
+
+    function sqrt(uint256 y) internal pure returns (uint256 z) {
+        if (y > 3) {
+            z = y;
+            uint256 x = y / 2 + 1;
+            while (x < z) {
+                z = x;
+                x = (y / x + x) / 2;
+            }
+        } else if (y != 0) {
+            z = 1;
+        }
+    }
+}
+
+abstract contract ReentrancyGuard {
+
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        _status = _ENTERED;
+
+        _;
+
+        _status = _NOT_ENTERED;
+    }
+}
+
+interface IBEP20 {
+
+    function totalSupply() external view returns (uint256);
+
+    function decimals() external view returns (uint8);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function getOwner() external view returns (address);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address _owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+contract HappyLucky is Ownable, ReentrancyGuard {
+    using SafeMath for uint256;
+    
+    IBEP20 public USDT = IBEP20(0x55d398326f99059fF775485246999027B3197955);
+
+    uint256 public PACKAGE_1 = 18;
+    uint256 public PACKAGE_2 = 3;
+    uint256 public VOTE_AMOUNT_1 = 1; // 15
+    uint256 public VOTE_AMOUNT_2 = 2; // 90
+    uint256 public JOIN_AMOUNT = 1; // 5
+
+    struct UserInfo {
+        uint256 balance;
+        uint256 package;
+        uint256 joinAt;
+        bool isJoin;
+        uint256 numberOfVote;
+        uint256 voteAmount; 
+    }
+
+    mapping(address => UserInfo) public userInfo;
+
+    event RescueFundsUSDT(address indexed owner, address to);
+    event AddUser(address indexed owner, address account, uint256 _balance, uint256 _package, uint256 _joinAt, bool _isJoin, uint256 _numberOfVote, uint256 _voteAmount);
+    event RemoveUserInfo(address indexed owner, address account);
+    event Join(address indexed owner, uint256 package);
+    event Vote(address indexed owner, uint256 amount, address f1);
+    event Vote2(address indexed owner, uint256 amount, address f1, address f2, address f3, address f4, address f5, address f6);
+
+    // VIEWS
+    function balanceUSDT() public view returns(uint256) {
+        return USDT.balanceOf(address(this));
+    }
+
+    function balanceUSDTOfUser(address account) public view returns(uint256) {
+        return USDT.balanceOf(account);
+    }
+
+    // OWNER
+    function addUser(address account, uint256 _balance, uint256 _package, uint256 _joinAt, bool _isJoin, uint256 _numberOfVote, uint256 _voteAmount) external onlyOwner {
+        userInfo[account].package = _balance;
+        userInfo[account].package = _package;
+        userInfo[account].joinAt = _joinAt;
+        userInfo[account].isJoin = _isJoin;
+        userInfo[account].numberOfVote = _numberOfVote;
+        userInfo[account].voteAmount = _voteAmount;
+
+        emit AddUser(msg.sender, account, _balance, _package, _joinAt, _isJoin, _numberOfVote, _voteAmount);
+    }
+
+    function removeUserInfo(address account) external onlyOwner {
+        delete userInfo[account];
+
+        emit RemoveUserInfo(msg.sender, account);
+    }
+
+    function rescueFundsUSDT(address to) external onlyOwner {
+        uint256 bal = balanceUSDT();
+        require(bal > 0, "dont have a USDT");
+        USDT.transfer(to, bal);
+
+        emit RescueFundsUSDT(msg.sender, to);
+    }
+
+    function setToken(uint8 tag,address value) public onlyOwner returns(bool) {
+        if(tag == 1) {
+            USDT = IBEP20(value);
+        }
+        
+        return true;
+    }
+
+    function set(uint8 tag,uint256 value) public onlyOwner returns(bool) {
+        if(tag == 1){
+            PACKAGE_1 = value;
+        } else if(tag == 2){
+            PACKAGE_2 = value;
+        } else if (tag == 3) {
+            VOTE_AMOUNT_1 = value;
+        } else if (tag == 4) {
+            VOTE_AMOUNT_2 = value;
+        } else if (tag == 5) {
+            JOIN_AMOUNT = value;
+        }
+        
+        return true;
+    }
+
+    /* --EXTERNAL-- */
+
+    function join(uint256 amount, uint256 package) public nonReentrant returns(bool) {
+        require(amount >= JOIN_AMOUNT.mul(10**18), "amount must greater than join amount");
+        require(msg.sender != address(0), "account must not zero address");
+        UserInfo storage user = userInfo[msg.sender];
+        require(balanceUSDTOfUser(msg.sender) >= amount.mul(10**18), "balance usdt not enough");
+        
+        user.package = package;
+        user.balance = user.balance.add(amount);
+        user.joinAt = block.timestamp;
+        user.isJoin = true;
+        user.numberOfVote = 0;
+        user.voteAmount = 0;
+
+        USDT.transferFrom(msg.sender, address(this), amount);
+
+        emit Join(msg.sender, package);
+        return true;
+    }
+
+    function vote(uint256 amount, address f1) public nonReentrant returns(bool) {
+        require(msg.sender != address(0), "account must not zero address");
+        UserInfo storage user = userInfo[msg.sender];
+        require(user.isJoin == true, "account havent join");
+
+        if(f1 != address(0) && msg.sender != f1){
+            user.numberOfVote = user.numberOfVote.add(1);
+            user.voteAmount = user.voteAmount.add(VOTE_AMOUNT_1.mul(10**18));
+
+            UserInfo storage userF1 = userInfo[f1];
+            userF1.balance = userF1.balance.add(VOTE_AMOUNT_1.mul(10**18));
+
+            USDT.transferFrom(msg.sender, f1, VOTE_AMOUNT_1.mul(10**18));
+        }
+
+        emit Vote(msg.sender, amount, f1);
+        return true;
+    }
+
+    function vote2(uint256 amount, address f1, address f2, address f3, address f4, address f5, address f6) public nonReentrant returns(bool) {
+        require(msg.sender != address(0), "account must not zero address");
+        UserInfo storage user = userInfo[msg.sender];
+        require(user.isJoin == true, "account havent join");
+
+        if(f1 != address(0) && msg.sender != f1){
+            user.numberOfVote = user.numberOfVote.add(1);
+            user.voteAmount = user.voteAmount.add(VOTE_AMOUNT_1.mul(10**18));
+
+            UserInfo storage userF1 = userInfo[f1];
+            userF1.balance = userF1.balance.add(VOTE_AMOUNT_1.mul(10**18));
+
+            USDT.transferFrom(msg.sender, f1, VOTE_AMOUNT_1.mul(10**18));
+        }
+        if(f2 != address(0) && msg.sender != f2) {
+            user.numberOfVote = user.numberOfVote.add(1);
+            user.voteAmount = user.voteAmount.add(VOTE_AMOUNT_1.mul(10**18));
+
+            UserInfo storage userF2 = userInfo[f2];
+            userF2.balance = userF2.balance.add(VOTE_AMOUNT_1.mul(10**18));
+
+            USDT.transferFrom(msg.sender, f2, VOTE_AMOUNT_1.mul(10**18));
+        }
+        if(f3 != address(0) && msg.sender != f3) {
+            user.numberOfVote = user.numberOfVote.add(1);
+            user.voteAmount = user.voteAmount.add(VOTE_AMOUNT_1.mul(10**18));
+
+            UserInfo storage userF3 = userInfo[f3];
+            userF3.balance = userF3.balance.add(VOTE_AMOUNT_1.mul(10**18));
+
+            USDT.transferFrom(msg.sender, f3, VOTE_AMOUNT_1.mul(10**18));
+        }
+        if(f4 != address(0) && msg.sender != f4) {
+            user.numberOfVote = user.numberOfVote.add(1);
+            user.voteAmount = user.voteAmount.add(VOTE_AMOUNT_1.mul(10**18));
+
+            UserInfo storage userF4 = userInfo[f4];
+            userF4.balance = userF4.balance.add(VOTE_AMOUNT_1.mul(10**18));
+
+            USDT.transferFrom(msg.sender, f4, VOTE_AMOUNT_1.mul(10**18));
+        }
+        if(f5 != address(0) && msg.sender != f5) {
+            user.numberOfVote = user.numberOfVote.add(1);
+            user.voteAmount = user.voteAmount.add(VOTE_AMOUNT_1.mul(10**18));
+
+            UserInfo storage userF5 = userInfo[f5];
+            userF5.balance = userF5.balance.add(VOTE_AMOUNT_1.mul(10**18));
+
+            USDT.transferFrom(msg.sender, f5, VOTE_AMOUNT_1.mul(10**18));
+        }
+        if(f6 != address(0) && msg.sender != f6) {
+            user.numberOfVote = user.numberOfVote.add(1);
+            user.voteAmount = user.voteAmount.add(VOTE_AMOUNT_1.mul(10**18));
+
+            UserInfo storage userF6 = userInfo[f6];
+            userF6.balance = userF6.balance.add(VOTE_AMOUNT_1.mul(10**18));
+
+            USDT.transferFrom(msg.sender, f6, VOTE_AMOUNT_1.mul(10**18));
+        }
+
+        emit Vote2(msg.sender, amount, f1, f2, f3, f4, f5, f6);
+        return true;
+    }
+    
+}

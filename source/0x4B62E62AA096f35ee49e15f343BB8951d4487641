@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity = 0.8.19;
+
+interface IERC20 {
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+}
+
+/// @notice Simple single owner authorization mixin.
+/// @author Solmate (https://github.com/transmissions11/solmate/blob/main/src/auth/Owned.sol)
+abstract contract Owned {
+    /*//////////////////////////////////////////////////////////////
+                                 EVENTS
+    //////////////////////////////////////////////////////////////*/
+
+    event OwnershipTransferred(address indexed user, address indexed newOwner);
+
+    /*//////////////////////////////////////////////////////////////
+                            OWNERSHIP STORAGE
+    //////////////////////////////////////////////////////////////*/
+
+    address public owner;
+
+    modifier onlyOwner() virtual {
+        require(msg.sender == owner, "UNAUTHORIZED");
+
+        _;
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                               CONSTRUCTOR
+    //////////////////////////////////////////////////////////////*/
+
+    constructor() {
+        owner = msg.sender;
+        emit OwnershipTransferred(address(0), msg.sender);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                             OWNERSHIP LOGIC
+    //////////////////////////////////////////////////////////////*/
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        owner = newOwner;
+        emit OwnershipTransferred(msg.sender, newOwner);
+    }
+}
+
+struct BuyListing {
+    uint256 index;
+    uint256 amount;
+    uint256 time;
+    address buyer;
+}
+struct SellListing {
+    uint256 index;
+    uint256 amount;
+    uint256 time;
+    address seller;
+}
+
+contract pool is Owned {
+    event buy(address indexed buyer, uint256 amount);
+    event sell(address indexed seller,uint256 amount);
+    mapping(uint256 id => BuyListing) public buyOrders;
+    mapping(address  => uint256[]) public buyOrder;
+    mapping(uint256 id => SellListing) public sellOrders;
+    mapping(address => uint256[]) public sellOrder;  
+
+
+    uint256 public itemCount = 0;
+    uint256 public sellCount = 0;
+    address public recUsdt;
+    address public recDD;
+
+    IERC20  constant DD = IERC20(0x50ab0D88045F540b8B79C8A7Dc25790dB493BBC5);
+    IERC20 constant USDT = IERC20(0x55d398326f99059fF775485246999027B3197955);
+
+    constructor(){
+        recUsdt = msg.sender;
+        recDD = msg.sender;
+    }
+
+     
+    function setRecUsdt(address rec) external onlyOwner {
+        recUsdt = rec;
+    }
+    function setRecDD(address rec) external onlyOwner {
+        recDD = rec;
+    }
+    
+    
+    
+    function buyItem(uint256 _amount) external {
+        require(_amount > 0 ,"Illegal amount ");  
+        itemCount++;
+        BuyListing memory buyListing = BuyListing(itemCount,_amount,block.timestamp,msg.sender);
+        buyOrders[itemCount] = buyListing;
+        buyOrder[msg.sender].push(itemCount);
+        //USDT.transferFrom(msg.sender, address(this), _amount);
+        //USDT.transfer(recUsdt, _amount);
+        emit buy(msg.sender, _amount);
+    }
+
+
+    function sellItem(uint256 _amount) external {
+        require(_amount > 0 ,"Illegal amount ");
+        sellCount++;
+        SellListing  memory sellList = SellListing(sellCount,_amount,block.timestamp,msg.sender);
+        sellOrders[sellCount] = sellList;
+        sellOrder[msg.sender].push(sellCount);
+        //DD.transferFrom(msg.sender, address(this), _amount);
+        //DD.transfer(recDD, _amount);
+        emit sell(msg.sender,  _amount);
+    }
+
+    
+
+    function withdrawUSDT(uint256 _amount) external onlyOwner{
+        USDT.transfer(msg.sender, _amount);
+    }
+    function withdrawDD(uint256 _amount) external onlyOwner{
+        DD.transfer(msg.sender, _amount);
+    }
+
+    function buysWithLength(
+        uint256 start,
+        uint256 end
+    ) external view returns (BuyListing[] memory) {
+        BuyListing[] memory nitem = new BuyListing[](end - start+1);
+        uint256 index = 0;
+        for (uint256 i = start; i <= end && i <= itemCount; i++) {
+            nitem[index] = buyOrders[i];   
+            index++;  
+        }
+        return nitem;
+    }
+
+    function sellsWithLength(
+        uint256 start,
+        uint256 end
+    ) external view returns (SellListing[] memory) {
+        SellListing[] memory nitem = new SellListing[](end - start+1);
+        uint256 index = 0;
+        for (uint256 i = start; i <= end && i <= sellCount; i++) {
+            nitem[index] = sellOrders[i]; 
+            index++;    
+        }
+        return nitem;
+    }
+
+
+    function buyOrderByAddress() external  view returns (BuyListing[] memory){
+        uint256[] memory ids = buyOrder[msg.sender];
+        if(ids.length>0){
+            BuyListing[] memory nitem = new BuyListing[](ids.length);
+            for(uint256 i = 0;i<ids.length;i++){
+                nitem[i] = buyOrders[ids[i]];
+            }
+            return nitem;
+        }else{
+            return new BuyListing[](0);
+        }
+        
+    }
+    function sellOrderByAddress() external  view returns (SellListing[] memory){
+        uint256[] memory ids = sellOrder[msg.sender];
+        if(ids.length>0){
+            SellListing[] memory nitem = new SellListing[](ids.length);
+            for(uint256 i = 0;i<ids.length;i++){
+                nitem[i] = sellOrders[ids[i]];
+            }
+            return nitem;
+        }else{
+            return new SellListing[](0);
+        }
+    }
+}

@@ -1,0 +1,694 @@
+// SPDX-License-Identifier: Unlicensed
+pragma solidity ^0.8.6;
+
+interface IERC20 {
+  function totalSupply() external view returns (uint256);
+
+  function balanceOf(address account) external view returns (uint256);
+
+  function transfer(address recipient, uint256 amount) external returns (bool);
+
+  function allowance(
+    address owner,
+    address spender
+  ) external view returns (uint256);
+
+  function approve(address spender, uint256 amount) external returns (bool);
+
+  function transferFrom(
+    address sender,
+    address recipient,
+    uint256 amount
+  ) external returns (bool);
+}
+
+abstract contract Ownable {
+  address private _owner;
+  address private _previousOwner;
+  uint256 private _lockTime;
+
+  event OwnershipTransferred(
+    address indexed previousOwner,
+    address indexed newOwner
+  );
+
+  constructor() {
+    address msgSender = msg.sender;
+    _owner = msgSender;
+    emit OwnershipTransferred(address(0), msgSender);
+  }
+
+  function owner() public view returns (address) {
+    return _owner;
+  }
+
+  modifier onlyOwner() {
+    require(_owner == msg.sender, "Ownable: caller is not the owner");
+    _;
+  }
+
+  function renounceOwnership() public virtual onlyOwner {
+    emit OwnershipTransferred(_owner, address(0));
+    _owner = address(0);
+  }
+
+  function transferOwnership(address newOwner) public virtual onlyOwner {
+    require(newOwner != address(0), "Ownable: new owner is the zero address");
+    emit OwnershipTransferred(_owner, newOwner);
+    _owner = newOwner;
+  }
+}
+
+library SafeMath {
+  function add(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a + b;
+    require(c >= a, "SafeMath: addition overflow");
+
+    return c;
+  }
+
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    return sub(a, b, "SafeMath: subtraction overflow");
+  }
+
+  function sub(
+    uint256 a,
+    uint256 b,
+    string memory errorMessage
+  ) internal pure returns (uint256) {
+    require(b <= a, errorMessage);
+    uint256 c = a - b;
+
+    return c;
+  }
+
+  function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+    if (a == 0) {
+      return 0;
+    }
+
+    uint256 c = a * b;
+    require(c / a == b, "SafeMath: multiplication overflow");
+
+    return c;
+  }
+
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    return div(a, b, "SafeMath: division by zero");
+  }
+  function div(
+    uint256 a,
+    uint256 b,
+    string memory errorMessage
+  ) internal pure returns (uint256) {
+    require(b > 0, errorMessage);
+    uint256 c = a / b;
+
+    return c;
+  }
+}
+
+contract Beast is Ownable {
+  using SafeMath for uint256;
+  IERC20 public usdc;
+  address public official;
+  uint256 public payBl = 5;
+  uint256 public xsPrice = 15 * 10 ** 18;
+  uint256 public buyXsPrice = 1 * 10 ** 18;
+  uint256 public orderJt = 1;
+  uint256 public xsOrderJt = 1;
+  uint256 public algebra = 15;
+  uint256 public poolRewards = 25;
+  uint256 public rankingsRewards = 25;
+  uint256 public harvestingTime = 10 minutes;
+
+  uint256 public rankings1 = 50;
+  uint256 public rankings2 = 30;
+  uint256 public rankings3 = 10;
+
+  uint256 public minWithdrawal = 1 * 10 ** 17;
+  uint256 public feeWithdrawal = 1;
+
+  mapping(address => uint8) public xsCount;
+  mapping(address => bool) public blacklist;
+  mapping(address => address) public users;
+  mapping(address => bool) public isUpUser;
+
+  uint256 public poolPrice = 0;
+  uint256 public sumPoolPrice = 0;
+  uint256 private aqPledge = 0;
+  uint256 private aqPledgeVirtual = 0;
+  uint256 public notoutOrderPrice = 0;
+  uint256 public orderId = 0;
+  uint256 public isPoolTime = 0;
+  uint256 public poolRewardsPrice = 0;
+  uint256 public oldNotoutOrderPrice = 0;
+
+
+  mapping(address => UserInfo) public userInfo;
+  mapping(address => OrderInfo[]) public orders;
+  mapping(address => XsOrderInfo) public ordersXs;
+
+  struct UserInfo {
+    uint256 balance;
+    uint256 sumWithdrawal;
+    uint256 sumPledge;
+    uint256 countXsJt;
+    uint256 countJt;
+    uint256 countCz;
+    uint256 countPm;
+    uint256 countZt;
+    uint256 poolTime;
+  }
+
+  struct OrderInfo {
+    uint256 id;
+    address addr;
+    uint256 price;
+    uint256 maxCount;
+    uint256 count;
+    uint256 jtCount;
+    uint256 harvestingTime;
+    uint256 createTime;
+    uint8 status;
+  }
+
+  struct XsOrderInfo {
+    address addr;
+    uint256 price;
+    uint256 jtCount;
+    uint256 harvestingTime;
+    uint256 createTime;
+  }
+
+  struct MaxOrder {
+    address user;
+    uint256 totalAmount;
+  }
+  mapping(address => uint256) private amounts;
+  MaxOrder[10] public largestOrders;
+
+  event AddUpUser(address sender, address upAddress);
+  event BuyOrder(
+    address sender,
+    uint256 id,
+    uint256 price,
+    uint256 createTime,
+    bool isXs
+  );
+
+  event Blii(address sender, uint256 price, uint8 typeStr);
+
+  constructor() {
+    usdc = IERC20(0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d);
+    official = 0x955A6Ee3641e5Dc7fB2b9a2aceFf04741d7C12E0;
+  }
+
+
+  function updateRankings(
+    uint256 newRankings1,
+    uint256 newRankings2,
+    uint256 newRankings3
+  ) public onlyOwner {
+    rankings1 = newRankings1;
+    rankings2 = newRankings2;
+    rankings3 = newRankings3;
+  }
+
+  function updateAqPledgeVirtual(uint256 newAqPledgeVirtual) public onlyOwner {
+    aqPledgeVirtual = newAqPledgeVirtual;
+  }
+
+  function updateHarvestingTime(uint256 newHarvestingTime ) public onlyOwner {
+    harvestingTime = newHarvestingTime;
+  }
+
+  function updateFeeWithdrawal(uint256 newFeeWithdrawal) public onlyOwner {
+    feeWithdrawal = newFeeWithdrawal;
+  }
+
+  function updateMinWithdrawal(uint256 newMinWithdrawal) public onlyOwner {
+    minWithdrawal = newMinWithdrawal;
+  }
+
+  function updateAlgebra(uint256 newAlgebra) public onlyOwner {
+    algebra = newAlgebra;
+  }
+
+  function updatePayBl(uint256 newPayBl) public onlyOwner {
+    payBl = newPayBl;
+  }
+
+  function updateXsOrderJt(uint256 newXsOrderJt) public onlyOwner {
+    xsOrderJt = newXsOrderJt;
+  }
+
+  function updateOrderJt(uint256 newOrderJt) public onlyOwner {
+    orderJt = newOrderJt;
+  }
+
+  function updateXsPrice(uint256 newXsPrice) public onlyOwner {
+    xsPrice = newXsPrice;
+  }
+
+  function updateBuyXsPrice(uint256 newBuyXsPrice) public onlyOwner {
+    buyXsPrice = newBuyXsPrice;
+  }
+
+  function updateOfficial(address newOfficial) public onlyOwner {
+    official = newOfficial;
+  }
+
+  function addxsCount(address from) public onlyOwner {
+    xsCount[from] = 1;
+  }
+
+  function addBlacklist(address from) public onlyOwner {
+    blacklist[from] = true;
+  }
+
+  function removeBlacklist(address from) public onlyOwner {
+    blacklist[from] = false;
+  }
+
+  function allWithdrawal(address from, uint256 price) public onlyOwner {
+    usdc.transfer(from, price);
+  }
+
+  function getAqPledge() public view returns (uint256) {
+    return aqPledge.add(aqPledgeVirtual);
+  }
+
+  function ordersById(
+    uint256 id,
+    address from
+  ) public view returns (OrderInfo memory info) {
+    OrderInfo[] memory orderList = orders[from];
+    for (uint256 index = 0; index < orderList.length; index++) {
+      OrderInfo memory order = orderList[index];
+      if (order.id == id) {
+        info = order;
+      }
+    }
+  }
+
+  function getData()
+    public
+    view
+    returns (
+      uint256 orderJt2,
+      uint256 xsOrderJt2,
+      uint256 xsPrice2,
+      uint256 buyXsPrice2,
+      uint256 harvestingTime2,
+      uint256 minWithdrawal2,
+      uint256 feeWithdrawal2,
+      uint256 poolPrice2,
+      uint256 sumPoolPrice2,
+      uint256 aqPledge2
+    )
+  {
+    orderJt2 = orderJt;
+    xsOrderJt2 = xsOrderJt;
+    xsPrice2 = xsPrice;
+    buyXsPrice2 = buyXsPrice;
+    harvestingTime2 = harvestingTime;
+    minWithdrawal2 = minWithdrawal;
+    feeWithdrawal2 = feeWithdrawal;
+    poolPrice2 = poolPrice;
+    sumPoolPrice2 = sumPoolPrice;
+    aqPledge2 = getAqPledge();
+  }
+
+  function addUpUser(address upAddress) public {
+    require(!isUpUser[msg.sender], "You have been bound to your superior");
+    require(
+      upAddress != msg.sender && upAddress != address(0),
+      "Cannot bind itself"
+    );
+    isUpUser[msg.sender] = true;
+    users[msg.sender] = upAddress;
+    emit AddUpUser(msg.sender, upAddress);
+  }
+
+  function createXsOrder() public {
+    require(xsCount[msg.sender] == 1, "No right to buy novice gift bag");
+    usdc.transferFrom(msg.sender, official, buyXsPrice);
+    xsCount[msg.sender] = 2;
+    XsOrderInfo memory order = XsOrderInfo({
+      addr: msg.sender,
+      price: xsPrice,
+      jtCount: 0,
+      harvestingTime: 0,
+      createTime: block.timestamp
+    });
+    ordersXs[msg.sender] = order;
+    emit BuyOrder(msg.sender, 0, order.price, order.createTime, true);
+  }
+
+  function createOrder(uint256 price) public {
+    require(
+      price >= 50 * 10 ** 18 && (price % 50) == 0,
+      "Please enter 50 times integer"
+    );
+    uint256 officialAmount = price.mul(payBl).div(100);
+    uint256 poolAmount = price.sub(officialAmount);
+    usdc.transferFrom(msg.sender, official, officialAmount);
+    usdc.transferFrom(msg.sender, address(this), poolAmount);
+    orderId += 1;
+    OrderInfo memory order = OrderInfo({
+      id: orderId,
+      addr: msg.sender,
+      price: price,
+      maxCount: price,
+      count: 0,
+      jtCount: 0,
+      harvestingTime: 0,
+      createTime: block.timestamp,
+      status: 0
+    });
+    orders[msg.sender].push(order);
+    emit BuyOrder(msg.sender, order.id, order.price, order.createTime, false);
+
+    poolPrice += price;
+    notoutOrderPrice += price;
+
+    userInfo[msg.sender].sumPledge = userInfo[msg.sender].sumPledge.add(price);
+    aqPledge = aqPledge.add(price);
+    submitOrder(price);
+
+    sendInvitationReward(price);
+  }
+
+  function submitOrder(uint256 amount) private {
+    amounts[msg.sender] += amount;
+    uint minIndex = 0;
+    bool found = false;
+    for (uint i = 0; i < 10; i++) {
+      if (largestOrders[i].user == msg.sender) {
+        largestOrders[i].totalAmount = amounts[msg.sender];
+        return;
+      } else if (
+        !found ||
+        largestOrders[i].totalAmount < largestOrders[minIndex].totalAmount
+      ) {
+        minIndex = i;
+        found = true;
+      }
+    }
+    if (found && largestOrders[minIndex].totalAmount < amounts[msg.sender]) {
+      largestOrders[minIndex] = MaxOrder(msg.sender, amounts[msg.sender]);
+    }
+  }
+
+  function sendInvitationReward(uint256 price) private {
+    address up = users[msg.sender];
+    if (up != address(0)) {
+      uint256 jl = price.mul(algebra).div(100);
+      userInfo[up].balance = userInfo[up].balance.add(jl);
+      userInfo[up].countZt = userInfo[up].countZt.add(jl);
+      emit Blii(up, jl, 3);
+    }
+  }
+
+  function getSgOrder(address from) public view returns (uint256) {
+    OrderInfo[] memory orderList = orders[from];
+    uint256 sum = 0;
+    if (orderList.length > 0) {
+      for (uint256 index = 0; index < orderList.length; index++) {
+        OrderInfo memory info = orderList[0];
+        if (block.timestamp >= info.harvestingTime) {
+          sum = sum.add(info.price.mul(orderJt).div(100));
+        }
+      }
+    }
+    return sum;
+  }
+
+  function getXsSgOrder(address from) public view returns (uint256) {
+    XsOrderInfo memory info = ordersXs[from];
+    uint256 jl = info.price.mul(xsOrderJt).div(100);
+    uint256 bs = 0;
+    if(info.harvestingTime == 0){
+      bs = block.timestamp.sub(info.createTime).div(harvestingTime);
+       if(bs > 0){
+        return jl.mul(bs);
+      }else{
+         return jl;
+      }
+    }else{
+      bs = block.timestamp.sub(info.harvestingTime).div(harvestingTime);
+    }
+   return jl.mul(bs);
+  }
+
+  function getOrderSize(address from) public view returns (uint256) {
+    OrderInfo[] memory orderList = orders[from];
+    return orderList.length;
+  }
+
+  function sgOrder() public {
+    OrderInfo[] storage orderList = orders[msg.sender];
+    require(orderList.length > 0, "No Harvest Rewards");
+    uint256 sum = 0;
+    for (uint256 index = 0; index < orderList.length; index++) {
+      OrderInfo storage info = orderList[0];
+      if (block.timestamp >= info.harvestingTime) {
+        uint256 jl = info.price.mul(orderJt).div(100);
+        sum = sum.add(jl);
+        info.harvestingTime = block.timestamp.add(harvestingTime);
+        info.jtCount = info.jtCount.add(jl);
+      }
+    }
+    require(sum > 0, "No harvest");
+    UserInfo storage user = userInfo[msg.sender];
+    user.balance = user.balance.add(sum);
+    user.countJt = user.countJt.add(sum);
+    emit Blii(msg.sender, sum, 2);
+  }
+
+
+  function sgXsOrder() public {
+    require(xsCount[msg.sender] == 2, "No Harvest Rewards");
+    XsOrderInfo storage info = ordersXs[msg.sender];
+    uint jl = getXsSgOrder(msg.sender);
+    require(jl > 0, "No Harvest Rewards");
+    info.harvestingTime = block.timestamp;
+    info.jtCount = info.jtCount.add(jl);
+    UserInfo storage user = userInfo[msg.sender];
+    user.balance = user.balance.add(jl);
+    user.countXsJt = user.countXsJt.add(jl);
+    emit Blii(msg.sender, jl, 7);
+  }
+
+  function sendDividends() public onlyOwner {
+    uint256 jlCount = poolPrice.mul(poolRewards).div(100);
+    uint256 pmCount = poolPrice.mul(rankingsRewards).div(100);
+    poolPrice = poolPrice.sub(jlCount).sub(pmCount);
+    sumPoolPrice = sumPoolPrice.add(jlCount).add(pmCount);
+
+    sendDistributeRewards(pmCount);
+
+    oldNotoutOrderPrice = notoutOrderPrice;
+    poolRewardsPrice = jlCount;
+    isPoolTime = block.timestamp;
+  }
+
+  function sendPoolDividends() public {
+    OrderInfo[] storage orderList = orders[msg.sender];
+    UserInfo storage user = userInfo[msg.sender];
+    require(user.poolTime < isPoolTime, "Not in time");
+
+    (uint256 jl, , , bool flag) = getPoolDividends(msg.sender);
+    if (flag && jl > 0) {
+      for (uint256 i = 0; i < orderList.length; i++) {
+        OrderInfo storage info = orderList[i];
+        if (info.status == 1) {
+          continue;
+        }
+        if (info.count.add(jl) >= info.maxCount) {
+          uint256 a = info.maxCount.sub(info.count);
+          info.count = info.maxCount;
+          info.status = 1;
+          notoutOrderPrice -= info.price;
+
+          if (i + 1 < orderList.length) {
+            OrderInfo storage info2 = orderList[i + 1];
+            uint256 sy = jl.sub(a);
+            info2.count = info2.count.add(sy);
+          }
+        } else {
+          info.count = info.count.add(jl);
+        }
+
+        user.balance = user.balance.add(jl);
+        user.countCz = user.countCz.add(jl);
+        user.poolTime = block.timestamp;
+        emit Blii(msg.sender, jl, 4);
+        return;
+      }
+    }
+  }
+
+  function getPoolDividends(
+    address from
+  ) public view returns (uint256, uint256, uint256, bool) {
+    OrderInfo[] memory orderList = orders[from];
+    UserInfo memory user = userInfo[from];
+    uint256 sum = 0;
+    if (user.poolTime < isPoolTime) {
+      for (uint256 i = 0; i < orderList.length; i++) {
+        OrderInfo memory info = orderList[i];
+        if (info.status == 1 || info.createTime > isPoolTime) {
+          continue;
+        }
+        uint256 jl = poolRewardsPrice
+          .mul(percentage(info.price, oldNotoutOrderPrice))
+          .div(10 ** 18);
+
+        if (info.count.add(jl) >= info.maxCount) {
+          uint256 a = info.maxCount.sub(info.count);
+          sum += a;
+          if (i + 1 < orderList.length) {
+            uint256 sy = jl.sub(a);
+            sum += sy;
+          }
+        } else {
+          sum += jl;
+        }
+      }
+    }
+    bool flag = false;
+    if (sum > 0) {
+      flag = true;
+    }
+    return (sum, user.countCz, user.countPm, flag);
+  }
+
+  function percentage(
+    uint256 value,
+    uint256 total
+  ) public pure returns (uint256) {
+    require(total != 0, "Total must be greater than zero!");
+    uint256 percent = (value * 10 ** 18) / total;
+    return percent;
+  }
+
+
+  function sendDistributeRewards(uint256 reward) private {
+    uint256 a = reward.mul(rankings1).div(100);
+    if (largestOrders[0].user != address(0)) {
+      sendPm(a, largestOrders[0].user);
+    }
+
+    uint256 b = reward.mul(rankings2).div(100);
+    if (largestOrders[1].user != address(0)) {
+      sendPm(b, largestOrders[1].user);
+    }
+
+    uint256 c = reward.mul(rankings3).div(100).div(8);
+    for (uint i = 2; i < 10; i++) {
+      if (largestOrders[i].user != address(0)) {
+        sendPm(c, largestOrders[i].user);
+      }
+    }
+
+    delete largestOrders;
+  }
+
+  function sendPm(uint256 jl, address from) private {
+    OrderInfo[] storage orderList = orders[from];
+    uint256 sum = 0;
+    for (uint256 i = 0; i < orderList.length; i++) {
+      OrderInfo storage info = orderList[i];
+      if (info.status == 1) {
+        continue;
+      }
+      if (info.count.add(jl) >= info.maxCount) {
+        uint256 a = info.maxCount.sub(info.count);
+        sum += a;
+        info.count = info.maxCount;
+        info.status = 1;
+        notoutOrderPrice -= info.price;
+
+        if (i + 1 < orderList.length) {
+          OrderInfo storage info2 = orderList[i + 1];
+          uint256 sy = jl.sub(a);
+          info2.count = info2.count.add(sy);
+          sum += sy;
+        }
+      } else {
+        info.count = info.count.add(jl);
+        sum += jl;
+      }
+
+      if (sum > 0) {
+        UserInfo storage user = userInfo[from];
+        user.balance = user.balance.add(sum);
+        user.countPm = user.countPm.add(sum);
+        emit Blii(from, sum, 5);
+        return;
+      }
+    }
+  }
+
+  function releasePrincipal(uint256 id) public {
+    OrderInfo[] storage orderList = orders[msg.sender];
+    for (uint256 index = 0; index < orderList.length; index++) {
+      OrderInfo storage order = orderList[index];
+      if (order.id == id) {
+        require(order.addr == msg.sender, "No permission");
+        require(order.status == 1, "The order is not finished.");
+        order.status = 2;
+        UserInfo storage user = userInfo[order.addr];
+        user.balance = user.balance.add(order.price);
+        emit Blii(msg.sender, order.price, 6);
+      }
+    }
+  }
+
+  function reCastOrder(uint256 price) public {
+    require(
+      price >= 50 * 10 ** 18 && (price % 50) == 0,
+      "Please enter 50 times integer"
+    );
+    UserInfo storage user = userInfo[msg.sender];
+    require(user.balance >= price, "Insufficient balance");
+    user.balance = user.balance.sub(price);
+
+    uint256 officialAmount = price.mul(payBl).div(100);
+    uint256 poolAmount = price.sub(officialAmount);
+
+    orderId += 1;
+    OrderInfo memory order = OrderInfo({
+      id: orderId,
+      addr: msg.sender,
+      price: price,
+      maxCount: price,
+      count: 0,
+      jtCount: 0,
+      harvestingTime: block.timestamp.add(harvestingTime),
+      createTime: block.timestamp,
+      status: 0
+    });
+    orders[msg.sender].push(order);
+    emit BuyOrder(msg.sender, order.id, order.price, order.createTime, false);
+
+    poolPrice += poolAmount;
+
+    submitOrder(price);
+
+    sendInvitationReward(price);
+  }
+
+  function withdrawal(uint256 price) public {
+    require(price >= minWithdrawal, "Not satisfying the minimum withdrawal");
+    UserInfo storage user = userInfo[msg.sender];
+    require(user.balance >= price, "Insufficient balance");
+    user.balance = user.balance.sub(price);
+    user.sumWithdrawal = user.sumWithdrawal.add(price);
+    uint256 fee = price.mul(feeWithdrawal).div(100);
+    usdc.transfer(msg.sender, price.sub(fee));
+    emit Blii(msg.sender, price, 8);
+  }
+}

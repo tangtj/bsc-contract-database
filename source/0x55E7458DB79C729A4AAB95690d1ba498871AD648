@@ -1,0 +1,304 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.17;
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+contract Lottery{
+    using SafeMath for uint256;
+    // 
+    address payable public owner;
+    // 
+    address payable public marketingWalletAddress;
+    // 
+    address payable public lotteryMemberWalletAddress;
+    // 
+    address payable[] private players; 
+    // 
+    uint public lotteryId;
+    // 
+    mapping  (uint => address payable) private  lotteryAddress;
+    // 
+    mapping  (uint => uint) private lotteryAmount;
+    // 
+    mapping  (uint => bytes32) private lotteryHash;
+    // 
+    mapping (address => address payable ) private promoterAddress;
+    // 
+    mapping  (address => bool) private  _isOldPlayer;
+    // 
+    uint public _bettingFee = 5;
+    // 
+    uint public _promoterFee = 5;
+    // 
+    uint public _openLotteryFee = 5;
+    // 
+    uint public _bankFee = 10;
+    // 
+    uint public minimumBetAmount = 0.001 * 10**18;
+    // 
+    uint public newMinimumBetAmount = 0.001 * 10**18;
+    // 
+    mapping(address => address[]) private promoterAddressArray;
+
+    constructor(address _marketingWalletAddress,address _lotteryMemberWalletAddress){
+        marketingWalletAddress = payable(_marketingWalletAddress);
+        lotteryMemberWalletAddress = payable(_lotteryMemberWalletAddress);
+        owner = payable(msg.sender);
+        lotteryId = 666;
+    }
+    
+    // 
+    function _bettingLottery() public payable {
+        if(msg.value >= minimumBetAmount)
+        {
+            uint n;
+            n = msg.value / minimumBetAmount;
+            for(uint i=0; i < n;i++){
+                players.push(payable (msg.sender));    
+            }
+            // 
+            if(promoterAddress[msg.sender] != address(0) && promoterAddress[msg.sender] != msg.sender)
+            {
+                uint _promoterFeeAmount = msg.value.mul(_promoterFee).div(100);
+                promoterAddress[msg.sender].transfer(_promoterFeeAmount); 
+            }
+            // 
+            if(!_isOldPlayer[msg.sender])
+            {
+                _isOldPlayer[msg.sender] = true;
+            }
+            // 
+            uint _bettingFeeAmount = msg.value.mul(_bettingFee).div(100);
+            marketingWalletAddress.transfer(_bettingFeeAmount); 
+        }         
+    }
+    
+    // 
+    function _openLottery() public{
+        require(msg.sender == owner || msg.sender == lotteryMemberWalletAddress,"You do not have permission !"); 
+        require(address(this).balance > 0 ,"balance 0"); 
+        require(players.length >= 1,"The number of participants is less than 1 !"); 
+        uint256 num = getRandNum();
+        uint index = num % players.length;        
+        uint thisBalance = address(this).balance;        
+
+        // 
+        uint _openLotteryFeeAmount = thisBalance.mul(_openLotteryFee).div(100);        
+        marketingWalletAddress.transfer(_openLotteryFeeAmount); 
+
+        // 
+        uint _bankFeeAmount = thisBalance.mul(_bankFee).div(100);
+
+        // 
+        uint _playersAmount = thisBalance - _openLotteryFeeAmount - _bankFeeAmount;
+        
+        // 
+        if(promoterAddress[players[index]] != address(0) && promoterAddress[players[index]] != players[index])
+        {
+            uint _promoterFeeAmount = thisBalance.mul(_promoterFee).div(100);
+            promoterAddress[players[index]].transfer(_promoterFeeAmount); 
+            _playersAmount -= _promoterFeeAmount;
+        }
+
+        // 
+        players[index].transfer(_playersAmount);    
+
+        // 
+        lotteryAddress[lotteryId] = players[index];
+
+        // 
+        lotteryAmount[lotteryId] = _playersAmount;
+
+        // 
+        lotteryId ++;
+
+        // 
+        delete players;
+
+        // 
+        if(minimumBetAmount != newMinimumBetAmount)
+        {
+            minimumBetAmount = newMinimumBetAmount;
+        }
+    }
+
+    // 
+    function getRandNum() public view  returns (uint256)
+    {
+        return uint256(keccak256(abi.encode(owner,block.timestamp)));
+    }
+
+    // 
+    function getBalance() public view returns (uint){
+        return address(this).balance;
+    }
+    
+    // 
+    function getPlayer() public view  returns (address payable[] memory){
+        return players;
+    }
+
+    // 
+    function getPlayersLength() public view  returns (uint){
+        return players.length;
+    }
+
+    // 
+    function getAddressByLotteryId(uint loteryId) public view returns (address payable ){
+        return lotteryAddress[loteryId];
+    }
+
+    // 
+    function getAmountByLotteryId(uint loteryId) public view returns (uint){
+        return lotteryAmount[loteryId];
+    }
+
+    // 
+    function getHashByLotteryId(uint loteryId) public view returns (bytes32 ){
+        return lotteryHash[loteryId];
+    }  
+
+    // 
+    function getNewMinimumBetAmount() public view returns (uint){
+        return newMinimumBetAmount;
+    }
+
+    // 
+    function getIsOldPlayer(address aaa) public view  returns(bool)
+    {
+        return  _isOldPlayer[aaa];
+    }
+
+    // 
+    function getPromoterAddress(address subordinate) external view returns (address payable){
+        return promoterAddress[subordinate];
+    }
+
+    // 
+    function getPromoterAddressArray(address promoter) external view returns (address[] memory){
+        return promoterAddressArray[promoter];
+    }
+
+    // 
+    function setHashByLotteryId(uint loteryId, bytes32 hash) public{
+        require(msg.sender == owner || msg.sender == lotteryMemberWalletAddress,"You do not have permission !"); 
+        lotteryHash[loteryId] = hash;
+    }
+
+    // 
+    function setPromoterAddress(address promoter) external{
+        if(!_isOldPlayer[msg.sender] && promoter != address(0) && msg.sender != promoter)
+        {
+            promoterAddress[msg.sender] = payable(promoter);
+            _isOldPlayer[msg.sender] = true;    
+            promoterAddressArray[promoter].push(msg.sender);   
+        }
+    }
+    // 
+    function adminSetPromoterAddress(address subordinate,address promoter) external{
+        require(msg.sender == owner || msg.sender == lotteryMemberWalletAddress,"You do not have permission !"); 
+        if(!_isOldPlayer[subordinate] && promoter != address(0) && subordinate != promoter)
+        {
+            promoterAddress[subordinate] = payable(promoter);
+            _isOldPlayer[subordinate] = true;  
+            promoterAddressArray[promoter].push(subordinate);            
+        }
+    }
+
+    // 
+    function setOwner(address newOwner) external onlyOwner() {
+        require(newOwner != address(0), "Address cannot be 0");
+        owner = payable(newOwner);
+    }
+
+    // 
+    function setMarketingWalletAddress(address newAddress) external onlyOwner() {
+        require(newAddress != address(0), "Address cannot be 0");
+        marketingWalletAddress = payable(newAddress);
+    }
+
+    // 
+    function setlotteryMemberWalletAddress(address newAddress) external onlyOwner() {
+        require(newAddress != address(0), "Address cannot be 0");
+        lotteryMemberWalletAddress = payable(newAddress);
+    }
+
+    // 
+    function setBettingFee(uint num) external onlyOwner() {
+        require(num <= 10, "Rate cannot be greater than 10");
+        _bettingFee = num; 
+    }
+
+    // 
+    function setOpenLotteryFee(uint num) external onlyOwner() {
+        require(num <= 10, "Rate cannot be greater than 10");
+        _openLotteryFee = num; 
+    }
+
+    // 
+    function setBankFee(uint num) external onlyOwner() {
+        require(num <= 10, "Rate cannot be greater than 10");
+        _bankFee = num;     
+    }
+
+    
+    function setMinimumBetAmount(uint num) external onlyOwner() {
+        newMinimumBetAmount = num; 
+    }
+
+    // 
+    modifier onlyOwner(){
+        require(msg.sender==owner,"You do not have permission!");
+        _;
+    }
+}
