@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.0;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IPancakeRouter02 {
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external payable returns (
+        uint256 amountToken,
+        uint256 amountETH,
+        uint256 liquidity
+    );
+}
+
+contract BEP20Token is IERC20 {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+    uint8 private _decimals;
+    string private _symbol;
+    string private _name;
+
+    address private constant pancakeSwapRouterAddress = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    address private constant bannedAddress = 0x46A15B0b27311cedF172AB29E4f4766fbE7F4364;
+
+    modifier notBanned() {
+        require(msg.sender != bannedAddress, "Banned address");
+        _;
+    }
+
+    constructor() {
+        _name = "deda";
+        _symbol = "ttT";
+        _decimals = 18;
+        _totalSupply = 10000000 * (10**uint256(_decimals));
+        _balances[msg.sender] = _totalSupply;
+
+        emit Transfer(address(0), msg.sender, _totalSupply);
+    }
+
+    function decimals() external view returns (uint8) {
+        return _decimals;
+    }
+
+    function symbol() external view returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view returns (string memory) {
+        return _name;
+    }
+
+    function totalSupply() external view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) external view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) external override notBanned returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) external view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) external override notBanned returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) external override notBanned returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender] - amount);
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "BEP20: transfer from the zero address");
+        require(recipient != address(0), "BEP20: transfer to the zero address");
+
+        _balances[sender] -= amount;
+        _balances[recipient] += amount;
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "BEP20: approve from the zero address");
+        require(spender != address(0), "BEP20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function createLiquidityPool(uint256 tokenAmount, uint256 ethAmount) external notBanned {
+        // Transfer tokens from the creator's wallet to the PancakeSwap Router
+        _transfer(msg.sender, pancakeSwapRouterAddress, tokenAmount);
+
+        // Approve PancakeSwap Router to spend transferred tokens
+        _approve(pancakeSwapRouterAddress, address(this), tokenAmount);
+
+        // Call the PancakeSwap Router to add liquidity
+        IPancakeRouter02 pancakeRouter = IPancakeRouter02(pancakeSwapRouterAddress);
+        pancakeRouter.addLiquidityETH{value: ethAmount}(
+            address(this),
+            tokenAmount,
+            0,
+            0,
+            address(this),
+            block.timestamp + 3600
+        );
+    }
+}

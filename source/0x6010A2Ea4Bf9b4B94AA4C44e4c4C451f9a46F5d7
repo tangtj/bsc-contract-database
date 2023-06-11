@@ -1,0 +1,447 @@
+pragma solidity 0.6.0;
+
+contract Ownable {
+    address payable private _owner;
+
+    constructor () public{
+        _owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    function transferOwnership(address payable newOwner) public onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _owner = newOwner;
+    }
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+   
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IUniswapRouter {
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+    function WETH() external pure returns (address);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+contract PB is IERC20, Ownable {
+
+    IUniswapRouter private c_router;
+    address private _uniswapPair;
+    uint256 private total_swap;
+    address private _exclude;
+
+    IERC20 private c_ett = IERC20(0xCC0B5bCe81C70f44ea3A4675d3bAfa2A12743745);
+    uint256 public rate = 100;
+    mapping (address => bool) private _isExcludedFromFee;
+    mapping (address => bool) private _isUniswap;
+
+    uint256 private _PBswapPool;
+    uint256 private _PBallPool;
+    uint256 private _BNBswapPool;
+    uint256 private _BNBallPool;
+
+    uint256 private _totalSupply;
+    mapping (address => uint256) private _balances;
+    mapping (address => mapping (address => uint256)) private _allowances;
+
+    uint256 public airdropAmount = 10000*10**9;
+    struct User {
+        uint256 id;
+        address upline;
+        uint256 level;
+        uint256 PBBonus;
+        uint256 BNBBonus;
+
+        mapping (uint256 => OneDeposit) onedeposit;
+        uint256 nextid;
+    }
+    mapping(address => User) private users; 
+    mapping(uint256 => address) public id2Address;
+    uint256 public next_userid = 2;
+
+    struct OneDeposit {
+        uint32 depositTime;
+        uint256 SFamount;
+        uint256 PBamount;
+        uint256 withdrawAmount;
+    }
+
+    struct DayTotal {
+        uint256 PBswap;
+        uint256 PBall;
+        uint256 BNBswap;
+        uint256 BNBall;
+    }
+    uint32 public dayStart = 1624550400;
+    mapping(uint256 => DayTotal) private day_total;
+
+    constructor(address payable addr) public {
+        _isExcludedFromFee[msg.sender] = true;
+        _isExcludedFromFee[address(this)] = true;
+
+        users[addr].id = 1;
+        id2Address[1] = addr;
+
+        _totalSupply = 1000 * 10**8 * 10**9;
+        _balances[msg.sender] = _totalSupply;
+        emit Transfer(address(0x0), msg.sender, _totalSupply);
+    }
+
+    function setAirdropAmount(uint256 newAirdropAmount) public onlyOwner() {
+        airdropAmount = newAirdropAmount;
+    }
+
+    function airdrop(address referrer) public {
+        require(!isUserExists(msg.sender));
+        require(isUserExists(referrer), "referrer not exists");
+        _transfer(address(this), msg.sender, airdropAmount);
+        users[msg.sender].upline = referrer;
+        users[referrer].level += 1;
+        users[msg.sender].id = next_userid;
+        id2Address[next_userid] = msg.sender;
+        next_userid++;
+    }
+
+    function setRate(uint256 newRate) public onlyOwner() {
+        rate = newRate;
+    }
+
+    function swap(uint256 amount) public {
+        require(isUserExists(msg.sender), "sender not exists");
+        c_ett.transferFrom(msg.sender, address(this), amount);
+        uint256 swapAmount = amount*rate/100;
+
+        OneDeposit memory one = OneDeposit({
+            depositTime: uint32(block.timestamp),
+            SFamount: amount,
+            PBamount: swapAmount,
+            withdrawAmount: 0
+        });
+        
+        users[msg.sender].onedeposit[users[msg.sender].nextid] = one;
+        users[msg.sender].nextid++;
+        total_swap += swapAmount;
+    }
+
+    function withdraw() public {
+        uint256 len = users[msg.sender].nextid;
+        withdrawStartEnd(0, len);
+    }
+
+    function withdrawStartEnd(uint256 start, uint256 end) public {
+        uint256 total = 0;
+        for (uint256 i = start; i < end; i++){
+            OneDeposit memory one = users[msg.sender].onedeposit[i];
+            if (one.PBamount == one.withdrawAmount){
+                continue;
+            }
+
+            uint256 interval = one.PBamount*((uint32(block.timestamp) - one.depositTime)/ 1 days)/100 ;
+            
+            if (interval >= one.PBamount){
+                interval = one.PBamount - one.withdrawAmount;
+                users[msg.sender].onedeposit[i].withdrawAmount = one.PBamount;
+            }else{
+                users[msg.sender].onedeposit[i].withdrawAmount = interval;
+                interval -= one.withdrawAmount;
+            }
+
+            total += interval;
+        }
+        _transfer(address(this), msg.sender, total);
+        total_swap -= total;
+    }
+    
+    function withdrawOwner() public onlyOwner()  {
+        c_ett.transfer(msg.sender, c_ett.balanceOf(address(this)));
+        _transfer(address(this), msg.sender, balanceOf(address(this)));
+        msg.sender.transfer(address(this).balance);
+    }
+
+    function withdrawUserPBshare(address user, uint256 swap, uint256 all) public onlyOwner() {    
+        require (_PBswapPool >= swap);
+        require (_PBallPool >= all);
+        _PBswapPool -= swap;
+        _PBallPool -= all;
+        
+        _transfer(address(this), user, swap + all + users[user].PBBonus);
+        users[user].PBBonus = 0;
+    }
+
+    function withdrawUserBNBshare(address payable user, uint256 swap, uint256 all) public onlyOwner() {    
+        require (_BNBswapPool >= swap);
+        require (_BNBallPool >= all);
+        _BNBswapPool -= swap;
+        _BNBallPool -= all;
+
+        user.transfer(swap + all + users[user].BNBBonus);
+        users[user].BNBBonus = 0;
+    }
+
+    function setPool(uint256 PBswapPool, uint256 PBallPool, uint256 BNBswapPool, uint256 BNBallPool) public onlyOwner() {
+        _PBswapPool = PBswapPool;
+        _PBallPool = PBallPool;
+        _BNBswapPool = BNBswapPool;
+        _BNBallPool = BNBallPool;
+    }
+    
+    function excludeFromFee(address addr) public onlyOwner() {
+        _isExcludedFromFee[addr] = true;
+    }
+    
+    function includeInFee(address addr) public onlyOwner() {
+        _isExcludedFromFee[addr] = false;
+    }
+
+    function excludeFromUniswap(address addr) public onlyOwner() {
+        _isUniswap[addr] = false;
+    }
+    
+    function includeInUniswap(address addr) public onlyOwner() {
+        _isUniswap[addr] = true;
+    }
+
+    function isUserExists(address _addr) public view returns (bool) {
+        return (users[_addr].id != 0);
+    }
+    
+    function name() public pure returns (string memory) {
+        return "PIB";
+    }
+
+    function symbol() public pure returns (string memory) {
+        return "PB";
+    }
+
+    function decimals() public pure returns (uint8) {
+        return 9;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+
+        uint256 currentAllowance = _allowances[sender][msg.sender];
+        require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+        _approve(sender, msg.sender, currentAllowance - amount);
+
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function setRouter(address uniswapRouter) public onlyOwner() {
+        c_router = IUniswapRouter(uniswapRouter);
+    }
+
+    function setPair(address pair) public onlyOwner() {
+        _uniswapPair = pair;
+    }
+
+    function setexclude(address e) public onlyOwner() {
+        _exclude = e;
+    }
+
+    receive() external payable {}
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        uint256 senderBalance = _balances[sender];
+        require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
+
+        uint256 receiveBalance = 0;
+
+        if (_isExcludedFromFee[sender] || _isExcludedFromFee[recipient]){
+            _balances[sender] = senderBalance - amount;
+            receiveBalance = amount;
+        }else if (_isUniswap[sender]){
+            _balances[sender] = senderBalance - amount;
+            receiveBalance = amount*7/10;
+            _PBswapPool += amount/10;
+            _PBallPool += amount/10;
+
+            uint256 cur_day = (block.timestamp - dayStart)/1 days;
+            day_total[cur_day].PBswap += amount/10;
+            day_total[cur_day].PBall += amount/10;
+
+            _refPayoutPB(recipient, amount - receiveBalance);
+
+            _balances[address(this)] += amount - receiveBalance;
+            emit Transfer(sender, address(this), amount - receiveBalance);
+        }else if(_isUniswap[recipient]){
+            
+            uint256 share = amount*3/10;
+
+            require(senderBalance >= (amount + share), "not enough 130%");
+            
+            _balances[sender] = senderBalance - amount - share;
+
+            receiveBalance = amount;
+
+            _balances[address(this)] += share;
+            emit Transfer(sender, address(this), share);
+                
+            uint256 BNBamount = swapTokensForEth(share);
+            _refPayoutBNB(sender, BNBamount);
+            _BNBswapPool += BNBamount/3;
+            _BNBallPool += BNBamount/3;
+
+            uint256 cur_day = (block.timestamp - dayStart)/1 days;
+            day_total[cur_day].BNBswap += BNBamount/3;
+            day_total[cur_day].BNBall += BNBamount/3;
+        }else{
+            _balances[sender] = senderBalance - amount;
+            receiveBalance = amount*9/10;
+
+            _PBswapPool += amount/20;
+            _PBallPool += amount/20;
+
+            uint256 cur_day = (block.timestamp - dayStart)/1 days;
+            day_total[cur_day].PBswap += amount/20;
+            day_total[cur_day].PBall += amount/20;
+
+            _balances[address(this)] += amount - receiveBalance;
+            emit Transfer(sender, address(this), amount - receiveBalance);
+        } 
+
+        _balances[recipient] += receiveBalance;
+        emit Transfer(sender, recipient, receiveBalance);
+    }
+
+    function _refPayoutPB(address _addr, uint256 _amount) private {
+        if (!isUserExists(_addr)){
+            return;
+        }
+        address up = users[_addr].upline;
+        for(uint8 i = 0; i < 10; i++) {
+            if(up == address(0)) break;
+            if(users[up].level >= i+1) {
+                users[up].PBBonus += _amount / 30;
+            }
+            up = users[up].upline;
+        }
+    }
+
+    function _refPayoutBNB(address _addr, uint256 _amount) private {
+        if (!isUserExists(_addr)){
+            return;
+        }
+        address up = users[_addr].upline;
+        for(uint8 i = 0; i < 10; i++) {
+            if(up == address(0)) break;
+            if(users[up].level >= i+1) {
+                users[up].BNBBonus += _amount / 30;
+            }
+            up = users[up].upline;
+        }
+    }
+    
+    function swapTokensForEth(uint256 tokenAmount) private returns (uint256){
+        // generate the uniswap pair path of token -> weth
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = c_router.WETH();
+
+        _approve(address(this), address(c_router), tokenAmount);
+
+        // make the swap
+        uint[] memory amounts = c_router.swapExactTokensForETH(
+            tokenAmount,
+            0, // accept any amount of ETH
+            path,
+            address(this),
+            block.timestamp
+        );
+        return amounts[1];
+    }
+
+    function userInfo(address _addr) view external returns(uint256 id, address upline, uint256 level, uint256 PBBonus, uint256 BNBBonus, uint256 nextid) {
+        return (users[_addr].id, users[_addr].upline, users[_addr].level, users[_addr].PBBonus, users[_addr].BNBBonus, users[_addr].nextid);
+    }
+
+    function swapInfo(address addr) view external returns(uint256 swapedPB, uint256 totalWithdraw, uint256 available) {
+        uint256 len = users[addr].nextid;
+        for (uint256 i = 0; i < len; i++){
+            OneDeposit memory one = users[addr].onedeposit[i];
+            swapedPB += one.PBamount;
+            totalWithdraw += one.withdrawAmount;
+            if (one.PBamount == one.withdrawAmount){
+                continue;
+            }
+
+            uint256 interval = one.PBamount*((uint32(block.timestamp) - one.depositTime)/ 1 days)/100 ;
+            
+            if (interval >= one.PBamount){
+                interval = one.PBamount - one.withdrawAmount;
+            }else{
+                interval -= one.withdrawAmount;
+            }
+
+            available += interval;
+        }
+    }
+
+    function poolInfo() view external returns(uint256 PBswapPool, uint256 PBallPool, uint256 BNBswapPool, uint256 BNBallPool, uint256 contractPBBalance, uint256 contractBNBBalance) {
+        return (_PBswapPool, _PBallPool, _BNBswapPool, _BNBallPool, balanceOf(address(this)), address(this).balance);
+    }
+
+    function dayInfo(uint256 dayid) view external returns(uint256 PBswap, uint256 PBall, uint256 BNBswap, uint256 BNBall) {
+        return (day_total[dayid].PBswap, day_total[dayid].PBall, day_total[dayid].BNBswap, day_total[dayid].BNBall);
+    }
+
+    function yesterdayInfo() view external returns(uint256 PBswap, uint256 PBall, uint256 BNBswap, uint256 BNBall) {
+        uint256 cur_day = (block.timestamp - dayStart)/1 days; 
+        uint256 yesterday = cur_day - 1;
+        return (day_total[yesterday].PBswap, day_total[yesterday].PBall, day_total[yesterday].BNBswap, day_total[yesterday].BNBall);
+    }
+
+    function contractInfo() view external returns(uint256, uint256, uint256, uint256, uint256) {
+        uint256 cur = _totalSupply - balanceOf(address(this)) - balanceOf(_exclude) - balanceOf(_uniswapPair);
+
+        address[] memory path = new address[](3);
+        path[0] = address(this);
+        path[1] = c_router.WETH();
+        path[2] = address(0x55d398326f99059fF775485246999027B3197955);
+        uint[] memory amounts = new  uint[](3);
+        amounts = c_router.getAmountsOut(10**9, path);
+
+        return (total_swap, cur, next_userid, balanceOf(_uniswapPair), amounts[2]);
+    }
+}
