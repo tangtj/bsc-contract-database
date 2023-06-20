@@ -1,0 +1,1374 @@
+
+// File: @openzeppelin/contracts/security/ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.9.0) (security/ReentrancyGuard.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() private {
+        // On the first call to nonReentrant, _status will be _NOT_ENTERED
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+    }
+
+    function _nonReentrantAfter() private {
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Returns true if the reentrancy guard is currently set to "entered", which indicates there is a
+     * `nonReentrant` function in the call stack.
+     */
+    function _reentrancyGuardEntered() internal view returns (bool) {
+        return _status == _ENTERED;
+    }
+}
+
+
+// File: contracts/lib/ERC1155Sort.sol
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity ^0.8.19;
+
+import {RBTreeUint64} from "./RBTreeUint64.sol";
+import {IMetaDescriptor} from "./IMetaDescriptor.sol";
+import {RefNFTHelper} from "./RefNFTHelper.sol";
+
+/// @dev ERC1155 with holders list
+abstract contract ERC1155Sort {
+    using RBTreeUint64 for RBTreeUint64.Tree;
+    using RefNFTHelper for RefNFTHelper.State;
+
+    error NotAuthorized();
+    error LackOfBalance();
+    error UnsafeRecipient();
+    error LengthMismatch();
+
+    event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 amount);
+    event TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] amounts);
+    event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+
+    IMetaDescriptor internal _metaDescriptor;
+    RefNFTHelper.State internal _refNft;
+    mapping(uint256 => RBTreeUint64.Tree) private _balances;
+    mapping(address => mapping(address => bool)) public isApprovedForAll;
+
+    function name() external view returns (string memory) {
+        return _metaDescriptor.getTokenName();
+    }
+
+    function symbol() external view returns (string memory) {
+        return _metaDescriptor.getTokenSymbol();
+    }
+
+    function uri(uint256 id) external view returns (string memory) {
+        return _metaDescriptor.getTokenURI(id);
+    }
+
+    function setApprovalForAll(address operator, bool approved) external {
+        isApprovedForAll[msg.sender][operator] = approved;
+        emit ApprovalForAll(msg.sender, operator, approved);
+    }
+
+    function _transferById(uint64 fromRefId, uint64 toRefId, uint256 id, uint256 amount) internal {
+        // if (_balances[id].val(fromRefId) < amount) revert LackOfBalance();
+        _balances[id].sub(fromRefId, amount);
+        _balances[id].add(toRefId, amount);
+    }
+
+    function _transferMultiById(uint64[] memory fromRefIds, uint64 toRefId, uint256 id, uint256 amount) internal {
+        uint256 balance;
+        for (uint256 i; i < fromRefIds.length;) {
+            balance = _balances[id].val(fromRefIds[i]);
+            if (amount <= balance) {
+                _transferById(fromRefIds[i], toRefId, id, amount);
+                amount = 0;
+                break;
+            } else {
+                _transferById(fromRefIds[i], toRefId, id, balance);
+                unchecked {
+                    amount -= balance;
+                }
+            }
+            unchecked {
+                ++i;
+            }
+        }
+        if (amount > 0) revert LackOfBalance();
+    }
+
+    function safeTransferFrom(address from, address to, uint256 id, uint256 amount, bytes calldata data) external {
+        if (to == address(0)) revert UnsafeRecipient();
+        if (msg.sender != from && !isApprovedForAll[from][msg.sender]) revert NotAuthorized();
+
+        uint64[] memory fromRefIds = _refNft.tokensOf(from);
+        if (fromRefIds.length == 0) revert LackOfBalance();
+        (uint64 toRefId,,) = _refNft.register(to, fromRefIds[0]);
+
+        _transferMultiById(fromRefIds, toRefId, id, amount);
+
+        emit TransferSingle(msg.sender, from, to, id, amount);
+        _checkSafe(from, to, id, amount, data);
+    }
+
+    function safeBatchTransferFrom(address from, address to, uint256[] calldata ids, uint256[] calldata amounts, bytes calldata data) external {
+        if (to == address(0)) revert UnsafeRecipient();
+        if (ids.length != amounts.length) revert LengthMismatch();
+        if (msg.sender != from && !isApprovedForAll[from][msg.sender]) revert NotAuthorized();
+
+        uint64[] memory fromRefIds = _refNft.tokensOf(from);
+        if (fromRefIds.length == 0) revert LackOfBalance();
+        (uint64 toRefId,,) = _refNft.register(to, fromRefIds[0]);
+        for (uint256 i = 0; i < ids.length;) {
+            _transferMultiById(fromRefIds, toRefId, ids[i], amounts[i]);
+            unchecked {
+                ++i;
+            }
+        }
+        emit TransferBatch(msg.sender, from, to, ids, amounts);
+        if (
+            to.code.length != 0
+                && ERC1155TokenReceiver(to).onERC1155BatchReceived(msg.sender, from, ids, amounts, data) != ERC1155TokenReceiver.onERC1155BatchReceived.selector
+        ) revert UnsafeRecipient();
+    }
+
+    function balanceOfRefId(uint64 ownerId, uint256 id) public view returns (uint256) {
+        return _balances[id].val(ownerId);
+    }
+
+    function balanceOf(address owner, uint256 id) public view returns (uint256 balance) {
+        uint64[] memory ownerIds = _refNft.tokensOf(owner);
+        for (uint256 i; i < ownerIds.length;) {
+            balance += balanceOfRefId(ownerIds[i], id);
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function balanceOfBatch(address[] calldata owners, uint256[] calldata ids) external view returns (uint256[] memory balances) {
+        if (owners.length != ids.length) revert LengthMismatch();
+
+        balances = new uint256[](owners.length);
+        unchecked {
+            for (uint256 i; i < owners.length; ++i) {
+                balances[i] = balanceOf(owners[i], ids[i]);
+            }
+        }
+    }
+
+    function ownerIdsTop(uint256 id, uint256 count) public view returns (uint64[] memory ownerIds, uint256[] memory balances) {
+        ownerIds = new uint64[](count);
+        balances = new uint256[](count);
+        uint64 ownerId = _balances[id].first();
+        uint256 i;
+        for (i; i < count;) {
+            if (ownerId == 0) {
+                break;
+            }
+            ownerIds[i] = ownerId;
+            balances[i] = _balances[id].val(ownerId);
+            ownerId = _balances[id].next(ownerId);
+            unchecked {
+                ++i;
+            }
+        }
+
+        // shrink array
+        if (i < count) {
+            uint256 trim = count - i;
+            assembly {
+                mstore(ownerIds, sub(mload(ownerIds), trim))
+                mstore(balances, sub(mload(balances), trim))
+            }
+        }
+    }
+
+    function supportsInterface(bytes4 interfaceId) external view virtual returns (bool) {
+        return interfaceId == 0x01ffc9a7 // ERC165 Interface ID for ERC165
+            || interfaceId == 0xd9b67a26 // ERC165 Interface ID for ERC1155
+            || interfaceId == 0x0e89341c; // ERC165 Interface ID for ERC1155MetadataURI
+    }
+
+    function _mintRefId(uint64 toRefId, uint256 id, uint256 amount) internal {
+        // get and check toRefId existense
+        address to = _refNft.ownerOf(toRefId);
+        _balances[id].add(toRefId, amount);
+
+        emit TransferSingle(msg.sender, address(0), to, id, amount);
+        _checkSafe(address(0), to, id, amount, "");
+    }
+
+    function _checkSafe(address from, address to, uint256 id, uint256 amount, bytes memory data) internal {
+        if (
+            to.code.length != 0
+                && ERC1155TokenReceiver(to).onERC1155Received(msg.sender, from, id, amount, data) != ERC1155TokenReceiver.onERC1155Received.selector
+        ) revert UnsafeRecipient();
+    }
+}
+
+/// @notice A generic interface for a contract which properly accepts ERC1155 tokens.
+abstract contract ERC1155TokenReceiver {
+    function onERC1155Received(address, address, uint256, uint256, bytes calldata) external virtual returns (bytes4) {
+        return ERC1155TokenReceiver.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(address, address, uint256[] calldata, uint256[] calldata, bytes calldata) external virtual returns (bytes4) {
+        return ERC1155TokenReceiver.onERC1155BatchReceived.selector;
+    }
+}
+
+
+// File: contracts/lib/GameCore.sol
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity ^0.8.17;
+
+import {Utils} from "./Utils.sol";
+/// @dev Game Queue logic
+
+library GameCore {
+    uint64 public constant ENTER_HOPS = 3;
+    uint64 public constant MAX_HOPS = ENTER_HOPS * 3;
+
+    error BadValue();
+    error MaxEntersReached();
+
+    struct GameQueue {
+        uint64[] userIds;
+        mapping(uint64 => uint64) idxs;
+    }
+
+    struct UserGameState {
+        uint64 enters;
+        uint64 hops;
+        uint96 rewardTotal;
+        uint96 refRewardTotal;
+        uint96 missedRefRewardTotal;
+        uint96 gamePrizeTotal;
+    }
+
+    struct GameState {
+        uint64 enters;
+        uint96 rewardTotal;
+        uint96 refRewardTotal;
+        uint96 missedRefRewardTotal;
+        uint96 gamePrizeTotal;
+    }
+
+    struct GameTop {
+        uint96 fund;
+        uint64 enters;
+    }
+
+    struct Game {
+        uint96 price;
+        GameState state;
+        GameTop top;
+        uint64[] queue;
+        mapping(uint64 => uint256) idxs;
+        mapping(uint64 => UserGameState) users;
+    }
+
+    /// @return uint64 completet game hops
+    /// @return uint64 max game hops
+    /// @return uint96 gotten game reward
+    /// @return uint96 max game reward
+    function userProgress(Game storage self, uint64 userId, uint8 rewardPcnt) external view returns (uint64, uint64, uint96, uint96) {
+        uint64 curEnters = self.users[userId].enters;
+        if (curEnters == 0) {
+            return (0, 0, 0, 0);
+        }
+        uint64 totalMaxHops = curEnters * MAX_HOPS;
+        uint64 totalHops = totalMaxHops - self.users[userId].hops;
+        uint96 reward = Utils._pcnt(self.price, rewardPcnt);
+        return (totalHops, totalMaxHops, reward * uint96(totalHops), reward * uint96(totalMaxHops));
+    }
+
+
+    function enterQueue(Game storage self, uint64 userId, uint96 value, uint8 rewardPcnt)
+        external
+        returns (uint64[] memory upIds, uint96 reward, uint64 enters)
+    {
+        if (value != self.price) revert BadValue();
+        if (self.users[userId].hops > MAX_HOPS) revert MaxEntersReached();
+
+        uint256 len = self.queue.length;
+        upIds = new uint64[](ENTER_HOPS);
+
+        if (len > 0) {
+            uint256[] memory idxs = new uint256[](ENTER_HOPS);
+            uint256 salt = Utils._random(userId);
+            unchecked {
+                reward = Utils._pcnt(value, rewardPcnt); //reward per 1 hop , 25%
+            }
+            for (uint256 i; i < ENTER_HOPS;) {
+                if (len > 2 && i > 0) {
+                    bool ok = true;
+                    uint256 k;
+                    uint256 j;
+                    do {
+                        idxs[i] = salt % len;
+                        for (j = 0; j < i;) {
+                            if (idxs[i] == idxs[j]) {
+                                ok = false;
+                                salt >>= 1;
+                                break;
+                            }
+                            unchecked {
+                                ++j;
+                            }
+                        }
+                        unchecked {
+                            ++k;
+                        }
+                    } while (!ok && k < 7);
+                } else {
+                    idxs[i] = len > 1 ? (salt % len) : 0;
+                }
+                upIds[i] = self.queue[idxs[i]];
+
+                if (self.users[upIds[i]].hops == 1) {
+                    // if item's remain hops=1 - the cuurent hop is the last one, so del item from queue
+                    len--;
+                    delete self.idxs[upIds[i]];
+                    if (len != idxs[i]) {
+                        uint64 lastUserId = self.queue[len];
+                        self.queue[idxs[i]] = lastUserId;
+                        self.idxs[lastUserId] = idxs[i] + 1;
+                    }
+                    self.queue.pop();
+                }
+                self.users[upIds[i]].hops -= 1;
+                self.users[upIds[i]].rewardTotal += reward;
+                unchecked {
+                    salt >>= 1;
+                    ++i;
+                }
+            }
+        } // else its 1st enter, so reward = 0
+        //inc total game enters & reward
+        self.state.enters++;
+        self.state.rewardTotal += reward * ENTER_HOPS;
+
+        //update queue
+        if (self.idxs[userId] == 0) {
+            self.queue.push(userId);
+            self.idxs[userId] = self.queue.length;
+        }
+
+        // inc total user game enters & remain hops
+        enters = self.users[userId].enters + 1;
+        self.users[userId].enters = enters;
+        self.users[userId].hops += MAX_HOPS;
+    }
+}
+
+
+// File: contracts/lib/IMetaDescriptor.sol
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity ^0.8.19;
+
+/**
+ * @title Interface defining INFTDescriptor to generate ERC721/ERC1155 token meta data
+ */
+interface IMetaDescriptor {
+    function getTokenURI(uint256 tokenId) external view returns (string memory);
+    function getTokenName() external view returns (string memory);
+    function getTokenSymbol() external view returns (string memory);
+}
+
+
+// File: contracts/lib/IReferralNFT.sol
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity ^0.8.19;
+
+interface IReferralNFT {
+    function ownerOf(uint64 id) external view returns (address);
+    function balanceOf(address owner) external view returns (uint64);
+    function tokensOf(address owner) external view returns (uint64[] memory);
+    function upIdOf(uint64 id) external view returns (uint64);
+    function register(address owner, uint64 refId) external returns (uint64 id, bool isNew, bool isUpExists);
+    function pay(uint64 refId) external payable;
+    function tokenOfByIndex(address owner, uint64 index) external view returns (uint64);
+}
+
+
+// File: contracts/lib/RBTreeUint64.sol
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity ^0.8.19;
+
+/// @dev Red Black Tree implementation
+///      based on https://github.com/perpdex/BokkyPooBahsRedBlackTreeLibrary
+library RBTreeUint64 {
+    struct Node {
+        bool red;
+        uint64 parent;
+        uint64 left;
+        uint64 right;
+        uint256 value;
+    }
+
+    struct Tree {
+        uint64 root;
+        mapping(uint64 => Node) nodes;
+    }
+
+    uint64 internal constant EMPTY = 0;
+
+    function first(Tree storage self) internal view returns (uint64 _key) {
+        _key = self.root;
+        if (_key != EMPTY) {
+            while (self.nodes[_key].left != EMPTY) {
+                _key = self.nodes[_key].left;
+            }
+        }
+    }
+
+    function last(Tree storage self) internal view returns (uint64 _key) {
+        _key = self.root;
+        if (_key != EMPTY) {
+            while (self.nodes[_key].right != EMPTY) {
+                _key = self.nodes[_key].right;
+            }
+        }
+    }
+
+    function next(Tree storage self, uint64 target) internal view returns (uint64 cursor) {
+        require(target != EMPTY);
+        if (self.nodes[target].right != EMPTY) {
+            cursor = _treeMinimum(self, self.nodes[target].right);
+        } else {
+            cursor = self.nodes[target].parent;
+            while (cursor != EMPTY && target == self.nodes[cursor].right) {
+                target = cursor;
+                cursor = self.nodes[cursor].parent;
+            }
+        }
+    }
+
+    function prev(Tree storage self, uint64 target) internal view returns (uint64 cursor) {
+        require(target != EMPTY);
+        if (self.nodes[target].left != EMPTY) {
+            cursor = _treeMaximum(self, self.nodes[target].left);
+        } else {
+            cursor = self.nodes[target].parent;
+            while (cursor != EMPTY && target == self.nodes[cursor].left) {
+                target = cursor;
+                cursor = self.nodes[cursor].parent;
+            }
+        }
+    }
+
+    function exists(Tree storage self, uint64 key) internal view returns (bool) {
+        return (key != EMPTY) && ((key == self.root) || (self.nodes[key].parent != EMPTY));
+    }
+
+    function val(Tree storage self, uint64 key) internal view returns (uint256) {
+        if (exists(self, key)) return self.nodes[key].value;
+        return 0;
+    }
+
+    function add(
+        Tree storage self,
+        uint64 key,
+        uint256 value
+    ) internal {
+        require(key != EMPTY);
+        if (exists(self, key)) {
+            value = self.nodes[key].value + value;
+            _remove(self, key);
+        }
+        if (value > 0) {
+            _insert(self, key, value);
+        }
+    }
+
+    function sub(
+        Tree storage self,
+        uint64 key,
+        uint256 value
+    ) internal {
+        require(key != EMPTY);
+        require(exists(self, key));
+        value = self.nodes[key].value - value;
+        _remove(self, key);
+        if (value > 0) {
+            _insert(self, key, value);
+        }
+    }
+
+    function _insert(
+        Tree storage self,
+        uint64 key,
+        uint256 value
+    ) private {
+        uint64 cursor = EMPTY;
+        uint64 probe = self.root;
+        while (probe != EMPTY) {
+            cursor = probe;
+            // DESC
+            if (value > self.nodes[probe].value) {
+                probe = self.nodes[probe].left;
+            } else {
+                probe = self.nodes[probe].right;
+            }
+        }
+        self.nodes[key] = Node({parent: cursor, left: EMPTY, right: EMPTY, red: true, value: value});
+        if (cursor == EMPTY) {
+            self.root = key;
+        } else if (value > self.nodes[cursor].value) {
+            self.nodes[cursor].left = key;
+        } else {
+            self.nodes[cursor].right = key;
+        }
+        _insertFixup(self, key);
+    }
+
+    function _remove(Tree storage self, uint64 key) private {
+        uint64 probe;
+        uint64 cursor;
+        if (self.nodes[key].left == EMPTY || self.nodes[key].right == EMPTY) {
+            cursor = key;
+        } else {
+            cursor = self.nodes[key].right;
+            while (self.nodes[cursor].left != EMPTY) {
+                cursor = self.nodes[cursor].left;
+            }
+        }
+        if (self.nodes[cursor].left != EMPTY) {
+            probe = self.nodes[cursor].left;
+        } else {
+            probe = self.nodes[cursor].right;
+        }
+        uint64 yParent = self.nodes[cursor].parent;
+        self.nodes[probe].parent = yParent;
+        if (yParent != EMPTY) {
+            if (cursor == self.nodes[yParent].left) {
+                self.nodes[yParent].left = probe;
+            } else {
+                self.nodes[yParent].right = probe;
+            }
+        } else {
+            self.root = probe;
+        }
+        bool doFixup = !self.nodes[cursor].red;
+        if (cursor != key) {
+            _replaceParent(self, cursor, key);
+            self.nodes[cursor].left = self.nodes[key].left;
+            self.nodes[self.nodes[cursor].left].parent = cursor;
+            self.nodes[cursor].right = self.nodes[key].right;
+            self.nodes[self.nodes[cursor].right].parent = cursor;
+            self.nodes[cursor].value = self.nodes[key].value;
+            self.nodes[cursor].red = self.nodes[key].red;
+            (cursor, key) = (key, cursor);
+        }
+        if (doFixup) {
+            _removeFixup(self, probe);
+        }
+        delete self.nodes[cursor];
+    }
+
+    function _treeMinimum(Tree storage self, uint64 key) private view returns (uint64) {
+        while (self.nodes[key].left != EMPTY) {
+            key = self.nodes[key].left;
+        }
+        return key;
+    }
+
+    function _treeMaximum(Tree storage self, uint64 key) private view returns (uint64) {
+        while (self.nodes[key].right != EMPTY) {
+            key = self.nodes[key].right;
+        }
+        return key;
+    }
+
+    function _rotateLeft(Tree storage self, uint64 key) private {
+        uint64 cursor = self.nodes[key].right;
+        uint64 keyParent = self.nodes[key].parent;
+        uint64 cursorLeft = self.nodes[cursor].left;
+        self.nodes[key].right = cursorLeft;
+        if (cursorLeft != EMPTY) {
+            self.nodes[cursorLeft].parent = key;
+        }
+        self.nodes[cursor].parent = keyParent;
+        if (keyParent == EMPTY) {
+            self.root = cursor;
+        } else if (key == self.nodes[keyParent].left) {
+            self.nodes[keyParent].left = cursor;
+        } else {
+            self.nodes[keyParent].right = cursor;
+        }
+        self.nodes[cursor].left = key;
+        self.nodes[key].parent = cursor;
+    }
+
+    function _rotateRight(Tree storage self, uint64 key) private {
+        uint64 cursor = self.nodes[key].left;
+        uint64 keyParent = self.nodes[key].parent;
+        uint64 cursorRight = self.nodes[cursor].right;
+        self.nodes[key].left = cursorRight;
+        if (cursorRight != EMPTY) {
+            self.nodes[cursorRight].parent = key;
+        }
+        self.nodes[cursor].parent = keyParent;
+        if (keyParent == EMPTY) {
+            self.root = cursor;
+        } else if (key == self.nodes[keyParent].right) {
+            self.nodes[keyParent].right = cursor;
+        } else {
+            self.nodes[keyParent].left = cursor;
+        }
+        self.nodes[cursor].right = key;
+        self.nodes[key].parent = cursor;
+    }
+
+    function _insertFixup(Tree storage self, uint64 key) private {
+        uint64 cursor;
+        while (key != self.root && self.nodes[self.nodes[key].parent].red) {
+            uint64 keyParent = self.nodes[key].parent;
+            if (keyParent == self.nodes[self.nodes[keyParent].parent].left) {
+                cursor = self.nodes[self.nodes[keyParent].parent].right;
+                if (self.nodes[cursor].red) {
+                    self.nodes[keyParent].red = false;
+                    self.nodes[cursor].red = false;
+                    self.nodes[self.nodes[keyParent].parent].red = true;
+                    key = self.nodes[keyParent].parent;
+                } else {
+                    if (key == self.nodes[keyParent].right) {
+                        key = keyParent;
+                        _rotateLeft(self, key);
+                    }
+                    keyParent = self.nodes[key].parent;
+                    self.nodes[keyParent].red = false;
+                    self.nodes[self.nodes[keyParent].parent].red = true;
+                    _rotateRight(self, self.nodes[keyParent].parent);
+                }
+            } else {
+                cursor = self.nodes[self.nodes[keyParent].parent].left;
+                if (self.nodes[cursor].red) {
+                    self.nodes[keyParent].red = false;
+                    self.nodes[cursor].red = false;
+                    self.nodes[self.nodes[keyParent].parent].red = true;
+                    key = self.nodes[keyParent].parent;
+                } else {
+                    if (key == self.nodes[keyParent].left) {
+                        key = keyParent;
+                        _rotateRight(self, key);
+                    }
+                    keyParent = self.nodes[key].parent;
+                    self.nodes[keyParent].red = false;
+                    self.nodes[self.nodes[keyParent].parent].red = true;
+                    _rotateLeft(self, self.nodes[keyParent].parent);
+                }
+            }
+        }
+        self.nodes[self.root].red = false;
+    }
+
+    function _replaceParent(
+        Tree storage self,
+        uint64 a,
+        uint64 b
+    ) private {
+        uint64 bParent = self.nodes[b].parent;
+        self.nodes[a].parent = bParent;
+        if (bParent == EMPTY) {
+            self.root = a;
+        } else {
+            if (b == self.nodes[bParent].left) {
+                self.nodes[bParent].left = a;
+            } else {
+                self.nodes[bParent].right = a;
+            }
+        }
+    }
+
+    function _removeFixup(Tree storage self, uint64 key) private {
+        uint64 cursor;
+        while (key != self.root && !self.nodes[key].red) {
+            uint64 keyParent = self.nodes[key].parent;
+            if (key == self.nodes[keyParent].left) {
+                cursor = self.nodes[keyParent].right;
+                if (self.nodes[cursor].red) {
+                    self.nodes[cursor].red = false;
+                    self.nodes[keyParent].red = true;
+                    _rotateLeft(self, keyParent);
+                    cursor = self.nodes[keyParent].right;
+                }
+                if (!self.nodes[self.nodes[cursor].left].red && !self.nodes[self.nodes[cursor].right].red) {
+                    self.nodes[cursor].red = true;
+                    key = keyParent;
+                } else {
+                    if (!self.nodes[self.nodes[cursor].right].red) {
+                        self.nodes[self.nodes[cursor].left].red = false;
+                        self.nodes[cursor].red = true;
+                        _rotateRight(self, cursor);
+                        cursor = self.nodes[keyParent].right;
+                    }
+                    self.nodes[cursor].red = self.nodes[keyParent].red;
+                    self.nodes[keyParent].red = false;
+                    self.nodes[self.nodes[cursor].right].red = false;
+                    _rotateLeft(self, keyParent);
+                    key = self.root;
+                }
+            } else {
+                cursor = self.nodes[keyParent].left;
+                if (self.nodes[cursor].red) {
+                    self.nodes[cursor].red = false;
+                    self.nodes[keyParent].red = true;
+                    _rotateRight(self, keyParent);
+                    cursor = self.nodes[keyParent].left;
+                }
+                if (!self.nodes[self.nodes[cursor].right].red && !self.nodes[self.nodes[cursor].left].red) {
+                    self.nodes[cursor].red = true;
+                    key = keyParent;
+                } else {
+                    if (!self.nodes[self.nodes[cursor].left].red) {
+                        self.nodes[self.nodes[cursor].right].red = false;
+                        self.nodes[cursor].red = true;
+                        _rotateLeft(self, cursor);
+                        cursor = self.nodes[keyParent].left;
+                    }
+                    self.nodes[cursor].red = self.nodes[keyParent].red;
+                    self.nodes[keyParent].red = false;
+                    self.nodes[self.nodes[cursor].left].red = false;
+                    _rotateRight(self, keyParent);
+                    key = self.root;
+                }
+            }
+        }
+        self.nodes[key].red = false;
+    }
+}
+
+
+// File: contracts/lib/RefNFTHelper.sol
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity ^0.8.19;
+
+import {IReferralNFT} from "./IReferralNFT.sol";
+
+library RefNFTHelper {
+    struct State {
+        IReferralNFT referralNft;
+    }
+
+    function set(State storage self, address referralNft) internal {
+        self.referralNft = IReferralNFT(referralNft);
+    }
+
+    function idOf(State storage self, address owner) internal view returns (uint64) {
+        if (self.referralNft.balanceOf(owner) == 0) return 0;
+        return self.referralNft.tokenOfByIndex(owner, 0);
+    }
+
+    function tokensOf(State storage self, address owner) internal view returns (uint64[] memory) {
+        return self.referralNft.tokensOf(owner);
+    }
+
+    function upIdOf(State storage self, uint64 id) internal view returns (uint64) {
+        return self.referralNft.upIdOf(id);
+    }
+
+    function pay(State storage self, uint64 id, uint256 value) internal {
+        self.referralNft.pay{value: value}(id);
+    }
+
+    function ownerOf(State storage self, uint64 id) internal view returns (address) {
+        return self.referralNft.ownerOf(id);
+    }
+
+    //uint64 id, bool isNew
+    function register(State storage self, address owner, uint64 upId) internal returns (uint64, bool, bool) {
+        return self.referralNft.register(owner, upId);
+    }
+}
+
+
+// File: contracts/lib/Utils.sol
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity ^0.8.19;
+
+library Utils {
+    error SenderNotEOA();
+    error TxFail();
+
+    function _checkEOA() internal view {
+        if (msg.sender != tx.origin) revert SenderNotEOA();
+    }
+
+    function _tx(address wallet, uint256 value) internal {
+        if (value > 0) {
+            (bool ok,) = payable(wallet).call{value: value}("");
+            if (!ok) revert TxFail();
+        }
+    }
+
+    function _random(uint256 seed) internal view returns (uint256) {
+        return uint256(keccak256(abi.encodePacked(seed, msg.sender, gasleft(), block.coinbase, block.difficulty, block.gaslimit, block.timestamp)));
+    }
+
+    function _pcnt(uint96 value, uint96 pcnt) internal pure returns (uint96) {
+        return (value / 100) * pcnt;
+    }
+}
+
+
+// File: contracts/NeraGame.sol
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity ^0.8.19;
+
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {ERC1155Sort} from "./lib/ERC1155Sort.sol";
+import {RefNFTHelper} from "./lib/RefNFTHelper.sol";
+import {IMetaDescriptor} from "./lib/IMetaDescriptor.sol";
+import {GameCore} from "./lib/GameCore.sol";
+import {Utils} from "./lib/Utils.sol";
+
+contract NeraGame is ReentrancyGuard, ERC1155Sort {
+    using GameCore for GameCore.Game;
+    using RefNFTHelper for RefNFTHelper.State;
+
+    uint8 public constant MEGA_TOKEN_ID = 255;
+    uint8 public constant TOTAL_GAMES = 6;
+    uint8 public constant REF_LEVELS = 5;
+
+    error BadValue();
+    error BadGameId();
+    error GameStartConflict();
+    error MaxEntersReached();
+    error RaffleNotReady();
+    error TopListEmpty();
+    error AlreadyRegistered();
+
+    event Enter(uint64 indexed userId, uint8 indexed gameId, uint64 level);
+    event Reward(uint64 indexed userId, uint8 indexed gameId, uint96 reward, uint64 fromId);
+    event ReferralReward(uint64 indexed userId, uint8 indexed gameId, uint96 reward, uint64 refId, uint8 refLevel);
+    event MissedReferralReward(uint64 indexed userId, uint8 indexed gameId, uint96 reward, uint64 refId, uint8 refLevel);
+    event GamePrizeFund(uint8 indexed gameId, uint96 amount);
+    event GamePrizeRaffle(uint64 indexed userId, uint8 indexed gameId, uint96 amount);
+    event GamePrizeRaffled(uint8 indexed gameId, uint96 amount);
+    event GamePrizeReady(uint8 indexed gameId, uint96 amount);
+    event FomoRaffle(uint64 indexed userId, uint96 amount);
+    event FomoUpdate(uint64 indexed userId, uint64 raffleAt, uint96 amount);
+
+    struct UserState {
+        uint96 rewardTotal;
+        uint96 refRewardTotal;
+        uint96 missedRefRewardTotal;
+        uint96 gamePrizeTotal;
+        uint96 fomoTotal;
+    }
+
+    struct Fomo {
+        uint96 fund;
+        uint64 raffleAt;
+        uint64 userId;
+        uint96 fomoTotal;
+    }
+
+    struct GameParams {
+        uint64 startTime;
+        uint64 registerRemainCount;
+    }
+
+    uint64 public immutable TOP_LIST_COUNT; // = 10;
+    uint64 public immutable GAME_PRIZE_ENTERS; // = 100;
+    uint64 public immutable MEGA_PRIZE_ENTERS; // = 20;
+    uint64 private immutable _START_TIME_PERIOD; // = 1 days;
+    uint64 private immutable _START_TIME_OFFSET; // = 90 hours;
+    address private immutable SYS_WALLET;
+    uint96 public immutable REG_PRICE;
+
+    uint8 private constant _rewardPcnt = 25; //1/3 of 75%
+    uint8 private constant _gamePrizePcnt = 2;
+    uint8 private constant _megaPrizePcnt = 2;
+    uint8 private constant _fomoPcnt = 5;
+
+    GameParams private _gameParams;
+
+    mapping(uint64 => UserState) private _users;
+    mapping(uint8 => GameCore.Game) private _games;
+    Fomo private _fomo;
+
+    constructor(
+        address wallet,
+        uint64 regMinCount,
+        uint96 regPrice,
+        uint96[] memory prices,
+        address referralNft,
+        address metaDescriptor,
+        uint64[] memory gameParams
+    ) {
+        require(wallet != address(0) && metaDescriptor != address(0) && referralNft != address(0) && prices.length == TOTAL_GAMES);
+        SYS_WALLET = wallet;
+
+        _gameParams.registerRemainCount = regMinCount;
+        if (regMinCount == 0) {
+            _gameParams.startTime = uint64(block.timestamp);
+        }
+        REG_PRICE = regPrice;
+        _START_TIME_PERIOD = gameParams[0];
+        _START_TIME_OFFSET = gameParams[1];
+        TOP_LIST_COUNT = gameParams[2];
+        GAME_PRIZE_ENTERS = gameParams[3];
+        MEGA_PRIZE_ENTERS = gameParams[4];
+
+        for (uint8 i; i < TOTAL_GAMES;) {
+            unchecked {
+                _games[i + 1].price = prices[i];
+                ++i;
+            }
+        }
+
+        _metaDescriptor = IMetaDescriptor(metaDescriptor);
+        _refNft.set(referralNft);
+    }
+
+    fallback() external {
+        revert();
+    }
+
+    receive() external payable {
+        uint256 value = msg.value;
+        uint8 gameId;
+        for (uint8 i = 1; i <= TOTAL_GAMES;) {
+            if (value == _games[i].price) {
+                gameId = i;
+                break;
+            }
+            unchecked {
+                ++i;
+            }
+        }
+        enter(gameId, 0);
+    }
+
+    function getUserId(address addr) public view returns (uint64) {
+        return _refNft.idOf(addr);
+    }
+
+    function getUser(uint64 userId) external view returns (UserState memory) {
+        return _users[userId];
+    }
+
+    function getUserGame(uint8 gameId, uint64 userId) external view returns (GameCore.UserGameState memory) {
+        return _games[gameId].users[userId];
+    }
+
+    function getUserGameProgress(uint8 gameId, uint64 userId)
+        external
+        view
+        returns (uint64 gameHops, uint64 maxGameHops, uint96 gameReward, uint96 maxGameReward)
+    {
+        return _games[gameId].userProgress(userId, _rewardPcnt);
+    }
+
+    function getGame(uint8 gameId)
+        external
+        view
+        returns (uint96 price, uint64 enters, uint96 rewardTotal, uint96 refRewardTotal, uint96 missedRefRewardTotal, uint96 gamePrizeTotal)
+    {
+        GameCore.GameState memory s = _games[gameId].state;
+        return (_games[gameId].price, s.enters, s.rewardTotal, s.refRewardTotal, s.missedRefRewardTotal, s.gamePrizeTotal);
+    }
+
+    function getRegStatus() external view returns (uint96 regPrice, uint64 regRemainCount) {
+        return (REG_PRICE, _gameParams.registerRemainCount);
+    }
+
+    function getStartStatus() public view returns (uint64 _startTime, bool _isStarted) {
+        uint64 startTime = _gameParams.startTime;
+        return (startTime, startTime > 0 && block.timestamp >= startTime);
+    }
+
+    function getGameTop(uint8 gameId) external view returns (uint96 prizeFund, uint64 curEnters, uint64 minEnters, bool isReady) {
+        return _getGameTop(gameId, GAME_PRIZE_ENTERS);
+    }
+
+    function getMegaTop() external view returns (uint96 prizeFund, uint64 curEnters, uint64 minEnters, bool isReady) {
+        return _getGameTop(MEGA_TOKEN_ID, MEGA_PRIZE_ENTERS);
+    }
+
+    function getGameTopList(uint8 gameId) public view returns (uint64[] memory userIds, uint256[] memory balances) {
+        return ownerIdsTop(gameId, TOP_LIST_COUNT);
+    }
+
+    function getMegaTopList() public view returns (uint64[] memory userIds, uint256[] memory balances) {
+        return ownerIdsTop(MEGA_TOKEN_ID, TOP_LIST_COUNT);
+    }
+
+    function getProvisionGamePrize(uint8 gameId, uint64 userId) external view returns (uint96 prizeAmount) {
+        (uint64[] memory ids, uint256[] memory balances) = getGameTopList(gameId);
+        return _getProvisionPrize(userId, _games[gameId].top.fund, ids, balances);
+    }
+
+    function getProvisionMegaPrize(uint64 userId) external view returns (uint96 prizeAmount) {
+        (uint64[] memory ids, uint256[] memory balances) = getMegaTopList();
+        return _getProvisionPrize(userId, _games[MEGA_TOKEN_ID].top.fund, ids, balances);
+    }
+
+    function getFomo() external view returns (uint96 prizeFund, uint64 userId, uint64 raffleAt, uint96 fomoTotal, uint64 timeRemain, bool isReady) {
+        Fomo memory fomo = _fomo;
+        if (fomo.raffleAt == 0) {
+            return (0, 0, 0, fomo.fomoTotal, 0, false);
+        }
+        uint64 curTime = uint64(block.timestamp);
+        isReady = curTime >= fomo.raffleAt;
+        unchecked {
+            return (fomo.fund, fomo.userId, fomo.raffleAt, fomo.fomoTotal, isReady ? 0 : fomo.raffleAt - curTime, isReady);
+        }
+    }
+
+    function getRewardPercents()
+        external
+        pure
+        returns (uint8 rewardPcnt, uint8 gamePrizePcnt, uint8 megaPrizePcnt, uint8 fomoPcnt, uint8[REF_LEVELS] memory refRewardPcnts)
+    {
+        return (_rewardPcnt, _gamePrizePcnt, _megaPrizePcnt, _fomoPcnt, _refRewardPcnts());
+    }
+
+    function getfomoDelays() external pure returns (uint16[TOTAL_GAMES] memory fomoDelays) {
+        return _fomoDelays();
+    }
+
+    /// @return id user's 1st ref nft id
+    function register(uint64 refId) external payable nonReentrant returns (uint64 id) {
+        Utils._checkEOA();
+        _checkGameStart(false);
+        address addr = msg.sender;
+        uint256 value = msg.value;
+
+        if (value != REG_PRICE) revert BadValue();
+
+        bool isNew;
+        (id, isNew,) = _refNft.register(addr, refId);
+        if (!isNew) revert AlreadyRegistered();
+
+        Utils._tx(SYS_WALLET, value);
+        GameParams memory gp = _gameParams;
+        if (gp.registerRemainCount > 0) {
+            unchecked {
+                gp.registerRemainCount--;
+            }
+            if (gp.registerRemainCount == 0) {
+                gp.startTime = uint64((block.timestamp / _START_TIME_PERIOD) * _START_TIME_PERIOD + _START_TIME_OFFSET);
+            }
+            _gameParams = gp;
+        }
+    }
+
+    function enter(uint8 gameId, uint64 refId) public payable nonReentrant {
+        Utils._checkEOA();
+        _checkGame(gameId);
+        _checkGameStart(true);
+
+        uint96 value = uint96(msg.value);
+        address addr = msg.sender;
+        (uint64 userId,,) = _refNft.register(addr, refId);
+
+        uint96 freeValue = value;
+
+        // reward
+        freeValue -= _processEnter(gameId, value, userId);
+        _mintRefId(userId, gameId, 1);
+
+        // refReward
+        freeValue -= _processRefReward(gameId, value, userId);
+        freeValue -= _updGameTop(gameId, value, _gamePrizePcnt, 1, GAME_PRIZE_ENTERS);
+
+        bool isMegaMint = _checkMegaMint(gameId, userId);
+        freeValue -= _updGameTop(MEGA_TOKEN_ID, value, _megaPrizePcnt, (isMegaMint ? 1 : 0), MEGA_PRIZE_ENTERS);
+
+        if (isMegaMint) {
+            _games[MEGA_TOKEN_ID].users[userId].enters++;
+            _games[MEGA_TOKEN_ID].state.enters++;
+            _mintRefId(userId, MEGA_TOKEN_ID, 1);
+        }
+
+        freeValue -= _processFomo(gameId, userId, freeValue);
+        Utils._tx(SYS_WALLET, freeValue);
+    }
+
+    function _updGameTop(uint8 gameId, uint96 value, uint8 fundPcnt, uint64 enters, uint64 minEnters) internal returns (uint96 fundDelta) {
+        GameCore.GameTop memory top = _games[gameId].top;
+        top.enters += enters;
+
+        fundDelta = Utils._pcnt(value, fundPcnt);
+        top.fund += fundDelta;
+
+        _games[gameId].top = top;
+
+        emit GamePrizeFund(gameId, top.fund);
+        if (top.enters >= minEnters) {
+            emit GamePrizeReady(gameId, top.fund);
+        }
+    }
+
+    function gamePrizeRaffle(uint8 gameId) external nonReentrant {
+        _checkGame(gameId);
+        _checkGameStart(true);
+        GameCore.GameTop memory top = _games[gameId].top;
+        if (top.enters < GAME_PRIZE_ENTERS) revert RaffleNotReady();
+        _games[gameId].top.fund = _distributeTopPrize(top.fund, gameId);
+        _games[gameId].top.enters = 0;
+    }
+
+    function megaPrizeRaffle() external nonReentrant {
+        _checkGameStart(true);
+        GameCore.GameTop memory top = _games[MEGA_TOKEN_ID].top;
+        if (top.enters < MEGA_PRIZE_ENTERS) revert RaffleNotReady();
+        _games[MEGA_TOKEN_ID].top.fund = _distributeTopPrize(top.fund, MEGA_TOKEN_ID);
+        _games[MEGA_TOKEN_ID].top.enters = 0;
+    }
+
+    function fomoRaffle() external nonReentrant {
+        _checkGameStart(true);
+        Fomo memory fomo = _fomo;
+        if (fomo.raffleAt == 0 || fomo.fund == 0 || block.timestamp < fomo.raffleAt) revert RaffleNotReady();
+        // Utils._tx(_users[fomo.userId].addr, fomo.fund);
+        _txRefId(fomo.userId, fomo.fund);
+        emit FomoRaffle(fomo.userId, fomo.fund);
+        _users[fomo.userId].fomoTotal += fomo.fund;
+        fomo.fomoTotal += fomo.fund;
+        fomo.fund = 0;
+        fomo.raffleAt = 0;
+        fomo.userId = 0;
+        _fomo = fomo;
+    }
+
+    /// @return uint96 fund
+    /// @return uint64 curEnters
+    /// @return uint64 minEnters
+    /// @return bool isReady
+    function _getGameTop(uint8 gameId, uint64 minEnters) internal view returns (uint96, uint64, uint64, bool) {
+        GameCore.GameTop memory top = _games[gameId].top;
+        return (top.fund, top.enters, minEnters, top.enters >= minEnters);
+    }
+
+    function _getProvisionPrize(uint64 id, uint96 fund, uint64[] memory ids, uint256[] memory balances) internal pure returns (uint96) {
+        bool found = false;
+        uint256 bal;
+        uint256 sum;
+
+        for (uint256 i; i < ids.length;) {
+            sum += balances[i];
+            if (id == ids[i]) {
+                found = true;
+                bal = balances[i];
+            }
+            unchecked {
+                ++i;
+            }
+        }
+
+        return found ? (fund * uint96(bal)) / uint96(sum) : 0;
+    }
+
+    function _distributeTopPrize(uint96 fund, uint8 gameId) internal returns (uint96) {
+        (uint64[] memory ownerIds, uint256[] memory balances) = ownerIdsTop(gameId, TOP_LIST_COUNT);
+        if (ownerIds.length == 0) revert TopListEmpty();
+
+        uint64 sum;
+        for (uint256 i; i < balances.length;) {
+            sum += uint64(balances[i]);
+            unchecked {
+                ++i;
+            }
+        }
+
+        uint96 reward;
+        uint96 prizeSum;
+        for (uint256 i; i < balances.length;) {
+            reward = (fund * uint96(uint64(balances[i]))) / uint96(sum);
+            if (reward > 0) {
+                _txRefId(ownerIds[i], reward);
+                emit GamePrizeRaffle(ownerIds[i], gameId, reward);
+                _users[ownerIds[i]].gamePrizeTotal += reward;
+                _games[gameId].users[ownerIds[i]].gamePrizeTotal += reward;
+                prizeSum += reward;
+            }
+            unchecked {
+                ++i;
+            }
+        }
+        emit GamePrizeRaffled(gameId, prizeSum);
+        _games[gameId].state.gamePrizeTotal += prizeSum;
+        return fund - prizeSum;
+    }
+
+    /// @return rewardSum
+    function _processEnter(uint8 gameId, uint96 value, uint64 userId) internal returns (uint96) {
+        uint96 rewardDelta;
+        (uint64[] memory userIds, uint96 reward, uint64 level) = _games[gameId].enterQueue(userId, value, _rewardPcnt);
+
+        emit Enter(userId, gameId, level);
+        for (uint256 i; i < userIds.length;) {
+            if (userIds[i] != 0) {
+                _txRefId(userIds[i], reward);
+                rewardDelta += reward;
+                _users[userIds[i]].rewardTotal += reward;
+                emit Reward(userIds[i], gameId, reward, userId);
+            }
+            unchecked {
+                ++i;
+            }
+        }
+        return rewardDelta;
+    }
+
+    function _processRefReward(uint8 gameId, uint96 value, uint64 userId) internal returns (uint96 refRewardSum) {
+        uint96 missedRefRewardSum;
+        uint64 upId = _refNft.upIdOf(userId);
+        uint256 balance = balanceOfRefId(userId, gameId);
+        uint256 upBalance = balanceOfRefId(upId, gameId);
+
+        uint96 reward;
+        for (uint8 i; i < REF_LEVELS;) {
+            if (upId == 0) {
+                break;
+            }
+            unchecked {
+                reward = Utils._pcnt(value, _refRewardPcnts()[i]);
+            }
+            if (upBalance >= balance) {
+                (bool ok,) = payable(_refNft.ownerOf(upId)).call{value: reward}("");
+                if (ok) {
+                    refRewardSum += reward;
+                    _users[upId].refRewardTotal += reward;
+                    _games[gameId].users[upId].refRewardTotal += reward;
+                    unchecked {
+                        emit ReferralReward(upId, gameId, reward, userId, i + 1);
+                    }
+                }
+            } else {
+                missedRefRewardSum += reward;
+                _users[upId].missedRefRewardTotal += reward;
+                _games[gameId].users[upId].missedRefRewardTotal += reward;
+                unchecked {
+                    emit MissedReferralReward(upId, gameId, reward, userId, i + 1);
+                }
+            }
+            upId = _refNft.upIdOf(upId);
+            upBalance = balanceOfRefId(upId, gameId);
+            unchecked {
+                ++i;
+            }
+        }
+        _games[gameId].state.refRewardTotal += refRewardSum;
+        _games[gameId].state.missedRefRewardTotal += missedRefRewardSum;
+    }
+
+    function _processFomo(uint8 gameId, uint64 userId, uint96 value) internal returns (uint96 topupSum) {
+        Fomo memory fomo = _fomo;
+        fomo.userId = userId;
+        unchecked {
+            fomo.raffleAt = uint64(block.timestamp) + _fomoDelay(gameId);
+            topupSum = Utils._pcnt(value, _fomoPcnt);
+        }
+        fomo.fund += topupSum;
+        _fomo = fomo;
+        emit FomoUpdate(userId, fomo.raffleAt, fomo.fund);
+    }
+
+    function _checkMegaMint(uint8 gameId, uint64 userId) internal view returns (bool) {
+        uint64 megaLevel = _games[MEGA_TOKEN_ID].users[userId].enters;
+        uint64 level;
+        for (uint8 i = 1; i <= TOTAL_GAMES;) {
+            if (i != gameId) {
+                level = _games[i].users[userId].enters;
+                if (level <= megaLevel) {
+                    return false;
+                    // break;
+                }
+            }
+            unchecked {
+                ++i;
+            }
+        }
+        return true;
+    }
+
+    function _checkGame(uint8 gameId) internal pure {
+        if (gameId == 0 || gameId > TOTAL_GAMES) revert BadGameId();
+    }
+
+    function _checkGameStart(bool shouldStarted) internal view {
+        (, bool isStarted) = getStartStatus();
+        if ((shouldStarted && !isStarted) || (!shouldStarted && isStarted)) {
+            revert GameStartConflict();
+        }
+    }
+
+    function _txRefId(uint64 refId, uint256 value) internal {
+        Utils._tx(_refNft.ownerOf(refId), value);
+    }
+
+    function _fomoDelay(uint8 gameId) internal pure returns (uint64) {
+        unchecked {
+            return _fomoDelays()[gameId - 1];
+        }
+    }
+
+    function _refRewardPcnts() internal pure returns (uint8[REF_LEVELS] memory) {
+        return [7, 5, 4, 3, 2];
+    }
+
+    function _fomoDelays() internal pure returns (uint16[TOTAL_GAMES] memory) {
+        return [3 hours, 2.5 hours, 2 hours, 1.5 hours, 1 hours, 30 minutes];
+    }
+}
+

