@@ -1,0 +1,305 @@
+// SPDX-License-Identifier: MIT
+// Author @ EVMlord => https://EVMlord.dev
+pragma solidity ^0.8.19;
+
+contract MultiSigWallet {
+    address[] public owners;
+    uint256 public required;
+
+    struct Transaction {
+        address author;
+        uint256 id;
+        address destination;
+        uint256 value;
+        bytes data;
+        bool executed;
+    }
+
+    event EtherReceived(
+        address indexed sender,
+        uint256 indexed amount,
+        uint256 timestamp
+    );
+    event TransactionSubmitted(
+        address indexed owner,
+        uint256 indexed txID,
+        uint256 timestamp
+    );
+    event TransactionConfirmed(
+        address indexed owner,
+        uint256 indexed txID,
+        uint256 timestamp
+    );
+    event TransactionRejected(
+        address indexed owner,
+        uint256 indexed txID,
+        uint256 timestamp
+    );
+    event TransactionExecuted(
+        address indexed owner,
+        uint256 indexed txID,
+        uint256 timestamp,
+        bool success
+    );
+
+    Transaction[] public transactions;
+    mapping(uint256 => mapping(address => bool)) public confirmations;
+    mapping(uint256 => mapping(address => bool)) public rejections;
+
+    constructor(address[] memory _owners, uint256 _required) {
+        require(_owners.length >= _required, "Owners less than required!");
+        owners = _owners;
+        required = _required;
+    }
+
+    receive() external payable {
+        emit EtherReceived(msg.sender, msg.value, block.timestamp);
+    }
+
+    function transactionsCount() public view returns (uint256) {
+        return transactions.length;
+    }
+
+    function hasConfirmed(uint256 txID, address owner)
+        public
+        view
+        ownerExists(owner)
+        returns (bool)
+    {
+        return confirmations[txID][owner];
+    }
+
+    function hasRejected(uint256 txID, address owner)
+        public
+        view
+        ownerExists(owner)
+        returns (bool)
+    {
+        return rejections[txID][owner];
+    }
+
+    function submitTransaction(
+        address destination,
+        uint256 value,
+        bytes memory data
+    ) public ownerExists(msg.sender) returns (uint256 transactionId) {
+        transactionId = transactions.length;
+        transactions.push(
+            Transaction({
+                author: msg.sender,
+                id: transactionId,
+                destination: destination,
+                value: value,
+                data: data,
+                executed: false
+            })
+        );
+
+        emit TransactionSubmitted(msg.sender, transactionId, block.timestamp);
+
+        confirmTransaction(transactionId);
+    }
+
+    function confirmTransaction(uint256 transactionId)
+        public
+        ownerExists(msg.sender)
+    {
+        require(
+            !transactions[transactionId].executed,
+            "Transaction already executed."
+        );
+        require(
+            !confirmations[transactionId][msg.sender],
+            "Transaction already confirmed by this owner."
+        );
+        require(
+            !isRejected(transactionId),
+            "Transaction has been rejected by owners."
+        );
+        emit TransactionConfirmed(msg.sender, transactionId, block.timestamp);
+        confirmations[transactionId][msg.sender] = true;
+        if (isConfirmed(transactionId)) {
+            executeTransaction(transactionId);
+        }
+    }
+
+    function executeTransaction(uint256 transactionId)
+        public
+        ownerExists(msg.sender)
+    {
+        require(
+            !transactions[transactionId].executed,
+            "Transaction already executed."
+        );
+
+        if (isConfirmed(transactionId)) {
+            Transaction storage t = transactions[transactionId];
+            t.executed = true;
+            (bool success, bytes memory returnData) = t.destination.call{
+                value: t.value
+            }(t.data);
+            if (!success) {
+                // Decode the revert reason if one was returned and revert with it
+                if (returnData.length > 0) {
+                    assembly {
+                        let returndata_size := mload(returnData)
+                        revert(add(32, returnData), returndata_size)
+                    }
+                } else {
+                    revert("Transaction failed.");
+                }
+            }
+
+            emit TransactionExecuted(
+                msg.sender,
+                transactionId,
+                block.timestamp,
+                success
+            );
+        } else {
+            revert("Unconfirmed Transaction ID.");
+        }
+    }
+
+    function isConfirmed(uint256 transactionId) internal view returns (bool) {
+        uint256 count = 0;
+        for (uint256 i = 0; i < owners.length; i++) {
+            if (confirmations[transactionId][owners[i]]) count++;
+            if (count == required) return true;
+        }
+        return false;
+    }
+
+    function isExecuted(uint256 transactionId) public view returns (bool) {
+        return transactions[transactionId].executed;
+    }
+
+    function pendingForOwner(address owner)
+        public
+        view
+        ownerExists(owner)
+        returns (uint256[] memory, uint256)
+    {
+        // Create a dynamic array to store the IDs of transactions pending for the owner
+        uint256[] memory pendingTransactions = new uint256[](
+            transactions.length
+        );
+        uint256 count = 0;
+
+        for (uint256 i = 0; i < transactions.length; i++) {
+            // If the transaction has not been executed and has not been confirmed by the owner
+            if (
+                !isExecuted(i) &&
+                !isConfirmed(i) &&
+                !isRejected(i) &&
+                !hasConfirmed(i, owner)
+            ) {
+                // Add the transaction ID to the array
+                pendingTransactions[count] = transactions[i].id;
+                count++;
+            }
+        }
+
+        // Create a new array of the correct length
+        uint256[] memory result = new uint256[](count);
+
+        // Copy over only the valid transaction IDs
+        for (uint256 i = 0; i < count; i++) {
+            result[i] = pendingTransactions[i];
+        }
+
+        return (result, result.length);
+    }
+
+    modifier ownerExists(address owner) {
+        bool exists = false;
+        for (uint256 i = 0; i < owners.length; i++) {
+            if (owners[i] == owner) {
+                exists = true;
+            }
+        }
+        require(exists, "Owner does not exist.");
+        _;
+    }
+
+    function rejectTransaction(uint256 transactionId)
+        public
+        ownerExists(msg.sender)
+    {
+        require(
+            !transactions[transactionId].executed,
+            "Transaction already executed."
+        );
+        require(!isRejected(transactionId), "Transaction already rejected.");
+        require(
+            !rejections[transactionId][msg.sender],
+            "Transaction already rejected by this owner."
+        );
+        if (hasConfirmed(transactionId, msg.sender))
+            confirmations[transactionId][msg.sender] = false;
+        emit TransactionRejected(msg.sender, transactionId, block.timestamp);
+
+        rejections[transactionId][msg.sender] = true;
+    }
+
+    function isRejected(uint256 transactionId) internal view returns (bool) {
+        uint256 count = 0;
+        for (uint256 i = 0; i < owners.length; i++) {
+            if (rejections[transactionId][owners[i]]) count += 1;
+            if (count == 2) return true;
+        }
+        return false;
+    }
+
+    function getApprovingOwners(uint256 transactionId)
+        public
+        view
+        returns (address[] memory)
+    {
+        address[] memory approvingOwners = new address[](owners.length);
+
+        uint256 counter = 0;
+        for (uint256 i = 0; i < owners.length; i++) {
+            // If the owner i has approved the transaction...
+            if (confirmations[transactionId][owners[i]]) {
+                // ... add their address to the approvingOwners array.
+                approvingOwners[counter] = owners[i];
+                counter++;
+            }
+        }
+
+        // Create a new array of the correct length
+        address[] memory finalOwners = new address[](counter);
+        for (uint256 i = 0; i < counter; i++) {
+            finalOwners[i] = approvingOwners[i];
+        }
+
+        return finalOwners;
+    }
+
+    function getRejectingOwners(uint256 transactionId)
+        public
+        view
+        returns (address[] memory)
+    {
+        address[] memory rejectingOwners = new address[](owners.length);
+
+        uint256 counter = 0;
+        for (uint256 i = 0; i < owners.length; i++) {
+            // If the owner i has rejected the transaction...
+            if (rejections[transactionId][owners[i]]) {
+                // ... add their address to the rejectingOwners array.
+                rejectingOwners[counter] = owners[i];
+                counter++;
+            }
+        }
+
+        // Create a new array of the correct length
+        address[] memory finalOwners = new address[](counter);
+        for (uint256 i = 0; i < counter; i++) {
+            finalOwners[i] = rejectingOwners[i];
+        }
+
+        return finalOwners;
+    }
+}

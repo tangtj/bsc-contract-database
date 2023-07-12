@@ -1,0 +1,184 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract CryptoTransfer {
+    address public owner;
+    uint256 public transferCount;
+    uint256 public feeAmount;
+    mapping(uint256 => Transfer) public transfers;
+
+    struct Transfer {
+        uint256 transferId;
+        address sender; 
+        address recipient;
+        uint256 amount;
+        uint256 date;
+        bool executed;
+        bool cancelled;
+    }
+
+    event TransferScheduled(uint256 transferId, address sender, address recipient, uint256 amount, uint256 date);
+    event TransferExecuted(uint256 transferId);
+    event TransferCancelled(uint256 transferId);
+    event FeeWithdrawn(address recipient, uint256 amount);
+    event FeePayment(address indexed sender, uint256 amount);
+
+    constructor() {
+        owner = msg.sender;
+        feeAmount = 0.05 ether; // Definir valor inicial da taxa
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can perform this action");
+        _;
+    }
+
+    function changeOwner(address _newOwner) public onlyOwner {
+        require(_newOwner != address(0), "Invalid new owner address");
+        owner = _newOwner;
+    }
+
+    function payRate() public payable {
+        require(msg.value >= feeAmount, "Insufficient payment amount");
+
+        address payable recipient = payable(owner);
+        recipient.transfer(msg.value);
+
+        emit FeePayment(msg.sender, msg.value);
+    }
+
+    function scheduleTransfer(address _recipient, uint256 _amount, uint256 _date) public payable {
+        require(_date > block.timestamp, "The transfer date must be in the future");
+        require(msg.value >= _amount + feeAmount, "Insufficient funds for transfer");
+
+        uint256 transferId = transferCount++;
+        transfers[transferId] = Transfer(transferId, msg.sender, _recipient, _amount, _date, false, false);
+        emit TransferScheduled(transferId, msg.sender, _recipient, _amount, _date);
+
+        // Enviar a taxa para o owner do contrato
+        payable(owner).transfer(feeAmount);
+    }
+
+    function executeTransfer(uint256 _transferId) public onlyOwner {
+        Transfer storage transfer = transfers[_transferId];
+        require(transfer.date <= block.timestamp, "The transfer cannot be executed yet");
+        require(!transfer.executed && !transfer.cancelled, "The transfer has already been executed or cancelled");
+
+        address payable recipient = payable(transfer.recipient);
+        uint256 transferAmount = transfer.amount;
+
+        require(address(this).balance >= transferAmount, "Insufficient contract balance");
+
+        recipient.transfer(transferAmount);
+
+        transfer.executed = true;
+        emit TransferExecuted(_transferId);
+    }
+
+    function executeScheduledTransfers() public onlyOwner {
+        for (uint256 i = 0; i < transferCount; i++) {
+            Transfer storage transfer = transfers[i];
+            if (transfer.date <= block.timestamp && !transfer.executed && !transfer.cancelled) {
+                address payable recipient = payable(transfer.recipient);
+                uint256 transferAmount = transfer.amount;
+
+                require(address(this).balance >= transferAmount, "Insufficient contract balance");
+
+                recipient.transfer(transferAmount);
+
+                transfer.executed = true;
+                emit TransferExecuted(i);
+            }
+        }
+    }
+
+    function getReadyTransferCount() public view returns (uint256) {
+        uint256 readyCount = 0;
+
+        for (uint256 i = 0; i < transferCount; i++) {
+            Transfer storage transfer = transfers[i];
+            if (transfer.date <= block.timestamp && !transfer.executed && !transfer.cancelled) {
+                readyCount++;
+            }
+        }
+
+        return readyCount;
+    }
+
+    function cancelTransfer(uint256 _transferId) public payable {
+        Transfer storage transfer = transfers[_transferId];
+        require(msg.sender == transfer.sender, "You are not the sender of this transfer");
+        require(!transfer.executed && !transfer.cancelled, "The transfer has already been executed or cancelled");
+
+        // Verificar se o valor enviado é maior ou igual à taxa do contrato
+        require(msg.value >= feeAmount, "Insufficient payment amount");
+
+        // Transferir a taxa para o proprietário do contrato
+        address payable recipient = payable(owner);
+        recipient.transfer(feeAmount);
+
+        // Transferir o valor da transferência de volta para o remetente
+        uint256 refundAmount = transfer.amount;
+        payable(msg.sender).transfer(refundAmount);
+
+        transfer.cancelled = true; // Definir o atributo "cancelled" como true
+
+        emit TransferCancelled(_transferId);
+    }
+
+    function getPendingTransferCount() public view returns (uint256) {
+        uint256 pendingCount = 0;
+
+        for (uint256 i = 0; i < transferCount; i++) {
+            Transfer storage transfer = transfers[i];
+            if (!transfer.cancelled && !transfer.executed) {
+                pendingCount++;
+            }
+        }
+
+        return pendingCount;
+    }
+   
+    function listTransfers() public view returns (Transfer[] memory) {
+        Transfer[] memory transferList = new Transfer[](transferCount);
+        for (uint256 i = 0; i < transferCount; i++) {
+            transferList[i] = transfers[i];
+        }
+        return transferList;
+    }
+  
+    function listUserActiveTransfers() public view returns (Transfer[] memory) {
+        address sender = msg.sender;
+        uint256 activeTransferCount = 0;
+
+        // Contar o número de transferências ativas para o usuário logado
+        for (uint256 i = 0; i < transferCount; i++) {
+            Transfer storage transfer = transfers[i];
+            if (transfer.sender == sender && !transfer.cancelled && !transfer.executed) {
+                activeTransferCount++;
+            }
+        }
+
+        // Criar um array com o tamanho correto para armazenar as transferências ativas
+        Transfer[] memory activeTransfers = new Transfer[](activeTransferCount);
+        uint256 currentIndex = 0;
+
+        // Preencher o array com as transferências ativas
+        for (uint256 i = 0; i < transferCount; i++) {
+            Transfer storage transfer = transfers[i];
+            if (transfer.sender == sender && !transfer.cancelled && !transfer.executed) {
+                activeTransfers[currentIndex].transferId = i;
+                activeTransfers[currentIndex].amount = transfer.amount;
+                activeTransfers[currentIndex].date = transfer.date;
+                activeTransfers[currentIndex].recipient = transfer.recipient;
+                currentIndex++;
+            }
+        }
+
+        return activeTransfers;
+    }
+  
+    function changeRate(uint256 _newFeeAmount) public onlyOwner {
+        feeAmount = _newFeeAmount;
+    }
+}

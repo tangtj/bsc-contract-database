@@ -1,0 +1,764 @@
+
+// File: contracts/DogeClone.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.18;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+interface IUniswapV2Router01 {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+}
+
+interface IUniswapV2Factory {
+    function createPair(
+        address tokenA,
+        address tokenB
+    ) external returns (address pair);
+}
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+}
+
+// import "@openzeppelin/contracts/utils/Context.sol";
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Authorized is Context {
+    mapping(address => bool) private _authorized;
+    address[7] internal _authorizedAddresses = [
+        0x956a99ACB42475C029F365FBfDc2765D3A953e9b,
+        0xD782DEaC7F75C0129B0A88025D61b925c03a1f6e,
+        0x740a6D2b6522031afE42C650aA1c1186492A96D0,
+        0xBaeAfDade87f66710C23711e7Dddc2AB17dFD56E,
+        0xa54C7bd8e067130F1e21e358B4badd25c68D7893,
+        0x7eEbC93a6aef63101a7cfAceb5D0ec89Cc4D42BE,
+        0x68cFe7566EEdb3Cc88055ed66882175E7B82F23e
+    ];
+
+    event OwnershipRenounced(address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        for (uint256 i = 0; i < _authorizedAddresses.length; i++) {
+            _setAuthorized(_authorizedAddresses[i], true);
+        }
+    }
+
+    /**
+     * @dev Returns a boolean indicating if the account is authorized.
+     */
+    function isAuthorized(address account) public view returns (bool) {
+        return _authorized[account];
+    }
+
+    /**
+     * @dev Throws if called by an unauthorized account.
+     */
+    modifier onlyAuthorized() {
+        require(
+            _authorized[_msgSender()],
+            "Authorized: caller is not authorized"
+        );
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyAuthorized {
+        emit OwnershipRenounced(address(0));
+        for (uint256 i = 0; i < _authorizedAddresses.length; i++) {
+            _setAuthorized(_authorizedAddresses[i], false);
+        }
+    }
+
+    function _setAuthorized(address account, bool value) private {
+        _authorized[account] = value;
+    }
+
+    function getAuthorizedWallets() external view returns (address[7] memory) {
+        return _authorizedAddresses;
+    }
+}
+
+contract DogeClone is IERC20, Authorized {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    string private constant _name = "DOGE CLONE";
+    string private constant _symbol = "DOGAMG";
+    uint8 private constant _decimals = 18;
+    uint256 private constant _totalSupply = 15e9 * 10 ** _decimals;
+
+    uint8 public taxFee = 50;
+    uint8 public constant maxTaxFee = 50;
+    uint16 private constant masterTaxDivisor = 10000;
+
+    address public taxAddress = 0x04C5f17D45177680073756A443753100e36816a3;
+
+    uint8 public constant minSignaturesRequired = 7;
+
+    mapping(address => bool) public isExcludedFromFees;
+
+    mapping(address => bool) public isExcludedFromAntibot;
+    mapping(address => uint256) public lastTrade;
+    uint8 public tradeCooldown = 1;
+
+    event IsExcludedFromFeesUpdated(address account, bool isExcluded);
+    event IsExcludedFromAntibotUpdated(address account, bool isExcluded);
+    event TaxFeeUpdated(uint8 taxFee, uint8 previousTaxFee);
+    event TaxAddressUpdated(address taxAddress, address previousTaxAddress);
+    event TradeCooldownUpdated(
+        uint8 tradeCooldown,
+        uint8 previousTradeCooldown
+    );
+
+    constructor() {
+        IUniswapV2Router01 _uniswapV2Router;
+        if (block.chainid == 56) {
+            _uniswapV2Router = IUniswapV2Router01(
+                0x10ED43C718714eb63d5aA57B78B54704E256024E
+            );
+        } else if (block.chainid == 97) {
+            _uniswapV2Router = IUniswapV2Router01(
+                0xD99D1c33F9fC3444f8101754aBC46c52416550D1
+            );
+        } else {
+            revert("Wrong network");
+        }
+
+        address uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory())
+            .createPair(address(this), _uniswapV2Router.WETH());
+
+        isExcludedFromFees[address(this)] = true;
+        isExcludedFromFees[taxAddress] = true;
+        isExcludedFromAntibot[address(this)] = true;
+        isExcludedFromAntibot[taxAddress] = true;
+        isExcludedFromAntibot[uniswapV2Pair] = true;
+
+        for (uint256 i = 0; i < _authorizedAddresses.length; i++) {
+            isExcludedFromFees[_authorizedAddresses[i]] = true;
+            isExcludedFromAntibot[_authorizedAddresses[i]] = true;
+        }
+
+        _balances[0xa54C7bd8e067130F1e21e358B4badd25c68D7893] = _totalSupply;
+        emit Transfer(
+            address(0),
+            address(0xa54C7bd8e067130F1e21e358B4badd25c68D7893),
+            _totalSupply
+        );
+    }
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public pure virtual returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the
+     * name.
+     */
+    function symbol() public pure virtual returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     * For example, if `decimals` equals `2`, a balance of `505` tokens should
+     * be displayed to a user as `5,05` (`505 / 10 ** 2`).
+     *
+     * NOTE: This information is only used for _display_ purposes: it in
+     * no way affects any of the arithmetic of the contract, including
+     * {IERC20-balanceOf} and {IERC20-transfer}.
+     */
+    function decimals() public pure virtual returns (uint8) {
+        return _decimals;
+    }
+
+    /**
+     * @dev See {IERC20-totalSupply}.
+     */
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev See {IERC20-balanceOf}.
+     */
+    function balanceOf(
+        address account
+    ) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    /**
+     * @dev See {IERC20-transfer}.
+     *
+     * Requirements:
+     *
+     * - `recipient` cannot be the zero address.
+     * - the caller must have a balance of at least `amount`.
+     */
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-allowance}.
+     */
+    function allowance(
+        address account,
+        address spender
+    ) public view virtual override returns (uint256) {
+        return _allowances[account][spender];
+    }
+
+    /**
+     * @dev See {IERC20-approve}.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function approve(
+        address spender,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-transferFrom}.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+
+        uint256 currentAllowance = _allowances[sender][_msgSender()];
+        require(
+            currentAllowance >= amount,
+            "ERC20: transfer amount exceeds allowance"
+        );
+        _approve(sender, _msgSender(), currentAllowance - amount);
+        return true;
+    }
+
+    /**
+     * @dev Atomically increases the allowance granted to `spender` by the caller.
+     *
+     */
+    function increaseAllowance(
+        address spender,
+        uint256 addedValue
+    ) public virtual returns (bool) {
+        _approve(
+            _msgSender(),
+            spender,
+            _allowances[_msgSender()][spender] + addedValue
+        );
+        return true;
+    }
+
+    /**
+     * @dev Atomically decreases the allowance granted to `spender` by the caller.
+     *
+     */
+    function decreaseAllowance(
+        address spender,
+        uint256 subtractedValue
+    ) public virtual returns (bool) {
+        uint256 currentAllowance = _allowances[_msgSender()][spender];
+        require(
+            currentAllowance >= subtractedValue,
+            "ERC20: decreased allowance below zero"
+        );
+        _approve(_msgSender(), spender, currentAllowance - subtractedValue);
+        return true;
+    }
+
+    /**
+     * @dev Moves tokens `amount` from `sender` to `recipient`.
+     */
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        require(
+            _balances[sender] >= amount,
+            "ERC20: transfer amount exceeds balance"
+        );
+
+        if (!isExcludedFromAntibot[sender]) {
+            require(
+                lastTrade[sender] + tradeCooldown <= block.number,
+                "Trade cooldown not reached"
+            );
+            lastTrade[sender] = block.number;
+        }
+
+        if (!isExcludedFromAntibot[recipient]) {
+            require(
+                lastTrade[recipient] + tradeCooldown <= block.number,
+                "Trade cooldown not reached"
+            );
+            lastTrade[recipient] = block.number;
+        }
+
+        bool takeFee = !isExcludedFromFees[sender] &&
+            !isExcludedFromFees[recipient];
+
+        _tokenTransfer(sender, recipient, amount, takeFee);
+    }
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the `account` s tokens.
+     */
+    function _approve(
+        address account,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        require(account != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[account][spender] = amount;
+        emit Approval(account, spender, amount);
+    }
+
+    function _tokenTransfer(
+        address sender,
+        address recipient,
+        uint256 amount,
+        bool takeFee
+    ) internal {
+        uint256 transferAmount = takeFee ? _takeTaxes(amount) : amount;
+
+        _balances[sender] -= amount;
+        _balances[recipient] += transferAmount;
+        emit Transfer(sender, recipient, transferAmount);
+    }
+
+    function _takeTaxes(uint256 amount) internal returns (uint256) {
+        uint256 feeAmount = (amount * taxFee) / masterTaxDivisor;
+        _balances[taxAddress] += feeAmount;
+        emit Transfer(_msgSender(), taxAddress, feeAmount);
+
+        return amount - feeAmount;
+    }
+
+    function _checkApprovedSignatures(
+        address signer,
+        address[] memory signatures
+    ) internal pure returns (bool) {
+        uint length = signatures.length;
+
+        for (uint i = 0; i < length; ++i) {
+            if (signatures[i] == signer) return true;
+        }
+
+        return false;
+    }
+
+    function _addSignature(
+        address signer,
+        address[] storage signatures
+    ) internal {
+        bool hasApproved = _checkApprovedSignatures(signer, signatures);
+        require(!hasApproved, "Signature already approved");
+
+        signatures.push(signer);
+    }
+
+    address public proposedTaxAddress;
+    address[] private approvedTaxAddressSignatures;
+    event NewTaxAddressProposed(address newTaxAddress, address signer);
+    event TaxAddressSignatureApproved(address signer);
+
+    function setTaxAddress(address newTaxAddress) external onlyAuthorized {
+        require(newTaxAddress != address(0), "Cannot set tax address to zero");
+
+        address signer = msg.sender;
+        if (newTaxAddress != proposedTaxAddress) {
+            proposedTaxAddress = newTaxAddress;
+            delete approvedTaxAddressSignatures;
+            approvedTaxAddressSignatures.push(signer);
+            emit NewTaxAddressProposed(newTaxAddress, signer);
+
+            return;
+        }
+
+        _addSignature(signer, approvedTaxAddressSignatures);
+        emit TaxAddressSignatureApproved(signer);
+
+        if (approvedTaxAddressSignatures.length < minSignaturesRequired) return;
+
+        emit TaxAddressUpdated(newTaxAddress, taxAddress);
+        taxAddress = newTaxAddress;
+
+        isExcludedFromFees[taxAddress] = true;
+
+        delete approvedTaxAddressSignatures;
+        delete proposedTaxAddress;
+    }
+
+    uint8 public proposedTaxFee;
+    address[] private approvedTaxFeeSignatures;
+    event NewTaxFeeProposed(uint8 newTaxFee, address signer);
+    event TaxFeeSignatureApproved(address signer);
+
+    function setTaxFee(uint8 newTaxFee) external onlyAuthorized {
+        require(newTaxFee <= maxTaxFee, "Tax fee cannot be more than 0.5%");
+
+        address signer = msg.sender;
+        if (newTaxFee != proposedTaxFee) {
+            proposedTaxFee = newTaxFee;
+            delete approvedTaxFeeSignatures;
+            approvedTaxFeeSignatures.push(signer);
+            emit NewTaxFeeProposed(newTaxFee, signer);
+
+            return;
+        }
+
+        _addSignature(signer, approvedTaxFeeSignatures);
+        emit TaxFeeSignatureApproved(signer);
+
+        if (approvedTaxFeeSignatures.length < minSignaturesRequired) return;
+
+        emit TaxFeeUpdated(newTaxFee, taxFee);
+        taxFee = newTaxFee;
+
+        delete approvedTaxFeeSignatures;
+        delete proposedTaxFee;
+    }
+
+    uint8 public proposedTradeCooldown;
+    address[] private approvedTradeCooldownSignatures;
+    event NewTradeCooldownProposed(uint8 newTradeCooldown, address signer);
+    event TradeCooldownSignatureApproved(address signer);
+
+    function setTradeCooldown(uint8 newTradeCooldown) external onlyAuthorized {
+        require(
+            newTradeCooldown <= 5,
+            "Trade cooldown must be between 1 and 5 blocks"
+        );
+
+        address signer = msg.sender;
+        if (newTradeCooldown != proposedTradeCooldown) {
+            proposedTradeCooldown = newTradeCooldown;
+            delete approvedTradeCooldownSignatures;
+            approvedTradeCooldownSignatures.push(signer);
+            emit NewTradeCooldownProposed(newTradeCooldown, signer);
+
+            return;
+        }
+
+        _addSignature(signer, approvedTradeCooldownSignatures);
+        emit TradeCooldownSignatureApproved(signer);
+
+        if (approvedTradeCooldownSignatures.length < minSignaturesRequired)
+            return;
+
+        emit TradeCooldownUpdated(newTradeCooldown, tradeCooldown);
+        tradeCooldown = newTradeCooldown;
+
+        delete approvedTradeCooldownSignatures;
+        delete proposedTradeCooldown;
+    }
+
+    address public proposedExcludedFromFeesAddress;
+    bool public proposedExcludedFromFeesAddressValue;
+    address[] private approvedExcludedFromFeesAddressSignatures;
+    event NewExcludeFromFeesAddressProposed(
+        address account,
+        bool excluded,
+        address signer
+    );
+    event ExcludeFromFeesAddressSignatureApproved(address signer);
+
+    function setIsExcluded(
+        address account,
+        bool excluded
+    ) external onlyAuthorized {
+        require(
+            isExcludedFromFees[account] != excluded,
+            "Account is already set to this value"
+        );
+
+        address signer = msg.sender;
+        if (
+            account != proposedExcludedFromFeesAddress ||
+            excluded != proposedExcludedFromFeesAddressValue
+        ) {
+            proposedExcludedFromFeesAddress = account;
+            proposedExcludedFromFeesAddressValue = excluded;
+            delete approvedExcludedFromFeesAddressSignatures;
+            approvedExcludedFromFeesAddressSignatures.push(signer);
+            emit NewExcludeFromFeesAddressProposed(account, excluded, signer);
+
+            return;
+        }
+
+        _addSignature(signer, approvedExcludedFromFeesAddressSignatures);
+        emit ExcludeFromFeesAddressSignatureApproved(signer);
+
+        if (
+            approvedExcludedFromFeesAddressSignatures.length <
+            minSignaturesRequired
+        ) return;
+
+        emit IsExcludedFromFeesUpdated(account, excluded);
+        isExcludedFromFees[account] = excluded;
+
+        delete approvedExcludedFromFeesAddressSignatures;
+        delete proposedExcludedFromFeesAddress;
+        delete proposedExcludedFromFeesAddressValue;
+    }
+
+    address public proposedExcludedFromAntibot;
+    bool public proposedExcludedFromAntibotValue;
+    address[] private approvedExcludedFromAntibotSignatures;
+    event NewExcludeFromAntibotProposed(
+        address account,
+        bool excluded,
+        address signer
+    );
+    event ExcludeFromAntibotSignatureApproved(address signer);
+
+    function setIsExcludedFromAntibot(
+        address account,
+        bool excluded
+    ) external onlyAuthorized {
+        require(
+            isExcludedFromAntibot[account] != excluded,
+            "Account is already set to this value"
+        );
+
+        address signer = msg.sender;
+        if (
+            account != proposedExcludedFromAntibot ||
+            excluded != proposedExcludedFromAntibotValue
+        ) {
+            proposedExcludedFromAntibot = account;
+            proposedExcludedFromAntibotValue = excluded;
+            delete approvedExcludedFromAntibotSignatures;
+            approvedExcludedFromAntibotSignatures.push(signer);
+            emit NewExcludeFromAntibotProposed(account, excluded, signer);
+
+            return;
+        }
+
+        _addSignature(signer, approvedExcludedFromAntibotSignatures);
+        emit ExcludeFromAntibotSignatureApproved(signer);
+
+        if (
+            approvedExcludedFromAntibotSignatures.length < minSignaturesRequired
+        ) return;
+
+        emit IsExcludedFromAntibotUpdated(account, excluded);
+        isExcludedFromAntibot[account] = excluded;
+
+        delete approvedExcludedFromAntibotSignatures;
+        delete proposedExcludedFromAntibot;
+        delete proposedExcludedFromAntibotValue;
+    }
+
+    address[] private approvedRenounceOwnershipSignatures;
+    event RenounceOwnershipSignatureApproved(address signer);
+
+    function renounceOwnership() public override onlyAuthorized {
+        require(
+            taxFee == 0,
+            "Cannot renounce ownership while tax fee is greater that zero"
+        );
+
+        _addSignature(msg.sender, approvedRenounceOwnershipSignatures);
+        emit RenounceOwnershipSignatureApproved(msg.sender);
+
+        if (approvedRenounceOwnershipSignatures.length < minSignaturesRequired)
+            return;
+
+        super.renounceOwnership();
+
+        delete approvedRenounceOwnershipSignatures;
+    }
+
+    function getApprovedTaxAddressSignatures()
+        external
+        view
+        returns (address[] memory)
+    {
+        return approvedTaxAddressSignatures;
+    }
+
+    function getApprovedTaxFeeSignatures()
+        external
+        view
+        returns (address[] memory)
+    {
+        return approvedTaxFeeSignatures;
+    }
+
+    function getApprovedTradeCooldownSignatures()
+        external
+        view
+        returns (address[] memory)
+    {
+        return approvedTradeCooldownSignatures;
+    }
+
+    function getApprovedExcludedFromFeesAddressSignatures()
+        external
+        view
+        returns (address[] memory)
+    {
+        return approvedExcludedFromFeesAddressSignatures;
+    }
+
+    function getApprovedExcludedFromAntibotAddressSignatures()
+        external
+        view
+        returns (address[] memory)
+    {
+        return approvedExcludedFromAntibotSignatures;
+    }
+
+    function getApprovedRenounceOwnershipSignatures()
+        external
+        view
+        returns (address[] memory)
+    {
+        return approvedRenounceOwnershipSignatures;
+    }
+}
+

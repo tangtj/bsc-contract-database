@@ -1,0 +1,161 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+contract CTBmoon {
+    string private constant _name = "CTBmoon";
+    string private constant _symbol = "CTBM";
+    uint256 private constant _totalSupply = 140000000000 * (10**18);
+    uint256 public decimals = 18;
+
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 private _maxSaleLimit;
+    uint256 private _lastMarketHigh;
+    uint256 private _lastMarketLow;
+    uint256 private _lastMarketPrice;
+    uint256 private _saleCooldown;
+    uint256 private _transferCooldown;
+    mapping(address => uint256) private _lastSaleTimestamp;
+
+    uint256 private _initialPrice = 10000; // Başlangıç fiyatını 0.00001 ether olarak ayarlandı
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        _balances[msg.sender] = _totalSupply;
+        emit Transfer(address(0), msg.sender, _totalSupply);
+    }
+
+    function name() public pure returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public pure returns (string memory) {
+        return _symbol;
+    }
+
+    function totalSupply() public pure returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        require(
+            amount <= _balances[msg.sender],
+            "CTBmoon: Insufficient balance"
+        );
+
+        require(
+            recipient != address(0),
+            "CTBmoon: Transfer to the zero address"
+        );
+
+        if (_maxSaleLimit > 0 && _lastMarketPrice > 0 && _lastMarketLow > 0) {
+            uint256 maxSaleAmount = (_maxSaleLimit * _lastMarketPrice) / 100;
+            require(amount <= maxSaleAmount, "CTBmoon: Sale limit exceeded");
+            require(
+                _lastMarketPrice >= ((_lastMarketHigh * 90) / 100),
+                "CTBmoon: Sale not allowed"
+            );
+        }
+
+        require(
+            amount <= _balances[msg.sender],
+            "CTBmoon: Transfer amount must be equal to the balance"
+        );
+
+        _balances[msg.sender] -= amount;
+        _balances[recipient] += amount;
+        emit Transfer(msg.sender, recipient, amount);
+
+        _lastSaleTimestamp[msg.sender] = block.timestamp;
+
+        return true;
+    }
+
+    function allowance(address owner, address spender)
+        public
+        view
+        returns (uint256)
+    {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public returns (bool) {
+        require(amount <= _balances[sender], "CTBmoon: Insufficient balance");
+        require(
+            amount <= _allowances[sender][msg.sender],
+            "CTBmoon: Insufficient allowance"
+        );
+
+        if (_maxSaleLimit > 0 && _lastMarketPrice > 0 && _lastMarketLow > 0) {
+            uint256 maxSaleAmount = (_maxSaleLimit * _lastMarketPrice) / 100;
+            require(amount <= maxSaleAmount, "CTBmoon: Sale limit exceeded");
+            require(
+                _lastMarketPrice >= ((_lastMarketHigh * 90) / 100),
+                "CTBmoon: Sale not allowed"
+            );
+        }
+
+        require(
+            amount <= _balances[sender],
+            "CTBmoon: Transfer amount must be equal to the balance"
+        );
+
+        _balances[sender] -= amount;
+        _balances[recipient] += amount;
+        _allowances[sender][msg.sender] -= amount;
+        emit Transfer(sender, recipient, amount);
+
+        _lastSaleTimestamp[sender] = block.timestamp;
+
+        return true;
+    }
+
+    function setMaxSaleLimit(uint256 limit) external {
+        _maxSaleLimit = limit;
+    }
+
+    function setMarketData(
+        uint256 high,
+        uint256 low,
+        uint256 price
+    ) external {
+        _lastMarketHigh = high;
+        _lastMarketLow = low;
+        _lastMarketPrice = price;
+    }
+
+    function setSaleCooldown(uint256 cooldown) external {
+        _saleCooldown = cooldown;
+    }
+
+    function setTransferCooldown(uint256 cooldown) external {
+        _transferCooldown = cooldown;
+    }
+
+    function transferCooldownEnded() external view returns (bool) {
+        if (_transferCooldown == 0) {
+            return true;
+        }
+
+        return
+            (block.timestamp - _lastSaleTimestamp[msg.sender]) >=
+            _transferCooldown;
+    }
+}

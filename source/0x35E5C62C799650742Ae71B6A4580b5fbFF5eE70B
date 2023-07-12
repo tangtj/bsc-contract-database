@@ -1,0 +1,427 @@
+
+// File: contracts/client/HotelGameLvl4.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+import "../interfaces/IPool.sol";
+import "../interfaces/IStacking.sol";
+import "../interfaces/IUserStorage.sol";
+import "../interfaces/IGifter.sol";
+import "../storages/Pool.sol";
+
+
+contract HotelGameL4
+{
+
+    // const
+    uint step = 20;
+    uint[] rewards = [17100 ether,10900 ether,7800 ether,6200 ether,4600 ether,3100 ether,1500 ether];
+    uint[] refPercent = [3,2,3,1,3,1,1,1];
+    uint[] RewardByType = [ 0, 0.8474375 ether,  0.2900625 ether,  0.25423125 ether,
+                               0.08701875 ether, 0.08474375 ether, 0.02900625 ether,
+                               0.325 ether,      0.0975 ether,     0.065 ether];
+    uint priceByLvl = 3.25 ether;
+    uint reinvestPay = 0.04 ether;
+    
+    address payable lotery;
+    address payable gifter;
+    IPool pool;
+    IStacking stacking;
+    IUserStorage userStorage;
+    IGifter controller;
+ 
+    /////// EVENTS ///////
+    event onBuyHotel(uint indexed hotelId, address indexed user);
+    event onReferalReward(uint indexed referalId, uint amount);
+    event onGifting(uint indexed recipientId, uint amount);
+
+
+    struct Hotel
+    {
+        uint id;
+        address Renter;
+        uint Parent;
+        uint Left;
+        uint Right;
+        uint8 IterationCount;    
+    }
+
+    constructor(
+                address _gifter,
+                address _loteryAddress,  
+                address _controller, 
+                address _userStorage, 
+                address _stack, 
+                address _charityAddress)
+    {
+        lotery = payable(_loteryAddress);
+        userStorage = IUserStorage(_userStorage);
+        address main = userStorage.getAddressById(1);
+        gifter = payable(_gifter);
+        controller = IGifter(_controller);
+        stacking = IStacking(_stack);
+        pool = new Pool(payable(_charityAddress));
+        HotelById[LastId ].id = 1;
+        HotelById[LastId ].Renter = main;
+        HotelById[LastId ].Parent = 1;
+        HotelById[LastId ].IterationCount = 8;
+        CurrentHotelIdByAddress[main] =  LastId;   
+        isAutos[main] = true;
+        _status = _NOT_ENTERED;
+    }
+
+    // data
+    mapping (uint => Hotel) private HotelById;
+    mapping (address => uint) private CurrentHotelIdByAddress;
+    uint private LastId = 1;
+    mapping (address => bool) private isAutos;
+    mapping (address => uint) private balances;  
+
+    uint256 constant _NOT_ENTERED = 1;
+    uint256 constant _ENTERED = 2;
+    uint256 private _status;
+
+
+    modifier nonReentrant() {
+         require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+        _;
+         _status = _NOT_ENTERED;
+    }
+
+
+    /// FUNCTIONS
+    function buyHotel() nonReentrant public payable returns(bool)
+    {
+        require(userStorage.isUserExistByAddress(msg.sender), "must be register");
+        require(msg.value == priceByLvl, "wrong price");
+        require(HotelById[CurrentHotelIdByAddress[msg.sender]].IterationCount == 0,"Hotel exist");
+        buyNewHotel(msg.sender);
+        Hotel memory head = HotelById[findHead()];
+
+        if (head.IterationCount == 0 && isAutos[head.Renter] && balances[head.Renter] >= priceByLvl)
+        {
+            balances[head.Renter] -= priceByLvl;
+            buyNewHotel(head.Renter);
+        }
+        return true;
+    }
+    fallback() external payable 
+    {
+        buyHotel();
+    }
+    receive() external payable
+    {
+        buyHotel();    
+    } 
+    function switchIsAuto() public payable
+    {
+        if (isAutos[msg.sender])
+        {
+            isAutos[msg.sender] == false;
+        }
+        else
+        {
+            require(msg.value == reinvestPay, "err2");
+            isAutos[msg.sender] = true;
+        }
+        gifter.transfer(msg.value);
+    }
+    function withdraw() nonReentrant public 
+    {
+        require(balances[msg.sender] > 0, "err3");
+        uint gift = balances[msg.sender];
+        balances[msg.sender] = 0;
+        payable(msg.sender).transfer(gift);
+    }
+
+
+    //// VIEWS
+    function getIsAuto (address us) public view returns (bool) 
+    {
+        return isAutos[us];
+    }
+    function balanceOf(address acc) public view returns(uint)
+    {
+        return balances[acc];
+    }
+    function getHotel(address us) public view returns (uint,uint8, uint,uint,uint)
+    {
+        return (
+            HotelById[CurrentHotelIdByAddress[us]].id,
+            HotelById[CurrentHotelIdByAddress[us]].IterationCount,
+            HotelById[CurrentHotelIdByAddress[us]].Parent,
+            HotelById[CurrentHotelIdByAddress[us]].Left,
+            HotelById[CurrentHotelIdByAddress[us]].Right);
+    }
+    function getHotelById(uint id) public view returns (uint,uint8, uint,uint,uint)
+    {
+        return (
+            HotelById[id].id,
+            HotelById[id].IterationCount,
+            HotelById[id].Parent,
+            HotelById[id].Left,
+            HotelById[id].Right);
+    }
+    function getLastId () public view returns(uint)
+    {
+        return LastId;
+    }
+    function findHead() public view returns (uint)
+    {
+       uint id = LastId;
+       uint levelStep = 0;
+       while (levelStep < 3 && id != 1)
+       {
+           id = HotelById[id].Parent;
+           levelStep++;
+       }
+       return id;
+    }
+    function getCount(uint id) public view returns(uint)
+    {
+        uint currentStep = ((id - 1) / step);
+        currentStep = currentStep > 6 ? 6 : currentStep;
+        return rewards[currentStep];
+    }
+    function getPool() public view returns(address)
+    {
+        return address(pool);
+    }
+
+
+    //// PRIVATE
+    function buyNewHotel(address user) internal 
+    {
+        PrimaryDistribution(user);
+        uint curId = LastId; 
+        createNewHotel(user); 
+        Hotel memory head = HotelById[findHead()];
+        HeadDistribution(head.Renter, RewardByType[1], RewardByType[2]);
+
+        uint left = head.Left;
+        uint right = head.Right;
+        uint leftChild1 = HotelById[left].Left;                                        
+        uint leftChild2 = HotelById[left].Right;
+        uint rightChild1 = HotelById[right].Left;
+        uint rightChild2 = HotelById[right].Right; 
+        if (curId< 7)
+        {
+            leftChild1 = 1;                                        
+            leftChild2 = 1;
+            rightChild1 = 1;
+            rightChild2 = 1; 
+            if (curId < 3)
+            {
+                left = 1;
+                right = 1;
+            }
+        }   
+        Distribution(HotelById[left].Renter, RewardByType[3], RewardByType[4]);
+        Distribution(HotelById[right].Renter, RewardByType[3], RewardByType[4]);
+        Distribution(HotelById[leftChild1].Renter, RewardByType[5], RewardByType[6]); 
+        Distribution(HotelById[leftChild2].Renter, RewardByType[5], RewardByType[6]);
+        Distribution(HotelById[rightChild1].Renter, RewardByType[5], RewardByType[6]);
+        Distribution(HotelById[rightChild2].Renter, RewardByType[5], RewardByType[6]);
+        if (curId >= 7)
+        {
+            HotelById[head.id].IterationCount--; 
+        }
+               
+    }
+    function createNewHotel(address renter) internal
+    {
+        uint parentId = (LastId/2)+(LastId%2);
+        LastId++;
+        HotelById[LastId].id = LastId;
+        HotelById[LastId].Renter = renter;
+        HotelById[LastId].Parent = parentId;
+        HotelById[LastId].IterationCount = 8;
+        HotelById[parentId].Left == 0 ? HotelById[parentId].Left = LastId : HotelById[parentId].Right = LastId; 
+        CurrentHotelIdByAddress[renter] = LastId;
+        emit onBuyHotel(LastId, renter);
+    }
+    function ReferalReward(uint userId, uint amount) internal 
+    {
+        uint refId = userStorage.getReferalId(userId);
+        for (uint8 lvl = 0; lvl <refPercent.length; lvl++)
+        {
+           uint reward = amount * refPercent[lvl]/100;
+           address refAdr = userStorage.getAddressById(refId);
+           payable(refAdr).transfer(reward);
+           emit onReferalReward(refId, reward);
+           refId = userStorage.getReferalId(refId);
+        }
+    }
+    function Distribution(address renter, uint reward, uint stack) internal 
+    {
+        uint recipientId = userStorage.getUserId(renter);
+        stacking.stackBy{value : stack}(renter);
+        balances[renter] += reward;
+        emit onGifting(recipientId, reward);
+    }
+    function HeadDistribution(address renter, uint reward, uint stack) internal
+    {
+        uint recipientId = userStorage.getUserId(renter);
+        uint refId = userStorage.getReferalId(recipientId);
+        address refAddress = userStorage.getAddressById(refId);
+        uint refReward = (reward * 15) /100;
+        payable(refAddress).transfer(refReward);
+        reward -= refReward;
+        emit onReferalReward(refId, refReward);
+        stacking.stackBy{value : stack}(renter);
+        balances[renter] += reward;
+        emit onGifting(recipientId, reward);
+    }
+    function PrimaryDistribution (address user) internal 
+    {
+        lotery.transfer(RewardByType[8]);          
+        gifter.transfer(RewardByType[7]);  
+        pool.addAddress{value: RewardByType[9]}(user);     
+        ReferalReward(userStorage.getUserId(user), priceByLvl);
+        controller.gift(msg.sender, getCount(LastId));
+    }
+}
+
+// File: contracts/storages/Pool.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+import "../interfaces/IPool.sol";
+
+
+contract Pool is IPool 
+{
+    address payable private charity;
+    uint private lastBuyTime;
+    address[] private lastUsers;
+    uint private balanceOf;
+    address private owner;
+    modifier onlyOwner ()
+    {
+        require(msg.sender == owner, "ony owner");
+        _;
+    }
+    constructor(address payable _ch)
+    {
+        charity = _ch;
+        owner = msg.sender;
+    }
+    
+    function addAddress(address acc) onlyOwner payable public returns(bool)
+    {
+        if (lastBuyTime + 14400 < block.timestamp && lastBuyTime != 0 )
+        {
+            _send();
+        }
+        lastBuyTime = block.timestamp;
+        balanceOf += msg.value;
+        if (lastUsers.length < 3)
+        {
+           lastUsers.push(acc);
+        }
+        else 
+        {
+            lastUsers[0] = lastUsers[1];
+            lastUsers[1] = lastUsers[2];
+            lastUsers[2] = acc;
+        }
+        return true;
+    }
+    
+
+
+    function getLastBuyTime() public view returns (uint)
+    {
+        return lastBuyTime;
+    }
+    function balance() public view returns(uint)
+    {
+        return balanceOf;
+    }
+    function getLastAddress() public view returns (address[] memory)
+    {
+        return lastUsers;
+    }
+    function _send () private 
+    {
+        uint mainBalance = balanceOf;
+        uint clRew = mainBalance * 10 / 100;
+        mainBalance -= clRew;
+        uint reward1 = mainBalance * 50 /100;
+        uint reward2 = mainBalance * 30 /100;
+        uint reward3 = mainBalance * 20 /100; 
+        if (lastUsers.length == 3)
+        {
+            payable(lastUsers[2]).transfer(reward1);
+            payable(lastUsers[1]).transfer(reward2);
+            payable(lastUsers[0]).transfer(reward3);
+            
+        }
+        if (lastUsers.length == 2)
+        {
+            payable(lastUsers[1]).transfer(reward1);
+            payable(lastUsers[0]).transfer(reward2);
+            clRew += reward3;
+        }
+        if (lastUsers.length == 1) 
+        {
+            payable(lastUsers[0]).transfer(reward1);
+            clRew += (reward3 + reward2);
+        }
+        charity.transfer(clRew);
+        delete lastUsers;
+        balanceOf = 0;
+    }
+}
+
+// File: contracts/interfaces/IGifter.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IGifter {
+    function gift (address to, uint amount) external returns(bool);
+}
+
+// File: contracts/interfaces/IUserStorage.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IUserStorage
+{   
+    function isUserExistById(uint id) external view returns(bool);
+    function isUserExistByAddress(address us) external view returns(bool);
+    function getUserId (address us) external view returns(uint);
+    function getReferalId (uint id ) external view returns (uint);
+    function getAddressById (uint id) external view returns (address);
+    function register (uint ref) external returns(bool);
+}
+
+// File: contracts/interfaces/IStacking.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IStacking
+{
+
+    function stackBy(address stacker) external payable returns(bool);
+    function stack() external payable returns(bool);
+    function claim() external ;
+    function reinvest() external;
+    function getProfit(address us) external view returns(uint);
+    function getStack(address us) external view returns (uint);
+    function getMax(address us) external view returns(uint);
+    function getClaimed(address us) external view returns(uint);
+}
+
+// File: contracts/interfaces/IPool.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IPool 
+{
+    function addAddress(address acc) external payable returns(bool);
+    function getLastBuyTime() external view returns (uint);
+    function balance () external view returns(uint);
+    function getLastAddress () external view returns (address[] memory);
+}

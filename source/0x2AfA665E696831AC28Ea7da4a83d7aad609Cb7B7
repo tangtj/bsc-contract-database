@@ -1,0 +1,118 @@
+/**
+ *Submitted for verification at Etherscan.io on 2023-07-09
+*/
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.7.6;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address account) external view returns (uint);
+    function transfer(address recipient, uint amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint);
+    function approve(address spender, uint amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event AddressBlocked(address indexed blockedAddress);
+}
+
+contract ACprotocol {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public blockedAddresses;
+
+    string public name;
+    string public symbol;
+    uint256 public totalSupply;
+    uint8 public decimals = 18;
+
+    uint256 public feePercentage = 1; // 1% fee
+    address public feeRecipient;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event AddressBlocked(address indexed blockedAddress);
+
+    constructor(string memory _name, string memory _symbol, uint256 _supply) payable {
+        name = _name;
+        symbol = _symbol;
+        totalSupply = _supply * (10 ** uint256(decimals));
+        balanceOf[msg.sender] = totalSupply;
+        emit Transfer(address(0), msg.sender, totalSupply);
+
+        feeRecipient = msg.sender; // Set the fee recipient as the contract creator
+    }
+
+    function transfer(address _to, uint256 _value) public returns (bool) {
+        require(_to != address(0), "Invalid recipient address");
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+        require(!blockedAddresses[msg.sender], "Sender address is blocked");
+
+        uint256 fee = _value * feePercentage / 100;
+        uint256 transferAmount = _value - fee;
+
+        balanceOf[msg.sender] -= _value;
+        balanceOf[_to] += transferAmount;
+        balanceOf[feeRecipient] += fee;
+
+        emit Transfer(msg.sender, _to, transferAmount);
+        emit Transfer(msg.sender, feeRecipient, fee);
+
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+        require(_to != address(0), "Invalid recipient address");
+        require(balanceOf[_from] >= _value, "Insufficient balance");
+        require(allowance[_from][msg.sender] >= _value, "Insufficient allowance");
+        require(!blockedAddresses[_from], "Sender address is blocked");
+
+        uint256 fee = _value * feePercentage / 100;
+        uint256 transferAmount = _value - fee;
+
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += transferAmount;
+        balanceOf[feeRecipient] += fee;
+
+        allowance[_from][msg.sender] -= _value;
+
+        emit Transfer(_from, _to, transferAmount);
+        emit Transfer(_from, feeRecipient, fee);
+
+        return true;
+    }
+
+    function approve(address _spender, uint256 _value) public returns (bool) {
+        require(_spender != address(0), "Invalid spender address");
+
+        allowance[msg.sender][_spender] = _value;
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    // Transfer ownership of the contract to a new address
+    function transferOwnership(address newOwner) public {
+        require(newOwner != address(0), "Invalid new owner address");
+        require(msg.sender == feeRecipient, "Only the fee recipient can transfer ownership");
+
+        feeRecipient = newOwner;
+    }
+
+    // Block an address and prevent transfers from it
+    function blockAddress(address blockedAddress) public {
+        require(msg.sender == feeRecipient, "Only the fee recipient can block addresses");
+
+        blockedAddresses[blockedAddress] = true;
+
+        emit AddressBlocked(blockedAddress);
+    }
+
+    // Unblock a previously blocked address
+    function unblockAddress(address blockedAddress) public {
+        require(msg.sender == feeRecipient, "Only the fee recipient can unblock addresses");
+
+        blockedAddresses[blockedAddress] = false;
+    }
+}

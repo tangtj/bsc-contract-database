@@ -1,0 +1,424 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.6;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+library TransferHelper {
+    function safeTransfer(
+        address token,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            'TransferHelper::safeTransfer: transfer failed'
+        );
+    }
+
+    function safeTransferFrom(
+        address token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+        require(
+            success && (data.length == 0 || abi.decode(data, (bool))),
+            'TransferHelper::transferFrom: transferFrom failed'
+        );
+    }
+}
+
+interface IUniswapV2Router01 {
+    function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )
+    external
+    returns (
+        uint256 amountA,
+        uint256 amountB,
+        uint256 liquidity
+    );
+
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+}
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+    function totalSupply() external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+}
+
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        _status = _ENTERED;
+
+        _;
+
+        _status = _NOT_ENTERED;
+    }
+}
+
+interface IVisaPull {
+    function getBuyOpAddr() external returns (address);
+}
+
+contract VisaAdmin is Ownable, ReentrancyGuard {
+    address constant private USDTToken = address(0x55d398326f99059fF775485246999027B3197955);
+    address constant private VISAToken = address(0xb0E9D02E3b10Ea1aEDffF203A0F2B794416A54FD);
+    address constant private visaSwapPair = address(0x4398e9415bAb56073936Bc800FB68AC0D7F715F4);
+
+    IUniswapV2Router01 constant private visaV2Router = IUniswapV2Router01(0x4DF006f93700Ed58553e4164121Fa7FD5D2E0c42);
+    IUniswapV2Router01 constant private pancakeV2Router = IUniswapV2Router01(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+
+    address public pullAddr = address(0x03e04f011746F21335C8122C5937D58BE74822Af);  
+    address public receiveRewardAddr = address(0xBDebfF69855F38439630C6eC56dB459716100218); 
+    uint256 public pullPercent = 50; 
+    uint256 public rewardPerTenThousand = 61; 
+    uint256 public lastRewardTime = 0;
+
+    address public constant destroyAddr = address(0x000000000000000000000000000000000000dEaD);
+
+    struct ProductInfo {
+        uint256 pId;            
+        uint8 participateType; 
+        uint256 usdtPercent;  
+        uint256 usdtMinAmt;  
+        uint8 isUse;           
+    }
+    ProductInfo[] public productInfos; 
+
+    struct OrderInfo {
+        address user;     
+        uint256 time;      
+        uint8 participateType;   
+        uint256 usdtAmt;       
+        uint256 visaAmt;      
+        uint256 usdtPercent; 
+    }
+    OrderInfo[] public orderInfos;
+    mapping (address => uint256[]) public orderUserIdx;
+
+    constructor() {
+        IERC20(USDTToken).approve(address(visaV2Router), type(uint256).max);
+        IERC20(VISAToken).approve(address(visaV2Router), type(uint256).max);
+        IERC20(visaSwapPair).approve(address(visaV2Router), type(uint256).max);
+    }
+
+    event AddOrder(address user, uint256 time, uint256 usdtAmt, uint256 visaAmt, uint256 usdtPercent);
+
+   
+    event SellVisa(address user, uint256 time, uint256 visaAmt, uint256 usdtAmt, uint256 usdtInAmt, uint256 usdtOrderAmt, uint256 usdtFeeAmt);
+
+    function sellVisa(uint256 amountIn, uint256 amountOutMin) external nonReentrant {
+        require(_msgSender() == tx.origin, "Can't From Contract");
+
+        uint256 visaAmt = IERC20(VISAToken).balanceOf(address(this));
+        TransferHelper.safeTransferFrom(VISAToken, _msgSender(), address(this), amountIn);
+        visaAmt = IERC20(VISAToken).balanceOf(address(this)) - visaAmt;
+        require(visaAmt + 1e14 >= amountIn, "Visa Amount Error.");
+
+        uint256 usdtAmt = IERC20(USDTToken).balanceOf(address(this));
+		address[] memory path = new address[](2);
+        path[0] = VISAToken;
+        path[1] = USDTToken;
+        visaV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            amountIn - 1e14,  // 1e14 is minBalance
+            amountOutMin,
+            path,
+            address(this),
+            block.timestamp
+        );
+        usdtAmt = IERC20(USDTToken).balanceOf(address(this)) - usdtAmt;
+        
+        TransferHelper.safeTransfer(USDTToken, _msgSender(), usdtAmt * 50 / 100);
+        TransferHelper.safeTransfer(USDTToken, pullAddr, usdtAmt * 5 / 100);
+
+        OrderInfo memory oi = OrderInfo({
+            user: _msgSender(), 
+            time: block.timestamp, 
+            participateType: 1, 
+            usdtAmt:  usdtAmt * 45 / 100,
+            visaAmt: 0,
+            usdtPercent: 100
+        });
+        orderInfos.push(oi);
+        orderUserIdx[_msgSender()].push(orderInfos.length - 1); 
+
+        emit SellVisa(_msgSender(), block.timestamp, amountIn, usdtAmt, usdtAmt * 50 / 100, usdtAmt * 45 / 100, usdtAmt * 5 / 100);
+        emit AddOrder(_msgSender(), block.timestamp, usdtAmt * 45 / 100, 0, 100);
+    }
+
+
+    
+    function addOrder(uint256 _pId, uint256 _usdtAmt, uint256 _visaAmt, uint8 _participateType) external nonReentrant {
+        require(_msgSender() == tx.origin, "Can't From Contract");
+        require(_pId <= productInfos.length, "Product Not Found.");
+
+        ProductInfo memory pi = productInfos[_pId - 1];
+
+        require(pi.isUse == 1, "Product Not In Use.");
+        require(pi.participateType == _participateType, "ParticipateType Error.");
+        require(pi.usdtMinAmt <= _usdtAmt, "USDT AMT Error.");
+
+        if (_participateType == 1) {
+            require(_visaAmt == 0, "VISA AMT Error.");
+        } else {
+            uint256 price = getCurPrice();
+            uint256 needVisaToUsdtAmt = _usdtAmt * (100 - pi.usdtPercent) / pi.usdtPercent;
+            require(price * _visaAmt / 1e18 >= needVisaToUsdtAmt * 99 / 100, "VISA AMT Error.");
+            require(price * _visaAmt / 1e18 <= needVisaToUsdtAmt * 101 / 100, "VISA AMT Error.");
+
+            TransferHelper.safeTransferFrom(VISAToken, _msgSender(), destroyAddr, _visaAmt);
+        }
+        
+        TransferHelper.safeTransferFrom(USDTToken, _msgSender(), pullAddr, _usdtAmt * pullPercent / 100);
+        TransferHelper.safeTransferFrom(USDTToken, _msgSender(), address(this), _usdtAmt * (100 - pullPercent) / 100);
+
+        OrderInfo memory oi = OrderInfo({
+            user: _msgSender(), 
+            time: block.timestamp, 
+            participateType: _participateType, 
+            usdtAmt:  _usdtAmt,
+            visaAmt: _visaAmt,
+            usdtPercent: pi.usdtPercent
+        });
+        orderInfos.push(oi);
+        orderUserIdx[_msgSender()].push(orderInfos.length - 1); 
+
+        emit AddOrder(_msgSender(), block.timestamp, _usdtAmt, _visaAmt, pi.usdtPercent);
+    }
+
+
+    function getOrderInfos(address user) public view returns(OrderInfo[] memory _orderInfos) {
+        uint256[] memory idxs = orderUserIdx[user];
+
+        _orderInfos = new OrderInfo[](idxs.length);
+
+        for(uint256 i = 0; i < idxs.length; i ++) {
+            _orderInfos[i] = orderInfos[idxs[i]];
+        }
+    }
+
+    event AddProduct(uint256 pId);
+    function addProduct(uint8 _participateType, uint256 _usdtPercent, uint256 _usdtMinAmt) public onlyOwner returns(bool) {
+        ProductInfo memory pi = ProductInfo({
+            pId: productInfos.length + 1, 
+            participateType: _participateType, 
+            usdtPercent: _usdtPercent,
+            usdtMinAmt: _usdtMinAmt,
+            isUse: 1
+        });
+        productInfos.push(pi);
+
+        emit AddProduct(pi.pId);
+
+        return true;
+    }
+
+    event StopProduct(uint256 pId);
+    function stopProduct(uint256 _pId) public onlyOwner returns(bool) {
+        ProductInfo storage pi = productInfos[_pId - 1];
+
+        pi.isUse = 2;
+
+        emit StopProduct(_pId);
+
+        return true;
+    }
+
+    event SetPullAddr(address pullAddr);
+    function setPullAddr(address _pullAddr) public onlyOwner returns(bool) {
+        pullAddr = _pullAddr;
+
+        emit SetPullAddr(pullAddr);
+
+        return true;
+    }
+
+    event SetPullPercent(uint256 pullPercent);
+    function setPullPercent(uint256 _pullPercent) public onlyOwner returns(bool) {
+        pullPercent = _pullPercent;
+
+        emit SetPullPercent(pullPercent);
+
+        return true;
+    }
+
+    
+    event SetRewardPerTenThousand(uint256 rewardPerTenThousand);
+    function setRewardPerTenThousand(uint256 _rewardPerTenThousand) public onlyOwner returns(bool) {
+        rewardPerTenThousand = _rewardPerTenThousand;
+
+        emit SetRewardPerTenThousand(rewardPerTenThousand);
+
+        return true;
+    }
+
+    event SetReceiveRewardAddr(address receiveRewardAddr);
+    function setReceiveRewardAddr(address _receiveRewardAddr) public onlyOwner returns(bool) {
+        receiveRewardAddr = _receiveRewardAddr;
+
+        emit SetReceiveRewardAddr(receiveRewardAddr);
+
+        return true;
+    }
+
+    function getProductInfos() public view returns(ProductInfo[] memory _productInfos, address _usdtToken, address _visaToken) {
+        _productInfos = new ProductInfo[](productInfos.length);
+
+        for(uint256 i = 0; i < productInfos.length; i ++) {
+            _productInfos[i] = productInfos[i];
+        }
+
+        return (_productInfos, USDTToken, VISAToken);
+    }
+
+    function getCurPrice() public view returns (uint) {
+        address[] memory path = new address[](2);
+        path[0] = VISAToken;
+        path[1] = USDTToken;
+        uint[] memory amounts = pancakeV2Router.getAmountsOut(1e18, path);
+        return amounts[1] * 1e18 / amounts[0];
+    }
+
+
+    function buyAndAddLiqFromVisaSwap(uint256 _usdtAmt) external returns(bool) {
+        require(IVisaPull(pullAddr).getBuyOpAddr() == msg.sender, "Not Buy Oper.");
+
+		address[] memory path = new address[](2);
+        path[0] = USDTToken;
+        path[1] = VISAToken;
+        visaV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            _usdtAmt / 2,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+
+        visaV2Router.addLiquidity (
+            USDTToken,
+            VISAToken,
+            _usdtAmt / 2,
+            IERC20(VISAToken).balanceOf(address(this)),
+            0, // slippage is unavoidable
+            0, // slippage is unavoidable
+            address(this),
+            block.timestamp
+        );
+
+        return true;
+    }
+
+    event RewardFromVisaSwap(uint256 execTime, uint256 rewardVisaAmt);
+    function rewardFromVisaSwap() external returns(uint256 rewardVisaAmt) {
+        require(IVisaPull(pullAddr).getBuyOpAddr() == msg.sender, "Not Buy Oper.");
+
+        require(lastRewardTime == 0 || block.timestamp >= 1 days + lastRewardTime, "Must exceed one day before execution");
+
+        uint256 lpAmount = IERC20(visaSwapPair).totalSupply() * rewardPerTenThousand / 10000;
+
+        visaV2Router.removeLiquidity(
+            USDTToken, 
+            VISAToken, 
+            lpAmount, 
+            1, 
+            1, 
+            address(this), 
+            block.timestamp
+        );
+
+        rewardVisaAmt = IERC20(VISAToken).balanceOf(address(this));
+
+		TransferHelper.safeTransfer(VISAToken, receiveRewardAddr, rewardVisaAmt);
+
+        lastRewardTime = block.timestamp;
+
+        emit RewardFromVisaSwap(lastRewardTime, rewardVisaAmt);
+    }
+}
