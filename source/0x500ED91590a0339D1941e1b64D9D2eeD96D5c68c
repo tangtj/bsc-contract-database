@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.9;
+
+contract RegistraContract {
+    address public nftContractAddress = 0xC905F638914EaAe6A157CCa89341D888289F47b9;
+    TestetsNFT public nftContract;
+    mapping(address => string) public registrationData;
+    mapping(string => address[]) public registeredAddresses;
+    mapping(string => uint256) public totalNFTsByRegistration;
+
+    constructor() {
+        nftContract = TestetsNFT(nftContractAddress);
+    }
+
+    modifier onlyNftOwners() {
+        require(nftContract.balanceOf(msg.sender) > 0, "Only NFT owners can call this function");
+        _;
+    }
+
+    function registra(string memory id) public onlyNftOwners {
+        address sender = msg.sender;
+        string memory previousId = registrationData[sender];
+
+        if (keccak256(bytes(previousId)) != keccak256(bytes(id))) {
+            // Rimuovi l'indirizzo dall'array delle registrazioni precedenti
+            if (bytes(previousId).length > 0) {
+                removeAddress(previousId, sender);
+                totalNFTsByRegistration[previousId] -= nftContract.balanceOf(sender);
+            }
+
+            // Aggiungi l'indirizzo all'array delle nuove registrazioni
+            registrationData[sender] = id;
+            registeredAddresses[id].push(sender);
+            totalNFTsByRegistration[id] += nftContract.balanceOf(sender);
+        }
+    }
+
+    function removeAddress(string memory id, address addr) private {
+        address[] storage addresses = registeredAddresses[id];
+        for (uint256 i = 0; i < addresses.length; i++) {
+            if (addresses[i] == addr) {
+                addresses[i] = addresses[addresses.length - 1];
+                addresses.pop();
+                break;
+            }
+        }
+    }
+
+    function getOwnedNFTCount(address owner) public view returns (uint256) {
+        return nftContract.balanceOf(owner);
+    }
+
+    function getAddressesByRegistration(string memory id) public view returns (address[] memory) {
+        return registeredAddresses[id];
+    }
+
+    function getTotalNFTsByRegistration(string memory id) public view returns (uint256) {
+        return totalNFTsByRegistration[id];
+    }
+}
+
+interface TestetsNFT {
+    function balanceOf(address owner) external view returns (uint256);
+}

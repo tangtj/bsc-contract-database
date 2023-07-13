@@ -1,0 +1,696 @@
+/**
+ *Submitted for verification at BscScan.com on 2023-07-10
+*/
+
+// pragma solidity ^0.8.7;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256 supply);
+
+    function balanceOf(address _owner) external view returns (uint256 balance);
+
+    function transfer(address _to, uint256 _value)
+        external
+        returns (bool success);
+
+    function transferFrom(
+        address _from,
+        address _to,
+        uint256 _value
+    ) external returns (bool success);
+
+    function approve(address _spender, uint256 _value)
+        external
+        returns (bool success);
+
+    function allowance(address _owner, address _spender)
+        external
+        view
+        returns (uint256 remaining);
+
+    function decimals() external view returns (uint256 digits);
+
+    event Approval(
+        address indexed _owner,
+        address indexed _spender,
+        uint256 _value
+    );
+}
+
+interface MLIFE{
+
+
+//  function registrationFor(address userAddress, address referrerAddress) external ;
+   function isUserExists(address useraddress) external returns (bool);
+   
+   function users(address addr) external returns(uint id,address referrer,uint partnersCount,uint workingIncome,uint nonWorkingIncome);
+
+  
+}
+
+contract daiExchange  {
+
+    uint256[] arrayOfPercent = [200, 250,250, 300, 300, 300, 300, 300,300,350,350];
+    uint256[]  percentForFixStaking = [300,300,300,300,300,300,350,350];
+
+    uint256[] refIncomePercent = [500,100,50,50,50,50,50,50,25,25,25,25];
+    uint256[] refIncomePercentOfFixStaking = [1000,200,100,100,100,100,100,100,50,50,50,50];
+
+   
+
+    uint256 oneYearInSeconds = 31536000 ; //31536000;
+    uint256 public OneMlgCoinRespectTodollar = 400  ;// 1000
+    uint256 public mlgStakingReturn = 300;
+    address public owner;
+    address public operator;
+    uint256 public OneMlgSpecialPriceAccordingToOwner =1600; // 1000; 
+    bool public  isDayByDayStakingAndClaimEnable =true;
+    bool public  isMLGstakingAndClaimEnable = true;
+    bool public  isFixedstakingAndClaimEnable = true;
+    IERC20 public DAI;
+    MLIFE public LIFE; 
+    IERC20 public MLG;
+    // uint256 public changePercentOFWithdraw;
+     
+
+    struct userDetail {
+    
+        uint256 monthlytokenGetByadmin;
+        uint256 tokenClaimedGivenByadmin;
+        uint256 TimeOftokenRecived;
+        uint256 LastTimetokenClaimedAt;
+        bool   isAdminSentToken;
+        uint256 referalIncome;
+        uint256 directRewardSendedByAdmin;
+        uint256 lastTimeMlgSell;
+        uint256 totalMlgSell;
+        uint256 DaiRecivedLastSell;
+        uint256 smartReferalIncome;
+
+    }
+        
+
+    struct userExchangeDetail {
+        uint256 DaiStaked;
+        uint256 RecivedMLGPoint;
+        uint256 timeStakedFor;
+        uint256 returnPercent;
+        uint256 stakedTime;
+        uint256 endTime;
+        uint256 userLastTimeClaimed;
+        
+    }
+
+    struct userFixStakingDetail{
+        uint256 daiStaked;
+        uint256 NumberOfrecivingMlg;
+        uint256 timeOfStaking;
+        uint256 EndTime;
+        uint256 userLastTimeClaimed;
+        uint256 returnPercent;
+        bool isclaim;
+        
+    }
+    struct userMlgStakingDetail{
+        uint256 amountStaked;
+        uint256 TimeOfStaking;
+        uint256 stakedForTime;
+        uint256 stakingPercent;
+        uint256 userLastTimeClaimed;
+
+
+    }
+
+    mapping(uint256 => address) public idToUser;
+    mapping(address => userDetail) public UserDetail;
+    mapping(address => userExchangeDetail[]) public UserExchangeDetail;
+    mapping(address => userFixStakingDetail[]) public UserFixStakingDetail;
+    mapping(address => userMlgStakingDetail[]) public UserMlgStakingDetail;
+    mapping(uint256 => uint256) public returnStakePercent;
+    mapping(uint256 => uint256) public returnStakePercentForFixStaking;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner,"not Owner");
+        _;
+    }
+      modifier onlyOperator() {
+        require(msg.sender == operator,"not Operator");
+        _;
+    }
+    event DayBydayStakeDetail(address user ,uint256 StakeAmount,uint256 stakeTime ,uint256 percentOfStaking , uint256 timeStakedFor,uint256 RecivedMlgPoint,address referal);
+    event FixStakingDetail(address user ,uint256 StakeAmount,uint256 stakeTime ,uint256 percentOfStaking , uint256 timeStakedFor,uint256 RecivedMlg,address referal);
+    event ownerChange(address oldOwner , address NewOwner  , uint256 timeOfChange);
+    event slotMemberToken(uint256 tokenSent,uint256 time,address slotMemberAddress);
+    event claimedAdminGivenToken(uint256 tokenClaimed , address claimedBy ,uint256 time );
+    event directFundedTokenByAdmin(uint256 amount ,uint256 time,address rewardedUser );
+    event claimedDirectFunded(uint256 amount ,uint256 time,address user );
+    event StakeMlg(uint256 stakedAmount ,uint256 timestakedFor ,uint256 returnAmount ,address user );
+    event claimedDilyReward(uint256 amount ,uint256 time,address user );
+    event claimedFixReward(uint256 amount ,uint256 time,address user );
+    event tokenRescuedFromContract(uint256 tokenRescuedAmount,string tokenType);
+    event claimReferal(address user , uint256 amount ,uint256 time);
+    event smartclaimReferal(address user , uint256 amount ,uint256 time);
+    event claimedMlgStaking(uint256 amount ,uint256 time,address user );
+    event sellMlgByUser(uint256 amountSell ,uint256 daiRecived, uint256 time,address user);
+    event sellMlgByUserSpecialPrice(uint256 amountSell ,uint256 daiRecived, uint256 time,address user);
+    
+    
+
+
+    constructor(address _owner ,address _operator) {
+        owner = _owner;
+        operator = _operator;
+        DAI = IERC20(0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3);
+        LIFE = MLIFE(0x078A3Bd21827Dc9e61CCf414dFFDa1b5FE9B9e47); 
+        MLG = IERC20(0x8439C602BB5bbb82656640Ede66C54c1AE45cb2e);
+       
+      
+      
+
+        returnStakePercent[0] = 100000000000000000000;
+        returnStakePercent[1] = 200000000000000000000;
+        returnStakePercent[2] = 300000000000000000000;
+        returnStakePercent[3] = 500000000000000000000;
+        returnStakePercent[4] = 600000000000000000000;
+        returnStakePercent[5] = 1000000000000000000000;
+        returnStakePercent[6] = 3000000000000000000000;
+        returnStakePercent[7] = 5000000000000000000000;
+        returnStakePercent[8] = 10000000000000000000000;
+        returnStakePercent[9] = 15000000000000000000000;
+        returnStakePercent[10] = 30000000000000000000000;
+      
+
+        returnStakePercentForFixStaking[0] = 100000000000000000000;
+        returnStakePercentForFixStaking[1] = 200000000000000000000;
+        returnStakePercentForFixStaking[2] = 500000000000000000000;
+        returnStakePercentForFixStaking[3] = 1000000000000000000000;
+        returnStakePercentForFixStaking[4] = 5000000000000000000000;
+        returnStakePercentForFixStaking[5] = 6000000000000000000000;
+        returnStakePercentForFixStaking[6] = 10000000000000000000000;
+        returnStakePercentForFixStaking[7] = 15000000000000000000000;
+
+       
+    }
+    
+    function stopAndStartDayByDayStakingAndClaim(bool res) public onlyOwner{
+        isDayByDayStakingAndClaimEnable =res;
+    } 
+    function stopAndStartFixedStakingAndClaim(bool res) public onlyOwner{
+        isFixedstakingAndClaimEnable =res;
+    } 
+    function stopAndStartMlgStakingAndClaim(bool res) public onlyOwner{
+        isMLGstakingAndClaimEnable =res;
+    } 
+    // function registerUser(address userAddress,address referrerAddress) public {
+    //     require(!LIFE.isUserExists(userAddress), "user exists");
+    //     require(LIFE.isUserExists(referrerAddress), "referrer not exists");
+    //     LIFE.registrationFor(userAddress,referrerAddress);
+    // }
+
+    function changePercentF(uint256 index,uint256 per) public  onlyOwner(){
+
+        percentForFixStaking[index]= per;
+
+
+    }
+     function changePercentS(uint256 index,uint256 per) public  onlyOwner(){
+    
+         arrayOfPercent[index]= per;
+    
+    }
+    
+    function IsUserInvestedInSmart(address userAdr) public view returns(bool){
+        bool returnValue = false;
+            if( UserExchangeDetail[userAdr].length > 0){
+         for (uint8 i = 0; i < UserExchangeDetail[userAdr].length; i++) {
+
+                if(UserExchangeDetail[userAdr][i].DaiStaked > 0)
+                {
+                    returnValue = true;
+                }
+         }
+         return returnValue;
+         }
+    }
+
+       function IsUserInvestedInFix(address userAdr) public view returns(bool){
+        bool returnValue =false;
+           if( UserFixStakingDetail[userAdr].length > 0){
+           for (uint8 i = 0; i < UserFixStakingDetail[userAdr].length; i++){
+                if(UserFixStakingDetail[userAdr][i].daiStaked > 0)
+                {
+                    returnValue = true;
+                }
+         }
+         return returnValue;
+           }
+
+    }
+
+    function returnPercent(uint256 amount) public view returns (uint256) {
+        uint256 prcnt;
+        for (uint256 i = 0; i <= 10; i++) {
+            if (amount == returnStakePercent[i]) {
+                prcnt = arrayOfPercent[i];
+                break;
+            }
+        }
+
+        return prcnt;
+    }
+    function returnPercentOfFixStaking(uint256 amount) public view returns (uint256) {
+        uint256 prcnt;
+        for (uint256 i = 0; i <= 7; i++) {
+            if (amount == returnStakePercentForFixStaking[i]) {
+                prcnt = percentForFixStaking[i];
+                break;
+            }
+        }
+
+
+        return prcnt;
+    }
+
+    function stakeDaiAndGetMlgCoinDayByDay(uint256 stakeAmount, address referal ) public {
+        require(isDayByDayStakingAndClaimEnable == true ,"Staking Not Active");
+        require(
+            stakeAmount >= 100000000000000000000,
+            "INVALID STAKING AMOUNT || AMOUNT MUST BE GREATER THAN 99 DAI"
+        );
+        require(LIFE.isUserExists(msg.sender), "user Not Registerd");
+        require(LIFE.isUserExists(referal), "referrer not exists");
+        uint256 prct = returnPercent(stakeAmount);
+       
+        
+        DAI.transferFrom(msg.sender,address(this),stakeAmount);
+        UserExchangeDetail[msg.sender].push(
+            userExchangeDetail(
+                stakeAmount,
+                stakeAmount,
+                51840000,//51840000,
+                prct,
+                block.timestamp,
+                block.timestamp + 51840000,//51840000,
+                block.timestamp
+            )
+        );
+         
+            address _referrer;
+
+            (, _referrer,,,) = LIFE.users(msg.sender);
+
+            for (uint8 i = 0; i < 12; i++) {
+                if (_referrer != address(0)) {
+                    bool refSmart = IsUserInvestedInSmart(_referrer);
+                    bool refFix = IsUserInvestedInFix(_referrer);
+                    if(refSmart == true || refFix ==  true){
+                     UserDetail[_referrer].smartReferalIncome += ((refIncomePercent[i] * stakeAmount) / 100) / 100;
+                    }
+                    (, _referrer,,,) = LIFE.users(_referrer);
+                    if (_referrer == address(0))
+                    break;
+                }
+            }
+
+         emit DayBydayStakeDetail(msg.sender,stakeAmount,block.timestamp,prct,51840000,stakeAmount,referal);
+
+    }
+
+    function calculateRoi(address useraddress) public view returns (uint256) {
+        uint256 returnAmount;
+
+        for (uint8 i = 0; i < UserExchangeDetail[useraddress].length; i++) {
+            if (UserExchangeDetail[useraddress][i].RecivedMLGPoint != 0) {
+                if (
+                    UserExchangeDetail[useraddress][i].stakedTime +UserExchangeDetail[useraddress][i].timeStakedFor >= block.timestamp
+                ) {
+                    uint256 time = block.timestamp - UserExchangeDetail[useraddress][i].userLastTimeClaimed;
+                    uint256 perSecPercent = ((UserExchangeDetail[useraddress][i].RecivedMLGPoint * UserExchangeDetail[useraddress][i].returnPercent) /100) / UserExchangeDetail[useraddress][i].timeStakedFor;
+                    returnAmount += time * perSecPercent;
+                } else if (
+                    UserExchangeDetail[useraddress][i].stakedTime +
+                        UserExchangeDetail[useraddress][i].timeStakedFor <
+                    block.timestamp
+                ) {
+                    uint256 time = UserExchangeDetail[useraddress][i].timeStakedFor +
+                        UserExchangeDetail[useraddress][i].stakedTime;
+                    if (
+                        time >
+                        UserExchangeDetail[useraddress][i].userLastTimeClaimed
+                    ) {
+                        time =
+                            time -
+                            UserExchangeDetail[useraddress][i]
+                                .userLastTimeClaimed;
+                    } else {
+                        time = 0;
+                    }
+
+                    uint256 perSecPercent = ((UserExchangeDetail[useraddress][i]
+                        .RecivedMLGPoint *
+                        UserExchangeDetail[useraddress][i].returnPercent) /
+                        100) / UserExchangeDetail[useraddress][i].timeStakedFor;
+                    returnAmount += time * perSecPercent;
+                }
+            }
+        }
+        return  returnAmount;
+    }
+
+    function stakeDaiForFixedDay(uint256 stakeAmount ,address referal ) public {
+
+         require(isFixedstakingAndClaimEnable == true ,"Staking Not Active");
+         require(stakeAmount >= 100000000000000000000, "INVALID STAKING AMOUNT || AMOUNT MUST BE GREATER THAN 99 DAI" );
+         require(LIFE.isUserExists(msg.sender), "user Not Registerd");
+         require(LIFE.isUserExists(referal), "referrer not exists");
+
+            uint256 stake = (stakeAmount*1e18)/((OneMlgCoinRespectTodollar*1e18)/1000);
+          uint256 prct = returnPercentOfFixStaking(stakeAmount);
+     
+        uint256 returnCoin = (stake*prct)/100;
+         DAI.transferFrom(msg.sender,address(this),stakeAmount);
+          
+              UserFixStakingDetail[msg.sender].push(userFixStakingDetail(
+                stake,
+                returnCoin,
+                block.timestamp,
+                63072000,
+                block.timestamp,
+                returnCoin,
+                false
+                
+            )
+        );
+
+
+            address _referrer;
+
+            (, _referrer,,,) = LIFE.users(msg.sender);
+
+            for (uint8 i = 0; i < 12; i++) {
+            if (_referrer != address(0)) {
+                 bool refSmart = IsUserInvestedInSmart(_referrer);
+                bool refFix = IsUserInvestedInFix(_referrer);
+                if(refSmart == true || refFix ==  true){
+                UserDetail[_referrer].referalIncome += ((refIncomePercentOfFixStaking[i] * stake) / 100) / 100;
+                }
+                (, _referrer,,,) = LIFE.users(_referrer);
+                if (_referrer == address(0))
+                break;
+             }
+            }
+
+         emit FixStakingDetail(msg.sender,stake,block.timestamp,prct,63072000,returnCoin,referal);   
+      
+
+    }
+
+    function calculateFixStakingAmount(address useraddress) public view returns(uint256,uint256){
+
+        uint256 returnAmount;
+
+        for (uint8 i = 0; i < UserFixStakingDetail[useraddress].length; i++) {
+              
+            if (UserFixStakingDetail[useraddress][i].isclaim != true){
+               
+                 if (UserFixStakingDetail[useraddress][i].EndTime  + UserFixStakingDetail[useraddress][i].timeOfStaking  <= block.timestamp ) {
+                       returnAmount += UserFixStakingDetail[useraddress][i].NumberOfrecivingMlg;
+                        return (returnAmount,i);
+                  }
+            
+               }
+        }
+    }
+ 
+    
+    function changeOwnerAddress(address _ownerAddress) public onlyOwner { 
+        owner = _ownerAddress;
+        emit ownerChange(msg.sender, _ownerAddress,block.timestamp);
+    } 
+     function changeOperatorAddress(address _opAddress) public onlyOwner { 
+        operator = _opAddress;
+       
+    }
+
+    function withdrawl(uint256 ammt) public onlyOwner {
+        require(address(this).balance >= ammt, "insufficient contract balance");
+        payable(msg.sender).transfer(ammt);
+
+    }
+
+    function sendtokentoSlotmember(uint256 amount , address slotMemberAddress) public onlyOwner { 
+        require(amount > 0 ,"Invalid Amount" );
+        require(UserDetail[slotMemberAddress].isAdminSentToken != true,"Already Sended!! ");
+        UserDetail[slotMemberAddress].monthlytokenGetByadmin  += amount;
+        UserDetail[slotMemberAddress].TimeOftokenRecived =block.timestamp;
+        UserDetail[slotMemberAddress].LastTimetokenClaimedAt = block.timestamp;
+        UserDetail[slotMemberAddress].isAdminSentToken = true;
+        emit slotMemberToken(amount, block.timestamp ,slotMemberAddress);
+
+    }
+
+    function calculateSlotMemeberToken(address useraddress )public view returns(uint256) {
+
+            uint256 returnAmount;
+
+                if (UserDetail[useraddress].monthlytokenGetByadmin != 0) {
+                
+                if (UserDetail[useraddress].TimeOftokenRecived + oneYearInSeconds >= block.timestamp){
+                
+                    uint256 time = block.timestamp - UserDetail[useraddress].LastTimetokenClaimedAt;
+
+                uint256 perSecPercent = ((UserDetail[useraddress].monthlytokenGetByadmin) / oneYearInSeconds);
+                returnAmount += time * perSecPercent;
+                }
+
+                else if(UserDetail[useraddress].TimeOftokenRecived + oneYearInSeconds < block.timestamp){
+
+                        uint256 time = oneYearInSeconds + UserDetail[useraddress].TimeOftokenRecived;
+                    if ( time > UserDetail[useraddress].LastTimetokenClaimedAt ) {
+                        time = time - UserDetail[useraddress].LastTimetokenClaimedAt;
+                    } else {
+                        time = 0;
+                    }
+
+                uint256 perSecPercent =((UserDetail[useraddress].monthlytokenGetByadmin) / oneYearInSeconds);
+                returnAmount += time * perSecPercent;
+
+                }
+                
+                }
+                return  returnAmount;
+
+
+    }
+    function claimTokenGivenByAdmin()public {
+
+            require(UserDetail[msg.sender].monthlytokenGetByadmin !=0 ,"Balance : 00 ");
+            uint256 tokenCredited =  calculateSlotMemeberToken(msg.sender);
+            MLG.transfer(msg.sender,tokenCredited);
+            UserDetail[msg.sender].tokenClaimedGivenByadmin = tokenCredited;
+            UserDetail[msg.sender].LastTimetokenClaimedAt=block.timestamp;
+            emit claimedAdminGivenToken(tokenCredited,msg.sender,block.timestamp);
+          
+        
+
+
+    }   
+    function sendTokenToUserByAdminWithoutStake( address addressOfUser , uint256 amountToTransfer) public onlyOwner {
+        require(amountToTransfer > 0 ,"Invalid Amount");
+        UserDetail[addressOfUser].directRewardSendedByAdmin += amountToTransfer;
+        emit directFundedTokenByAdmin(amountToTransfer,block.timestamp,msg.sender);
+    }
+    function claimDirectFundedTokenByAdmin()public {
+        require(UserDetail[msg.sender].directRewardSendedByAdmin >0 ,"Balance Zero ");
+        MLG.transfer(msg.sender,UserDetail[msg.sender].directRewardSendedByAdmin);
+        emit claimedDirectFunded(UserDetail[msg.sender].directRewardSendedByAdmin,block.timestamp,msg.sender);
+        UserDetail[msg.sender].directRewardSendedByAdmin =0;  
+
+    }
+    
+    function StakeMlgCoin(uint256 mlgAmount) public {
+      require(isMLGstakingAndClaimEnable == true ,"Staking Not Active");
+      MLG.transferFrom(msg.sender,address(this),mlgAmount);
+      UserMlgStakingDetail[msg.sender].push(userMlgStakingDetail(mlgAmount,block.timestamp,63072000,mlgStakingReturn,block.timestamp)) ;
+      emit StakeMlg(mlgAmount,63072000 ,mlgStakingReturn,msg.sender);
+              
+    }
+
+
+
+
+    function calculateRoiOfMlgStaked(address useraddress ) public view returns(uint256){
+     
+     uint256 returnAmount;
+     for (uint8 i = 0; i < UserMlgStakingDetail[useraddress].length; i++) {
+       
+                if ( UserMlgStakingDetail[useraddress][i].TimeOfStaking +UserMlgStakingDetail[useraddress][i].stakedForTime >= block.timestamp){
+                     uint256 time = block.timestamp - UserMlgStakingDetail[useraddress][i].userLastTimeClaimed;
+                     uint256 perSecPercent = ((UserMlgStakingDetail[useraddress][i].amountStaked * UserMlgStakingDetail[useraddress][i].stakingPercent) /100) / UserMlgStakingDetail[useraddress][i].stakedForTime;
+                     returnAmount += time * perSecPercent;
+                }
+
+                 else if (UserMlgStakingDetail[useraddress][i].TimeOfStaking + UserMlgStakingDetail[useraddress][i].stakedForTime < block.timestamp ) {
+                      uint256 time = UserMlgStakingDetail[useraddress][i].stakedForTime +   UserMlgStakingDetail[useraddress][i].TimeOfStaking;
+                    if ( time > UserMlgStakingDetail[useraddress][i].userLastTimeClaimed) {
+                        time = time - UserMlgStakingDetail[useraddress][i].userLastTimeClaimed;
+                    } else {
+                        time = 0;
+                    }
+                      uint256 perSecPercent = ((UserMlgStakingDetail[useraddress][i].amountStaked *UserMlgStakingDetail[useraddress][i].stakingPercent) /100) / UserMlgStakingDetail[useraddress][i].stakedForTime;
+                       returnAmount += time * perSecPercent;
+                 }
+
+           }
+         
+
+      return  returnAmount;
+    }
+
+    // function claimDailyStakingReward() public {
+
+    //     require(isDayByDayStakingAndClaimEnable == true ,"currently InActive");
+    //     uint256 availableAMouint  =calculateRoi(msg.sender);
+    //     availableAMouint = (availableAMouint*1e18)/((OneMlgCoinRespectTodollar*1e18)/1000);
+    //         MLG.transfer(msg.sender, (availableAMouint));
+    //         emit claimedDilyReward(availableAMouint,block.timestamp,msg.sender);
+    //         for(uint8 i=0; i < UserExchangeDetail[msg.sender].length; i++){
+    //           UserExchangeDetail[msg.sender][i].userLastTimeClaimed = block.timestamp;
+    //         } 
+
+    // }     
+
+
+    function UpdateUserTimeStamp (address userAddr) public onlyOperator {
+
+        for(uint8 i=0; i < UserExchangeDetail[userAddr].length; i++){
+            UserExchangeDetail[userAddr][i].userLastTimeClaimed = block.timestamp;
+        } 
+
+    }
+
+
+    function claimFixStakingReward() public {
+        require(isFixedstakingAndClaimEnable == true ,"currently InActive");
+           ( uint256 availableAMouint,uint256 i)  = calculateFixStakingAmount(msg.sender);
+            MLG.transfer(msg.sender, (availableAMouint));
+             emit claimedFixReward(availableAMouint,block.timestamp,msg.sender);
+              UserFixStakingDetail[msg.sender][i].userLastTimeClaimed = block.timestamp;
+              UserFixStakingDetail[msg.sender][i].isclaim = true;
+              UserFixStakingDetail[msg.sender][i].NumberOfrecivingMlg = 0;
+
+            
+
+    }
+    function rescueDaiToken(uint256 amt) public onlyOwner{
+        require(amt >0,"invalid Amount");
+        DAI.transfer(owner,amt);
+       emit tokenRescuedFromContract(amt, "DAI");
+    } 
+    
+    function rescueMLGToken(uint256 amt) public onlyOwner{
+        require(amt >0,"invalid Amount");
+        MLG.transfer(owner,amt);
+       emit tokenRescuedFromContract(amt, "MLG");
+
+    }  
+
+    function claimFixReferalIncome()public{
+     require(UserDetail[msg.sender].referalIncome !=0,"Balance 0");
+     MLG.transfer(msg.sender,UserDetail[msg.sender].referalIncome);
+     emit claimReferal(msg.sender,UserDetail[msg.sender].referalIncome,block.timestamp);
+     UserDetail[msg.sender].referalIncome =0;
+
+    }
+     function claimSmartReferalIncome()public{
+     require(UserDetail[msg.sender].smartReferalIncome !=0,"Balance 0");
+     uint256 toTransfer = (UserDetail[msg.sender].smartReferalIncome*1e18)/((OneMlgCoinRespectTodollar*1e18)/1000);
+     MLG.transfer(msg.sender,toTransfer);
+     emit smartclaimReferal(msg.sender,toTransfer,block.timestamp);
+     UserDetail[msg.sender].smartReferalIncome =0;
+
+    }
+
+    function claimMlgStakingReward() public {
+        require(isMLGstakingAndClaimEnable == true ,"currently InActive");
+        uint256 availableAMouint  =calculateRoiOfMlgStaked(msg.sender);
+            MLG.transfer(msg.sender, (availableAMouint));
+            emit claimedMlgStaking(availableAMouint,block.timestamp,msg.sender);
+            for(uint8 i=0; i < UserMlgStakingDetail[msg.sender].length; i++){
+              UserMlgStakingDetail[msg.sender][i].userLastTimeClaimed = block.timestamp;
+            } 
+
+    }     
+    
+    function changePercentOfMlgStaking(uint256 amount) public onlyOwner{
+        require(amount > 0,"Invalid Amount");
+        mlgStakingReturn = amount;
+    }    
+    function changeMlgPrice(uint256 amount) public onlyOwner{
+        require(amount > 0,"Invalid Amount");
+        OneMlgCoinRespectTodollar = amount;
+      
+    }
+       function changeSpecialMlgPrice(uint256 amount) public onlyOwner{
+        require(amount > 0,"Invalid Amount");
+        OneMlgSpecialPriceAccordingToOwner = amount;
+      
+    }
+    
+
+    function getLength(address userAdr) public view returns (uint256 ,uint256,uint256 ) {
+        return (UserExchangeDetail[userAdr].length , UserFixStakingDetail[userAdr].length, UserMlgStakingDetail[userAdr].length);
+    }
+
+    function sellMlgCoinGetDai(uint256 amount) public {
+      require(amount>0,"Invalid Amount");
+      MLG.transferFrom(msg.sender,address(this),amount);
+      uint256 daiRecived = (OneMlgCoinRespectTodollar*amount)/1000;
+      DAI.transfer(msg.sender,daiRecived);
+      UserDetail[msg.sender].lastTimeMlgSell= amount;
+      UserDetail[msg.sender].DaiRecivedLastSell= daiRecived;
+      emit sellMlgByUser(amount,daiRecived,block.timestamp,msg.sender);
+    }
+    function selltokenAccordingToAdmin(uint256 amount) public {
+        require(UserDetail[msg.sender].monthlytokenGetByadmin >=  UserDetail[msg.sender].totalMlgSell ," maximum Selling amount Reached  Try Normal Selling" );
+        require(amount>0,"Invalid Amount");
+        require(UserDetail[msg.sender].isAdminSentToken ==  true ,"Invalid User , Not Eligible For This Selling Try AnotherOne");
+        MLG.transferFrom(msg.sender,address(this),amount);
+        UserDetail[msg.sender].totalMlgSell += amount;
+        uint256 daiRecived = (OneMlgSpecialPriceAccordingToOwner*amount)/1000;
+        DAI.transfer(msg.sender,daiRecived);
+        emit sellMlgByUserSpecialPrice(amount ,daiRecived,block.timestamp,msg.sender);
+    }
+
+    function topUpIdByAdmin (uint256 amount , address UserAddress) public onlyOwner{
+        require(amount >0 ,"Invalid Amount");
+        require(LIFE.isUserExists(UserAddress), "user Not Registerd");
+        bool res;
+         for (uint256 i = 0; i <= 10; i++) {
+            if (amount == returnStakePercent[i]) {
+                res = true;
+                break;
+            }
+        }
+        require(res == true,"Invalid Amount , Please Enter Amount According to the Plan");
+        
+        uint256 prct = returnPercent(amount);
+           UserExchangeDetail[UserAddress].push(
+            userExchangeDetail(
+                amount,
+                amount,
+                51840000, //51840000,
+                prct,
+                block.timestamp,
+                block.timestamp + 51840000,//51840000,
+                block.timestamp
+            )
+        );
+
+         emit DayBydayStakeDetail(UserAddress,amount,block.timestamp,prct,51840000,amount,msg.sender);
+        
+
+    }
+
+
+}

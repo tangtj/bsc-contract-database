@@ -1,0 +1,486 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby disabling any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+/**
+ * @dev Contract module which allows children to implement an emergency stop
+ * mechanism that can be triggered by an authorized account.
+ *
+ * This module is used through inheritance. It will make available the
+ * modifiers `whenNotPaused` and `whenPaused`, which can be applied to
+ * the functions of your contract. Note that they will not be pausable by
+ * simply including this module, only once the modifiers are put in place.
+ */
+abstract contract Pausable is Context {
+    /**
+     * @dev Emitted when the pause is triggered by `account`.
+     */
+    event Paused(address account);
+
+    /**
+     * @dev Emitted when the pause is lifted by `account`.
+     */
+    event Unpaused(address account);
+
+    bool private _paused;
+
+    /**
+     * @dev Initializes the contract in unpaused state.
+     */
+    constructor() {
+        _paused = false;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is not paused.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    modifier whenNotPaused() {
+        _requireNotPaused();
+        _;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is paused.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    modifier whenPaused() {
+        _requirePaused();
+        _;
+    }
+
+    /**
+     * @dev Returns true if the contract is paused, and false otherwise.
+     */
+    function paused() public view virtual returns (bool) {
+        return _paused;
+    }
+
+    /**
+     * @dev Throws if the contract is paused.
+     */
+    function _requireNotPaused() internal view virtual {
+        require(!paused(), "Pausable: paused");
+    }
+
+    /**
+     * @dev Throws if the contract is not paused.
+     */
+    function _requirePaused() internal view virtual {
+        require(paused(), "Pausable: not paused");
+    }
+
+    /**
+     * @dev Triggers stopped state.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    function _pause() internal virtual whenNotPaused {
+        _paused = true;
+        emit Paused(_msgSender());
+    }
+
+    /**
+     * @dev Returns to normal state.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    function _unpause() internal virtual whenPaused {
+        _paused = false;
+        emit Unpaused(_msgSender());
+    }
+}
+
+contract CybercodeContestBNB is Context, Ownable, Pausable {
+    struct LeaderboardEntry {
+		uint rank;
+		uint score;
+		uint duration;
+		uint reward;
+        uint tasks;
+        address payable addr;
+	}
+
+	struct TaskResult {
+		string slug;
+		uint score;
+		uint duration;
+        uint date;
+	}
+
+    struct ParticipationHistoryEntry {
+        uint date;
+        uint rank;
+        uint reward;
+    }
+
+    uint public dailyPrizeFund;
+
+    address payable public creatorAddress; 
+    uint public creatorFee;
+
+    uint public participantsThreshold;
+
+	mapping(uint => address payable[]) public participaitedAccounts;
+	mapping(address => bool) public bannedAccounts;
+
+	mapping(address => TaskResult[]) public results;
+	
+    mapping(uint => bool) private leaderboardFormations;
+
+    uint public totalDistributedRewards;
+
+    constructor() {
+        dailyPrizeFund = 1000000000000000000;
+
+        creatorFee = 0;
+
+        participantsThreshold = 10;
+    }
+
+    function setDailyPrizeFund(uint amount) public onlyOwner {
+        dailyPrizeFund = amount;
+    }
+
+    function setCreatorAddress(address payable creatorAddr) public onlyOwner {
+        creatorAddress = creatorAddr;
+    }
+
+    function setCreatorFee(uint fee) public onlyOwner {
+        creatorFee = fee;
+    }
+
+    function setParticipantsThreshold(uint threshold) public onlyOwner {
+        participantsThreshold = threshold;
+    }
+
+    receive() external payable {
+        if (creatorFee > 0) {
+            require(creatorAddress != address(0), "Creator address is not configured: it is required when creator fee > 0");
+
+            uint creatorFeeValue = (msg.value / 100) * creatorFee;
+
+            (bool success, ) = creatorAddress.call{value: creatorFeeValue}("");
+            require(success, "Failed to send creator fee");
+        }
+    }
+ 
+    function setTaskResult(address payable addr, string memory slug, uint score, uint duration, uint date) public onlyOwner {
+        acknowledgeParticipation(addr, date);
+
+        require(!isTaskResultRecorded(addr, slug), "Result of the given task is already tracked");
+        require(!leaderboardFormations[date], "Results can no longer be tracked for the given date");
+
+        results[addr].push(
+            TaskResult({slug: slug, score: score, duration: duration, date: date})
+        );
+    }
+
+    function acknowledgeParticipation(address payable addr, uint date) private onlyOwner {
+        for (uint i = 0; i < participaitedAccounts[date].length; i++) {
+            if (participaitedAccounts[date][i] == addr) {
+                return;
+            }
+        }
+       
+        participaitedAccounts[date].push(addr);
+    }
+
+    function isTaskResultRecorded(address payable addr, string memory slug) private view onlyOwner returns (bool) {
+        for (uint i; i < results[addr].length; i++) {
+            if (keccak256(abi.encodePacked((results[addr][i].slug))) == keccak256(abi.encodePacked((slug)))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function closeTournamentDay(uint date) public onlyOwner {
+        require(!leaderboardFormations[date], "Rewards have already been distributed");
+
+        LeaderboardEntry[] memory winners = getLeaderboard(date);
+
+        for (uint i; i < winners.length; i++) {
+            LeaderboardEntry memory winner = winners[i];
+
+            (bool success, ) = winner.addr.call{value: winner.reward}("");
+
+            require(success, "Failed to send reward");
+
+            totalDistributedRewards+= winner.reward;
+        }
+
+        leaderboardFormations[date] = true;
+    }
+
+    function getWinner(address payable participantAccount, uint date) private view returns (LeaderboardEntry memory) {
+        LeaderboardEntry memory winner = LeaderboardEntry({rank: 0, score:0, duration: 0, reward: 0, tasks: 0, addr: participantAccount});
+
+        for (uint k; k < results[participantAccount].length; k++) {
+            TaskResult memory result = results[participantAccount][k];
+
+            if (result.date != date) {
+                continue;
+            }
+
+            winner.tasks += 1;
+            winner.score += result.score;
+            winner.duration += result.duration;
+        }
+
+        return winner;
+    }
+
+    function sortWinners(LeaderboardEntry[] memory winners) private pure returns(LeaderboardEntry[] memory) {
+        winners = sortWinnersByScore(winners);
+        winners = sortWinnersByDuration(winners);
+        
+        return winners;
+    }
+
+    function sortWinnersByScore(LeaderboardEntry[] memory winners) private pure returns(LeaderboardEntry[] memory) {
+        for (uint i = 0; i < winners.length; i++) {
+            for (uint k = 0; k < winners.length - i - 1; k++) {
+                if (winners[k].score < winners[k + 1].score) {
+                    LeaderboardEntry memory winner = winners[k];
+                    winners[k] = winners[k + 1];
+                    winners[k + 1] = winner;
+                }
+            }
+        }
+
+        return winners;
+    }
+
+    function sortWinnersByDuration(LeaderboardEntry[] memory winners) private pure returns(LeaderboardEntry[] memory) {
+        for (uint i = 0; i < winners.length; i++) {
+            for (uint k = 0; k < winners.length - i - 1; k++) {
+
+                if (winners[k].score == winners[k + 1].score) {
+
+                    if (winners[k].duration > winners[k + 1].duration) {
+                        LeaderboardEntry memory winner = winners[k];
+                        winners[k] = winners[k + 1];
+                        winners[k + 1] = winner;
+                    }
+
+                }
+            }
+        }
+
+        return winners;
+    }
+
+    function calculateRankAndRewards(LeaderboardEntry[] memory winners) private view returns(LeaderboardEntry[] memory) {
+        uint fund = dailyPrizeFund;
+
+        if (winners.length < participantsThreshold) {
+            fund = 0;
+        }
+
+        for (uint i = 0; i < winners.length; i++) {
+            uint rank = i + 1;
+            winners[i].rank = rank;
+
+            if (winners[i].score == 0 || fund == 0) {
+                continue;
+            }
+
+            if (rank == 1) {
+                winners[i].reward = fund / 2;
+            } else if (rank == 2) {
+                winners[i].reward = fund / 4;
+            } else if (rank == 3) {
+                winners[i].reward = fund / 8;
+            } else {
+                winners[i].reward = fund / 10;
+            }
+
+            fund = winners[i].reward;
+        }
+
+        return winners;
+    }
+
+    function getLeaderboard(uint date) public view returns (LeaderboardEntry[] memory) {
+        uint totalWinners = 0;
+    
+        LeaderboardEntry[] memory winners = new LeaderboardEntry[](participaitedAccounts[date].length);
+
+        for (uint i = 0; i < participaitedAccounts[date].length; i++) {
+            address payable participantAccount = participaitedAccounts[date][i];
+            
+            if (bannedAccounts[participantAccount]) {
+                continue;
+            }
+
+            LeaderboardEntry memory winner = getWinner(participantAccount, date);
+
+            if (winner.tasks < 4) {
+                continue;
+            }
+
+            winners[totalWinners] = winner;
+            totalWinners++;
+        }
+
+        LeaderboardEntry[] memory trimmedWinners = new LeaderboardEntry[](totalWinners);
+       
+        for (uint k = 0; k < totalWinners; k++) {
+            trimmedWinners[k] = winners[k];
+        }
+
+        trimmedWinners = sortWinners(trimmedWinners);
+        trimmedWinners = calculateRankAndRewards(trimmedWinners);
+
+        return trimmedWinners;
+    }
+
+    function getParticipationHistory(address payable addr, uint[] memory dates) public view returns (ParticipationHistoryEntry[] memory) {
+        ParticipationHistoryEntry[] memory entries = new ParticipationHistoryEntry[](dates.length);
+        
+        uint totalEntries = 0;
+
+        for (uint i = 0; i < dates.length; i++) {
+            LeaderboardEntry[] memory leaderboard = getLeaderboard(dates[i]);
+
+            for (uint k = 0; k < leaderboard.length; k++) {
+                if (leaderboard[k].addr != addr) {
+                    continue;
+                }
+
+                entries[totalEntries] = ParticipationHistoryEntry({date: dates[i], rank: leaderboard[k].rank, reward: leaderboard[k].reward});
+                totalEntries++;
+            }
+        }
+
+        ParticipationHistoryEntry[] memory trimmedEntries = new ParticipationHistoryEntry[](totalEntries);
+       
+        for (uint k = 0; k < totalEntries; k++) {
+            trimmedEntries[k] = entries[k];
+        }
+
+        return trimmedEntries;
+    }
+
+    function banAccount(address payable addr) public onlyOwner {
+        bannedAccounts[addr] = true;
+    }
+
+    function unbanAccount(address payable addr) public onlyOwner {
+        delete bannedAccounts[addr];
+    }
+
+    function transfer(address payable addr, uint amount) public onlyOwner {
+        bool sent = addr.send(amount);
+
+        require(sent, "Failed to send BNB");
+    }
+}

@@ -1,0 +1,325 @@
+pragma solidity ^0.8.10;
+
+contract MultiSigWallet {
+
+    event Deposit(address indexed sender, uint amount, uint balance);
+    event SubmitTransaction(
+        address indexed owner,
+        uint indexed txIndex,
+        address indexed to,
+        uint value,
+        bytes data
+    );
+    event ConfirmTransaction(address indexed owner, uint indexed txIndex);
+    event RevokeConfirmation(address indexed owner, uint indexed txIndex);
+    event ExecuteTransaction(address indexed owner, uint indexed txIndex);
+
+
+    address[] public owners;
+    mapping(address => bool) public isOwner;
+    uint public numConfirmationsRequired;
+    InterfaceCrnPool public crnPool;
+    address public crnToken;
+
+
+    struct Transaction {
+        address to;
+        uint value;
+        bytes data;
+        bool executed;
+        uint numConfirmations;
+    }
+
+    // mapping from tx index => owner => bool
+    mapping(uint => mapping(address => bool)) public isConfirmed;
+
+    Transaction[] public transactions;
+
+
+
+    modifier onlyOwner() {
+        require(isOwner[msg.sender], "not owner");
+        _;
+    }
+
+    modifier txExists(uint _txIndex) {
+        require(_txIndex < transactions.length, "tx does not exist");
+        _;
+    }
+
+    modifier notExecuted(uint _txIndex) {
+        require(!transactions[_txIndex].executed, "tx already executed");
+        _;
+    }
+
+    modifier notConfirmed(uint _txIndex) {
+        require(!isConfirmed[_txIndex][msg.sender], "tx already confirmed");
+        _;
+    }
+
+
+
+
+    receive() external payable {
+        emit Deposit(msg.sender, msg.value, address(this).balance);
+    }
+
+
+
+
+    constructor() {
+        crnToken = address(0xeeDB6926f69d036E203472a5B856Fd54a8BaD6F4);
+        crnPool = InterfaceCrnPool(address(0xb454bf72b2398dAE86234b9E023Bc1AC8D3f14AF));
+        owners = [
+            0x272350530095FEc8989DCe8fA6866C66eE203988,
+            0xCaF5E095796a67116F69845be2A80bfe685FC04B,
+            0x8D019c210F0F626e0c92422070001C0340F908e2,
+            0xB5369bF7717e4D674C9Adf0A2c8ba3c9DC9db939,
+            0xF9E278Aa937EeF682798AF75659dc7947bA9F135,
+            0xDA739634ED014B81012209eF1CeFe5E918B7465E,
+            0x31673C4Aefc59c8b772C4c06e2984D0a04F7BAC6,
+            0x95D87939e8a464E71c97f85e1D2B76D3d143e155,
+            0x12957157E26f18897b476fE96Ac1837D1347F4B6,
+            0xf4234cC154CA49dB4406431023c432EA021eeECE,
+            0x5A4DD8DB120dF4721FD06F399a084872C7149688,
+            0x8948695fEd98a84Dd61A2aB4475589F2E716e9eF,
+            0xe8eb8634Fa2D91F8446cf34AFB9A7A69fB00e4A5,
+            0xC287081cD9a45342702384Ba2F24B880Db48b0c9,
+            0x5b096F8D099C27C4faEd493F3EA8F4cb6dc9863e,
+            0x5B4bE20B2D657C4452aE9496ce01c9954Aa0d439,
+            0x7935fB10549b22CeDA19D678904018BC10B5cd39,
+            0x1a6eAf1908BdaB196c50f73834Ef3eF1DaC3F4e1,
+            0x10333997F48A524953e808d3Ca89533BE9FF1430,
+            0xA5DB038Df10bf01BfBAe1271D393c3c6118Ec15B,
+            0x8f26D20e37f4200D1B86E29c60c4a1f89c30c1Fe,
+            0xAA04A287bE4f58BC5171D585841eBa8F35f51630,
+            0xcd00c7fD24d606d3c936C85aF7fd8292F58DF035,
+            0xA8518bb724Eab81BDdc1B0CaFc5962e10a9aE9d5,
+            0x50752afc6a063177D06b688D84deFeBAd61e6623,
+            0x16335Ab32ce551f5FCB4c7bDefD3e5914aA88C38,
+            0x41fCA5993bc3B6E46270fe26F92368F022724aAc,
+            0x4588eCFE2FCe1c2CA52d3D94dBbD89EE0064F6dD,
+            0x59098986Dd2bb6415dbf5dF4C589BcCBDE61F3Ab,
+            0xeA41527d49811478bec16F85F1344006e54365c2,
+            0xdCf32B064919c0039f3D9f12f89c2fD799c42Fc3,
+            0x261a2a43597e03e6a39D0f058750E405cdCA7306,
+            0x888d38B8f9B2F0E8985f221218e7951743F84Aa9,
+            0xff537843Bd69263BB6C0a60842463f71cb0eb753,
+            0xA53c21FB39Bbb3215d62F427091760A2FbB46Bba,
+            0x91c2fd09241e393f19462f1B34328D2594Ec44A2,
+            0x3e5E789D59534603C6864791E2d79410D603F8CF,
+            0x79095F39D11189BAe929Cbac3cC6b999707eb807,
+            0x74b623096E7798eA3b04e145B756b4DC3f615Dd6,
+            0x0cdb4633f2302F31A8743Fe21E203c8C75a42531,
+            0x169aA6BF87f8C50278B3E76386f46279BC4Bb2Ed,
+            0xe59F1d415690Dcf0319B8f8B981964A55A436fAC,
+            0x5D32E72DAf70B3857a7764D77a7C0c519086D494,
+            0xC944AdddCb7F8e5F83D133F2E5994cb1B163e1a3,
+            0x2678EBE3954e53922F83Bd6ecE1F29d5078A8c29,
+            0xF3eAD79199f1bB2fCa2472c9Dd1f12Da51D0a24b,
+            0x6305549f49d77f9673331D894b985165861A4782,
+            0xa86C6Ae9aA19968cc1e2C911A3227C95407D619D,
+            0x4d869F4746A7a543665DF7cd859fa4a7F1B0a672,
+            0x70B21a7c34011c38c776DFa8C9C40BB0A2A918f2,
+            0xEb7492C7e234A120E2E18d11e126f9AEFa8c4374,
+            0x8fD005489C87b5EadCA371c935386Dc855B8124B,
+            0x93eE41ed661DA7d1C4769cBf67A0C8de3C5e6A34,
+            0x6c2ED9075fe78Ef1EEE6E2755F3A9e19B82BB13D,
+            0xb205875Bda1538ad6C711426a381A611e94abfcd,
+
+            0x3b81980a03Be5D99711e13185c8eFf8c8455c572,
+            0xdd4c1F628B87f511bA60Eac7075890A6008eBcfd,
+            0x60e1f70E0296e933bda0f69877774663422496be,
+            0x8f56dCf911059b8bA76722f38Fe86aca099976c6,
+            0x16AeFf7026BBEB0dFb81a21030A3E635359bf83C,
+            0xd722971c0BE695a83bF26233eD7E2c2a45c7F2f2,
+            0x5439095be2F486212fD54D358AD4159967fe39f6,
+            0xeb13e35073A702e17484a247A962b1ba9Cec560e,
+            0x5dF83dB28620128FB78dCC12faC765479101AaCa,
+            0x3bE5A69d3503C5f3b44A29a6541b819122880a9c,
+            0xf41B3d8931510C2b00e76fc5eFef187DfB0D73Ee,
+            0x80f4E03540f9f110FC3A81211B86A74C7A499123,
+            0x3254b546d0B2F05D1c6443909444240d568E13A0,
+            0xE5b42c3C26A0fbBdE113Da4C2c966a071153ce83,
+            0x7e5819af76A7ece4998472C56A6D182f997cB4DF,
+            0xF283fD51E839d19A830b09C401fF9A67213ce602,
+            0xC3b920c71250B81bc2418A59C9723531a7345a28,
+            0xAF1f1Afe51488548F7cD9beb9c14b09CB0647ead,
+            0x74b8372327Cc48507E490Cb9C3BfdAD3Bd36572F,
+            0x5feE3C7eda5a4B7F5Ae6f8d7F64D6783498b7293,
+            0x9201e73548C8d97341975C8Fd5283669573F196c,
+            0xF5b9d28364636a096968D6Af9Eff5b7430c184c2,
+            0xf82764f9b3cbCa71E55e1Cc0c966ba34bD2CE548,
+            0xD4d52562fAB4fE77E097D4b73d2b70A97F5Af629,
+            0x97ae9A4B04d3b7056cC6266c96C44f26CF4BF114,
+            0xa8a4492C768232352455045ce5b5292A80425Aa6,
+            0x9f0804382DCd7FB31c1BC470B5F3970373f9947f,
+            0xad57F3E2ea115a632a225965B8FB125d757280B9,
+            0xbd7442739e773a5F200e602eC6AF46B8f6E19095,
+            0x49179D7182461BE36b582DF4C97CCDcE100f1771,
+            0xc03aecb60D8f2677e5b6B5E361301369715BE775,
+            0xD1a31BFeee84C5Ecb7A9786Ce7066516a813d8B7,
+            0xd7ef78a2669D51C35D47d1F69c6365DaE4367BfA,
+            0x3Bd2FeE571E0625D15B15ffEc0f7ECaaeD6A9719,
+            0xd58624567B5672C24e744064fe20033337de2980,
+            0x58EA65C46Df30C4511238439D9F2365490C415AB,
+            0x1514FA1F45d664c98452d060bEE4b2194e32a92f,
+            0xc414F7B014841FD4b2c9dC61525b764Dd4125C7B,
+            0x236591a999E157812E518F777Ad8da69FaC95D34,
+            0x343D07aAbDF3F29522057200a67CEdBc9Ce53Bb7,
+            0xC7c0A6C4bFBb3E5F080525272E5b12FF895138E7,
+            0x7015041Ef7e0A62859e6F47d0c7CCEEA285E96C6,
+            0x6437c0c0239d89127FC5810CefaE2F330B3a4817
+        ];        
+
+        for (uint i = 0; i < owners.length; i++) {
+            address owner = owners[i];
+
+            require(owner != address(0), "invalid owner");
+            require(!isOwner[owner], "owner not unique");
+
+            isOwner[owner] = true;
+            // owners.push(owner);
+        }
+
+        numConfirmationsRequired = owners.length;
+    }
+
+
+    
+
+
+
+
+    function addSinger (address owner) public onlyOwner {
+        require(owner != address(0), "invalid owner");
+        require(!isOwner[owner], "owner not unique");
+
+        isOwner[owner] = true;
+        owners.push(owner);
+
+        numConfirmationsRequired = owners.length;
+    }
+
+    function setCrnPool (address _pool) public onlyOwner {
+        require(_pool != address(0), "invalid address");
+        crnPool = InterfaceCrnPool(_pool);
+    }
+
+
+    function submitTransaction(
+        address _to,
+        uint _value,
+        string[] calldata fun,
+        string[] calldata funParam,
+        bytes memory _data
+    ) public onlyOwner {
+        require(fun.length == funParam.length, "submitTransaction: function param error.");
+        uint txIndex = transactions.length;
+        for(uint i=0; i<fun.length; ++i) {
+            // bool success = crnPool.removePool(...);
+            transactions.push(
+                Transaction({
+                    to: _to,
+                    value: _value,
+                    data: abi.encodeWithSignature(fun[i], bytes(funParam[i])),
+                    executed: false,
+                    numConfirmations: 0
+                })
+            );
+        }
+
+        emit SubmitTransaction(msg.sender, txIndex, _to, _value, _data);
+    }
+
+    function confirmTransaction(uint _txIndex)
+        public
+        onlyOwner
+        txExists(_txIndex)
+        notExecuted(_txIndex)
+        notConfirmed(_txIndex)
+    {
+        Transaction storage transaction = transactions[_txIndex];
+        transaction.numConfirmations += 1;
+        isConfirmed[_txIndex][msg.sender] = true;
+
+        emit ConfirmTransaction(msg.sender, _txIndex);
+    }
+
+    function executeTransaction(uint _txIndex)
+        public
+        onlyOwner
+        txExists(_txIndex)
+        notExecuted(_txIndex)
+    {
+        Transaction storage transaction = transactions[_txIndex];
+
+        require(
+            transaction.numConfirmations >= numConfirmationsRequired,
+            "cannot execute tx"
+        );
+
+        transaction.executed = true;
+
+        (bool success, ) = transaction.to.call{value: transaction.value}(
+            // bool success = crnPool.removePool(...);
+            transaction.data
+        );
+        require(success, "tx failed");
+
+        emit ExecuteTransaction(msg.sender, _txIndex);
+    }
+
+    function revokeConfirmation(uint _txIndex)
+        public
+        onlyOwner
+        txExists(_txIndex)
+        notExecuted(_txIndex)
+    {
+        Transaction storage transaction = transactions[_txIndex];
+
+        require(isConfirmed[_txIndex][msg.sender], "tx not confirmed");
+
+        transaction.numConfirmations -= 1;
+        isConfirmed[_txIndex][msg.sender] = false;
+
+        emit RevokeConfirmation(msg.sender, _txIndex);
+    }
+
+    function getOwners() public view returns (address[] memory) {
+        return owners;
+    }
+
+    function getTransactionCount() public view returns (uint) {
+        return transactions.length;
+    }
+
+    function getTransaction(uint _txIndex)
+        public
+        view
+        returns (
+            address to,
+            uint value,
+            bytes memory data,
+            bool executed,
+            uint numConfirmations
+        )
+    {
+        Transaction storage transaction = transactions[_txIndex];
+
+        return (
+            transaction.to,
+            transaction.value,
+            transaction.data,
+            transaction.executed,
+            transaction.numConfirmations
+        );
+    }
+}
+
+interface InterfaceCrnPool {
+    function withdraw(bytes memory _data, bytes memory _sin) external returns(bool);
+    function removePool(bytes memory _sin) external returns(bool) ;
+    function disablePool(bytes memory _sin) external returns(bool);
+    function enablePool(bytes memory _sin) external returns(bool);
+}

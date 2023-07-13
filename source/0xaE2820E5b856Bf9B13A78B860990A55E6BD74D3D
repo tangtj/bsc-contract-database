@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract DEDE2_0 is IBEP20 {
+    string public name = "DEDE2.0";
+    string public symbol = "DEDE";
+    uint8 public decimals = 18;
+
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => bool) private _isBlacklisted;
+    mapping(address => bool) private _isWhitelisted;
+    bool private _paused;
+    address private _owner;
+    address private _admin;
+    address private _pancakeSwapV2Router;
+
+    modifier onlyOwner() {
+        require(msg.sender == _owner, "Only owner can call this function");
+        _;
+    }
+
+    modifier onlyAdmin() {
+        require(msg.sender == _admin || msg.sender == _owner, "Only admin can call this function");
+        _;
+    }
+
+    modifier whenNotPaused() {
+        require(!_paused, "Trading is currently paused");
+        _;
+    }
+
+    constructor() {
+        _owner = msg.sender;
+        _admin = msg.sender;
+        _balances[_owner] = 1000000000 * 10 ** uint(decimals);
+        emit Transfer(address(0), _owner, _balances[_owner]);
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _balances[_owner];
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override whenNotPaused returns (bool) {
+        require(recipient != address(0), "Transfer to zero address");
+        require(!_isBlacklisted[msg.sender], "Sender is blacklisted");
+
+        _balances[msg.sender] -= amount;
+        _balances[recipient] += amount;
+        emit Transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override whenNotPaused returns (bool) {
+        require(spender != address(0), "Approve to zero address");
+
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override whenNotPaused returns (bool) {
+        require(recipient != address(0), "Transfer to zero address");
+        require(!_isBlacklisted[sender], "Sender is blacklisted");
+
+        _balances[sender] -= amount;
+        _balances[recipient] += amount;
+        _allowances[sender][msg.sender] -= amount;
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function addToBlacklist(address account) public onlyAdmin {
+        require(account != address(0), "Blacklist zero address");
+        _isBlacklisted[account] = true;
+    }
+
+    function removeFromBlacklist(address account) public onlyAdmin {
+        require(account != address(0), "Blacklist zero address");
+        _isBlacklisted[account] = false;
+    }
+
+    function addToWhitelist(address account) public onlyAdmin {
+        require(account != address(0), "Whitelist zero address");
+        _isWhitelisted[account] = true;
+    }
+
+    function removeFromWhitelist(address account) public onlyAdmin {
+        require(account != address(0), "Whitelist zero address");
+        _isWhitelisted[account] = false;
+    }
+
+    function setPaused(bool paused) public onlyAdmin {
+        _paused = paused;
+    }
+
+    function setPancakeSwapV2Router(address router) public onlyAdmin {
+        require(router != address(0), "Router cannot be zero address");
+        _pancakeSwapV2Router = router;
+    }
+
+    function addLiquidity() public onlyAdmin {
+        require(_pancakeSwapV2Router != address(0), "PancakeSwapV2 router not set");
+        // Add liquidity logic here
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "Ownership transfer to zero address");
+        _owner = newOwner;
+    }
+
+    function setAdmin(address newAdmin) public onlyOwner {
+        require(newAdmin != address(0), "Admin address cannot be zero");
+        _admin = newAdmin;
+    }
+
+    function isAdmin(address account) public view returns (bool) {
+        return account == _admin;
+    }
+}

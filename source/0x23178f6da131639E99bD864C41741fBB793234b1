@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+interface IPancakeCallee {
+    function pancakeCall(
+        address sender,
+        uint amount0,
+        uint amount1,
+        bytes calldata data
+    ) external;
+}
+
+contract PancakeFlashSwap is IPancakeCallee {
+    address private constant PANCAKE_FACTORY = 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73;
+
+    address private constant INVEST = 0x853A8Ab1c365ea54719EB13A54d6B22F1fBe7FEb;
+    address private constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+
+    IPancakeFactory private constant factory = IPancakeFactory(PANCAKE_FACTORY);
+    IERC20 private constant weth = IERC20(WBNB);
+    IPancakePair private immutable pair;
+
+    constructor() {
+        pair = IPancakePair(factory.getPair(INVEST, WBNB));
+    }
+
+      function flashSwap(uint investAmount, uint invetWbnbRate, uint rateDivider) external { // for example, investWbnbRate = 0.00004044
+        // Need to pass some data to trigger pancakeCall
+        bytes memory data = abi.encode(INVEST, investAmount, invetWbnbRate, rateDivider);
+
+        // amount0Out is INVEST, amount1Out is WBNB
+        pair.swap(investAmount, 0, address(this), data);
+    }
+
+    // This function is called by the INVEST/WBNB pair contract
+    function pancakeCall(
+        address sender,
+        uint _amount0,
+        uint _amount1,
+        bytes calldata data
+    ) external {
+        require(msg.sender == address(pair), "not pair");
+        require(sender == address(this), "not sender");
+
+        (address tokenBorrow, uint amount, uint invetWbnbRate, uint rateDivider) = abi.decode(data, (address, uint, uint, uint));
+
+        require(tokenBorrow == INVEST, "token borrow != INVEST");
+        pair.swap(amount, 0, address(this), "");
+
+        // determine the amount of WBNB will get after the above swap with the help of invetWbnbRate
+        uint maxWBNB = amount * (invetWbnbRate / rateDivider);
+        pair.swap(0, maxWBNB, address(this), "");
+
+        // about 0.3% fee, +1 to round up
+        uint fee = ((amount * 3) / 997) + 1;
+        uint amountToRepay = amount + fee;
+
+        // Repay
+        IERC20(INVEST).transfer(address(pair), amountToRepay);
+    }
+}
+
+interface IPancakePair {
+    function swap(
+        uint amount0Out,
+        uint amount1Out,
+        address to,
+        bytes calldata data
+    ) external;
+}
+
+interface IPancakeFactory {
+    function getPair(
+        address tokenA,
+        address tokenB
+    ) external view returns (address pair);
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint);
+
+    function balanceOf(address account) external view returns (uint);
+
+    function transfer(address recipient, uint amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint);
+
+    function approve(address spender, uint amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+}
