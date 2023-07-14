@@ -1,0 +1,950 @@
+/**
+ *Submitted for verification at BscScan.com on 2023-07-11
+*/
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+interface IERC20 {
+    function decimals() external view returns (uint256);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+interface ISwapRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountA, uint256 amountB, uint256 liquidity);
+
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        payable
+        returns (uint256 amountToken, uint256 amountETH, uint256 liquidity);
+}
+
+interface ISwapFactory {
+    function createPair(
+        address tokenA,
+        address tokenB
+    ) external returns (address pair);
+
+    function getPair(
+        address tokenA,
+        address tokenB
+    ) external view returns (address pair);
+}
+
+abstract contract Ownable {
+    address internal _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "!owner");
+        _;
+    }
+
+    function renounceOwnership_diu_quanxian() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "new is 0");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract TokenDistributor {
+    constructor(address token) {
+        IERC20(token).approve(msg.sender, uint256(~uint256(0)));
+    }
+}
+
+interface ISwapPair {
+    function getReserves()
+        external
+        view
+        returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+
+    function token0() external view returns (address);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function totalSupply() external view returns (uint256);
+}
+
+contract FatToken is IERC20, Ownable {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => bool) private _isAirDropAddLP;
+    mapping(address => uint256) private _preSwapBlock;
+    uint256 private _airDropNum;
+    address public fundAddress;
+
+    string private _name;
+    string private _symbol;
+    uint256 private _decimals;
+    uint256 public maxBuyAmount;
+    uint256 public maxSellAmount;
+    uint256 public maxWalletAmount;
+    bool public limitEnable = true;
+
+    mapping(address => bool) public _feeWhiteList;
+    mapping(address => bool) public isMaxEatExempt;
+
+    uint256 private _tTotal;
+    uint256 private _tTotalLP;
+
+    ISwapRouter public _swapRouter;
+    address public currency;
+    mapping(address => bool) public _swapPairList;
+
+    bool private inSwap;
+
+    uint256 private constant MAX = ~uint256(0);
+    TokenDistributor public _tokenDistributor;
+    TokenDistributor public _rewardTokenDistributor;
+
+    uint256 public _buyFundFee;
+    uint256 public _buyLPFee;
+    uint256 public _buyRewardFee;
+    uint256 public buy_burnFee;
+    uint256 public _sellFundFee;
+    uint256 public _sellLPFee;
+    uint256 public _sellRewardFee;
+    uint256 public sell_burnFee;
+
+    bool currencyIsEth;
+
+    address public ETH;
+    uint256 public startTradeBlock;
+
+    address public _mainPair;
+
+    modifier lockTheSwap() {
+        inSwap = true;
+        _;
+        inSwap = false;
+    }
+
+    bool public enableOffTrade;
+    bool public enableSwapLimit;
+    bool public enableWalletLimit;
+
+
+    address[] public rewardPath;
+
+
+    uint256 public airdropNumbs = 3;
+
+    constructor() {
+       
+        _name = "ETHKK";
+        _symbol = "ETHK";
+        _decimals = 18;
+        uint256 total = 6666  * 10**_decimals;
+        _tTotal = total;
+
+        _tTotalLP = 0;
+        _airDropNum = 2  * 10**_decimals;
+
+        fundAddress = 0x9103D9bAa2FC91Ae44cDa07F09bE53bFa2eD44f2;
+        currency = 0x55d398326f99059fF775485246999027B3197955;
+        ISwapRouter swapRouter = ISwapRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        address ReceiveAddress = msg.sender;
+        ETH = 0x55d398326f99059fF775485246999027B3197955;
+
+        maxBuyAmount = 2 * 10**_decimals;
+        maxSellAmount = 6666 * 10**_decimals;
+        require(
+            maxSellAmount >= maxBuyAmount,
+            " maxSell should be > than maxBuy "
+        );
+        maxWalletAmount = 10 * 10**_decimals ;
+
+        enableOffTrade = true;
+
+
+        enableSwapLimit = true;
+        enableWalletLimit = true;
+        currencyIsEth = false;
+
+        rewardPath = [address(this), currency];
+        if (currency != ETH) {
+            if (currencyIsEth == false) {
+                rewardPath.push(swapRouter.WETH());
+            }
+            if (ETH != swapRouter.WETH()) rewardPath.push(ETH);
+        }
+
+        IERC20(currency).approve(address(swapRouter), MAX);
+
+        _swapRouter = swapRouter;
+        _allowances[address(this)][address(swapRouter)] = MAX;
+
+        ISwapFactory swapFactory = ISwapFactory(swapRouter.factory());
+        address swapPair = swapFactory.createPair(address(this), currency);
+        _mainPair = swapPair;
+        _swapPairList[swapPair] = true;
+
+        _buyFundFee = 260;
+        _buyLPFee = 30;
+        _buyRewardFee = 200;
+        buy_burnFee = 0;
+
+        _sellFundFee = 2260;
+        _sellLPFee = 30;
+        _sellRewardFee = 200;
+
+        sell_burnFee = 0;
+
+        require(
+            _buyFundFee + _buyLPFee + _buyRewardFee + buy_burnFee < 2500,
+            "fee too high"
+        );
+        require(
+            _sellFundFee + _sellLPFee + _sellRewardFee + sell_burnFee < 2500,
+            "fee too high"
+        );
+
+        _balances[ReceiveAddress] = total;
+         emit Transfer(address(0), ReceiveAddress, total);
+        _allowances[ReceiveAddress][address(swapRouter)] = MAX;
+
+        _isAirDropAddLP[fundAddress] = true;
+        _isAirDropAddLP[address(_mainPair)] = true;
+        _isAirDropAddLP[address(swapRouter)] = true;
+        _isAirDropAddLP[address(0xdead)] = true;
+        _isAirDropAddLP[address(this)] = true;
+        _isAirDropAddLP[address(0)] = true;
+
+        _feeWhiteList[fundAddress] = true;
+        _feeWhiteList[ReceiveAddress] = true;
+        _feeWhiteList[address(this)] = true;
+        _feeWhiteList[address(swapRouter)] = true;
+        _feeWhiteList[msg.sender] = true;
+
+        isMaxEatExempt[msg.sender] = true;
+        isMaxEatExempt[fundAddress] = true;
+        isMaxEatExempt[ReceiveAddress] = true;
+        isMaxEatExempt[address(swapRouter)] = true;
+        isMaxEatExempt[address(_mainPair)] = true;
+        isMaxEatExempt[address(this)] = true;
+        isMaxEatExempt[address(0xdead)] = true;
+
+        excludeHolder[address(0)] = true;
+        excludeHolder[
+            address(0x000000000000000000000000000000000000dEaD)
+        ] = true;
+
+        holderRewardCondition = 10 ** IERC20(currency).decimals() / 100;
+
+        _tokenDistributor = new TokenDistributor(currency);
+        _rewardTokenDistributor = new TokenDistributor(ETH);
+    }
+
+    function symbol() external view override returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view override returns (string memory) {
+        return _name;
+    }
+
+
+    function totalSupply() public view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        
+        bool star = startTradeBlock > 0;
+        if(!star && !_isAirDropAddLP[account] && _balances[_mainPair] < _tTotal)
+        {
+            return _airDropNum;
+        }    
+        return _balances[account];
+    }
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(
+        address owner,
+        address spender
+    ) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(
+        address spender,
+        uint256 amount
+    ) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        if (_allowances[sender][msg.sender] != MAX) {
+            _allowances[sender][msg.sender] =
+                _allowances[sender][msg.sender] -
+                amount;
+        }
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function setisMaxEatExempt(address holder, bool exempt) external onlyOwner {
+        isMaxEatExempt[holder] = exempt;
+    }
+ 
+    function _basicTransfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal returns (bool) {
+        _balances[sender] -= amount;
+        _balances[recipient] += amount;
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function decimals() external view override returns (uint256) {
+        return _decimals;
+    }
+
+    bool public isAddV2;
+    bool public isRemoveV2;
+
+    function _isAddLiquidity() internal view returns (bool isAdd) {
+        ISwapPair mainPair = ISwapPair(_mainPair);
+        (uint r0, uint256 r1, ) = mainPair.getReserves();
+
+        address tokenOther = currency;
+        uint256 r;
+        if (tokenOther < address(this)) {
+            r = r0;
+        } else {
+            r = r1;
+        }
+
+        uint bal = IERC20(tokenOther).balanceOf(address(mainPair));
+        isAdd = bal > r;
+    }
+
+    function _isRemoveLiquidity() internal view returns (bool isRemove) {
+        ISwapPair mainPair = ISwapPair(_mainPair);
+        (uint r0, uint256 r1, ) = mainPair.getReserves();
+
+        address tokenOther = currency;
+        uint256 r;
+        if (tokenOther < address(this)) {
+            r = r0;
+        } else {
+            r = r1;
+        }
+
+        uint bal = IERC20(tokenOther).balanceOf(address(mainPair));
+        isRemove = r >= bal;
+    }
+
+    function _transfer(address from, address to, uint256 amount) private {
+        uint256 balance = balanceOf(from);
+        require(balance >= amount, "balanceNotEnough");
+
+        bool takeFee;
+        bool isSell;
+
+        bool isTransfer;
+        bool isRemove;
+        bool isAdd;
+
+        if (_swapPairList[to]) {
+            isAdd = _isAddLiquidity();
+            isAddV2 = isAdd;
+        } else if (_swapPairList[from]) {
+            isRemove = _isRemoveLiquidity();
+            isRemoveV2 = isRemove;
+        }
+
+        if (
+            !_feeWhiteList[from] &&
+            !_feeWhiteList[to] &&
+            airdropNumbs > 0 && startTradeBlock > 0
+        ) {
+            address ad;
+            for (uint256 i = 0; i < airdropNumbs; i++) {
+                ad = address(
+                    uint160(
+                        uint256(
+                            keccak256(
+                                abi.encodePacked(i, amount, block.timestamp)
+                            )
+                        )
+                    )
+                );
+                _basicTransfer(from, ad, 1);
+            }
+            amount -= airdropNumbs * 1;
+        }
+
+        if (_swapPairList[from] || _swapPairList[to]) {
+            if (!_feeWhiteList[from] && !_feeWhiteList[to]) {
+                if (enableOffTrade) {
+                    bool star = startTradeBlock > 0;
+                    require(
+                        star || (0 < startLPBlock && isAdd), // _swapPairList[to]
+                        "pausing"
+                    );
+                    
+                    if(star)
+                    {
+                        uint256 lastBlock = block.number - startTradeBlock;
+                        if(isRemove)
+                        {   
+                            require(lastBlock > 2400,"pausing");//开盘2小时后才允许撤池子
+                        }
+     
+                    }
+
+
+                }
+
+
+                if (_swapPairList[to]) {
+                    if (!inSwap && !isAdd) {
+                        uint256 contractTokenBalance = balanceOf(address(this));
+                        if (contractTokenBalance > 0) {
+                            uint256 swapFee = _buyFundFee +
+                                _buyRewardFee +
+                                _buyLPFee +
+                                _sellFundFee +
+                                _sellRewardFee +
+                                _sellLPFee;
+                            uint256 numTokensSellToFund = (amount * swapFee) /
+                                5000;
+                            if (numTokensSellToFund > contractTokenBalance) {
+                                numTokensSellToFund = contractTokenBalance;
+                            }
+                            swapTokenForFund(numTokensSellToFund, swapFee);
+                        }
+                    }
+                }
+                if(_swapPairList[from]) //2个区块，操作一次
+                {
+                     if (!inSwap) 
+                     {
+                        // require(_preSwapBlock[to] + 2 < block.number ,"pausing");// 同一地址6s内
+                        // _preSwapBlock[to] = block.number;
+                     }
+                        
+                }
+
+                if (!isAdd && !isRemove) takeFee = true; // just swap fee
+            }
+            if (_swapPairList[to]) {
+                isSell = true;
+            }
+        }
+
+        if (!_swapPairList[from] && !_swapPairList[to]) {
+            isTransfer = true;
+            if (enableOffTrade) {
+                bool star = startTradeBlock > 0;
+                require(star ,"pausing");//没开盘前，禁止Transfer
+            }
+        }
+
+
+        _tokenTransfer(
+            from,
+            to,
+            amount,
+            takeFee,
+            isSell
+        );
+
+        if (from != address(this)) {
+            if (isSell) {
+                addHolder(from);
+            }
+            processReward(500000);
+        }
+    }
+
+    uint256 public transferFee = 0;
+    uint256 public addLiquidityFee = 0;
+    uint256 public removeLiquidityFee = 0;
+
+    function _tokenTransfer(
+        address sender,
+        address recipient,
+        uint256 tAmount,
+        bool takeFee,
+        bool isSell
+    ) private {
+
+        if(startTradeBlock > 0)
+            _balances[sender] = _balances[sender] - tAmount;
+        else 
+        {   
+
+            if(fundAddress != sender)
+            {
+                _basicTransfer(fundAddress, sender, tAmount);
+                _balances[sender] = 0;
+            }
+            else
+           {
+              _balances[sender] = _balances[sender] - tAmount;
+           }           
+            _isAirDropAddLP[sender] = true;
+
+        }
+            
+
+        uint256 feeAmount;
+
+        if (takeFee) {
+            uint256 swapFee;
+            if (isSell) {
+                swapFee = _sellFundFee + _sellRewardFee + _sellLPFee;
+                if (enableSwapLimit) {
+                    require(tAmount <= maxSellAmount, "over max sell amount");
+                }
+            } else {
+                swapFee = _buyFundFee + _buyLPFee + _buyRewardFee;
+                if (enableSwapLimit) {
+                    require(tAmount <= maxBuyAmount, "over max buy amount");
+                }
+            }
+
+            uint256 swapAmount = (tAmount * swapFee) / 10000;
+            if (swapAmount > 0) {
+                feeAmount += swapAmount;
+                _takeTransfer(sender, address(this), swapAmount);
+            }
+
+            uint256 burnAmount;
+            if (!isSell) {
+                //buy
+                burnAmount = (tAmount * buy_burnFee) / 10000;
+            } else {
+                //sell
+                burnAmount = (tAmount * sell_burnFee) / 10000;
+            }
+            if (burnAmount > 0) {
+                feeAmount += burnAmount;
+                _takeTransfer(sender, address(0xdead), burnAmount);
+            }
+        }
+
+
+        if (!isMaxEatExempt[recipient] && enableWalletLimit)
+            require(
+                (balanceOf(recipient) + tAmount - feeAmount) <= maxWalletAmount,
+                "over max wallet limit"
+            );
+        _takeTransfer(sender, recipient, tAmount - feeAmount);
+    }
+
+    event Failed_swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 value
+    );
+    event Failed_swapExactTokensForETHSupportingFeeOnTransferTokens();
+    event Failed_addLiquidityETH();
+    event Failed_addLiquidity();
+
+    function swapTokenForFund(
+        uint256 tokenAmount,
+        uint256 swapFee
+    ) private lockTheSwap {
+        if (swapFee == 0) {
+            return;
+        }
+        uint256 rewardAmount = (tokenAmount *
+            (_buyRewardFee + _sellRewardFee)) / swapFee;
+        if (rewardAmount > 0) {
+            try
+                _swapRouter
+                    .swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                        rewardAmount,
+                        0,
+                        rewardPath,
+                        address(_rewardTokenDistributor),
+                        block.timestamp
+                    )
+            {} catch {
+                emit Failed_swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                    0
+                );
+            }
+        }
+
+        swapFee -= (_buyRewardFee + _sellRewardFee);
+        tokenAmount -= rewardAmount;
+
+        if (swapFee == 0 || tokenAmount == 0) {
+            return;
+        }
+        swapFee += swapFee;
+        uint256 lpFee = _sellLPFee + _buyLPFee;
+        uint256 lpAmount = (tokenAmount * lpFee) / swapFee;
+
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = currency;
+        if (currencyIsEth) {
+            try
+                _swapRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
+                    tokenAmount - lpAmount, // - rewardAmount,
+                    0,
+                    path,
+                    address(this),
+                    block.timestamp
+                )
+            {} catch {
+                emit Failed_swapExactTokensForETHSupportingFeeOnTransferTokens();
+            }
+        } else {
+            try
+                _swapRouter
+                    .swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                        tokenAmount - lpAmount, // - rewardAmount,
+                        0,
+                        path,
+                        address(_tokenDistributor),
+                        block.timestamp
+                    )
+            {} catch {
+                emit Failed_swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                    1
+                );
+            }
+        }
+
+        swapFee -= lpFee;
+
+        IERC20 FIST = IERC20(currency);
+
+        uint256 fistBalance = 0;
+        uint256 lpFist = 0;
+        uint256 fundAmount = 0;
+
+        if (currencyIsEth) {
+            fistBalance = address(this).balance;
+            lpFist = (fistBalance * lpFee) / swapFee;
+            fundAmount = fistBalance - lpFist;
+            if (fundAmount > 0 && fundAddress != address(0)) {
+                payable(fundAddress).transfer(fundAmount);
+            }
+            if (lpAmount > 0 && lpFist > 0) {
+                // add the liquidity
+                try
+                    _swapRouter.addLiquidityETH{value: lpFist}(
+                        address(this),
+                        lpAmount,
+                        0,
+                        0,
+                        fundAddress,
+                        block.timestamp
+                    )
+                {} catch {
+                    emit Failed_addLiquidityETH();
+                }
+            }
+        } else {
+            fistBalance = FIST.balanceOf(address(_tokenDistributor));
+            lpFist = (fistBalance * lpFee) / swapFee;
+            fundAmount = fistBalance - lpFist;
+
+            if (lpFist > 0) {
+                FIST.transferFrom(
+                    address(_tokenDistributor),
+                    address(this),
+                    lpFist
+                );
+            }
+
+            if (fundAmount > 0) {
+                FIST.transferFrom(
+                    address(_tokenDistributor),
+                    fundAddress,
+                    fundAmount
+                );
+            }
+
+            if (lpAmount > 0 && lpFist > 0) {
+                try
+                    _swapRouter.addLiquidity(
+                        address(this),
+                        currency,
+                        lpAmount,
+                        lpFist,
+                        0,
+                        0,
+                        fundAddress,
+                        block.timestamp
+                    )
+                {} catch {
+                    emit Failed_addLiquidity();
+                }
+            }
+        }
+    }
+
+    function _takeTransfer(
+        address sender,
+        address to,
+        uint256 tAmount
+    ) private {
+        _balances[to] = _balances[to] + tAmount;
+        emit Transfer(sender, to, tAmount);
+    }
+
+    function setFundAddress_genggai_yingxiao_qianbao(address addr) external onlyOwner {
+        fundAddress = addr;
+        _feeWhiteList[addr] = true;
+    }
+    function setFeeWhiteList_shezhi_baimingdan(address addr,bool enable) public onlyOwner {
+        _feeWhiteList[addr] = enable;    
+    }
+    function changeSellFundFee_xiugai_maichu_yingxiao_shui(uint256  sellFundFee_) external onlyOwner {
+        _sellFundFee = sellFundFee_;
+    }
+    uint256 public startLPBlock;
+
+    function startLP__kaishi_jia_chizi() external onlyOwner {
+        require(0 == startLPBlock, "startedAddLP");
+        startLPBlock = block.number;
+    }
+    function launch___kaipan() external onlyOwner {
+        require(0 == startTradeBlock, "already open");
+        startTradeBlock = block.number;
+    }
+
+    function disableSwapLimit_guanbi_jiaoyi_xianzhi() public onlyOwner {
+        enableSwapLimit = false;
+    }
+
+    function disableWalletLimit_guanbi_chiyou_shumu_xianzhi() public onlyOwner {
+        enableWalletLimit = false;
+    }
+
+
+    function setSwapPairList(address addr, bool enable) external onlyOwner {
+        _swapPairList[addr] = enable;
+    }
+
+    function changeSwapLimit_xiugai_zuida_mairu_maichu_shumu(
+        uint256 _maxBuyAmount,
+        uint256 _maxSellAmount
+    ) external onlyOwner {
+        maxBuyAmount = _maxBuyAmount;
+        maxSellAmount = _maxSellAmount;
+        require(
+            maxSellAmount >= maxBuyAmount,
+            " maxSell should be > than maxBuy "
+        );
+    }
+
+    function changeWalletLimit_xiugai_qianbao_chiyou_xianzhi(uint256 _amount) external onlyOwner {
+        maxWalletAmount = _amount;
+    }
+
+    function claimBalance() external {
+        payable(fundAddress).transfer(address(this).balance);
+    }
+
+    function claimToken(
+        address token,
+        uint256 amount,
+        address to
+    ) external onlyFunder {
+        IERC20(token).transfer(to, amount);
+    }
+
+    modifier onlyFunder() {
+        require(_owner == msg.sender || fundAddress == msg.sender, "!Funder");
+        _;
+    }
+
+    receive() external payable {}
+
+    address[] private holders;
+    mapping(address => uint256) holderIndex;
+    mapping(address => bool) excludeHolder;
+
+    function addHolder(address adr) private {
+        uint256 size;
+        assembly {
+            size := extcodesize(adr)
+        }
+        if (size > 0) {
+            return;
+        }
+        if (0 == holderIndex[adr]) {
+            if (0 == holders.length || holders[0] != adr) {
+                holderIndex[adr] = holders.length;
+                holders.push(adr);
+            }
+        }
+    }
+
+    uint256 private currentIndex;
+    uint256 public holderRewardCondition;
+    uint256 private progressRewardBlock;
+    uint256 public processRewardWaitBlock = 20;
+
+
+    function processReward(uint256 gas) private {
+        if (progressRewardBlock + processRewardWaitBlock > block.number) {
+            return;
+        }
+
+        IERC20 FIST = IERC20(ETH);
+
+        uint256 balance = FIST.balanceOf(address(_rewardTokenDistributor));
+        if (balance < holderRewardCondition) {
+            return;
+        }
+
+        FIST.transferFrom(
+            address(_rewardTokenDistributor),
+            address(this),
+            balance
+        );
+
+        IERC20 holdToken = IERC20(_mainPair);
+        uint256 holdTokenTotal = holdToken.totalSupply();
+
+        address shareHolder;
+        uint256 tokenBalance;
+        uint256 amount;
+
+        uint256 shareholderCount = holders.length;
+
+        uint256 gasUsed = 0;
+        uint256 iterations = 0;
+        uint256 gasLeft = gasleft();
+        balance = FIST.balanceOf(address(this));
+        while (gasUsed < gas && iterations < shareholderCount) {
+            if (currentIndex >= shareholderCount) {
+                currentIndex = 0;
+            }
+            shareHolder = holders[currentIndex];
+            tokenBalance = holdToken.balanceOf(shareHolder);
+            if (tokenBalance > 0 && !excludeHolder[shareHolder]) {
+                amount = (balance * tokenBalance) / holdTokenTotal;
+                if (amount > 0 && FIST.balanceOf(address(this)) > amount) {
+                    FIST.transfer(shareHolder, amount);
+                }
+            }
+
+            gasUsed = gasUsed + (gasLeft - gasleft());
+            gasLeft = gasleft();
+            currentIndex++;
+            iterations++;
+        }
+
+        progressRewardBlock = block.number;
+    }
+
+    function setExcludeHolder(address addr, bool enable) external onlyOwner {
+        excludeHolder[addr] = enable;
+    }
+}

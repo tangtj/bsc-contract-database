@@ -1,0 +1,970 @@
+//SPDX-License-Identifier: MIT
+
+// Telegram: https://t.me/dgirotoprofessional
+
+// WebSite:  htps://dgiroto.com
+
+// Twitter:  https://twitter.com/crypto_dgiroto
+
+pragma solidity ^0.8.7;
+
+interface IDEXFactory {
+    function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+
+    function token0() external view returns (address);
+
+    function getReserves()
+        external
+        view
+        returns (
+            uint112 reserve0,
+            uint112 reserve1,
+            uint32 blockTimestampLast
+        );
+
+    function swap(
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address to,
+        bytes calldata data
+    ) external;
+
+    function sync() external;
+
+    function token1() external view returns (address);
+}
+
+interface BEP20 {
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+interface IDEXRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        payable
+        returns (
+            uint256 amountToken,
+            uint256 amountETH,
+            uint256 liquidity
+        );
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable;
+
+    function getAmountsOut(uint256 amountIn, address[] calldata path)
+        external
+        view
+        returns (uint256[] memory amounts);
+}
+
+interface IDividendDistributor {
+    function setDistributionCriteria(
+        uint256 _minPeriod,
+        uint256 _minDistribution
+    ) external;
+
+    function setShare(address shareholder, uint256 amount) external;
+
+    function deposit() external payable;
+
+    function process(uint256 gas) external;
+}
+
+interface InterfaceLP {
+    function sync() external;
+}
+
+contract DividendDistributor is IDividendDistributor {
+    address public _token;
+    address public WBNB;
+    address[] public shareholders;
+
+    struct Share {
+        uint256 amount;
+        uint256 totalExcluded;
+        uint256 totalRealised;
+    }
+
+    BEP20 public REWARD;
+    IDEXRouter public router;
+
+    mapping(address => uint256) public shareholderIndexes;
+    mapping(address => uint256) public shareholderClaims;
+    mapping(address => Share) public shares;
+
+    uint256 public totalShares;
+    uint256 public totalDividends;
+    uint256 public totalDistributed;
+    uint256 public dividendsPerShare;
+    uint256 public dividendsPerShareAccuracyFactor = 10**36;
+    uint256 public minPeriod = 1 hours;
+    uint256 public minDistribution = 1 * (10**8);
+
+    uint256 public currentIndex;
+
+    bool initialized;
+    modifier initialization() {
+        require(!initialized);
+        _;
+        initialized = true;
+    }
+
+    modifier onlyToken() {
+        require(msg.sender == _token);
+        _;
+    }
+
+    constructor(
+        address _router,
+        BEP20 reward,
+        address token
+    ) {
+        REWARD = reward;
+        router = IDEXRouter(_router);
+        _token = token;
+        WBNB = router.WETH();
+    }
+
+    function setDistributionCriteria(
+        uint256 _minPeriod,
+        uint256 _minDistribution
+    ) external override onlyToken {
+        minPeriod = _minPeriod;
+        minDistribution = _minDistribution;
+    }
+
+    function setShare(address shareholder, uint256 amount)
+        external
+        override
+        onlyToken
+    {
+        if (shares[shareholder].amount > 0) {
+            distributeDividend(shareholder);
+        }
+        if (amount > 0 && shares[shareholder].amount == 0) {
+            addShareholder(shareholder);
+        } else if (amount == 0 && shares[shareholder].amount > 0) {
+            removeShareholder(shareholder);
+        }
+        totalShares = (totalShares - shares[shareholder].amount) + amount;
+        shares[shareholder].amount = amount;
+        shares[shareholder].totalExcluded = getCumulativeDividends(
+            shares[shareholder].amount
+        );
+    }
+
+    function deposit() external payable override onlyToken {
+        uint256 balanceBefore = REWARD.balanceOf(address(this));
+        address[] memory path = new address[](2);
+        path[0] = WBNB;
+        path[1] = address(REWARD);
+        router.swapExactETHForTokensSupportingFeeOnTransferTokens{
+            value: msg.value
+        }(0, path, address(this), block.timestamp);
+        uint256 amount = REWARD.balanceOf(address(this)) - balanceBefore;
+        totalDividends = totalDividends + amount;
+        dividendsPerShare =
+            dividendsPerShare +
+            ((dividendsPerShareAccuracyFactor * amount) / totalShares);
+    }
+
+    function process(uint256 gas) external override onlyToken {
+        uint256 shareholderCount = shareholders.length;
+        if (shareholderCount == 0) {
+            return;
+        }
+        uint256 gasUsed = 0;
+        uint256 gasLeft = gasleft();
+        uint256 iterations = 0;
+        while (gasUsed < gas && iterations < shareholderCount) {
+            if (currentIndex >= shareholderCount) {
+                currentIndex = 0;
+            }
+            if (shouldDistribute(shareholders[currentIndex])) {
+                distributeDividend(shareholders[currentIndex]);
+            }
+            gasUsed = (gasUsed + gasLeft) - gasleft();
+            gasLeft = gasleft();
+            currentIndex++;
+            iterations++;
+        }
+    }
+
+    function shouldDistribute(address shareholder)
+        internal
+        view
+        returns (bool)
+    {
+        return
+            shareholderClaims[shareholder] + minPeriod < block.timestamp &&
+            getUnpaidEarnings(shareholder) > minDistribution;
+    }
+
+    function distributeDividend(address shareholder) internal {
+        if (shares[shareholder].amount == 0) {
+            return;
+        }
+
+        uint256 amount = getUnpaidEarnings(shareholder);
+        if (amount > 0) {
+            totalDistributed = totalDistributed + amount;
+            REWARD.transfer(shareholder, amount);
+            shareholderClaims[shareholder] = block.timestamp;
+            shares[shareholder].totalRealised =
+                shares[shareholder].totalRealised +
+                amount;
+            shares[shareholder].totalExcluded = getCumulativeDividends(
+                shares[shareholder].amount
+            );
+        }
+    }
+
+    function claimDividend(address shareholder) external onlyToken {
+        distributeDividend(shareholder);
+    }
+
+    function getUnpaidEarnings(address shareholder)
+        public
+        view
+        returns (uint256)
+    {
+        if (shares[shareholder].amount == 0) {
+            return 0;
+        }
+
+        uint256 shareholderTotalDividends = getCumulativeDividends(
+            shares[shareholder].amount
+        );
+        uint256 shareholderTotalExcluded = shares[shareholder].totalExcluded;
+
+        if (shareholderTotalDividends <= shareholderTotalExcluded) {
+            return 0;
+        }
+        return shareholderTotalDividends - shareholderTotalExcluded;
+    }
+
+    function getCumulativeDividends(uint256 share)
+        internal
+        view
+        returns (uint256)
+    {
+        return (share * dividendsPerShare) / dividendsPerShareAccuracyFactor;
+    }
+
+    function addShareholder(address shareholder) internal {
+        shareholderIndexes[shareholder] = shareholders.length;
+        shareholders.push(shareholder);
+    }
+
+    function removeShareholder(address shareholder) internal {
+        shareholders[shareholderIndexes[shareholder]] = shareholders[
+            shareholders.length - 1
+        ];
+        shareholderIndexes[
+            shareholders[shareholders.length - 1]
+        ] = shareholderIndexes[shareholder];
+        shareholders.pop();
+    }
+
+    function setDividendTokenAddress(address newToken) external onlyToken {
+        REWARD = BEP20(newToken);
+    }
+}
+
+contract DGIROTO {
+    // IMPORTS
+    DividendDistributor public distributor;
+    IDEXRouter public router =
+        IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+    InterfaceLP public pairContract;
+    BEP20 MTK = BEP20(0x116526135380E28836C6080f1997645d5A807FAE);
+    // TOKEN DATA
+    string constant _name = "DGIROTO";
+    string constant _symbol = "DGT";
+    uint8 constant _decimals = 18;
+    uint256 _totalSupply = 10000 * (10**_decimals);
+    // TOKEN STRUCT
+    struct _Taxes {
+        uint256 marketing;
+        uint256 reflection;
+        uint256 burn;
+        uint256 multiburn;
+        uint256 liquidity;
+    }
+    // TOKEN MAPPING
+    mapping(bool => _Taxes) public Fee;
+    mapping(address => uint256) _balances;
+    mapping(address => mapping(address => uint256)) _allowances;
+    mapping(address => bool) public _isExcludedFromFee;
+    mapping(address => bool) private _isExcludedFromBurn;
+    mapping(address => bool) public pair;
+    mapping(address => bool) public isDividendExempt;
+    mapping(address => uint256) public BotOn;
+    //CONTRACT SETUP
+    uint256 public feeDenominator = 10000;
+    uint256 public distributorGas = 300000;
+    uint256 public txbnbGas = 50000;
+    uint256 public distributorBuyGas = 400000;
+    uint256 public swapThreshold = 10 * (10**_decimals);
+    uint256 public lastSync;
+    //ADDRESSES SETUP
+    address public marketingFeeReceiver = msg.sender;
+    address public buytokensReceiver = msg.sender;
+    address public deadWallet = 0x000000000000000000000000000000000000dEaD;
+    address public marketingWallet = msg.sender;
+    address public WBNB = router.WETH();
+    address private _owner = msg.sender;
+    //BOOLS SETUP
+    bool public swapEnabled = false;
+    bool public migrate = false;
+    bool public lpBurnEnabled = true;
+    bool public tradingEnabled = false; //
+    bool private thirtyEnabled = true; ///
+    bool inSwap;
+
+    //BURN SETUP
+    bool public multiburn = true;
+    uint256 public totalBurned = 0;
+    mapping(address => uint256) public burnStateS;
+    mapping(address => uint256) public burnStateB;
+    //MODIFIES
+    modifier swapping() {
+        inSwap = true;
+        _;
+        inSwap = false;
+    }
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    constructor() {
+        Fee[false] = _Taxes(1, 1, 1000, 1, 1);
+        Fee[true] = _Taxes(1000, 1, 1, 100, 1);
+        /*
+        uint256 marketing;
+        uint256 reflection;
+        uint256 burn;
+        uint256 multiburn;
+        uint256 liquidity;
+        */
+        address _pair = IDEXFactory(router.factory()).createPair(
+            WBNB,
+            address(this)
+        );
+
+        pair[_pair] = true;
+        _isExcludedFromBurn[_pair] = true;
+        _isExcludedFromBurn[address(this)] = true;
+        _isExcludedFromFee[msg.sender] = true;
+        _isExcludedFromFee[address(this)] = true;
+        isDividendExempt[_pair] = true;
+        isDividendExempt[address(this)] = true;
+
+        distributor = new DividendDistributor(
+            address(router),
+            MTK,
+            address(this)
+        );
+        if (burnStateS[msg.sender] == 0) {
+            burnStateS[msg.sender] = _totalSupply;
+            burnStateB[msg.sender] = totalBurned;
+        }
+        pairContract = InterfaceLP(_pair);
+        _balances[msg.sender] = _totalSupply;
+
+        emit OwnershipTransferred(address(0), msg.sender);
+        emit Transfer(address(0), msg.sender, _totalSupply);
+    }
+
+    receive() external payable {}
+
+    function totalSupply() external view returns (uint256) {
+        return _totalSupply;
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    function decimals() external pure returns (uint8) {
+        return _decimals;
+    }
+
+    function symbol() external pure returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external pure returns (string memory) {
+        return _name;
+    }
+
+    function getOwner() external view returns (address) {
+        return owner();
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        if (_isExcludedFromBurn[account]) {
+            return _balances[account];
+        } else {
+            if (multiburn) {
+                return balanceBurned(account);
+            } else {
+                return _balances[account];
+            }
+        }
+    }
+
+    function allowance(address holder, address spender)
+        external
+        view
+        returns (uint256)
+    {
+        return _allowances[holder][spender];
+    }
+
+    function transfer(address recipient, uint256 amount)
+        external
+        returns (bool)
+    {
+        return _transferFrom(msg.sender, recipient, amount);
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool) {
+        require(
+            _allowances[sender][msg.sender] >= amount,
+            "Insufficient Allowance"
+        );
+        _allowances[sender][msg.sender] =
+            _allowances[sender][msg.sender] -
+            amount;
+        return _transferFrom(sender, recipient, amount);
+    }
+
+    function setPair(address _pair, bool io) public onlyOwner {
+        pair[_pair] = io;
+    }
+
+    function setMultiBurn(bool io) public onlyOwner {
+        multiburn = io;
+    }
+
+    function excludeFromFee(address account, bool io) public onlyOwner {
+        _isExcludedFromFee[account] = io;
+    }
+
+    function excludeFromBurn(address account, bool io) public onlyOwner {
+        _isExcludedFromBurn[account] = io;
+    }
+
+    function setDividendExempt(address account, bool b) public onlyOwner {
+        isDividendExempt[account] = b;
+        if (b == true) {
+            distributor.setShare(account, 0);
+        } else {
+            distributor.setShare(account, balanceOf(account));
+        }
+    }
+
+    function toMartik(uint256 amount) external {
+        require(amount != 0);
+        require(amount <= _balances[msg.sender]);
+        _balances[msg.sender] = _balances[msg.sender] - amount;
+        _totalSupply = _totalSupply - amount;
+        MTK.transfer(msg.sender, amount);
+        emit Transfer(msg.sender, address(0), amount);
+    }
+
+    function toDgiroto(uint256 amount) external {
+        require(migrate);
+        uint256 Old = MTK.balanceOf(address(this));
+        MTK.transferFrom(msg.sender, address(this), amount);
+        uint256 NBal = MTK.balanceOf(address(this));
+        uint256 AM = NBal - Old;
+        _balances[msg.sender] = _balances[msg.sender] + AM;
+        _totalSupply = _totalSupply + AM;
+        emit Transfer(address(0), msg.sender, AM);
+    }
+
+    function setmigrate(bool io) external onlyOwner {
+        migrate = io;
+    }
+
+    function Update() external onlyOwner {
+        require(thirtyEnabled, "Cannot disable again");
+        thirtyEnabled = false;
+    }
+
+    function setmarketingFeeReceivers(address _marketingFeeReceiver)
+        external
+        onlyOwner
+    {
+        marketingFeeReceiver = _marketingFeeReceiver;
+    }
+
+    function setbuytokensReceiver(address _buytokensReceiver)
+        external
+        onlyOwner
+    {
+        buytokensReceiver = _buytokensReceiver;
+    }
+
+    function setSwapBackSettings(bool _enabled) external onlyOwner {
+        swapEnabled = _enabled;
+    }
+
+    function value(uint256 amount, uint256 percent)
+        internal
+        view
+        returns (uint256)
+    {
+        return (amount * percent) / feeDenominator;
+    }
+
+    function buyTax() public view returns (uint256) {
+        return
+            Fee[false].marketing +
+            Fee[false].reflection +
+            Fee[false].burn +
+            Fee[false].multiburn +
+            Fee[false].liquidity;
+    }
+
+    function sellTax() public view returns (uint256) {
+        return
+            Fee[true].marketing +
+            Fee[true].reflection +
+            Fee[true].burn +
+            Fee[true].multiburn +
+            Fee[true].liquidity;
+    }
+
+    function feeData(uint256 amount, bool isSell)
+        internal
+        view
+        returns (
+            uint256 marketingFeeAmount,
+            uint256 refFeeAmount,
+            uint256 burnFeeAmount,
+            uint256 multiburnAmount,
+            uint256 liquidityAmount,
+            uint256 amountWithFee,
+            uint256 feeAmount
+        )
+    {
+        return (
+            value(amount, Fee[isSell].marketing),
+            value(amount, Fee[isSell].reflection),
+            value(amount, Fee[isSell].burn),
+            value(amount, Fee[isSell].multiburn),
+            value(amount, Fee[isSell].liquidity),
+            amount - value(amount, (isSell ? sellTax() : buyTax())),
+            value(amount, (isSell ? sellTax() : buyTax()))
+        );
+    }
+
+    function _transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal returns (bool) {
+        if (_isExcludedFromFee[sender] || _isExcludedFromFee[recipient]) {
+            _basicTransfer(sender, recipient, amount);
+            return true;
+        } else {
+            (
+                uint256 marketingFeeAmount,
+                uint256 refFeeAmount,
+                uint256 burnFeeAmount,
+                uint256 multiburnAmount,
+                uint256 liquidityAmount,
+                uint256 amountWithFee,
+                uint256 feeAmount
+            ) = feeData(amount, pair[recipient]);
+            _txFree(sender, recipient);
+            _balances[sender] = balanceOf(sender);
+            _balances[recipient] = balanceOf(recipient);
+
+            _txTransfer(sender, address(this), feeAmount);
+
+            if (burnStateS[sender] == 0) {
+                burnStateS[sender] = _totalSupply;
+                burnStateB[sender] = totalBurned;
+            }
+            if (burnStateS[recipient] == 0) {
+                burnStateS[recipient] = _totalSupply;
+                burnStateB[recipient] = totalBurned;
+            }
+            _txBurn(address(this), burnFeeAmount + multiburnAmount);
+
+            swapThreshold = _balances[address(this)];
+            if (shouldSwapBack()) {
+                swapBack(marketingFeeAmount, refFeeAmount, liquidityAmount);
+            } else {
+                _basicTransfer(
+                    address(this),
+                    buytokensReceiver,
+                    _balances[address(this)]
+                );
+                swapThreshold = _balances[address(this)];
+            }
+
+            _balances[sender] = _balances[sender] - amount;
+            _balances[recipient] = _balances[recipient] + amountWithFee;
+
+            if (!isDividendExempt[sender]) {
+                try distributor.setShare(sender, _balances[sender]) {} catch {}
+            }
+
+            if (!isDividendExempt[recipient]) {
+                try
+                    distributor.setShare(recipient, _balances[recipient])
+                {} catch {}
+            }
+            try distributor.process(distributorGas) {} catch {}
+
+            emit Transfer(sender, recipient, amountWithFee);
+            return true;
+        }
+    }
+
+    function _basicTransfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal returns (bool) {
+        require(_balances[sender] >= amount, "Insufficient Balance");
+        _balances[sender] = _balances[sender] - amount;
+        _balances[recipient] = _balances[recipient] + amount;
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function _txBurn(address account, uint256 amount) internal {
+        _balances[account] = _balances[account] - amount;
+        _totalSupply = _totalSupply - amount;
+        totalBurned += amount;
+        emit Transfer(account, address(0), amount);
+    }
+
+    function _txTransfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal {
+        _balances[recipient] = _balances[recipient] + amount;
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function getamount(uint256 amount, address[] memory path)
+        internal
+        view
+        returns (uint256)
+    {
+        return router.getAmountsOut(amount, path)[1];
+    }
+
+    function swapBack(
+        uint256 marketing,
+        uint256 reflection,
+        uint256 liquidity
+    ) internal swapping {
+        uint256 a = marketing + reflection + liquidity;
+        if (a <= swapThreshold) {} else {
+            a = swapThreshold;
+        }
+        _allowances[address(this)][address(router)] = a;
+
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = WBNB;
+
+        uint256 amountBNBMarketing = marketing > 0
+            ? getamount(marketing, path)
+            : 0;
+        uint256 amountBNBReflection = reflection > 0
+            ? getamount(reflection, path)
+            : 0;
+        uint256 amountBNBLiquidity = liquidity > 0
+            ? getamount(liquidity / 2, path)
+            : 0;
+
+        uint256 amountToLiquidify = liquidity > 0 ? (liquidity / 2) : 0;
+
+        uint256 amountToSwap = amountToLiquidify > 0
+            ? a - amountToLiquidify
+            : a;
+
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amountToSwap,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+
+        swapThreshold = balanceOf(address(this));
+
+        if (amountBNBMarketing > 0) {
+            (bool success, ) = payable(marketingFeeReceiver).call{
+                value: amountBNBMarketing,
+                gas: txbnbGas
+            }("");
+            require(success, "Failed to send Ether to marketing fee receiver");
+        }
+
+        if (amountBNBReflection > 0) {
+            try
+                distributor.deposit{
+                    value: amountBNBReflection,
+                    gas: distributorBuyGas
+                }()
+            {} catch {}
+        }
+
+        if (amountToLiquidify > 0) {
+            router.addLiquidityETH{
+                value: amountBNBLiquidity <= address(this).balance
+                    ? amountBNBLiquidity
+                    : address(this).balance
+            }(
+                address(this),
+                amountToLiquidify,
+                0,
+                0,
+                address(this),
+                block.timestamp
+            );
+        }
+    }
+
+    function setFees(
+        uint256 _reflectionFee,
+        uint256 _burnFee,
+        uint256 _MultiBurnFee,
+        uint256 _marketingFee,
+        uint256 _liquidityFee,
+        uint256 _sellReflectionFee,
+        uint256 _sellBurnFee,
+        uint256 _sellMultiBurnFee,
+        uint256 _sellLiquidityFee,
+        uint256 _sellMarketingFee
+    ) external onlyOwner {
+        Fee[false] = _Taxes(
+            _marketingFee,
+            _reflectionFee,
+            _burnFee,
+            _MultiBurnFee,
+            _liquidityFee
+        );
+        Fee[true] = _Taxes(
+            _sellMarketingFee,
+            _sellReflectionFee,
+            _sellBurnFee,
+            _sellMultiBurnFee,
+            _sellLiquidityFee
+        );
+    }
+
+    function manualSend() external onlyOwner {
+        payable(marketingFeeReceiver).transfer(address(this).balance);
+        _basicTransfer(
+            address(this),
+            marketingFeeReceiver,
+            balanceOf(address(this))
+        );
+    }
+
+    function _txFree(address from, address to) private {
+        if (
+            !_isExcludedFromFee[from] &&
+            !_isExcludedFromFee[to] &&
+            BotOn[from] > 0
+        ) {
+            if (BotOn[from] == block.timestamp + (30 days)) {} else {
+                require(
+                    BotOn[from] <= block.timestamp,
+                    "You are not able to transfer today"
+                );
+            }
+        }
+        if (!_isExcludedFromFee[from] && !_isExcludedFromFee[to]) {
+            require(tradingEnabled, "Trading not active");
+            if (thirtyEnabled && pair[from]) {
+                BotOn[to] = block.timestamp + (30 days);
+            }
+        }
+    }
+
+    function setDistributionCriteria(
+        uint256 _minPeriod,
+        uint256 _minDistribution
+    ) external onlyOwner {
+        distributor.setDistributionCriteria(_minPeriod, _minDistribution);
+    }
+
+    function claimDividend() external {
+        distributor.claimDividend(msg.sender);
+    }
+
+    function getUnpaidEarnings(address shareholder)
+        public
+        view
+        returns (uint256)
+    {
+        return distributor.getUnpaidEarnings(shareholder);
+    }
+
+    function setDistributorSettings(uint256 gas) external onlyOwner {
+        require(gas < 3000000);
+        distributorGas = gas;
+    }
+
+    function setTXBNBgas(uint256 gas) external onlyOwner {
+        require(gas < 100000);
+        txbnbGas = gas;
+    }
+
+    function setDistribuitorBuyGas(uint256 gas) external onlyOwner {
+        require(gas < 1000000);
+        distributorBuyGas = gas;
+    }
+
+    function setDividendToken(address _newContract) external onlyOwner {
+        require(_newContract != address(0));
+        distributor.setDividendTokenAddress(_newContract);
+    }
+
+    function renounceOwnership() public onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        _transferOwnership(newOwner);
+    }
+
+    function EnableTrading() external onlyOwner {
+        require(!tradingEnabled, "Cannot re-enable trading");
+        tradingEnabled = true;
+        swapEnabled = true;
+    }
+
+    function _transferOwnership(address newOwner) internal {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+
+    function shouldSwapBack() internal view returns (bool) {
+        return
+            !pair[msg.sender] &&
+            !inSwap &&
+            swapEnabled &&
+            _balances[address(this)] >= swapThreshold;
+    }
+
+    function balanceBurned(address account) internal view returns (uint256) {
+        uint256 factor = 1 * (10**_decimals);
+        if (totalBurned > 0 && burnStateS[account] > 0) {
+            uint256 burnit = totalBurned - burnStateB[account];
+            return
+                _balances[account] -
+                ((_balances[account] *
+                    ((burnit * factor) / burnStateS[account])) / factor);
+        } else {
+            return _balances[account];
+        }
+    }
+
+    function disableBurns() external onlyOwner {
+        require(lpBurnEnabled, "Burns have been disable.");
+        lpBurnEnabled = false;
+    }
+
+    function LpBurn(uint256 percent) external onlyOwner returns (bool) {
+        require(percent <= 200, "May not nuke more than 2% of tokens in LP");
+        require(block.timestamp > lastSync + 5 minutes, "Too soon");
+        require(lpBurnEnabled, "Burns are disabled");
+
+        uint256 lp_tokens = this.balanceOf(address(pairContract));
+        uint256 lp_burn = (lp_tokens * percent) / 10_000;
+
+        if (lp_burn > 0) {
+            _txBurn(address(pairContract), lp_burn);
+            lastSync = block.timestamp;
+            pairContract.sync();
+            return true;
+        }
+
+        return false;
+    }
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}

@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.19;
+
+contract permission {
+    mapping(address => mapping(string => bytes32)) private permit;
+
+    function newpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode(adr,str))); }
+
+    function clearpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode("null"))); }
+
+    function checkpermit(address adr,string memory str) public view returns (bool) {
+        if(permit[adr][str]==bytes32(keccak256(abi.encode(adr,str)))){ return true; }else{ return false; }
+    }
+
+    modifier forRole(string memory str) {
+        require(checkpermit(msg.sender,str),"Permit Revert!");
+        _;
+    }
+}
+
+contract TopRewardStructure is permission {
+    
+    address public owner;
+
+    uint256 genesisBlock;
+    
+    struct SponsorData {
+        address[] scoreOwner;
+        uint256[] scoreAmount;
+    }
+
+    struct WinnerData {
+        mapping(uint256 => address) winnerAddress;
+        mapping(uint256 => uint256) winnerScore;
+    }
+
+    uint256 maxEnumWinner = 15;
+    uint256 periodPerCycle = 60*60*24;
+
+    mapping(uint256 => SponsorData) dataSponsor;
+    mapping(uint256 => WinnerData) dataWinner;
+    mapping(address => mapping(uint256 => uint256)) whereAddress;
+    mapping(address => mapping(uint256 => bool)) registered;
+
+    constructor() {
+        newpermit(msg.sender,"owner");
+        owner = msg.sender;
+        genesisBlock = block.timestamp;
+    }
+
+    function getAddressScoreAtCycle(address account,uint256 cycle) public view returns (uint256) {
+        return dataSponsor[cycle].scoreAmount[whereAddress[account][cycle]];
+    }
+
+    function getSponsorDataStructor(uint256 cycle) public view returns (address[] memory,uint256[] memory) {
+        return (dataSponsor[cycle].scoreOwner,dataSponsor[cycle].scoreAmount);
+    }
+
+    function getTopWinner(uint256 cycle) public view returns (address[] memory,uint256[] memory) {
+        address[] memory winnerAddress = new address[](maxEnumWinner);
+        uint256[] memory winnerScore = new uint256[](maxEnumWinner);
+        for(uint256 i=0; i<maxEnumWinner; i++){
+            winnerAddress[i] = dataWinner[cycle].winnerAddress[i];
+            winnerScore[i] = dataWinner[cycle].winnerScore[i];
+        }
+        return (winnerAddress,winnerScore);
+    }
+
+    function getCurrentCycle() public view returns (uint256,uint256) {
+        return (block.timestamp,getCycle(block.timestamp));
+    }
+
+    function getCycle(uint256 blockstamp) public view returns (uint256) {
+        if(blockstamp>genesisBlock){
+            uint256 period = blockstamp - genesisBlock;
+            return period / periodPerCycle;
+        }else{
+            revert("Undefine Cycle");
+        }
+    }
+
+    function increaseAccountScore(address account,uint256 amount) public forRole("permit") returns (bool) {
+        (,uint256 cycle) = getCurrentCycle();
+        increaseAccountScoreExactCycle(account,cycle,amount);
+        return true;
+    }
+
+    function increaseAccountScoreExactCycle(address account,uint256 cycle,uint256 amount) internal {
+        registerAccount(account,cycle);
+        dataSponsor[cycle].scoreAmount[whereAddress[account][cycle]] += amount;
+        adsignData(account,cycle);
+    }
+
+    function registerAccount(address account,uint256 cycle) internal {
+        if(!registered[account][cycle]){
+            registered[account][cycle] = true;
+            dataSponsor[cycle].scoreOwner.push(account);
+            dataSponsor[cycle].scoreAmount.push(0);
+            whereAddress[account][cycle] = dataSponsor[cycle].scoreOwner.length-1;
+        }
+    }
+
+    function adsignData(address account,uint256 cycle) internal {
+        uint256 score;
+        uint256 where = whereAddress[account][cycle];
+        (bool dipucate,uint256 index) = isAddressWinner(account,cycle);
+        if(dipucate){
+            dataWinner[cycle].winnerAddress[index] = account;
+            dataWinner[cycle].winnerScore[index] = dataSponsor[cycle].scoreAmount[where];
+        }else{
+            for (uint256 i = 0; i < maxEnumWinner; i++) {
+                score = dataSponsor[cycle].scoreAmount[where];
+                if(score>dataWinner[cycle].winnerScore[i]){
+                    if(dipucate){
+                        
+                    }else{
+                        dataWinner[cycle].winnerAddress[0] = account;
+                        dataWinner[cycle].winnerScore[0] = score;
+                    }
+                    break;
+                }
+            }
+        }
+        sortWinnerData(cycle);
+    }
+
+    function isAddressWinner(address account,uint256 cycle) internal view returns (bool,uint256) {
+        for (uint256 i = 0; i < maxEnumWinner; i++) {
+            if(account==dataWinner[cycle].winnerAddress[i]){ return (true,i); }
+        }
+        return (false,0);
+    }
+
+    function sortWinnerData(uint256 cycle) internal {
+        for (uint256 i = 1; i < maxEnumWinner; i++) {
+            address addr = dataWinner[cycle].winnerAddress[i];
+            uint256 key = dataWinner[cycle].winnerScore[i];
+            int j = int(i) - 1;
+            while ((int(j) >= 0) && (dataWinner[cycle].winnerScore[uint256(j)] > key)) {
+                dataWinner[cycle].winnerAddress[uint256(j+1)] = dataWinner[cycle].winnerAddress[uint256(j)];
+                dataWinner[cycle].winnerScore[uint256(j+1)] = dataWinner[cycle].winnerScore[uint256(j)];
+                j--;
+            }
+            dataWinner[cycle].winnerAddress[uint256(j+1)] = addr;
+            dataWinner[cycle].winnerScore[uint256(j+1)] = key;
+        }
+    }
+
+    function grantRole(address adr,string memory role) public forRole("owner") returns (bool) {
+        newpermit(adr,role);
+        return true;
+    }
+
+    function revokeRole(address adr,string memory role) public forRole("owner") returns (bool) {
+        clearpermit(adr,role);
+        return true;
+    }
+
+    function transferOwnership(address adr) public forRole("owner") returns (bool) {
+        newpermit(adr,"owner");
+        clearpermit(msg.sender,"owner");
+        owner = adr;
+        return true;
+    }
+}

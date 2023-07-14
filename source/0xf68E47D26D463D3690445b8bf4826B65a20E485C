@@ -1,0 +1,225 @@
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+
+
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+// File: contracts/Payment-v2.sol
+
+
+pragma solidity ^0.8.0;
+
+// OpenZeppelin contracts
+
+
+contract PaymentV2 {
+    address payable private _bank;
+    address private _owner;
+    mapping(address => bool) public supportedCurrencyMap;
+    mapping(address => bool) public supportedStableCoinForSwappingMap;
+
+    event DepositNativeToken(address indexed buyer, uint256 amount);
+    event DepositNonNativeToken(address indexed buyer, address indexed tokenAddress, uint256 amount);
+    event SwapStableCoin(address indexed sender, address indexed stableCoin, uint256 amount);
+
+    constructor(address bank) {
+        _owner = msg.sender;
+        _bank = payable(bank);
+    }
+
+    // ==================== FOR DEPOSITTING ====================
+
+    function addCurrency(address tokenAddress) public returns (bool) {
+        require(_owner == msg.sender, "sender must be owner");
+
+        supportedCurrencyMap[tokenAddress] = true;
+
+        return true;
+    }
+
+    function removeCurrency(address tokenAddress) public returns (bool) {
+        require(msg.sender == _owner, "sender must be owner");
+
+        supportedCurrencyMap[tokenAddress] = false;
+
+        return true;
+    }
+
+    function getBank() public view  returns (address) {
+        require(_owner == msg.sender, "sender must be owner");
+
+        return _bank;
+    }
+
+    function getOwner() public view  returns (address) {
+        require(_owner == msg.sender, "sender must be owner");
+
+        return _owner;
+    }
+
+    function setNewOwner(address newOwner) public returns (bool) {
+        require(_owner == msg.sender, "sender must be owner");
+
+        _owner = newOwner;
+
+        return true;
+    }
+
+    function setNewBank(address newBank) public returns (bool) {
+        require(_owner == msg.sender, "sender must be owner");
+
+        _bank = payable(newBank);
+
+        return true;
+    }
+
+    function depositNativeToken() public payable returns (bool) {
+        _bank.transfer(msg.value);
+
+        emit DepositNativeToken(msg.sender, msg.value);
+
+        return true;
+    }
+
+    function depositNonNativeToken(
+        address tokenAddress,
+        uint256 amount
+    ) public returns (bool) {
+        require(
+            supportedCurrencyMap[tokenAddress],
+            "token address is not supported"
+        );
+
+        IERC20(tokenAddress).transferFrom(msg.sender, _bank, amount);
+
+        emit DepositNonNativeToken(msg.sender, tokenAddress, amount);
+
+        return true;
+    }
+
+    function validateSufficientApprovedAmount(
+        address buyer,
+        address tokenAddress,
+        uint256 amount
+    ) public view returns (bool) {
+        require(
+            supportedCurrencyMap[tokenAddress] || supportedStableCoinForSwappingMap[tokenAddress],
+            "token address is not supported"
+        );
+
+        uint256 approvedAmount = IERC20(tokenAddress).allowance(
+            buyer,
+            address(this)
+        );
+        require(approvedAmount >= amount, "approved amount is insufficient");
+
+        return true;
+    }
+
+    // ==================== FOR SWAPPING ====================
+
+    function addStableCoinForSwapping(address tokenAddress) public returns (bool) {
+        require(_owner == msg.sender, "sender must be owner");
+
+        supportedStableCoinForSwappingMap[tokenAddress] = true;
+
+        return true;
+    }
+
+    function removeStableCoinForSwapping(address tokenAddress) public returns (bool) {
+        require(msg.sender == _owner, "sender must be owner");
+
+        supportedStableCoinForSwappingMap[tokenAddress] = false;
+
+        return true;
+    }
+
+    function swapStableCoin(address stableCoinAddress, uint256 amount) public returns (bool) {
+        require(supportedStableCoinForSwappingMap[stableCoinAddress], "stable coin is not supported");
+
+        IERC20(stableCoinAddress).transferFrom(msg.sender, _bank, amount);
+
+        emit SwapStableCoin(msg.sender, stableCoinAddress, amount);
+
+        return true;
+    }
+}

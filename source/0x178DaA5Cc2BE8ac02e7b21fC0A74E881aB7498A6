@@ -1,0 +1,210 @@
+/**
+ *Submitted for verification at BscScan.com on 2023-07-12
+*/
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.1;
+
+interface IERC20 {
+    function name() external view returns (string memory);
+
+    function symbol() external view returns (string memory);
+
+    function decimals() external view returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+
+
+contract Ownable {
+    address private _owner;
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+contract Manager is Ownable {
+    address public manager;
+    modifier onlyManager() {
+        require(
+            owner() == _msgSender() || manager == _msgSender(),
+            "Ownable: Not Manager"
+        );
+        _;
+    }
+
+    function setManager(address account) public virtual onlyManager {
+        manager = account;
+    }
+}
+
+contract LPDividend is Manager {
+    address[] private _userAdds;
+    mapping(address => uint256) public userIndex;
+    mapping(address => bool) public isBlackList;
+    uint private _currentIndex;
+    uint private _rewardMin = 10e18;
+    IERC20 private _TOKEN;
+    IERC20 private _LP;
+
+    constructor(address _manager, address usdt, address lp) {
+        manager = _manager;
+        _TOKEN = IERC20(usdt);
+        _LP = IERC20(lp);
+    }
+
+    function withdrawToken(IERC20 token, uint256 amount) public onlyManager {
+        token.transfer(msg.sender, amount);
+    }
+
+    function setToken(address token) public onlyManager {
+        _TOKEN = IERC20(token);
+    }
+
+    function setLP(address lp) public onlyManager {
+        _LP = IERC20(lp);
+    }
+
+    function setRewardMin(uint rewardMin) public onlyManager {
+        _rewardMin = rewardMin;
+    }
+
+    function setIsBlackList(address account, bool enable) public onlyManager {
+        isBlackList[account] = enable;
+    }
+
+    function addUser(address account) public onlyManager {
+        if (userIndex[account] == 0) {
+            if (_userAdds.length == 0 || _userAdds[0] != account) {
+                userIndex[account] = _userAdds.length;
+                _userAdds.push(account);
+            }
+        }
+    }
+
+    function sendReward(uint gas) public {
+        uint totalPair = _LP.totalSupply();
+        if (0 == totalPair) {
+            return;
+        }
+        if (_TOKEN.balanceOf(address(this)) < _rewardMin) {
+            return;
+        }
+        uint reward;
+        uint gasUsed = 0;
+        uint gasLeft = gasleft();
+        uint total = _userAdds.length;
+        for (uint i = 0; i < total; i++) {
+            if (_currentIndex >= total) {
+                _currentIndex = 0;
+            }
+            if (
+                _LP.balanceOf(_userAdds[_currentIndex]) > 0 &&
+                !isBlackList[_userAdds[_currentIndex]]
+            ) {
+                reward =
+                    (_rewardMin * _LP.balanceOf(_userAdds[_currentIndex])) /
+                    totalPair;
+                if (reward > 0) {
+                    _TOKEN.transfer(_userAdds[_currentIndex], reward);
+                }
+            }
+            _currentIndex++;
+            gasUsed = gasUsed + (gasLeft - gasleft());
+            gasLeft = gasleft();
+            if (gasUsed < gas) {
+                break;
+            }
+        }
+    }
+
+    function getConfig()
+        public
+        view
+        returns (
+            uint currentIndex,
+            uint userTotal,
+            uint rewardMin,
+            address token,
+            address lp
+        )
+    {
+        currentIndex = _currentIndex;
+        userTotal = _userAdds.length;
+        rewardMin = _rewardMin;
+        token = address(_TOKEN);
+        lp = address(_LP);
+    }
+
+    function getUsers() public view returns (address[] memory users) {
+        users = new address[](_userAdds.length);
+        for (uint256 i = 0; i < _userAdds.length; i++) {
+            users[i] = _userAdds[i];
+        }
+    }
+}
