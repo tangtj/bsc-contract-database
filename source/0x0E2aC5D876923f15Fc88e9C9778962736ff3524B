@@ -1,0 +1,251 @@
+
+// File: src/Rujinpro.sol
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity >=0.8.2 <0.9.0;
+
+import "openzeppelin-contracts/access/Ownable.sol";
+
+interface SwapRouterService{
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
+interface Erc20Service {
+    function balanceOf(address account) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+}
+
+contract Rujinpro is Ownable {
+
+    mapping(uint256 => uint256) orderMapping;
+
+
+    struct addconfig {
+        address swapRouterAdd;
+        address usdtAdd;
+        address busdAdd;
+        address swapHTTAddress;
+        address chujinAdd;
+        address[] getPath;
+        address[] getBusdPath;
+        SwapRouterService swapRouterService;
+        Erc20Service erc20BusdService;
+        Erc20Service erc20Service;
+    }
+
+    address account;
+
+    addconfig initconfig;
+
+    constructor(
+        address addr3,  // 交易所合约地址
+        address chujinAdd
+    ){
+
+        initconfig.swapRouterAdd = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+        initconfig.usdtAdd = 0x55d398326f99059fF775485246999027B3197955;
+        initconfig.busdAdd = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+        initconfig.swapHTTAddress = addr3;
+        initconfig.chujinAdd = chujinAdd;
+        initconfig.getPath = [initconfig.usdtAdd,initconfig.busdAdd];
+        initconfig.getBusdPath = [initconfig.busdAdd,initconfig.usdtAdd];
+        initconfig.swapRouterService = SwapRouterService(initconfig.swapRouterAdd);
+        initconfig.erc20Service = Erc20Service(initconfig.usdtAdd);
+        initconfig.erc20BusdService = Erc20Service(initconfig.busdAdd);
+
+    }
+
+
+    function getMoney(uint256 amountIn,uint256 servicefee,uint256 deadline,uint256 orderNo) public {
+        uint256 finalIn = (amountIn * 98) / 100;
+        uint256 part2 = (amountIn * 2) / 100;
+
+        initconfig.erc20Service.transferFrom(msg.sender,address(this), finalIn);
+        initconfig.erc20Service.transferFrom(msg.sender,initconfig.swapHTTAddress, part2);//jiaoyisuo合约底池地址
+
+
+
+        initconfig.erc20Service.approve(initconfig.swapRouterAdd, finalIn);
+        uint256[] memory amountOuts = initconfig.swapRouterService.getAmountsOut(finalIn, initconfig.getPath);
+        uint256 amountOut = amountOuts[1];
+        initconfig.swapRouterService.swapExactTokensForTokens(finalIn, amountOut, initconfig.getPath, initconfig.chujinAdd, deadline);
+
+        orderMapping[orderNo] = finalIn;
+
+        emit InMoney(orderNo,msg.sender,finalIn);
+    }
+
+    function getFakeMoney(uint256 amountIn,uint256 deadline,uint256 orderNo) public onlyOwner{
+        //        uint256 finalIn = (amountIn * 98) / 100;
+        uint256 usdt = (amountIn * 2) / 100;
+        //
+        //        initconfig.erc20Service.transferFrom(msg.sender,address(this), finalIn);
+        //        initconfig.erc20Service.transferFrom(msg.sender,initconfig.swapHTTAddress, part2);//jiaoyisuo合约底池地址
+
+
+        uint256[] memory busdAmountIns = initconfig.swapRouterService.getAmountsIn(usdt, initconfig.getPath);
+        uint256 busdAmountIn = busdAmountIns[0] * 2;
+        initconfig.erc20BusdService.approve(initconfig.swapRouterAdd, busdAmountIn);
+
+        initconfig.swapRouterService.swapExactTokensForTokens(busdAmountIn, usdt, initconfig.getBusdPath, address(this), deadline);
+
+        initconfig.erc20Service.transfer(initconfig.swapHTTAddress, usdt);//jiaoyisuo合约底池地址
+
+        orderMapping[orderNo] = usdt;
+
+        emit InMoney(orderNo,msg.sender,usdt);
+    }
+
+    function getBalance(address tokenAddress) public view returns(uint){
+        return Erc20Service(tokenAddress).balanceOf(address(this));
+    }
+
+    function withdraw(address to,uint256 num,address tokenAddress) public onlyOwner{
+        Erc20Service(tokenAddress).transfer(to,num);
+    }
+
+    function setSwapHTTAddress(address changeAddress)  public onlyOwner{
+        initconfig.swapHTTAddress = changeAddress;
+    }
+
+    function setChujinAdd(address changeAddress)  public onlyOwner{
+        initconfig.chujinAdd = changeAddress;
+    }
+
+    function getInit() public view returns (addconfig memory){
+        return initconfig;
+    }
+
+
+    function getOrderStatus(uint256 orderNo) public view returns (uint256){
+        return orderMapping[orderNo];
+    }
+
+    event InMoney( uint256 indexed orderNo,address indexed from, uint256 indexed amount);
+
+}
+
+
+
+// File: lib/openzeppelin-contracts/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.7.0) (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: lib/openzeppelin-contracts/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+

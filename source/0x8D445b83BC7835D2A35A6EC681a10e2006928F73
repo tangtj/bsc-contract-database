@@ -1,0 +1,506 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.16;
+
+interface IERC20 {
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+  
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+ 
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        return c;
+    }
+
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return payable(msg.sender);
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+library Address {
+
+    function isContract(address account) internal view returns (bool) {
+        uint256 size;
+        // solhint-disable-next-line no-inline-assembly
+        assembly { size := extcodesize(account) }
+        return size > 0;
+    }
+
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+
+        // solhint-disable-next-line avoid-low-level-calls, avoid-call-value
+        (bool success, ) = recipient.call{ value: amount }("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+
+    function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+      return functionCall(target, data, "Address: low-level call failed");
+    }
+
+   
+    function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+        return _functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+    
+    function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+    }
+
+
+    function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        return _functionCallWithValue(target, data, value, errorMessage);
+    }
+
+    function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+        require(isContract(target), "Address: call to non-contract");
+
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory returndata) = target.call{ value: weiValue }(data);
+        if (success) {
+            return returndata;
+        } else {
+            // Look for revert reason and bubble it up if present
+            if (returndata.length > 0) {
+                // The easiest way to bubble the revert reason is using memory via assembly
+
+                // solhint-disable-next-line no-inline-assembly
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+
+contract Ownable is Context {
+    address internal _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+}
+
+interface IUniswapV2Router02 {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+     function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )external
+        returns (
+            uint256 amountA,
+            uint256 amountB,
+            uint256 liquidity
+        );
+}
+
+interface IUniswapV2Pair {
+    function factory() external view returns (address);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function sync() external;
+}
+
+
+interface IPoolContract {
+    function updatePoolInfo(uint256 amount) external returns (bool);
+}
+
+contract BRIToken is Context, IERC20, Ownable {
+    using SafeMath for uint256;
+    using Address for address;
+
+    event Fee(address indexed user, uint256 indexed feeType, uint256 indexed amount);
+
+    uint8 private _decimals = 18;
+    uint256 private _tTotal = 500000000 * 10 ** 18;
+
+    string private _name = "Bri";
+    string private _symbol = "Bri";
+
+    mapping (address => uint256) private _tOwned;
+    mapping (address => mapping (address => uint256)) private _allowances;
+    mapping (address => bool) private _isExcludedFromFee;
+
+    IUniswapV2Router02 public _router;
+    address public _pair;
+    mapping(address => bool) public _ammPairs;
+
+    bool _inSwapAndLiquify;
+    uint public AddPriceTokenAmount = 1e18;
+    
+    address private _usdtToken;
+
+    address private _feeReceiver;      
+    address private _poolAddress;
+
+    bool private _buyOpen;
+
+    /*
+        deploy BriToken before PowerPool
+        !! Import:
+            1 should set pool address after PowerPool deploy.
+            2 set no fee address to add liquidity.
+            3 transfer enough bri token to PowerPool，.
+    */
+    /*
+        release version:
+            router: 0x10ED43C718714eb63d5aA57B78B54704E256024E
+            usdt: 0x55d398326f99059fF775485246999027B3197955
+            this: 0x8D445b83BC7835D2A35A6EC681a10e2006928F73
+    */
+    constructor (
+        address route,         // router
+        address usdtToken         // USDT
+    ) {
+        _owner = msg.sender;
+
+        _usdtToken = usdtToken;
+
+        // Pool Contract Address
+        _poolAddress = address(0);
+
+        _isExcludedFromFee[_owner] = true;
+        _isExcludedFromFee[address(this)] = true;
+
+        _router = IUniswapV2Router02(route);
+         
+        _pair = IUniswapV2Factory(_router.factory()).createPair(address(this), usdtToken);
+        
+        _ammPairs[_pair] = true;
+        // 
+        _feeReceiver = msg.sender;
+
+        _tOwned[_owner] = _tTotal;
+        emit Transfer(address(0), _owner, _tTotal);
+    }
+
+    receive() external payable {}
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function setBuyOpen(bool buyOpen) public onlyOwner {
+        _buyOpen = buyOpen;
+    }
+
+    function setFeeReceiver(address receiver) public onlyOwner {
+        _feeReceiver = receiver;
+    }
+
+    function setPoolAddress(address poolAddress) public onlyOwner {
+        _poolAddress = poolAddress;
+    }
+
+    function excludeFromFee(address[] memory accounts) public onlyOwner {
+        for( uint i = 0; i < accounts.length; i++ ){
+            _isExcludedFromFee[accounts[i]] = true;
+        }
+    }
+    
+    function includeInFee(address account) public onlyOwner {
+        _isExcludedFromFee[account] = false;
+    }
+
+    function isExcludedFromFee(address account) public view returns(bool) {
+        return _isExcludedFromFee[account];
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _tOwned[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _isLiquidity(address from,address to)internal view returns(bool isAdd, bool isDel){
+        address token0 = IUniswapV2Pair(address(_pair)).token0();
+        (uint r0,,) = IUniswapV2Pair(address(_pair)).getReserves();
+        uint bal0 = IERC20(token0).balanceOf(address(_pair));
+        if( _ammPairs[to] ){
+            if( token0 != address(this) && bal0 > r0 ){
+                isAdd = bal0 - r0 > AddPriceTokenAmount;
+            }
+        }
+        if( _ammPairs[from] ){
+            if( token0 != address(this) && bal0 < r0 ){
+                isDel = r0 - bal0 > 0; 
+            }
+        }
+    }
+
+    function _take(uint256 tValue, address from, address to) private {
+        _tOwned[to] = _tOwned[to].add(tValue);
+        emit Transfer(from, to, tValue);
+    }
+
+    function _takeFee(uint256 tAmount, address from, address to) private returns(uint256) {
+        bool takeFee = true;
+
+        if( _isExcludedFromFee[from] ) {
+            takeFee = false;
+        }
+        
+        if(!takeFee) {
+            return tAmount;
+        }
+
+
+        uint256 leftAmount = _tOwned[from].sub(tAmount);
+        require(leftAmount >= 10 ** (_decimals - 3), "Balance Must Left 0.001 Token.");
+
+        uint tFee = 0;
+
+        // sell
+        if(_ammPairs[to]) {
+            // fee 5%
+            uint256 back = tAmount.mul(5).div(100);
+            _take(back, from, _feeReceiver);
+            emit Fee(from, 1, back);
+            
+            // pool 5%
+            _take(back, from, _poolAddress);
+            emit Fee(from, 2, back);
+
+            if( _poolAddress != address(0) ) {
+                bool success = IPoolContract(_poolAddress).updatePoolInfo(back);
+                require(success, "pool send fee failed.");
+            }
+            
+            // destory 10%
+            uint256 destory = back.mul(2);
+            _take(destory, from, address(0));
+            emit Fee(from, 0, destory);
+
+            // total fee 20%
+            tFee = destory.mul(2);
+        } 
+        // buy
+        else if(_ammPairs[from]) {
+            require(_buyOpen, "Buy Not Opend.");
+        }
+        // normal transfer
+        else{
+            tFee = tAmount.mul(5).div(100);
+            emit Fee(from, 0, tFee);
+            _take(tFee, from, address(0));
+        }
+
+        return tAmount.sub(tFee);
+    }
+
+    function _tokenTransfer(address sender, address recipient, uint256 tAmount, uint256 toAmount) private {
+        _tOwned[sender] = _tOwned[sender].sub(tAmount);
+        _tOwned[recipient] = _tOwned[recipient].add(toAmount);
+
+        emit Transfer(sender, recipient, toAmount);
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) private {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+
+        bool isAddLiquidity;
+        bool isDelLiquidity;
+        ( isAddLiquidity, isDelLiquidity) = _isLiquidity(from,to);
+
+        if( isAddLiquidity) {
+            require(_isExcludedFromFee[from], "not allow");
+        }
+
+        if( isDelLiquidity) {
+            require(_isExcludedFromFee[to], "not allow");
+        }
+        
+        if(msg.sender == _poolAddress) {
+            _tokenTransfer(from, to, amount, amount);
+        }
+        // no fee when add and del liquidity
+        else if(isAddLiquidity || isDelLiquidity) {
+            _tokenTransfer(from, to, amount, amount);
+        } 
+        else {
+            uint256 toAmount = _takeFee(amount, from, to);
+            _tokenTransfer(from, to, amount, toAmount);
+        }
+    }
+}
