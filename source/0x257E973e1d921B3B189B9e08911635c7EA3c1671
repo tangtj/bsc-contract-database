@@ -1,0 +1,161 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface ERC20 {
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+}
+
+contract SwirgeDaoContract {
+    address public owner;
+    uint public pollCreationFee;
+    uint public votingFee;
+    address public feeReceiver;
+    ERC20 private feeToken;
+    
+    struct Poll {
+        string question;
+        string[] options;
+        uint endTime;
+        bool isEnded;
+        address creator;
+    }
+    
+    struct Voter {
+        uint pollId;
+        uint optionId;
+    }
+    
+    Poll[] public polls;
+    mapping(address => Voter) public voters;
+    mapping(uint => mapping(uint => uint)) public voteCounts; // Mapping to store vote counts for each poll and option
+    
+    event PollCreated(uint pollId, string question, address creator);
+    event Voted(uint pollId, uint optionId, address voter);
+    event Withdrawn(address voter, uint amount);
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can call this function.");
+        _;
+    }
+    
+    constructor(address tokenAddress) {
+        owner = msg.sender;
+        feeToken = ERC20(tokenAddress);
+    }
+    
+    function setPollCreationFee(uint fee) public onlyOwner {
+        pollCreationFee = fee;
+    }
+    
+    function setVotingFee(uint fee) public onlyOwner {
+        votingFee = fee;
+    }
+    
+    function setFeeReceiver(address receiver) public onlyOwner {
+        feeReceiver = receiver;
+    }
+    
+    function setFeeToken(address tokenAddress) public onlyOwner {
+        feeToken = ERC20(tokenAddress);
+    }
+    
+    function createPoll(string memory question, string[] memory options, uint duration) public {
+        require(feeToken.transferFrom(msg.sender, address(this), pollCreationFee), "Fee transfer failed.");
+        
+        uint pollId = polls.length;
+        polls.push(Poll(question, options, block.timestamp + duration, false, msg.sender));
+        
+        emit PollCreated(pollId, question, msg.sender);
+    }
+    
+    function vote(uint pollId, uint optionId) public {
+        require(pollId < polls.length, "Invalid poll ID.");
+        require(block.timestamp <= polls[pollId].endTime, "Poll has ended.");
+        require(feeToken.transferFrom(msg.sender, address(this), votingFee), "Fee transfer failed.");
+        require(voters[msg.sender].pollId != pollId, "Address has already voted on this poll.");
+
+        voteCounts[pollId][optionId]++; // Increment the vote count for the chosen option
+
+        voters[msg.sender] = Voter(pollId, optionId);
+
+        emit Voted(pollId, optionId, msg.sender);
+    }
+    
+    function withdraw() public {
+        Voter memory voter = voters[msg.sender];
+        require(voter.pollId < polls.length, "No vote found for the sender.");
+        require(polls[voter.pollId].isEnded, "Poll is not ended yet.");
+        
+        uint amount = votingFee;
+        require(amount > 0, "No balance to withdraw.");
+        
+        delete voters[msg.sender];
+        require(feeToken.transfer(msg.sender, amount), "Withdrawal failed.");
+        
+        emit Withdrawn(msg.sender, amount);
+    }
+    
+    function getPollCount() public view returns (uint) {
+        return polls.length;
+    }
+    
+    function getPoll(uint pollId) public view returns (string memory, string[] memory, uint, bool, address) {
+        require(pollId < polls.length, "Invalid poll ID.");
+        
+        Poll memory poll = polls[pollId];
+        return (poll.question, poll.options, poll.endTime, poll.isEnded, poll.creator);
+    }
+    
+    function getPollOptions(uint pollId) public view returns (string[] memory) {
+        require(pollId < polls.length, "Invalid poll ID.");
+
+        Poll memory poll = polls[pollId];
+        return poll.options;
+    }
+    
+    function getVoteCounts(uint pollId) public view returns (uint[] memory) {
+        require(pollId < polls.length, "Invalid poll ID.");
+
+        uint[] memory counts = new uint[](polls[pollId].options.length);
+
+        for (uint i = 0; i < polls[pollId].options.length; i++) {
+            counts[i] = voteCounts[pollId][i];
+        }
+
+        return counts;
+    }
+    
+    function getVotePercentages(uint pollId) public view returns (uint[] memory) {
+        require(pollId < polls.length, "Invalid poll ID.");
+
+        uint[] memory percentages = new uint[](polls[pollId].options.length);
+        uint totalVotes = 0;
+
+        // Calculate the total number of votes
+        for (uint i = 0; i < polls[pollId].options.length; i++) {
+            totalVotes += voteCounts[pollId][i];
+        }
+
+        // Calculate the percentage for each option
+        for (uint i = 0; i < polls[pollId].options.length; i++) {
+            percentages[i] = (voteCounts[pollId][i] * 100) / totalVotes;
+        }
+
+        return percentages;
+    }
+
+    function transferCollectedFees() public onlyOwner {
+        uint256 collectedFees = feeToken.balanceOf(address(this));
+        require(collectedFees > 0, "No collected fees to transfer.");
+
+        require(feeToken.transfer(feeReceiver, collectedFees), "Transfer failed.");
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "Invalid new owner address.");
+
+        owner = newOwner;
+    }
+}

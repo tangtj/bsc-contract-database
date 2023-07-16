@@ -1,0 +1,288 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.19;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function decimals() external view returns (uint256);
+    function symbol() external view returns (string memory);
+    function name() external view returns (string memory);
+    function getOwner() external view returns (address);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function mint(address to,uint256 amount) external returns (bool);
+    function burn(address from,uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IUser {
+    function getUserRegistered(address account) external view returns (bool);
+    function register(address referree,address referral) external returns (bool);
+    function getUserReferree(address account,uint256 level) external view returns (address[] memory);
+    function getUserUpline(address account,uint256 level) external view returns (address[] memory);
+    function getUserReferral(address account) external view returns (address);
+    function pushUserReferreeWithPermit(address account,address referree,uint256 level) external returns (bool);
+}
+
+interface IPresale {
+    function balanceOf(address account,address token) external view returns (uint256);
+}
+
+contract permission {
+    mapping(address => mapping(string => bytes32)) private permit;
+
+    function newpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode(adr,str))); }
+
+    function clearpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode("null"))); }
+
+    function checkpermit(address adr,string memory str) public view returns (bool) {
+        if(permit[adr][str]==bytes32(keccak256(abi.encode(adr,str)))){ return true; }else{ return false; }
+    }
+
+    modifier forRole(string memory str) {
+        require(checkpermit(msg.sender,str),"Permit Revert!");
+        _;
+    }
+}
+
+contract MooMoohUp is permission {
+    
+    address public owner;
+
+    address public tokenMOO = 0x89b27E03D98e2f32C82248c647cAE0ab0024E33f;
+    address public tokenTracker = 0x3B4b7f35B664258E193F18015aDabE34b39BD73f;
+    address public tokenRenew = 0xF57bf6a4f28619Ac9CDfebDFbeEDc234c761fFF0;
+
+    uint256 public ROIRatio = 1;
+    uint256 public ROIDenominator = 100;
+    uint256 public direcAmount = 20 * 1e18;
+    uint256 public matchingAmount = 100 * 1e18;
+
+    uint256 public feeToRenew = 20;
+    uint256 public feeToBurn = 10;
+    uint256 public feeToReferral = 10;
+    uint256 public feeAtTotal = 40;
+
+    address[] participants;
+
+    struct Data {
+        uint256 balanceTOKEN;
+        uint256 balanceUSD;
+        uint256 roiClaimed;
+        uint256 latestBlock;
+        mapping(uint256 => uint256) stackTOKEN;
+        bool staked;
+    }
+
+    mapping(address => Data) public data;
+
+    bool locked;
+    modifier noReentrant() {
+        require(!locked, "No re-entrancy");
+        locked = true;
+        _;
+        locked = false;
+    }
+
+    constructor() {
+        newpermit(msg.sender,"permit");
+        newpermit(msg.sender,"owner");
+        owner = msg.sender;
+    }
+
+    function getParticipants() public view returns (address[] memory,uint256) {
+        return (participants,participants.length);
+    }
+
+    function stackTOKENOf(address account,uint256 level) public view returns (uint256) {
+        return data[account].stackTOKEN[level];
+    }
+
+    function depositWithPermit(address account,address referral,address userCA,uint256 amountTOKEN,uint256 amountUSD,bool isblockReferralReward) public forRole("permit") returns (bool) {
+        if(!data[account].staked){
+            data[account].staked = true;
+            participants.push(account);
+        }
+        IUser userMananger = IUser(userCA);
+        address[] memory upline = new address[](10);
+        if(!userMananger.getUserRegistered(account)){
+            require(userMananger.getUserRegistered(referral),"MOOMOOUP REVERT: REFERRAL MUST BE REGISTERED");
+            require(account!=referral,"MOOMOOUP REVERT: REFERRAL MUST NOT BE REFERREE");
+            userMananger.register(account,referral);
+            upline = userMananger.getUserUpline(account,10);
+            for(uint256 i=0; i < 10; i++){
+                if(upline[i]!=address(0)){
+                    userMananger.pushUserReferreeWithPermit(account,upline[i],i);
+                }
+            }
+        }else{
+            referral = userMananger.getUserReferral(account);
+        }
+        //
+        data[account].balanceTOKEN += amountTOKEN;
+        data[account].balanceUSD += amountUSD;
+        //
+        if(!isblockReferralReward){
+            upline = userMananger.getUserUpline(account,10);
+            uint256 referrerBalance = data[referral].balanceUSD;
+            uint256 tokenAmount = amountTOKEN/100;
+            if(referrerBalance >= direcAmount){ updateReward(referral,amountTOKEN/10,0); }
+            if(shouldMatching(upline[1],userCA)){ updateReward(upline[1],tokenAmount,1); }
+            if(shouldMatching(upline[2],userCA)){ updateReward(upline[2],tokenAmount,2); }
+            if(shouldMatching(upline[3],userCA)){ updateReward(upline[3],tokenAmount,3); }
+            if(shouldMatching(upline[4],userCA)){ updateReward(upline[4],tokenAmount,4); }
+            if(shouldMatching(upline[5],userCA)){ updateReward(upline[5],tokenAmount,5); }
+            if(shouldMatching(upline[6],userCA)){ updateReward(upline[6],tokenAmount,6); }
+            if(shouldMatching(upline[7],userCA)){ updateReward(upline[7],tokenAmount,7); }
+            if(shouldMatching(upline[8],userCA)){ updateReward(upline[8],tokenAmount,8); }
+            if(shouldMatching(upline[9],userCA)){ updateReward(upline[9],tokenAmount,9); }
+        }
+        return true;
+    }
+
+    function externalUpdateReward(address account,uint256 amountTOKEN,uint256 stackLevel) public forRole("permit") returns (bool) {
+        data[account].stackTOKEN[stackLevel] = amountTOKEN;
+        return true;
+    }
+
+    function externalUpdateDATA(address account,uint256[] memory vaule) public forRole("permit") returns (bool) {
+        data[account].balanceTOKEN = vaule[0];
+        data[account].balanceUSD = vaule[1];
+        data[account].roiClaimed = vaule[2];
+        data[account].latestBlock = vaule[3];
+        return true;
+    }
+
+    function claimReward(address account,address userCA,bool isblockReferralReward) public forRole("permit") returns (bool) {
+        uint256 ROIPeriodReward = getROIPeriodReward(account);
+        if(ROIPeriodReward>0){
+            data[account].roiClaimed += ROIPeriodReward;
+            uint256 amountToFee = ROIPeriodReward * feeAtTotal / 100;
+            uint256 amountToRenew = ROIPeriodReward * feeToRenew / 100;
+            uint256 amountToBurn = ROIPeriodReward * feeToBurn / 100;
+            uint256 amountToReferral = ROIPeriodReward * feeToReferral / 100;
+            uint256 amountToClaim = ROIPeriodReward - amountToFee;
+            IERC20(tokenMOO).transfer(account,amountToClaim);
+            IERC20(tokenMOO).transfer(address(0xdead),amountToBurn);
+            IERC20(tokenRenew).mint(account,amountToRenew);
+            if(!isblockReferralReward){
+                IUser userMananger = IUser(userCA);
+                address[] memory upline = new address[](10);
+                upline = userMananger.getUserUpline(account,10);
+                uint256 tokenAmount = amountToReferral/200;
+                updateReward(upline[0],amountToReferral/20,0);
+                updateReward(upline[1],tokenAmount,1);
+                updateReward(upline[2],tokenAmount,2);
+                updateReward(upline[3],tokenAmount,3);
+                updateReward(upline[4],tokenAmount,4);
+                updateReward(upline[5],tokenAmount,5);
+                updateReward(upline[6],tokenAmount,6);
+                updateReward(upline[7],tokenAmount,7);
+                updateReward(upline[8],tokenAmount,8);
+                updateReward(upline[9],tokenAmount,9);
+            }
+        }
+        data[account].latestBlock = block.timestamp;
+        return true;
+    }
+
+    function getROIPeriodReward(address account) public view returns (uint256) {
+        uint256 latest = data[account].latestBlock;
+        if(latest > 0 && block.timestamp > latest){
+            uint256 period = block.timestamp - latest;
+            uint256 rewardPerBlock = getROIAccount(account) / 86400;
+            return rewardPerBlock * period;
+        }
+        return 0;
+    }
+
+    function getROIAccount(address account) public view returns (uint256) {
+        return data[account].balanceTOKEN * ROIRatio / ROIDenominator;
+    }
+
+    function updateReward(address account,uint256 amountTOKEN,uint256 stackLevel) internal {
+        data[account].stackTOKEN[stackLevel] += amountTOKEN;
+        IERC20(tokenTracker).mint(account,amountTOKEN);
+    }
+
+    function shouldMatching(address account,address userCA) public view returns (bool) {
+        uint256 totalBalance = data[account].balanceUSD;
+        if(totalBalance >= matchingAmount && isInvitedBinary(account,userCA,2,direcAmount) && account != address(0)){
+            return true;
+        }
+        return false;
+    }
+
+    function isInvitedBinary(address account,address userCA,uint256 minimumCount,uint256 minimumAmount) public view returns (bool) {
+        IUser userMananger = IUser(userCA);
+        address[] memory referree = userMananger.getUserReferree(account,0);
+        uint256 enumCount = 0;
+        if(referree.length>=minimumCount){
+            for(uint256 i=0; i < referree.length; i++){
+                uint256 totalBalance = data[account].balanceUSD;
+                if(totalBalance>=minimumAmount){
+                    enumCount += 1;
+                }
+            }
+            if(enumCount>=minimumCount){ return true; }
+        }
+        return false;
+    }
+
+    function changeConditionAmount(uint256[] memory amounts) public forRole("owner") returns (bool) {
+        ROIRatio = amounts[0];
+        ROIDenominator = amounts[1];
+        direcAmount = amounts[2];
+        matchingAmount = amounts[3];
+        return true;
+    }
+
+    function changeFeeAmount(uint256[] memory amounts) public forRole("owner") returns (bool) {
+        feeToRenew = amounts[0];
+        feeToBurn = amounts[1];
+        feeToReferral = amounts[2];
+        feeAtTotal = amounts[0] + amounts[1] + amounts[2];
+        return true;
+    }
+
+    function changeTriggerAddress(address[] memory addrs) public forRole("owner") returns (bool) {
+        tokenMOO = addrs[0];
+        tokenTracker = addrs[1];
+        tokenRenew = addrs[2];
+        return true;
+    }
+
+    function withdrawToken(address token,uint256 amount) public forRole("owner") returns (bool) {
+        IERC20(token).transfer(msg.sender,amount);
+        return true;
+    }
+
+    function withdrawETH(uint256 amount) public forRole("owner") returns (bool) {
+        (bool success,) = msg.sender.call{ value: amount }("");
+        require(success, "MOOMOOUP REVERT: FAIL TO WITHDRAW ETH");
+        return true;
+    }
+
+    function grantRole(address adr,string memory role) public forRole("owner") returns (bool) {
+        newpermit(adr,role);
+        return true;
+    }
+
+    function revokeRole(address adr,string memory role) public forRole("owner") returns (bool) {
+        clearpermit(adr,role);
+        return true;
+    }
+
+    function transferOwnership(address adr) public forRole("owner") returns (bool) {
+        newpermit(adr,"owner");
+        clearpermit(msg.sender,"owner");
+        owner = adr;
+        return true;
+    }
+
+    receive() external payable {}
+}

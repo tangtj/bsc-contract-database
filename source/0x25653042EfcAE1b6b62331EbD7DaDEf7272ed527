@@ -1,0 +1,845 @@
+// SPDX-License-Identifier: MIT
+
+/*
+
+    WOR pre-sales contract
+
+    World of Rewards (WOR) is a rewards platform
+    based on blockchains that aims to create an ecosystem
+    decentralized, transparent, and
+    fair reward system for users.
+    The project is based on the BSC blockchain and uses
+    smart contracts to automate the distribution of rewards.
+
+    https://worldofrewards.finance/
+    https://twitter.com/WorldofRewards
+    https://t.me/WorldofRewards
+
+
+*/
+
+
+pragma solidity 0.8.18;
+
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+*/
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _status;
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+        _;
+        _status = _NOT_ENTERED;
+    }
+}
+
+contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+}
+
+
+contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Is impossible to renounce the ownership of the contract");
+        require(newOwner != address(0xdead), "Is impossible to renounce the ownership of the contract");
+
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+interface IERC20 {
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+}
+
+
+interface IERC20Metadata {
+
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function decimals() external view returns (uint8);
+
+}
+
+
+interface IUniswapV2Router02 {
+
+    function getAmountsOut(
+        uint amountIn, 
+        address[] calldata path) 
+        external view returns (uint[] memory amounts);
+
+}
+
+
+interface IWORcontractToken {
+    function _isRewardsExempt(address addressHolder) external view returns (bool);
+    function totalSupply() external view returns (uint256);
+}
+
+
+contract ERC20 is Context, IERC20Metadata {
+    mapping(address => uint256) internal _balances;
+
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 internal _totalSupply;
+
+    string private _name;
+    string private _symbol;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+    }
+
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 0;
+    }
+
+    function totalSupply() public view virtual returns (uint256) {
+        return _totalSupply;
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+}
+
+
+contract WORRewardsDapp is ERC20, Ownable, ReentrancyGuard {
+
+    uint256 public timeDeployContract;
+    uint256 public spacedDays;
+
+    uint256 public minimunTokens;
+    uint256 public limitProjects;
+
+    uint256 public supplyExcluded;
+    uint256 public _decimals;
+
+    //Stats here
+    uint256 public countJoin;
+    uint256 public totalJoin;
+
+    uint256 public totalUSDclaimed;
+
+    bool public isOpenRewardsDapp;
+
+    address uniswapV2Router  = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    address addressBUSD      = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+    address addressUSDT      = 0x55d398326f99059fF775485246999027B3197955;
+    address addressWBNB      = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address addressWOR       = 0x1980f4Dd2A2DE4450Da2057dFbe76E91CfDaeAE8;
+    address addressFunds;
+
+    //BSC contracts addresses
+    address uniswapV2Pair    = 0x55a9a0f49E46Ab54d09BBFCA0D2192C1A9E797de;
+    address controlledFunds  = 0x225d8b799399F0264Eb6cA319403ae84Bd0AeAb1;
+    address marketingWallet1 = 0x30c69E18D090de6dff8be2ab7A4ef11e9166A9B6;
+
+
+    struct structHolder {
+        uint256 activeProjects;
+        address projectAddress1;
+        uint256 timeJoin1;
+        address projectAddress2;
+        uint256 timeJoin2;
+        address projectAddress3;
+        uint256 timeJoin3;
+        address projectAddress4;
+        uint256 timeJoin4;
+    }
+
+    struct structHolderRewardsClaimed {
+        uint256 totalBalanceWOR_USD;
+        uint256 totalRewardsClaimed;
+    }
+
+    struct structProject {
+        address projectAddress;
+        address pairLiquidityPool;
+    }
+    
+    struct structNFTsUltra {
+        uint256 numNFTs;
+    }
+
+    mapping (address => structHolder) mappingStructHolder;
+    mapping (address => structHolderRewardsClaimed) mappingHolderRewardsClaimed;
+    mapping (address => mapping (address => uint256)) mappingStructHolderClaim;
+    mapping (address => structProject) mappingStructProject;
+    mapping (address => structNFTsUltra) public mappingStructNFTsUltra;
+
+    mapping (address => mapping (address => uint256)) mappingAmountClaimedUSD;
+
+    address[] addressesProjectRewards;
+
+    receive() external payable 
+    {}
+
+
+    constructor() ERC20("WOR - Rewards Dapp", "DAPP") {
+        timeDeployContract = block.timestamp;
+        // spacedDays = 7 * 24 * 60 * 60;
+        spacedDays = 3 * 60;
+
+        minimunTokens = 2500 * 10 ** 18;
+        limitProjects = 2;
+
+        supplyExcluded;
+
+        _decimals = 18;
+
+        isOpenRewardsDapp = true;
+
+        _mint(address(0), 1);
+    }
+
+    function getBlockTimestamp() public view returns (uint256) {
+        return block.timestamp;
+    }
+
+    //Security check to confirm it's not a contract
+    function checkSecurity() public view returns (bool checkSecurityReturn) {
+        uint256 size;
+        address acount = _msgSender();
+
+        assembly {
+            size := extcodesize(acount)
+        }
+
+        if (size == 0 && tx.origin == msg.sender) {
+            checkSecurityReturn = true;
+        }
+        
+        return checkSecurityReturn;
+    }
+
+    function getMappingStructHolder(address addressHolder) public view returns (structHolder memory) {
+        return mappingStructHolder[addressHolder];
+    }
+
+    function getMappingStructHolderClaim(address addressHolder, address projectAddress) public view returns (uint256) {
+        return mappingStructHolderClaim[addressHolder][projectAddress];
+    }
+
+    function getMappingStructProject(address projectAddress) public view returns (structProject memory) {
+        return mappingStructProject[projectAddress];
+    }
+
+    function getAmountClaimedUSD(address addressHolder, address projectAddress) public view returns (uint256) {
+        return mappingAmountClaimedUSD[addressHolder][projectAddress];
+    }
+
+    function getAddressesProjectRewardsLength() public view returns (uint256) {
+        return addressesProjectRewards.length;
+    }
+
+    function getArrayHolders() public view returns (address[] memory) {
+        return addressesProjectRewards;
+    }
+
+    function getCirculatingSupply() public view returns (uint256) {
+        return  IWORcontractToken(addressWOR).totalSupply() - 
+                IERC20(addressWOR).balanceOf(address(0)) - 
+                IERC20(addressWOR).balanceOf(uniswapV2Pair) - 
+                IERC20(addressWOR).balanceOf(addressWOR) - 
+                IERC20(addressWOR).balanceOf(address(controlledFunds)) - 
+                IERC20(addressWOR).balanceOf(address(marketingWallet1)) - 
+                supplyExcluded;
+    }
+
+    //valor total bloqueado dos rewards. Retorno em dólars
+    function TVL () public view returns (uint256 totalRewardsTVL) {
+
+        uint256 lengthddressesProjectAddress = addressesProjectRewards.length;
+
+        for (uint256 i = 0; i < lengthddressesProjectAddress; i++) {
+            uint256 amountUSDconverted;
+
+            address projectRewards = addressesProjectRewards[i];
+            uint256 balanceTokenRewards = IERC20(projectRewards).balanceOf(address(this));
+
+            if (mappingStructProject[projectRewards].pairLiquidityPool == addressWBNB) {
+                amountUSDconverted = convertTokenWbnbUsd(projectRewards, balanceTokenRewards);
+            } else if (mappingStructProject[projectRewards].pairLiquidityPool == addressBUSD) {
+                amountUSDconverted = convertTokenUsdt(projectRewards, balanceTokenRewards);    
+            } else if (mappingStructProject[projectRewards].pairLiquidityPool == addressUSDT) {
+                amountUSDconverted = convertTokenBusd(projectRewards, balanceTokenRewards);
+            }
+
+            totalRewardsTVL += amountUSDconverted;
+        }
+
+    }
+
+    function APR (address holder, address projectRewards) public view returns (uint256 rewardsAPR) {
+
+    }
+
+
+    function convertTokenWbnbUsd(address addressIn, uint256 amount) public view returns (uint256) {
+        
+        address[] memory path = new address[](3);
+        path[0] = addressIn;
+        path[1] = addressWBNB;
+        path[2] = addressBUSD;
+
+        uint256[] memory amountOutMins = 
+        IUniswapV2Router02(uniswapV2Router).getAmountsOut(amount, path);
+
+        return amountOutMins[path.length - 1];
+    } 
+
+    function convertTokenUsdt(address addressIn, uint256 amount) public view returns (uint256) {
+        
+        address[] memory path = new address[](2);
+        path[0] = addressIn;
+        path[1] = addressBUSD;
+
+        uint256[] memory amountOutMins = 
+        IUniswapV2Router02(uniswapV2Router).getAmountsOut(amount, path);
+
+        return amountOutMins[path.length - 1];
+    } 
+
+    function convertTokenBusd(address addressIn, uint256 amount) public view returns (uint256) {
+        
+        address[] memory path = new address[](2);
+        path[0] = addressIn;
+        path[1] = addressUSDT;
+
+        uint256[] memory amountOutMins = 
+        IUniswapV2Router02(uniswapV2Router).getAmountsOut(amount, path);
+
+        return amountOutMins[path.length - 1];
+    }
+
+    function canJoin() public view returns (bool canJoinReturns) {
+
+        if (mappingStructHolder[_msgSender()].timeJoin1 + spacedDays <= block.timestamp ||
+            mappingStructHolder[_msgSender()].timeJoin2 + spacedDays <= block.timestamp ||
+            mappingStructHolder[_msgSender()].timeJoin3 + spacedDays <= block.timestamp ||
+            mappingStructHolder[_msgSender()].timeJoin4 + spacedDays <= block.timestamp) {
+
+            canJoinReturns = true;
+
+        } else {
+            require(false, "You are already in 3 pools. You need to leave one of them to enter another pool");
+        }
+
+    }
+
+    function canClaim(address projectRewards) public view returns (bool canClaimReturns) {
+
+        if (mappingStructHolderClaim[_msgSender()][projectRewards] + spacedDays <= block.timestamp) {
+            canClaimReturns = true;
+        } else {
+            require(false, "Claim deadline not reached");
+        }
+    }
+
+
+    function join(address projectRewards) external nonReentrant() {
+        require(isOpenRewardsDapp, "RewardsDapp not opened yet");
+        require(IERC20(addressWOR).balanceOf(_msgSender()) >= minimunTokens, 
+        "Balance smaller than minimunTokens");
+        require(!IWORcontractToken(addressWOR)._isRewardsExempt(_msgSender()), 
+        "Excluded from rewards in the WOR contract");
+        require(mappingStructProject[projectRewards].projectAddress != address(0), 
+        "Rewards contract not setted");
+        require(mappingStructHolder[_msgSender()].activeProjects + 1 <= limitProjects, "Over pool limit");
+
+        require(checkSecurity(), "Security check not passed!");
+
+        bool participatePool;
+
+        if (mappingStructHolder[_msgSender()].timeJoin1 + spacedDays <= block.timestamp && 
+            mappingStructHolder[_msgSender()].projectAddress1 == address(0)) {
+
+                if (mappingStructHolder[_msgSender()].projectAddress2 == projectRewards || 
+                    mappingStructHolder[_msgSender()].projectAddress3 == projectRewards ||
+                    mappingStructHolder[_msgSender()].projectAddress4 == projectRewards) {
+
+                        participatePool = true;
+                    }
+
+                mappingStructHolder[_msgSender()].projectAddress1 = projectRewards;
+                mappingStructHolder[_msgSender()].timeJoin1 = block.timestamp;
+
+        } else if (mappingStructHolder[_msgSender()].timeJoin2 + spacedDays <= block.timestamp && 
+                mappingStructHolder[_msgSender()].projectAddress2  == address(0)) {
+
+                if (mappingStructHolder[_msgSender()].projectAddress1 == projectRewards || 
+                    mappingStructHolder[_msgSender()].projectAddress3 == projectRewards ||
+                    mappingStructHolder[_msgSender()].projectAddress4 == projectRewards) {
+                        
+                        participatePool = true;
+                    }
+
+                mappingStructHolder[_msgSender()].projectAddress2 = projectRewards;
+                mappingStructHolder[_msgSender()].timeJoin2 = block.timestamp;
+
+
+        } else if (mappingStructHolder[_msgSender()].timeJoin3 + spacedDays <= block.timestamp && 
+                mappingStructHolder[_msgSender()].projectAddress3  == address(0)) {
+
+                if (mappingStructHolder[_msgSender()].projectAddress1 == projectRewards ||  
+                        mappingStructHolder[_msgSender()].projectAddress2 == projectRewards ||
+                        mappingStructHolder[_msgSender()].projectAddress4 == projectRewards) {
+                        
+                        participatePool = true;
+                    }
+
+                mappingStructHolder[_msgSender()].projectAddress3 = projectRewards;
+                mappingStructHolder[_msgSender()].timeJoin3 = block.timestamp;
+
+
+        } else if (mappingStructHolder[_msgSender()].timeJoin4 + spacedDays <= block.timestamp && 
+                mappingStructHolder[_msgSender()].projectAddress4  == address(0)) {
+
+                if (mappingStructHolder[_msgSender()].projectAddress1 == projectRewards || 
+                    mappingStructHolder[_msgSender()].projectAddress2 == projectRewards ||
+                    mappingStructHolder[_msgSender()].projectAddress3 == projectRewards) {
+                        
+                        participatePool = true;
+                    }
+
+                mappingStructHolder[_msgSender()].projectAddress4 = projectRewards;
+                mappingStructHolder[_msgSender()].timeJoin4 = block.timestamp;
+
+
+        } else {
+            require(false, "Limited number of projects per week");
+        }
+
+        if (participatePool) {
+            revert("You already participate in this pool of rewards");
+        }
+
+        unchecked {
+            mappingStructHolder[_msgSender()].activeProjects ++;
+
+            countJoin ++;
+
+            totalJoin ++;
+        }
+
+    }
+
+    function getAmountAvailable(address holder, address projectRewards) public view returns (uint256 amountTokenRewards) {
+        
+        if (mappingStructHolder[holder].projectAddress1 != projectRewards &&
+            mappingStructHolder[holder].projectAddress2 != projectRewards &&
+            mappingStructHolder[holder].projectAddress3 != projectRewards &&
+            mappingStructHolder[holder].projectAddress4 != projectRewards) {
+
+                amountTokenRewards = 0;
+        }
+
+        require(checkSecurity(), "Security check not passed!");
+
+        uint256 balanceTokensWOR = IERC20(addressWOR).balanceOf(holder);
+        uint256 balanceTokensRewards = IERC20(projectRewards).balanceOf(address(this));
+        uint256 diferenceTime;
+
+        unchecked {
+            amountTokenRewards = balanceTokensRewards * balanceTokensWOR / getCirculatingSupply();
+
+            //Calculates the multiplication of rewards in relation to the weeks that were not claimed
+            if (mappingStructHolderClaim[holder][projectRewards] > 0) {
+                diferenceTime = block.timestamp - mappingStructHolderClaim[holder][projectRewards];
+            }
+
+            diferenceTime = diferenceTime / spacedDays;
+
+            amountTokenRewards = amountTokenRewards * (1 + diferenceTime);
+
+            if (mappingStructNFTsUltra[holder].numNFTs > 0) {
+                amountTokenRewards = 
+                amountTokenRewards * (100 + 10 * mappingStructNFTsUltra[holder].numNFTs) / 100;
+            }
+
+        }
+
+        if (amountTokenRewards > IERC20(projectRewards).balanceOf(address(this))) {
+            amountTokenRewards = IERC20(projectRewards).balanceOf(address(this));
+        }
+
+        return amountTokenRewards;
+
+    }
+
+    function getPendingRewards(address holder, address projectRewards) public view returns (uint256 pending) {
+                
+        uint256 convertReward;
+
+        uint256 amountAvailable = getAmountAvailable(holder, projectRewards);
+
+        if (amountAvailable == 0) {
+            return pending = 0;
+        }
+
+        if (mappingStructProject[projectRewards].pairLiquidityPool == addressWBNB) {
+            convertReward = convertTokenWbnbUsd(projectRewards, amountAvailable);
+
+        } else if (mappingStructProject[projectRewards].pairLiquidityPool == addressBUSD) {
+            convertReward = convertTokenUsdt(projectRewards, amountAvailable);
+
+        } else if (mappingStructProject[projectRewards].pairLiquidityPool == addressUSDT) {
+            convertReward = convertTokenBusd(projectRewards, amountAvailable);
+
+        }
+
+        return convertReward;
+
+    }
+
+    function poolRewardsAvailable(address projectRewards) public view returns (uint256 poolRewards) {
+                
+        uint256 balanceTokenRewards = IERC20(projectRewards).balanceOf(address(this));
+        
+        if (balanceTokenRewards == 0) {
+            return poolRewards = 0;
+        }
+
+        if (mappingStructProject[projectRewards].pairLiquidityPool == addressWBNB) {
+            poolRewards = convertTokenWbnbUsd(projectRewards, balanceTokenRewards);
+        } else if (mappingStructProject[projectRewards].pairLiquidityPool == addressBUSD) {
+            poolRewards = convertTokenUsdt(projectRewards, balanceTokenRewards);    
+        } else if (mappingStructProject[projectRewards].pairLiquidityPool == addressUSDT) {
+            poolRewards = convertTokenBusd(projectRewards, balanceTokenRewards);
+        }
+
+    }
+
+    function getTotalPendingRewards(address holder) public view returns (uint256) {
+        
+        uint256 convertReward1;
+        address projectRewards1 = mappingStructHolder[holder].projectAddress1;
+
+        uint256 amountAvailable1 = getAmountAvailable(holder, projectRewards1);
+
+        if (amountAvailable1 != 0) {
+            if (mappingStructProject[projectRewards1].pairLiquidityPool == addressWBNB) {
+                convertReward1 = convertTokenWbnbUsd(projectRewards1, amountAvailable1);
+
+            } else if (mappingStructProject[projectRewards1].pairLiquidityPool == addressBUSD) {
+                convertReward1 = convertTokenUsdt(projectRewards1, amountAvailable1);
+
+            } else if (mappingStructProject[projectRewards1].pairLiquidityPool == addressUSDT) {
+                convertReward1 = convertTokenBusd(projectRewards1, amountAvailable1);
+
+            }
+        }
+
+        uint256 convertReward2;
+        address projectRewards2 = mappingStructHolder[holder].projectAddress2;
+
+        uint256 amountAvailable2 = getAmountAvailable(holder, projectRewards2);
+
+        if (amountAvailable2 != 0) {
+            if (mappingStructProject[projectRewards2].pairLiquidityPool == addressWBNB) {
+                convertReward2 = convertTokenWbnbUsd(projectRewards2, amountAvailable2);
+
+            } else if (mappingStructProject[projectRewards2].pairLiquidityPool == addressBUSD) {
+                convertReward2 = convertTokenUsdt(projectRewards2, amountAvailable2);
+
+            } else if (mappingStructProject[projectRewards2].pairLiquidityPool == addressUSDT) {
+                convertReward2 = convertTokenBusd(projectRewards2, amountAvailable2);
+
+            }
+        }
+
+
+        uint256 convertReward3;
+        address projectRewards3 = mappingStructHolder[holder].projectAddress3;
+
+        uint256 amountAvailable3 = getAmountAvailable(holder, projectRewards3);
+
+        if (amountAvailable3 != 0) {
+            if (mappingStructProject[projectRewards3].pairLiquidityPool == addressWBNB) {
+                convertReward3 = convertTokenWbnbUsd(projectRewards3, amountAvailable3);
+
+            } else if (mappingStructProject[projectRewards3].pairLiquidityPool == addressBUSD) {
+                convertReward3 = convertTokenUsdt(projectRewards3, amountAvailable3);
+
+            } else if (mappingStructProject[projectRewards3].pairLiquidityPool == addressUSDT) {
+                convertReward3 = convertTokenBusd(projectRewards3, amountAvailable3);
+
+            }
+        }
+
+
+        uint256 convertReward4;
+        address projectRewards4 = mappingStructHolder[holder].projectAddress4;
+
+        uint256 amountAvailable4 = getAmountAvailable(holder, projectRewards4);
+
+        if (amountAvailable4 != 0) {
+            if (mappingStructProject[projectRewards4].pairLiquidityPool == addressWBNB) {
+                convertReward4 = convertTokenWbnbUsd(projectRewards4, amountAvailable4);
+
+            } else if (mappingStructProject[projectRewards4].pairLiquidityPool == addressBUSD) {
+                convertReward4 = convertTokenUsdt(projectRewards4, amountAvailable4);
+
+            } else if (mappingStructProject[projectRewards4].pairLiquidityPool == addressUSDT) {
+                convertReward4 = convertTokenBusd(projectRewards4, amountAvailable4);
+
+            }
+        }
+
+        return convertReward1 + convertReward2 + convertReward3 + convertReward4;
+
+    }
+
+
+    function claim(address projectRewards) external nonReentrant() {
+        require(isOpenRewardsDapp, "RewardsDapp not opened yet");
+        require(mappingStructHolder[_msgSender()].projectAddress1 == projectRewards ||
+                mappingStructHolder[_msgSender()].projectAddress2 == projectRewards ||
+                mappingStructHolder[_msgSender()].projectAddress3 == projectRewards ||
+                mappingStructHolder[_msgSender()].projectAddress4 == projectRewards,
+                "Invalid selected claim contract");
+        
+        uint256 amountUSDconverted;
+        
+        uint256 amountTokenRewards = getAmountAvailable(_msgSender(), projectRewards);
+
+        require(checkSecurity(), "Security check not passed!");
+
+        if (getMappingStructHolderClaim(_msgSender(), projectRewards) + spacedDays >= block.timestamp) {
+            require(false, "Before claim deadline");
+        }
+
+        mappingStructHolderClaim[_msgSender()][projectRewards] = block.timestamp;
+
+        if (mappingStructProject[projectRewards].pairLiquidityPool == addressWBNB) {
+            amountUSDconverted = convertTokenWbnbUsd(projectRewards, amountTokenRewards);
+        } else if (mappingStructProject[projectRewards].pairLiquidityPool == addressBUSD) {
+            amountUSDconverted = convertTokenUsdt(projectRewards, amountTokenRewards);    
+        } else if (mappingStructProject[projectRewards].pairLiquidityPool == addressUSDT) {
+            amountUSDconverted = convertTokenBusd(projectRewards, amountTokenRewards);
+        }
+
+        unchecked {
+            mappingHolderRewardsClaimed[_msgSender()].totalRewardsClaimed += amountUSDconverted;
+            
+            totalUSDclaimed += amountUSDconverted; 
+        }
+
+        mappingAmountClaimedUSD[_msgSender()][projectRewards] += amountUSDconverted;
+
+        if (IERC20(projectRewards).balanceOf(address(this)) > 0) {
+            IERC20(projectRewards).transfer(_msgSender(), amountTokenRewards);
+        } else {
+            IERC20(projectRewards).transferFrom(addressFunds,_msgSender(), amountTokenRewards);
+        }
+
+    }
+
+
+    function claimAndCancelPool(address projectRewards) external nonReentrant() {
+
+        require(isOpenRewardsDapp, "RewardsDapp not opened yet");
+        
+        uint256 amountUSDconverted;
+
+        uint256 amountTokenRewards = getAmountAvailable(_msgSender(), projectRewards);
+
+        bool waitToClaim;
+
+        require(checkSecurity(), "Security check not passed!");
+
+        if (getMappingStructHolderClaim(_msgSender(), projectRewards) + spacedDays >= block.timestamp) {
+            require(false, "Before claim deadline");
+        }
+        
+        if (mappingStructProject[projectRewards].pairLiquidityPool == addressWBNB) {
+            amountUSDconverted = convertTokenWbnbUsd(projectRewards, amountTokenRewards);
+        } else if (mappingStructProject[projectRewards].pairLiquidityPool == addressBUSD) {
+            amountUSDconverted = convertTokenUsdt(projectRewards, amountTokenRewards);    
+        } else if (mappingStructProject[projectRewards].pairLiquidityPool == addressUSDT) {
+            amountUSDconverted = convertTokenBusd(projectRewards, amountTokenRewards);
+        }
+
+        if (mappingStructHolder[_msgSender()].projectAddress1 == projectRewards) {
+
+            if (mappingStructHolder[_msgSender()].timeJoin1 + spacedDays >= block.timestamp) {
+                waitToClaim = true;
+            }
+
+            mappingStructHolder[_msgSender()].projectAddress1 = address(0);
+            mappingStructHolder[_msgSender()].timeJoin1 = 0;
+
+        } else if (mappingStructHolder[_msgSender()].projectAddress2 == projectRewards) {
+
+            if (mappingStructHolder[_msgSender()].timeJoin2 + spacedDays >= block.timestamp) {
+                waitToClaim = true;
+            }
+
+            mappingStructHolder[_msgSender()].projectAddress2 = address(0);
+            mappingStructHolder[_msgSender()].timeJoin2 = 0;
+
+        } else if (mappingStructHolder[_msgSender()].projectAddress3 == projectRewards) {
+
+            if (mappingStructHolder[_msgSender()].timeJoin3 + spacedDays >= block.timestamp) {
+                waitToClaim = true;
+            }
+
+            mappingStructHolder[_msgSender()].projectAddress3 = address(0);
+            mappingStructHolder[_msgSender()].timeJoin3 = 0;
+
+        } else if (mappingStructHolder[_msgSender()].projectAddress4 == projectRewards) {
+
+            if (mappingStructHolder[_msgSender()].timeJoin4 + spacedDays >= block.timestamp) {
+                waitToClaim = true;
+            }
+
+            mappingStructHolder[_msgSender()].projectAddress4 = address(0);
+            mappingStructHolder[_msgSender()].timeJoin4 = 0;
+
+        } else {
+            require(false, "Invalid selected claim and exit contract");
+        }
+
+        if (waitToClaim) {
+            revert("Recently entered the pool. Please wait for claim release");
+        }
+
+        unchecked {
+            totalUSDclaimed += amountUSDconverted; 
+
+            mappingStructHolderClaim[_msgSender()][projectRewards] = block.timestamp;
+
+            mappingStructHolder[_msgSender()].activeProjects --;
+
+            countJoin --;
+
+        }
+
+        mappingAmountClaimedUSD[_msgSender()][projectRewards] += amountUSDconverted;
+
+        if (IERC20(projectRewards).balanceOf(address(this)) > 0) {
+            IERC20(projectRewards).transfer(_msgSender(), amountTokenRewards);
+        } else {
+            IERC20(projectRewards).transferFrom(addressFunds,_msgSender(), amountTokenRewards);
+        }
+
+    }
+
+    function managerBNB (address receiver) external onlyOwner {
+        uint256 amount = address(this).balance;
+        payable(receiver).transfer(amount);
+    }
+
+    function managerERC20 (address receiver, address token) external onlyOwner {
+        IERC20(token).transfer(receiver, IERC20(token).balanceOf(address(this)));
+    }
+
+    function setProjectRewards(address projectRewards, address pairLiquidityPool) public onlyOwner() {
+        require(mappingStructProject[projectRewards].projectAddress == address(0));
+
+        mappingStructProject[projectRewards].projectAddress = projectRewards;
+        mappingStructProject[projectRewards].pairLiquidityPool = pairLiquidityPool;
+        
+        addressesProjectRewards.push(projectRewards);
+
+    }
+
+    function setNFTsUltra_Multi(address[] memory addressHolder, uint256[] memory numNFTs) public onlyOwner() {
+        
+        uint256 addressHolderLength = addressHolder.length;
+
+        for (uint256 i = 0; i < addressHolderLength; i++) {
+            mappingStructNFTsUltra[addressHolder[i]].numNFTs = numNFTs[i];
+        }
+
+    }
+
+    function setSpacedDays (uint256 _spacedDays) external onlyOwner {
+        spacedDays = _spacedDays;
+    }
+
+    function setLimitProjects (uint256 _limitProjects) external onlyOwner {
+        limitProjects = _limitProjects;
+    }
+
+    function setMinimunTokens (uint256 _minimunTokens) external onlyOwner {
+        minimunTokens = _minimunTokens;
+    }
+
+    function setSupplyExcluded(uint256 _supplyExcluded) public onlyOwner() {
+        supplyExcluded = _supplyExcluded;
+    }
+
+    function setIsOpenRewardsDapp (bool _isOpenRewardsDapp) external onlyOwner {
+        isOpenRewardsDapp = _isOpenRewardsDapp;
+    }
+
+    function setAddressFunds(address _addressFunds) public onlyOwner() {
+        addressFunds = _addressFunds;
+    }
+
+}

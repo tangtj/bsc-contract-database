@@ -1,0 +1,197 @@
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+
+
+// OpenZeppelin Contracts (last updated v4.9.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+// File: T4S/privatesale.sol
+
+
+pragma solidity ^0.8.9;
+
+
+interface INinetoFive {
+    function investments(
+        address user
+    ) external view returns (
+        address,
+        uint256,
+        uint256,
+        uint256,
+        uint256,
+        uint256,
+        bool);
+}
+
+contract PrivateSale {
+    IERC20 public T4S;
+
+    struct StakeInfo {
+        uint256 amount;
+        uint256 reward;
+        uint256 timestamp;
+    }
+    
+    mapping(address => StakeInfo) public T4SStakers;
+    
+    uint256 public constant T4S_PRICE_1BNB = 1650;
+
+    uint256 public constant STAKING_PERIOD = 15 days;
+    address public dev;
+    uint256 public constant BNB_REWARD_PERCENT = 10;
+    uint256 public constant USDT_REWARD_PERCENT = 5;
+    uint256 public constant REWARD_TOTAL = 100000 * 10 ** 18;
+    uint256 public constant LAUNCH_DATE = 1687968000;
+    uint256 public constant FINISH_DATE = 1688400000;
+
+    uint256 public distributedRewards;
+
+    INinetoFive public Nine;
+
+    constructor() {
+        dev = msg.sender;
+        T4S = IERC20(0x4cb10A0216BdAA44035DFfFC49323d269f66fcD7);
+        Nine = INinetoFive(0xca6a29fB2EEE7D5911BCeA58EcEA792Da5BaF2E3);
+    }
+
+    function buyT4S() public payable {
+
+        require(msg.value >= 0.05 ether && msg.value <= 2 ether,"wrong amount");
+        require(block.timestamp >= LAUNCH_DATE,"not launched yet");
+        require(distributedRewards < REWARD_TOTAL, "All rewards have been distributed");
+        require(isElegible(), "User has not made any investments");
+
+        // Calculate the amount of T4S tokens the user gets
+        uint256 tokensToBuy = msg.value * T4S_PRICE_1BNB;
+
+        uint256 total = T4SStakers[msg.sender].amount + msg.value;
+        require(total <= 2 ether, "Full");
+
+        uint256 total_re = T4SStakers[msg.sender].reward + tokensToBuy;
+        T4SStakers[msg.sender] = StakeInfo(
+        total, 
+        total_re,
+        block.timestamp
+        );
+        distributedRewards += tokensToBuy;
+    }
+
+
+    function claimT4SReward() external {
+        require(block.timestamp >= FINISH_DATE,"not finished yet");
+        require(T4S.balanceOf(address(this)) >= T4SStakers[msg.sender].reward, "Not enough T4S tokens in the contract");
+        uint256 _reward = T4SStakers[msg.sender].reward;
+        T4SStakers[msg.sender].reward = 0;
+        T4S.transfer(msg.sender, _reward);
+    }
+
+
+function withdrawpresale() external {
+    require(msg.sender == dev, "Only the dev can withdraw");
+    payable(dev).transfer(address(this).balance);
+}
+
+function withdrawpresaleT4S(uint256 _amount) external {
+    require(msg.sender == dev, "Only the dev can withdraw");
+    T4S.transfer(dev, _amount);
+}
+
+
+function getContractT4SBalance() public view returns (uint256) {
+    return T4S.balanceOf(address(this));
+}
+
+function isElegible() public view returns (bool) {
+    (,uint256 investments,,,,,) = Nine.investments(msg.sender);
+    bool check;
+    investments != 0 ? check = true : check = false;
+    return check;
+}
+
+function returnPerc() public view returns (uint256) {
+    uint256 perc = distributedRewards * 100 / REWARD_TOTAL; 
+    return perc;
+}
+
+
+function burnAll(uint256 amount) external {
+    require (msg.sender == dev);
+    T4S.transfer(address(0), amount);
+}
+    
+}

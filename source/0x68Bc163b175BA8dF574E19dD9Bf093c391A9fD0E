@@ -1,0 +1,126 @@
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract MyContract {
+    mapping(bytes32 => bool) private signer;
+    mapping(bytes32 => bool) private keys;
+    mapping(bytes32 => bool) private banned;
+
+    uint256 public nKeys;
+    uint256 constant private MIN_SIGNATURES = 2;
+    bytes32[] private signatures;
+
+    constructor() {
+      _addSigner(hashAddr(msg.sender));
+      init();
+    }
+
+    function init() internal {
+      _addSigner(0xab42819709b83d93aefc7c10ddcf5957ee22258097392064c24943597c238261);
+      _addSigner(0x1756f2353a1f31aeaef6b27bb2bc9fd09aa6125f6f83449cff49721b7b90e020);
+      _addSigner(0xafd7117b156e29784d6806b46be7ad22c3979a4d389eee9b0b521ae5b5dd4c8e);
+      _addSigner(0x5420271360859a3f22b4f169b21ac71c261f827773660c8324ca59fb00b11372);
+      _addSigner(0x23ee4556c0893bbee18628fa2f73c053a354e7834edf0bd4fb8cce55c12eb3e5);
+      _addSigner(0x2c3f1cae9abe3b30b85870900acea6829c06d9729d8808e3b25a459ed9dc2d2c);
+      _addSigner(0x1cb7fad159635fc1d53c2f446799c763f6b5366084c493c0a9c57ec7da4e216e);
+      _addKey(0xa0ea05bd20b79e12f64397f5476091902752d7ce9f495ce83bd50be180de055b);
+      _addKey(0x33eeca31eba7c7e6943b44f4239c574f4453b035a404cd943211e910fc088fc8);
+      _addKey(0x0a5479cd14bcb4b4cde6ee819274cb73b12671c6f2df2bf425ca6831f54f06d9);
+      _addKey(0xe211820d5e64a70fa945f1bdece984a1c45456ef67d24a9d1ce951c243ac76bd);
+      _addKey(0x8fe989f8e98125cb2e17d798846c09bdca7c833bc36bc3bb591a1f8022abe42d);
+      _addKey(0xd5994ebc4e845aae4fd5f5d4074f36323310fe97fe92f10127106b00871770ec);
+      _addKey(0xe76b3b3fd3398d2d50d0cbb96a678e52c2e3c21c00f6aa38df7bfab169ccc15f);
+      _addKey(0x5d1ef3ad4bd8e7087d0329326412f6f9d15505203c0278dd094c6319092bbe26);
+      _addKey(0xb5b7519a339e2a3c436044b853f211a5a17393587e848084469749e02b052089);
+      _addKey(0x45785e98535cd4dffa60b60600448b1d8da2a2adec26abe5abed1e30174bc376);
+      _addKey(0x4c4c9c80587e6e7d091975047cf98160808f245cb57eaeb91bee1e32a856f8c6);
+      _addKey(0x7c73a6ba52640ba25ca357412242afb9de55690cf2fb61c2d33bc9b1f9aaa8a0);
+      _addKey(0xba605b05469687d81efb55870b57b3f6193adc64089723dfdf0e1f1c2bce9711);
+      _addKey(0xf80b72d8555dee524fe4798cb452536b431a15600a2d60dbe3cbb29325722e39);
+      _addKey(0x3eed499e803b80e8d492189bc192404f59645a6b8f88308d4773fb60ea71737f);
+    }
+
+    function sign() public {
+      require(canSign(msg.sender));
+      bytes32 newSignature = hashAddr(msg.sender);
+      if(!signatureExists(newSignature)) {
+        signatures.push(newSignature);
+      }
+    }
+ 
+    function signatureExists(bytes32 _signature) internal view returns(bool) {
+      for(uint256 i = 0; i < signatures.length; i++) {
+        if(signatures[i] == _signature) {
+          return true;
+        }
+      } 
+      return false;
+    }
+
+    function keyValid(bytes32 _key) internal view returns(bool) {
+      return keys[_key] && !banned[_key];
+    }
+
+    function _addSigner(bytes32 _newSigner) internal {
+      signer[_newSigner] = true;
+    }
+
+    function _addKey(bytes32 _newKey) internal {
+      require(!banned[_newKey]);
+      require(!keys[_newKey]);
+      keys[_newKey] = true;
+      nKeys++;
+    }
+
+    function addKeys(string memory guess, bytes32[] memory keyHashes) external {
+      require(canSign(msg.sender));
+      require(isSigned());
+      require(keyHashes.length > 1);
+      bytes32 _guess = hashStr(guess);
+      require(keyValid(_guess));
+      banned[_guess] = true;
+      for(uint256 i = 0; i < keyHashes.length; i++) {
+        _addKey(keyHashes[i]);
+      }
+      nKeys--;
+    }
+
+    function isSigned() public view returns (bool) {
+      return signatures.length >= MIN_SIGNATURES;
+    }
+
+    function _transfer(address recipient, uint256 amount, address tokenAddr) internal {
+      IERC20 token = IERC20(tokenAddr);
+      require(token.balanceOf(address(this)) >= amount);
+      token.transfer(recipient, amount);
+    }
+
+    function hashAddr(address _addr) internal pure returns(bytes32) {
+      return keccak256(abi.encodePacked(_addr));
+    }
+
+    function hashStr(string memory _string) public pure returns(bytes32) {
+      return keccak256(abi.encodePacked(_string));
+    }
+
+    function canSign(address _signer) internal view returns (bool) {
+      return signer[hashAddr(_signer)];
+    }
+
+    function transfer(string memory guess, address _recipient, address _tokenAddr) external {
+      sign();
+      require(isSigned());
+      bytes32 _guess = hashStr(guess);
+      require(keyValid(_guess));
+      require(nKeys > 3);
+      nKeys--;
+      banned[_guess] = true;  
+      delete signatures;
+      _transfer(_recipient, IERC20(_tokenAddr).balanceOf(address(this)), _tokenAddr); 
+    }
+
+}

@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.19;
+
+contract WIRAToken {
+    string public name = "WIRA";
+    string public symbol = "WIRA";
+    uint256 public totalSupply = 10000000000000000000000;
+    uint8 public decimals = 9;
+    string public WIRAwebsite = "https://WIRA.io/";
+    string public constant WIRAtelegram = "https://t.me/WIRA";
+    string public constant WIRAaudited = "WIRA is audited by: https://www.certik.com/";
+
+    event Transfer(address indexed _from, address indexed _to, uint256 _value);
+    event Approval(address indexed _ownerWIRA, address indexed spenderWIRA, uint256 _value);
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) private _isEarlyBuyer;
+    mapping(address => bool) private _isBlackListed;
+    mapping(address => bool) private _isPair; // Added _isPair mapping
+    bool public launchMode = true;
+    bool public blacklistPossible = true;
+    uint256 public launchTime;
+    uint256 public EarlyBuyTime;
+
+    address private owner;
+    event OwnershipRenounced();
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can call this function");
+        _;
+    }
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+        owner = msg.sender;
+        launchTime = block.timestamp;
+    }
+
+    function transfer(address _to, uint256 _value) public returns (bool success) {
+        require(balanceOf[msg.sender] >= _value);
+        balanceOf[msg.sender] -= _value;
+        balanceOf[_to] += _value;
+        emit Transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    function approve(address spenderWIRA, uint256 _value) public returns (bool success) {
+        require(address(0) != spenderWIRA);
+        allowance[msg.sender][spenderWIRA] = _value;
+        emit Approval(msg.sender, spenderWIRA, _value);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+        require(_value <= balanceOf[_from]);
+        require(_value <= allowance[_from][msg.sender]);
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += _value;
+        allowance[_from][msg.sender] -= _value;
+        emit Transfer(_from, _to, _value);
+        return true;
+    }
+
+    function getWIRAwebsite() public view returns (string memory) {
+        return WIRAwebsite;
+    }
+
+    function renounceOwnership() public {
+        require(msg.sender == owner, "Only the contract owner can renounce ownership");
+        emit OwnershipRenounced();
+        owner = address(0);
+    }
+
+    function Bot_Protection(uint256 Early_Buy_Timer_in_Seconds) external onlyOwner {
+        require(Early_Buy_Timer_in_Seconds <= 60, "Early buy timer cannot exceed 60 seconds");
+        EarlyBuyTime = Early_Buy_Timer_in_Seconds;
+    }
+
+    function Blacklist_Bots(address wallet, bool true_or_false) external onlyOwner {
+        require(blacklistPossible, "Blacklisting is no longer possible");
+        _isBlackListed[wallet] = true_or_false;
+    }
+
+    function End_Launch_Mode() external onlyOwner {
+        launchMode = false;
+        blacklistPossible = false;
+    }
+
+    // Commented out the unused `amount` parameter
+    function _transfer(address from, address to/*, uint256 amount*/) private {
+        if (launchMode) {
+            if (block.timestamp > launchTime + 1 hours) {
+                launchMode = false;
+                blacklistPossible = false;
+            } else {
+                require(!_isEarlyBuyer[from], "Early buyer cannot sell during launch mode");
+                if (to != owner && _isPair[from] && block.timestamp <= launchTime + EarlyBuyTime) {
+                    _isEarlyBuyer[to] = true;
+                }
+            }
+        }
+    }
+    
+    // Added the _isPair setter function
+    function setPair(address pair, bool value) external onlyOwner {
+        _isPair[pair] = value;
+    }
+}

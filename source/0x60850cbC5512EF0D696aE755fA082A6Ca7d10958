@@ -1,0 +1,1125 @@
+//SPDX-License-Identifier: UNLICENSED
+
+pragma solidity 0.8.5;
+
+
+interface tfIERC20 {
+
+	function totalSupply() external view returns (uint);
+
+	function balanceOf(address account) external view returns (uint);
+
+	function transfer(address recipient, uint amount) external returns (bool);
+
+	function allowance(address owner, address spender) external view returns (uint);
+
+	function approve(address spender, uint amount) external returns (bool);
+
+	function transferFrom(address sender, address recipient, uint amount) external returns (bool);
+
+}
+
+library tfAddress {
+
+	function isContract(address account) internal view returns (bool) {
+
+		uint size;
+		assembly {
+			size := extcodesize(account)
+		}
+		return size > 0;
+	}
+
+	function sendValue(address payable recipient, uint amount) internal {
+		require(address(this).balance >= amount, "Address: insufficient balance");
+		(bool success, ) = recipient.call{value: amount}("");
+		require(success, "Address: unable to send value, recipient may have reverted");
+	}
+
+	function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+		return functionCall(target, data, "Address: low-level call failed");
+	}
+
+	function functionCall(
+		address target,
+		bytes memory data,
+		string memory errorMessage
+	) internal returns (bytes memory) {
+		return functionCallWithValue(target, data, 0, errorMessage);
+	}
+
+	function functionCallWithValue(
+		address target,
+		bytes memory data,
+		uint value
+	) internal returns (bytes memory) {
+		return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+	}
+
+	function functionCallWithValue(
+		address target,
+		bytes memory data,
+		uint value,
+		string memory errorMessage
+	) internal returns (bytes memory) {
+		require(address(this).balance >= value, "Address: insufficient balance for call");
+		require(isContract(target), "Address: call to non-contract");
+		(bool success, bytes memory returndata) = target.call{value: value}(data);
+		return verifyCallResult(success, returndata, errorMessage);
+	}
+
+	function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+		return functionStaticCall(target, data, "Address: low-level static call failed");
+	}
+
+	function functionStaticCall(
+		address target,
+		bytes memory data,
+		string memory errorMessage
+	) internal view returns (bytes memory) {
+		require(isContract(target), "Address: static call to non-contract");
+		(bool success, bytes memory returndata) = target.staticcall(data);
+		return verifyCallResult(success, returndata, errorMessage);
+	}
+
+	function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+		return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+	}
+
+	function functionDelegateCall(
+		address target,
+		bytes memory data,
+		string memory errorMessage
+	) internal returns (bytes memory) {
+		require(isContract(target), "Address: delegate call to non-contract");
+		(bool success, bytes memory returndata) = target.delegatecall(data);
+		return verifyCallResult(success, returndata, errorMessage);
+	}
+
+	function verifyCallResult(
+		bool success,
+		bytes memory returndata,
+		string memory errorMessage
+	) internal pure returns (bytes memory) {
+		if (success) {
+			return returndata;
+		} else {
+			if (returndata.length > 0) {
+				assembly {
+					let returndata_size := mload(returndata)
+					revert(add(32, returndata), returndata_size)
+				}
+			} else {
+				revert(errorMessage);
+			}
+		}
+	}
+}
+
+library tfSafeERC20 {
+
+	using tfAddress for address;
+
+	function safeTransfer(
+		tfIERC20 token,
+		address to,
+		uint value
+	) internal {
+		_callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+	}
+
+	function safeTransferFrom(
+		tfIERC20 token,
+		address from,
+		address to,
+		uint value
+	) internal {
+		_callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+	}
+
+	function safeApprove(
+		tfIERC20 token,
+		address spender,
+		uint value
+	) internal {
+		require(
+			(value == 0) || (token.allowance(address(this), spender) == 0),
+			"SafeERC20: approve from non-zero to non-zero allowance"
+		);
+		_callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+	}
+
+	function safeIncreaseAllowance(
+		tfIERC20 token,
+		address spender,
+		uint value
+	) internal {
+		uint newAllowance = token.allowance(address(this), spender) + value;
+		_callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+	}
+
+	function safeDecreaseAllowance(
+		tfIERC20 token,
+		address spender,
+		uint value
+	) internal {
+		unchecked {
+			uint oldAllowance = token.allowance(address(this), spender);
+			require(oldAllowance >= value, "SafeERC20: decreased allowance below zero");
+			uint newAllowance = oldAllowance - value;
+			_callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+		}
+	}
+
+	function _callOptionalReturn(tfIERC20 token, bytes memory data) private {
+		bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+		if (returndata.length > 0) {
+			require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+		}
+	}
+}
+
+
+interface ITrustEarnInsurance {
+	function fundProject(uint _amountRequested) external returns(uint _amountSent);
+}
+
+contract TRUSTEARN_INSURANCE {
+
+	receive() external payable { }
+
+	modifier OnlyProject() { require(msg.sender == PROJECT, 'Only Project' ); _; }
+
+	using tfSafeERC20 for tfIERC20;
+
+	tfIERC20 public	TOKEN;
+	address public	PROJECT;
+
+	constructor(address _tokenAddr) {
+
+		TOKEN = tfIERC20(_tokenAddr);
+		PROJECT = msg.sender;
+	}
+
+	function fundProject(uint _amountRequested) external OnlyProject returns(uint _amountFunded) {
+
+		uint balance = TOKEN.balanceOf( address(this) );
+		_amountFunded = _amountRequested > balance ? balance : _amountRequested;
+		TOKEN.safeTransfer(PROJECT, _amountFunded);
+	}
+
+}
+
+
+contract TRUSTEARN {
+
+	receive() external payable { }
+
+	using tfSafeERC20 for tfIERC20;
+
+	modifier OnlyOwner() { require( msg.sender == OWNER, 'OnlyOwner' ); _; }
+
+
+	address public					OWNER;
+	tfIERC20 public					TOKEN;
+	uint public						LAUNCHED;
+	uint16 constant					DAILY_ROI =				25;
+	uint constant					EARNINGS_CUTOFF =		4 days;
+	uint constant					MINIMAL_INVEST =		1 ether;
+	uint16 constant					REF_LVLS =				1;
+	uint16[REF_LVLS] public			REF_PERCENTAGES =		[40];
+	uint16 constant					FEE_INVEST =			100;
+	uint16 constant					FEE_COMPOUND =			25;
+
+	uint16 constant					UNSTAKE_PERCENT =		500;
+	uint16 constant					UNSTAKE_AIRDROP =		50;
+	uint public						AIRDROP_INDEX;
+	uint constant					AIRDROP_DURATION =		10 days;
+
+	address payable public			INSURANCE;
+	uint public						AGG_INVESTED;
+	uint constant					AVG_BALANCE_PERIOD =	7;
+
+	uint constant					INS_PER_INVEST =		10;
+	uint constant					INS_PER_COMPOUND =		25;
+	uint constant					INS_PER_WITHDRAW =		100;
+	uint constant					INS_PER_UNSTAKE =		100;
+	uint constant					INS_PER_TRIGGER =		250;
+
+	uint public						HT_INVESTED;
+	uint public						HT_REFREWARD;
+	uint public						HT_AIRREWARD;
+	uint public						HT_EARNED;
+	uint public						HT_COMPOUNDED;
+	uint public						HT_WITHDRAWN;
+	uint public						HT_AIRDROPPED;
+	uint public						HT_AIRCLAIMS;
+
+	uint[4] public					HT_INS_SENT;
+	uint public						HT_INS_SENT_AGG;
+	uint public						HT_INS_RECV_AGG;
+
+	uint public						HT_TIMER_AMT;
+	uint public						HT_TIMER_CNT;
+
+
+	event event_invest(address user, uint amount);
+
+	event event_withdraw(address user, uint refReward, uint airReward, uint earnReward);
+
+	event event_unstake(address user, uint totalRewards, uint unstakeAmount);
+
+	event event_setUpline(address user, address upline);
+
+	event event_refPayout(address referrer, address user, uint reward);
+
+	event event_encashEarnings(address user, uint timeFull, uint timeEarn, uint amtFull, uint amtEarn);
+
+	event event_compoundRewards(address user, uint refReward, uint airReward, uint earnReward);
+
+	event event_createAirdrop(address creator, uint amount);
+
+	event event_claimAirdrop(address user, uint airdropIndex, uint amount);
+
+	event event_insurancePull(Flags flag, uint amountRequested, uint amountFunded);
+
+
+	enum Flags { NEWCOMER, INVEST, COMPOUND, REFPAYOUT, WITHDRAW, UNSTAKE, CREATE_AIRDROP, CLAIM_AIRDROP, TOP_DEPOSIT, INS_TRIGGER_ZERO, INS_TRIGGER_HEAVY, INS_TRIGGER_AVG, INS_ADMIN }
+
+
+	struct History {
+		Flags	flag;
+		uint	time;
+		uint	amt1;
+		uint	amt2;
+		uint	amt3;
+		address	addr1;
+		address	addr2;
+	}
+
+	struct User {
+
+		address			upline;
+		uint[REF_LVLS]	refCounts;
+		uint			invested;
+		uint			refReward;
+		uint			airReward;
+		uint			earnReward;
+		uint			checkpoint;
+		uint			airIndex;
+		uint			ht_invested;
+		uint			ht_refReward;
+		uint			ht_airReward;
+		uint			ht_earned;
+		uint			ht_compounded;
+		uint			ht_withdrawn;
+		History[]		history;
+	}
+
+	struct Airdrop {
+		uint	time;
+		address	creator;
+		uint	initialAmt;
+		uint	currentAmt;
+		uint	claimedNum;
+	}
+
+	struct Deposit {
+		address	user;
+		uint	amount;
+	}
+
+	struct AvgBalance {
+		uint	count;
+		uint	amount;
+	}
+
+
+	address[] public					ADDRS;
+	mapping(address => User) public		USERS;
+	Airdrop[] public					AIRDROPS;
+	Deposit[10] public					TOPDEPOSITS;
+	mapping(uint => AvgBalance) public	AVG_BALANCE;
+	History[] public					HISTORY;
+
+
+	/*
+		constructor
+	*/
+
+	constructor(address _tokenAddr) {
+
+		OWNER = msg.sender;
+		TOKEN = tfIERC20(_tokenAddr);
+		INSURANCE = payable( new TRUSTEARN_INSURANCE(_tokenAddr) );
+	}
+
+
+	/*
+		public functions
+	*/
+
+	function invest(uint _amount, address _upline) external {
+
+		require( _amount >= MINIMAL_INVEST, 'Insufficient amount');
+		require( (LAUNCHED > 0) || (msg.sender == OWNER), 'Please wait for the official launch');
+
+		if( LAUNCHED == 0 ) {
+			LAUNCHED = block.timestamp;
+		}
+
+		User storage user = USERS[msg.sender];
+
+		if(!_isUser(msg.sender)) {
+			ADDRS.push(msg.sender);
+			user.airIndex = AIRDROPS.length;
+			_userHistory(user, Flags.NEWCOMER, 0, 0, 0, address(0), address(0) );
+		}
+
+		TOKEN.safeTransferFrom( msg.sender, address(this), _amount );
+
+		TOKEN.safeTransfer(OWNER, _per(_amount, FEE_INVEST) );
+
+		_setUpline(msg.sender, _upline);
+
+		_refPayout(msg.sender, _amount);
+
+		_encashEarnings(msg.sender);
+
+		_compoundRewards(msg.sender);
+
+		user.invested += _amount;
+		AGG_INVESTED += _amount;
+
+		user.ht_invested += _amount;
+		HT_INVESTED += _amount;
+
+		_insuranceFill( _per(_amount, INS_PER_INVEST), Flags.INVEST );
+
+		_trackBalance();
+
+		_rateDeposit(msg.sender, _amount);
+
+
+		_userHistory(user, Flags.INVEST, _amount, user.invested, AGG_INVESTED, address(0), address(0) );
+
+		_globalHistory(Flags.INVEST, _amount, user.invested, AGG_INVESTED, msg.sender, address(0) );
+
+		emit event_invest(msg.sender, _amount);
+
+	}
+
+
+	function compound() external {
+
+		require( _isUser(msg.sender), 'Invalid user');
+
+		_encashEarnings(msg.sender);
+
+		_compoundRewards(msg.sender);
+
+		_trackBalance();
+
+	}
+
+
+	function withdraw() external {
+
+		require( _isUser(msg.sender), 'Invalid user');
+
+		User storage user = USERS[msg.sender];
+
+		_encashEarnings(msg.sender);
+
+		(uint refReward, uint airReward, uint earnReward, uint totalRewards) = _drainRewards(msg.sender);
+
+		bool triggered = _insuranceTrigger(totalRewards);
+
+		if(!triggered) _insuranceFill( _per(totalRewards, INS_PER_WITHDRAW), Flags.WITHDRAW );
+
+		TOKEN.safeTransfer(msg.sender, totalRewards);
+
+		user.ht_withdrawn += totalRewards;
+		HT_WITHDRAWN += totalRewards;
+
+		_trackBalance();
+
+		_userHistory(user, Flags.WITHDRAW, refReward, airReward, earnReward, address(0), address(0) );
+
+		emit event_withdraw(msg.sender, refReward, airReward, earnReward);
+
+	}
+
+
+	function unstake() external {
+
+		require( _isUser(msg.sender), 'Invalid user');
+
+		User storage user = USERS[msg.sender];
+
+		require(user.invested > 0, 'Nothing to unstake');
+
+		_encashEarnings(msg.sender);
+
+		(/*refReward*/, /*airReward*/, /*earnReward*/, uint totalRewards) = _drainRewards(msg.sender);
+
+		uint unstakeAmount = totalRewards + _per(user.invested, UNSTAKE_PERCENT);
+
+		uint insuranceAmount = _per(user.invested, INS_PER_UNSTAKE);
+
+		_createAirdrop(msg.sender, _per(user.invested, UNSTAKE_AIRDROP) );
+
+		AGG_INVESTED -= user.invested;
+		user.invested = 0;
+
+		user.ht_withdrawn += unstakeAmount;
+		HT_WITHDRAWN += unstakeAmount;
+
+		bool triggered = _insuranceTrigger(unstakeAmount);
+
+		if(!triggered) _insuranceFill( insuranceAmount, Flags.UNSTAKE );
+
+		TOKEN.safeTransfer(msg.sender, unstakeAmount);
+		
+
+		_trackBalance();
+
+		_userHistory(user, Flags.UNSTAKE, totalRewards, unstakeAmount, 0, address(0), address(0) );
+
+		emit event_unstake(msg.sender, totalRewards, unstakeAmount);
+
+	}
+
+
+	function claimAirdrops() external {
+
+		require( _isUser(msg.sender), 'Invalid user');
+
+		User storage user = USERS[msg.sender];
+
+		uint count;
+		uint reward;
+		for( uint i = _max(AIRDROP_INDEX, user.airIndex);  i < AIRDROPS.length;  i++ ) {
+
+			(bool avail,/*partPrc10000*/, uint amt) = _userAirdropAmt(i, msg.sender);
+			if(avail) {
+
+				count++;
+				reward += amt;
+
+				AIRDROPS[i].currentAmt -= amt;
+				AIRDROPS[i].claimedNum++;
+
+				_userHistory(user, Flags.CLAIM_AIRDROP, i, amt, 0, address(0), address(0) );
+
+				emit event_claimAirdrop(msg.sender, i, amt);
+			}
+		}
+
+		user.airIndex = AIRDROPS.length;
+		user.airReward += reward;
+
+		user.ht_airReward += reward;
+		HT_AIRREWARD += reward;
+		HT_AIRCLAIMS += count;
+
+		for( uint i = AIRDROP_INDEX; i < AIRDROPS.length; i++ ) {
+
+			if(	_airdropDrained(i) || _airdropExpired(i) ) {
+				AIRDROP_INDEX++;
+				continue;
+			}
+			break;
+		}
+
+
+		_trackBalance();
+
+		_globalHistory(Flags.CLAIM_AIRDROP, reward, count, 0, msg.sender, address(0) );
+
+	}
+
+
+	struct DataContract {
+		uint		time;
+		uint		launched;
+		uint		balance;
+		uint		usersCount;
+
+		uint		agg_invested;
+		uint		ht_invested;
+		uint		ht_refReward;
+		uint		ht_earned;
+		uint		ht_withdrawn;
+
+		uint		ht_airDropped;
+		uint 		ht_airClaims;
+		uint		ht_airReward;
+
+		uint		insBalance;
+		uint		ht_insSentAgg;
+		uint		ht_insRecvAgg;
+		uint		avgBalance;
+
+		Airdrop[10]	airdrops;
+		Deposit[10] topDeposits;
+		History[20]	history;
+	}
+
+	struct DataUser {
+		uint	balance;
+		uint	allowance;
+	}
+
+	function contractInfo(address _user) public view returns(DataContract memory _dataContract, DataUser memory _dataUser) {
+
+		Airdrop[10] memory _AIRDROPS;
+		for( uint i = AIRDROPS.length;  i > 0;  i-- ) {
+			uint x = AIRDROPS.length - i;
+			if(x >= _AIRDROPS.length) break;
+			_AIRDROPS[x] = AIRDROPS[i-1];
+		}
+
+		History[20] memory _HISTORY;
+		for( uint i = HISTORY.length;  i > 0;  i-- ) {
+			uint x = HISTORY.length - i;
+			if(x >= _HISTORY.length) break;
+			_HISTORY[x] = HISTORY[i-1];
+		}
+
+
+		_dataContract = DataContract({
+			time:			block.timestamp,
+			launched:		LAUNCHED,
+			balance:		TOKEN.balanceOf(address(this)),
+			usersCount:		ADDRS.length,
+
+			agg_invested:	AGG_INVESTED,
+			ht_invested:	HT_INVESTED,
+			ht_refReward:	HT_REFREWARD,
+			ht_earned:		HT_EARNED,
+			ht_withdrawn:	HT_WITHDRAWN,
+
+			ht_airDropped:	HT_AIRDROPPED,
+			ht_airClaims:	HT_AIRCLAIMS,
+			ht_airReward:	HT_AIRREWARD,
+
+			insBalance:		TOKEN.balanceOf(INSURANCE),
+			ht_insSentAgg:	HT_INS_SENT_AGG,
+			ht_insRecvAgg:	HT_INS_RECV_AGG,
+			avgBalance:		_avgBalance(),
+
+			airdrops:		_AIRDROPS,
+			topDeposits:	TOPDEPOSITS,
+			history:		_HISTORY
+		});
+
+		_dataUser = DataUser({
+			balance:	TOKEN.balanceOf(_user),
+			allowance:	TOKEN.allowance(_user, address(this))
+		});
+	}
+
+
+	struct DataUserEx {
+		uint			time;
+		uint			balance;
+		uint			allowance;
+		bool			isUser;
+		uint			checkpoint;
+		uint			invested;
+		uint			refReward;
+		uint			airReward;
+		uint			earnReward;
+		uint			amtFull;
+		uint			amtEarn;
+		uint			amtDaily;
+		uint			beforeCutoff;
+		uint[REF_LVLS]	refCounts;
+		uint			airAvailNum;
+		uint			airAvailAmt;
+		uint			unstakeRewards;
+		uint			ht_invested;
+		uint			ht_refReward;
+		uint			ht_airReward;
+		uint			ht_earned;
+		uint			ht_compounded;
+		uint			ht_withdrawn;
+	}
+
+	function userInfo(address _user) public view returns(DataUserEx memory _dataUserEx, History[10] memory _history) {
+
+		(/*timeFull*/, uint timeEarn, uint amtFull, uint amtEarn, uint amtDaily) = _calcEarnings(_user);
+
+		User storage user = USERS[_user];
+
+		uint airAvailNum;
+		uint airAvailAmt;
+		for( uint i = _max(AIRDROP_INDEX, user.airIndex);  i < AIRDROPS.length;  i++ ) {
+			(bool avail, /*partPrc10000*/, uint amt) = _userAirdropAmt(i, _user);
+			if(avail) {
+				airAvailAmt += amt;
+				airAvailNum++;
+			}
+		}
+
+		_dataUserEx = DataUserEx({
+			time:				block.timestamp,
+			balance:			TOKEN.balanceOf(_user),
+			allowance:			TOKEN.allowance(_user, address(this)),
+			isUser:				_isUser(_user),
+			checkpoint:			user.checkpoint,
+			invested:			user.invested,
+			refReward:			user.refReward,
+			airReward:			user.airReward,
+			earnReward:			user.earnReward,
+			amtFull:			amtFull,
+			amtEarn:			amtEarn,
+			amtDaily:			amtDaily,
+			beforeCutoff:		timeEarn < EARNINGS_CUTOFF ? EARNINGS_CUTOFF - timeEarn : 0,
+			refCounts:			user.refCounts,
+			airAvailNum:		airAvailNum,
+			airAvailAmt:		airAvailAmt,
+			unstakeRewards:		_calcUnstakeRewards(_user),
+			ht_invested:		user.ht_invested,
+			ht_refReward:		user.ht_refReward,
+			ht_airReward:		user.ht_airReward,
+			ht_earned:			user.ht_earned,
+			ht_compounded:		user.ht_compounded,
+			ht_withdrawn:		user.ht_withdrawn
+		});
+
+		(,,_history) = userHistory(_user, 0);
+
+	}
+
+
+	function userHistory(address _user, uint _offset) public view returns(bool _canPrev, bool _canNext, History[10] memory _history) {
+
+		_canPrev = _offset > 0;
+		uint LEN = USERS[_user].history.length;
+		uint len = _history.length;
+
+		if(LEN < _offset+1) return (false, _canPrev, _history);
+
+		uint start = LEN - _offset - 1;
+		uint cnt = _min(len, start+1);
+		_canNext = (start+1 > len);
+		for(uint i = 0; i<cnt; i++) {
+			_history[i] = USERS[_user].history[start-i];
+		}
+	}
+
+
+	struct UserAirdrop {
+		uint	time;
+		address	creator;
+		uint	initialAmt;
+		uint	currentAmt;
+		uint	claimedNum;
+		uint	userSharePrc;
+		uint	userShareAmt;
+	}
+
+	function userAvailableAirdrops(address _user) public view returns(uint _availNum, uint _availAmt, UserAirdrop[10] memory _airdrops) {
+
+		User storage user = USERS[_user];
+		uint LEN = AIRDROPS.length;
+		uint MIN = _max(AIRDROP_INDEX, user.airIndex);
+		uint len = _airdrops.length;
+
+		for( uint i = LEN;  i > MIN;  i-- ) {
+
+			uint IDX = i - 1;
+			(bool avail, uint prc, uint amt) = _userAirdropAmt(IDX, _user);
+
+			if(avail) {
+				_availAmt += amt;
+				_availNum++;
+				uint idx = LEN - i;
+				if(idx >= len) continue;
+
+				Airdrop storage airdrop = AIRDROPS[IDX];
+				_airdrops[idx] = UserAirdrop({
+											time: airdrop.time,
+											creator: airdrop.creator,
+											initialAmt: airdrop.initialAmt,
+											currentAmt: airdrop.currentAmt,
+											claimedNum: airdrop.claimedNum,
+											userSharePrc: prc,
+											userShareAmt: amt
+										});
+			}
+		}
+	}
+
+
+	/*
+		admin functions
+	*/
+
+	// Create an extra Airdrop, USDT amount is taken from the Owner's wallet only
+	function extraAirdrop(uint _amount) external OnlyOwner {
+
+		TOKEN.safeTransferFrom( msg.sender, address(this), _amount );
+
+		_createAirdrop(msg.sender, _amount);
+
+		_trackBalance();
+
+	}
+
+
+	// Force the Insurance contract to fund the Main contract, no USDT will be sent outside
+	function pullInsurance(uint _amount) public OnlyOwner {
+
+		_insurancePull( Flags.INS_ADMIN, _amount );
+	}
+
+
+	// Interface for Moonarch rankings: accumulated earnings&rewards amount
+	function moonArch(address _user) public view returns(uint) {
+
+		User storage user = USERS[_user];
+		(,,,uint amtEarn,) = _calcEarnings(_user);
+		return amtEarn + user.refReward + user.airReward + user.earnReward;
+	}
+
+
+	/*
+		private functions
+	*/
+
+	function _min(uint num1, uint num2) private pure returns(uint) {
+
+		return num1 < num2 ? num1 : num2;
+	}
+
+
+	function _max(uint num1, uint num2) private pure returns(uint) {
+
+		return num1 > num2 ? num1 : num2;
+	}
+
+
+	function _per(uint _amount, uint _percent) private pure returns(uint) {
+
+		return (_amount * _percent) / 1000;
+	}
+
+
+	function _isUser(address _user) private view returns(bool) {
+
+		return (USERS[_user].checkpoint > 0);
+	}
+
+
+	function _globalHistory(Flags _flag, uint _amt1, uint _amt2, uint _amt3, address _addr1, address _addr2) private {
+
+		HISTORY.push(
+			History({
+				flag:	_flag,
+				time:	block.timestamp,
+				amt1:	_amt1,
+				amt2:	_amt2,
+				amt3:	_amt3,
+				addr1:	_addr1,
+				addr2:	_addr2
+			})
+		);
+	}
+
+
+	function _userHistory(User storage _user, Flags _flag, uint _amt1, uint _amt2, uint _amt3, address _addr1, address _addr2) private {
+
+		_user.history.push(
+			History({
+				flag:	_flag,
+				time:	block.timestamp,
+				amt1:	_amt1,
+				amt2:	_amt2,
+				amt3:	_amt3,
+				addr1:	_addr1,
+				addr2:	_addr2
+			})
+		);
+	}
+
+
+	function _rateDeposit(address _user, uint _amount) private {
+
+		bool upd;
+		uint idx;
+		for(uint i=0; i < TOPDEPOSITS.length; i++) {
+			if(_amount > TOPDEPOSITS[i].amount) {
+				idx = i;
+				upd = true;
+				continue;
+			}
+			break;
+		}
+		if(!upd) return;
+
+		for(uint i=idx; i < TOPDEPOSITS.length; i++) {
+			if(_amount < TOPDEPOSITS[i].amount) break;
+			if(_amount == TOPDEPOSITS[i].amount) return;
+		}
+
+		for(uint i=0; i < idx; i++) {
+			if(TOPDEPOSITS[i].amount < TOPDEPOSITS[i+1].amount) {
+				TOPDEPOSITS[i] = TOPDEPOSITS[i+1];
+			}
+		}
+		TOPDEPOSITS[idx] = Deposit({user: _user, amount: _amount});
+
+		_globalHistory(Flags.TOP_DEPOSIT, _amount, 0, 0, _user, address(0) );
+
+	}
+
+
+	function _setUpline(address _user, address _upline) private {
+
+		if( USERS[_user].upline != address(0) ) return;
+		if( !_isUser(_upline) ) return;
+		if( _user == _upline ) return;
+
+		USERS[_user].upline = _upline;
+		emit event_setUpline(_user, _upline);
+
+		for(uint8 i = 0; i < REF_LVLS; i++) {
+			USERS[_upline].refCounts[i]++;
+			_upline = USERS[_upline].upline;
+			if(_upline == address(0)) break;
+		}
+	}
+
+
+	function _refPayout(address _user, uint _amount) private {
+
+		address upline = USERS[_user].upline;
+
+		for(uint8 i = 0; i < REF_LVLS; i++) {
+
+			if(upline == address(0)) break;
+
+			uint reward = _per( _amount, REF_PERCENTAGES[i] );
+
+			User storage referrer = USERS[upline];
+
+			referrer.refReward += reward;
+
+			referrer.ht_refReward += reward;
+
+			HT_REFREWARD += reward;
+
+			_userHistory(referrer, Flags.REFPAYOUT, reward, 0, 0, _user, address(0) );
+
+			emit event_refPayout(upline, _user, reward);
+
+			upline = referrer.upline;
+		}
+	}
+
+
+	function _calcUnstakeRewards(address _user) public view returns(uint) {
+
+		User storage user = USERS[_user];
+		(,,,uint amtEarn,) = _calcEarnings(_user);
+		return _per(user.invested,UNSTAKE_PERCENT) + amtEarn + user.refReward + user.airReward + user.earnReward;
+	}
+
+
+	function _calcEarnings(address _user) public view returns(uint _timeFull, uint _timeEarn, uint _amtFull, uint _amtEarn, uint _daily) {
+
+		User storage user = USERS[_user];
+
+		_timeFull = user.checkpoint > 0 ? block.timestamp - user.checkpoint : 0;
+		_timeEarn = _min( _timeFull , EARNINGS_CUTOFF );
+
+		_amtFull = (user.invested * _timeFull * DAILY_ROI) / 86400000;
+		_amtEarn = (user.invested * _timeEarn * DAILY_ROI) / 86400000;
+		_daily = (user.invested * DAILY_ROI) / 1000;
+
+	}
+
+
+	function _encashEarnings(address _user) private {
+
+		User storage user = USERS[_user];
+
+		(uint timeFull, uint timeEarn, uint amtFull, uint amtEarn, /*daily*/) = _calcEarnings(_user);
+
+		user.checkpoint = block.timestamp;
+		user.earnReward += amtEarn;
+		user.ht_earned += amtEarn;
+		HT_EARNED += amtEarn;
+
+		HT_TIMER_AMT += timeFull - timeEarn;
+		HT_TIMER_CNT++;
+
+		emit event_encashEarnings(_user, timeFull, timeEarn, amtFull, amtEarn);
+	}
+
+
+	function _drainRewards(address _user) private returns(uint _refReward, uint _airReward, uint _earnReward, uint _totalRewards) {
+
+		User storage user = USERS[_user];
+
+		(_refReward, _airReward, _earnReward) = (user.refReward, user.airReward, user.earnReward);
+		_totalRewards = _refReward + _airReward + _earnReward;
+
+		(user.refReward, user.airReward, user.earnReward) = (0,0,0);
+	}
+
+
+	function _compoundRewards(address _user) private {
+
+		User storage user = USERS[_user];
+
+		(uint refReward, uint airReward, uint earnReward, uint totalRewards) = _drainRewards(_user);
+
+		if(totalRewards==0) return;
+
+		user.invested += totalRewards;
+		AGG_INVESTED += totalRewards;
+
+		user.ht_compounded += totalRewards;
+		HT_COMPOUNDED += totalRewards;
+
+		_insuranceFill( _per(totalRewards, INS_PER_COMPOUND), Flags.COMPOUND );
+
+		TOKEN.safeTransfer(OWNER, _per(totalRewards, FEE_COMPOUND) );
+
+		_userHistory(user, Flags.COMPOUND, refReward, airReward, earnReward, address(0), address(0) );
+
+		emit event_compoundRewards(_user, refReward, airReward, earnReward);
+	}
+
+
+	function _airdropDrained(uint _idx) private view returns(bool) {
+
+		return AIRDROPS[_idx].currentAmt == 0;
+	}
+
+
+	function _airdropExpired(uint _idx) private view returns(bool) {
+
+		return AIRDROPS[_idx].time + AIRDROP_DURATION < block.timestamp;
+	}
+
+
+	function _createAirdrop(address _creator, uint _amount) private {
+
+		AIRDROPS.push(Airdrop({
+			time:				block.timestamp,
+			creator:			_creator,
+			initialAmt:			_amount,
+			currentAmt: 		_amount,
+			claimedNum:			 0
+		}));
+
+		HT_AIRDROPPED += _amount;
+
+		_globalHistory(Flags.CREATE_AIRDROP, _amount, 0, 0, _creator, address(0) );
+
+		emit event_createAirdrop(_creator, _amount);
+	}
+
+
+	function _userAirdropAmt(uint _airIdx, address _user) private view returns(bool _avail, uint _partPrc10000, uint _partAmount) {
+
+		Airdrop storage drop = AIRDROPS[_airIdx];
+
+		if(	_airdropDrained(_airIdx) || _airdropExpired(_airIdx) || (AGG_INVESTED == 0) ) return ( false, 0, 0 );
+
+		_avail = true;
+		_partPrc10000 = (USERS[_user].invested * 1000000) / AGG_INVESTED;
+		_partAmount = (drop.initialAmt * _partPrc10000) / 1000000;
+		_partAmount = _min( _partAmount, drop.currentAmt );
+
+	}
+
+
+	function _getDayIdx() private view returns(uint) {
+
+		return block.timestamp / 86400;
+	}
+
+
+	function _trackBalance() private {
+
+		AvgBalance storage avg = AVG_BALANCE[_getDayIdx()];
+		avg.amount += TOKEN.balanceOf(address(this));
+		avg.count++;
+	}
+
+
+	function _avgBalance() private view returns(uint) {
+
+		uint idx = _getDayIdx();
+		uint count;
+		uint amount;
+		for(uint i = idx-AVG_BALANCE_PERIOD; i < idx; i++) {
+			AvgBalance storage avg = AVG_BALANCE[i];
+			if(avg.count == 0) continue;
+			amount += avg.amount / avg.count;
+			count++;
+		}
+
+		return count == 0 ? 0 : amount / count;
+	}
+
+
+	function _insuranceFill(uint _amount, Flags _flag) private {
+
+		TOKEN.safeTransfer( INSURANCE, _amount );
+
+		HT_INS_SENT_AGG += _amount;
+
+		if(_flag == Flags.INVEST)	HT_INS_SENT[0] += _amount; else
+		if(_flag == Flags.COMPOUND)	HT_INS_SENT[1] += _amount; else
+		if(_flag == Flags.WITHDRAW)	HT_INS_SENT[2] += _amount; else
+		if(_flag == Flags.UNSTAKE)	HT_INS_SENT[3] += _amount;
+	}
+
+
+	function _insurancePull(Flags _flag, uint _amountRequested) private {
+
+		uint amountFunded = ITrustEarnInsurance(INSURANCE).fundProject( _amountRequested );
+
+		HT_INS_RECV_AGG += amountFunded;
+
+		emit event_insurancePull(_flag, _amountRequested, amountFunded);
+	}
+
+
+	function _insuranceTrigger(uint _amount) private returns(bool) {
+
+		uint balance = TOKEN.balanceOf(address(this));
+
+		if(balance == 0) {
+
+			_insurancePull( Flags.INS_TRIGGER_ZERO, TOKEN.balanceOf(INSURANCE) );
+			return true;
+		}
+
+		if(_amount * 1000 / balance >= INS_PER_TRIGGER) {
+
+			_insurancePull( Flags.INS_TRIGGER_HEAVY, _amount );
+			return true;
+		}
+
+		uint avg = _avgBalance();
+		if(avg > 0) {
+			if(balance * 1000 / avg <= 1000-INS_PER_TRIGGER) {
+
+				_insurancePull( Flags.INS_TRIGGER_AVG, avg - balance );
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+
+}

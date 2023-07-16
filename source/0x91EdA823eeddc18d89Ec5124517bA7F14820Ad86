@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.19;
+
+interface IERC20 {
+  function totalSupply() external view returns (uint256);
+  function decimals() external view returns (uint256);
+  function symbol() external view returns (string memory);
+  function name() external view returns (string memory);
+  function getOwner() external view returns (address);
+  function balanceOf(address account) external view returns (uint256);
+  function transfer(address recipient, uint256 amount) external returns (bool);
+  function allowance(address _owner, address spender) external view returns (uint256);
+  function approve(address spender, uint256 amount) external returns (bool);
+  function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract permission {
+    mapping(address => mapping(string => bytes32)) private permit;
+
+    function newpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode(adr,str))); }
+
+    function clearpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode("null"))); }
+
+    function checkpermit(address adr,string memory str) public view returns (bool) {
+        if(permit[adr][str]==bytes32(keccak256(abi.encode(adr,str)))){ return true; }else{ return false; }
+    }
+
+    modifier forRole(string memory str) {
+        require(checkpermit(msg.sender,str),"Permit Revert!");
+        _;
+    }
+}
+
+contract MooMoohUsers is permission {
+    
+    address public owner;
+
+    address[] users;
+
+    struct User {
+        uint256 id;
+        address ref;
+        bool registerd;
+        mapping(uint256 => address[]) refmap;
+    }
+
+    mapping(address => User) user;
+    
+    constructor() {
+        newpermit(msg.sender,"permit");
+        newpermit(msg.sender,"owner");
+        owner = msg.sender;
+    }
+
+    function getUsers() public view returns (address[] memory) {
+        return users;
+    }
+
+    function getTotalUsers() public view returns (uint256) {
+        return users.length;
+    }
+
+    function getUser(address account) public view returns (uint256,address,bool) {
+        return (user[account].id,user[account].ref,user[account].registerd);
+    }
+
+    function getUserReferree(address account,uint256 level) public view returns (address[] memory) {
+        return user[account].refmap[level];
+    }
+
+    function getUserId(address account) public view returns (uint256) {
+        return user[account].id;
+    }
+
+    function getUserReferral(address account) public view returns (address) {
+        return user[account].ref;
+    }
+
+    function getUserRegistered(address account) public view returns (bool) {
+        return user[account].registerd;
+    }
+
+    function getUserUpline(address account,uint256 level) public view returns (address[] memory) {
+        address[] memory result = new address[](level);
+        for(uint256 i=0; i<level; i++){
+            result[i] = user[account].ref;
+            account = user[account].ref;
+        }
+        return result;
+    }
+
+    function register(address referree,address referral) public forRole("permit") returns (bool) {
+        if(!user[referree].registerd){
+            users.push(referree);
+            user[referree].id = users.length-1;
+            user[referree].ref = referral;
+            user[referree].registerd = true;
+        }
+        return true;
+    }
+
+    function updateUserWithPermit(address account,uint256 id,address ref,bool registerd) public forRole("permit") returns (bool) {
+        user[account].id = id;
+        user[account].ref = ref;
+        user[account].registerd = registerd;
+        return true;
+    }
+
+    function updateUserReferreeWithPermit(address account,address[] memory refmap,uint256 level) public forRole("permit") returns (bool) {
+        user[account].refmap[level] = refmap;
+        return true;
+    }
+
+    function pushUserReferreeWithPermit(address referree,address referral,uint256 level) public forRole("permit") returns (bool) {
+        user[referral].refmap[level].push(referree);
+        return true;
+    }
+
+    function withdrawToken(address token,uint256 amount) public forRole("owner") returns (bool) {
+      IERC20(token).transfer(msg.sender,amount);
+      return true;
+    }
+
+    function withdrawETH(uint256 amount) public forRole("owner") returns (bool) {
+      (bool success,) = msg.sender.call{ value: amount }("");
+      require(success, "MOOMOOHHALL REVERT: FAIL TO WITHDRAW ETH");
+      return true;
+    }
+
+    function grantRole(address adr,string memory role) public forRole("owner") returns (bool) {
+        newpermit(adr,role);
+        return true;
+    }
+
+    function revokeRole(address adr,string memory role) public forRole("owner") returns (bool) {
+        clearpermit(adr,role);
+        return true;
+    }
+
+    function transferOwnership(address adr) public forRole("owner") returns (bool) {
+        newpermit(adr,"owner");
+        clearpermit(msg.sender,"owner");
+        owner = adr;
+        return true;
+    }
+
+    receive() external payable {}
+}

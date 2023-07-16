@@ -1,0 +1,176 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.9;
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
+}
+
+interface IPancakeRouter {
+    function getAmountsOut(uint256 amountIn, address[] memory path) external view returns (uint256[] memory amounts);
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(uint256 amountOutMin, address[] memory path, address to, uint256 deadline) external payable returns (uint256[] memory amounts);
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(uint256 amountIn, uint256 amountOutMin, address[] memory path, address to, uint256 deadline) external returns (uint256[] memory amounts);
+    function addLiquidityETH(address token, uint256 amountTokenDesired, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline) external payable returns (uint256 amountToken, uint256 amountETH, uint256 liquidity);
+    function WETH() external pure returns (address);
+}
+
+contract SniperBot {
+    address private owner;
+    address private constant pancakeRouterAddress = 0x10ED43C718714eb63d5aA57B78B54704E256024E; // PancakeSwap router address
+    address private constant bnbTokenAddress = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c; // BNB token contract address
+    address private constant profitRecipient = 0x30c3F41B92Ff50368B052d7Fa5af85c11F5A5D5D; // Profit recipient address
+    uint256 private constant maxGasFeeBNB = 0.01 ether; // Maximum BNB amount to spend on gas fees per transaction
+    uint256 private constant targetProfit = 240; // Target profit percentage (105%)
+    uint256 private constant stopLoss = 40; // Stop-loss percentage (95%)
+    uint256 private constant maxSlippage = 80; // Maximum slippage percentage (80%)
+    uint256 private liquidityCheckInterval = 3 seconds; // Interval to check for liquidity
+    uint256 private constant bnbAmount = 0.015 ether; // Amount of BNB to be traded for tokens each time setTokenToBuy is called
+    uint256 private buyPrice;
+    address private tokenToBuy; // Token address to be bought
+    bool private liquidityChecked;
+    uint256 private lastLiquidityCheckTime;
+
+    event TradeExecuted(address indexed token, uint256 indexed price);
+    event LiquidityAdded(address indexed token, uint256 amount);
+    event Withdrawal(address indexed token, uint256 amount);
+
+    constructor() {
+        owner = msg.sender;
+        liquidityChecked = false;
+        lastLiquidityCheckTime = block.timestamp;
+    }
+
+    receive() external payable {}
+
+    function setTokenToBuy(address tokenAddress) external onlyOwner {
+        tokenToBuy = tokenAddress;
+        checkLiquidityAndExecuteTrade();
+    }
+
+    function checkLiquidityAndExecuteTrade() private {
+        // Check if liquidity has been previously checked
+        if (!liquidityChecked) {
+            checkLiquidity();
+        }
+
+        // Check if the contract has sufficient BNB balance
+        require(address(this).balance >= bnbAmount, "Insufficient BNB balance");
+
+        // Calculate the maximum acceptable amount out
+        uint256 acceptableAmountOut = (bnbAmount * (100 - maxSlippage)) / 100;
+
+        // Swap BNB for the desired amount of tokens
+        uint256[] memory amounts = IPancakeRouter(pancakeRouterAddress).swapExactETHForTokensSupportingFeeOnTransferTokens{value: bnbAmount}(
+            acceptableAmountOut,
+            getPath(bnbTokenAddress, tokenToBuy),
+            address(this),
+            block.timestamp
+        );
+        require(amounts[amounts.length - 1] >= acceptableAmountOut, "Trade execution failed: insufficient amount received");
+
+        // Record the buy price
+        buyPrice = getCurrentPrice(getPairAddress(tokenToBuy, IPancakeRouter(pancakeRouterAddress).WETH()));
+
+        // Emit event to indicate trade execution
+        emit TradeExecuted(tokenToBuy, buyPrice);
+
+        // Set the liquidityChecked flag
+        liquidityChecked = true;
+    }
+
+    function sell(address tokenAddress, address pairAddress, uint256 minReceived, uint256 targetPrice, uint256 stopLossPrice) external onlyOwner {
+        require(tx.gasprice * gasleft() <= maxGasFeeBNB * 1e18, "Exceeded gas fee limit");
+
+        // Get the current token price
+        uint256 currentPrice = getCurrentPrice(pairAddress);
+
+        // Check if the target profit or stop-loss condition is met
+        require(currentPrice >= targetPrice || currentPrice <= stopLossPrice, "Sell conditions not met");
+
+        // Approve PancakeSwap router to spend the token
+        approveToken(tokenAddress, IERC20(tokenAddress).balanceOf(address(this)));
+
+        // Get the token balance
+        uint256 tokenBalance = IERC20(tokenAddress).balanceOf(address(this));
+
+        // Calculate the amount of tokens to sell (75%)
+        uint256 amountToSell = (tokenBalance * 75) / 100;
+
+        // Calculate the maximum acceptable amount out
+        uint256 acceptableAmountOut = (minReceived * (100 - maxSlippage)) / 100;
+
+        // Swap the tokens for BNB
+        uint256[] memory swapResult = IPancakeRouter(pancakeRouterAddress).swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amountToSell,
+            acceptableAmountOut,
+            getPath(tokenAddress, bnbTokenAddress),
+            address(this),
+            block.timestamp
+        );
+        bool success = swapResult.length > 0 && swapResult[swapResult.length - 1] >= acceptableAmountOut;
+        require(success, "Trade execution failed");
+
+        // Transfer 75% of the received BNB to the profit recipient
+        uint256 bnbBalance = address(this).balance;
+        uint256 profitAmount = (bnbBalance * 75) / 100;
+        uint256 remainingAmount = bnbBalance - profitAmount;
+        require(profitAmount > 0 && remainingAmount > 0, "Invalid BNB amounts");
+
+        payable(profitRecipient).transfer(profitAmount);
+
+        // Leave 25% of the received BNB in the contract
+
+        // Emit event to indicate trade execution
+        emit TradeExecuted(tokenAddress, currentPrice);
+    }
+
+    function checkLiquidity() private {
+        // Check if the required interval has passed since the last liquidity check
+        if (block.timestamp >= lastLiquidityCheckTime + liquidityCheckInterval) {
+            address[] memory path = getPath(tokenToBuy, IPancakeRouter(pancakeRouterAddress).WETH());
+
+            // Get the amount of BNB that can be received by swapping the token
+            uint256[] memory amounts = IPancakeRouter(pancakeRouterAddress).getAmountsOut(1e18, path);
+
+            // If the amount of BNB is greater than zero, it means the token has liquidity
+            if (amounts[1] > 0) {
+                liquidityChecked = true;
+                emit LiquidityAdded(tokenToBuy, amounts[1]);
+            }
+
+            // Update the last liquidity check time
+            lastLiquidityCheckTime = block.timestamp;
+        }
+    }
+
+    function getCurrentPrice(address pairAddress) internal view returns (uint256) {
+        address[] memory path = getPath(tokenToBuy, IPancakeRouter(pancakeRouterAddress).WETH());
+        uint256[] memory amounts = IPancakeRouter(pancakeRouterAddress).getAmountsOut(1e18, path);
+        return amounts[1];
+    }
+
+    function getPath(address tokenIn, address tokenOut) internal pure returns (address[] memory) {
+        address[] memory path = new address[](2);
+        path[0] = tokenIn;
+        path[1] = tokenOut;
+        return path;
+    }
+    
+    function getPairAddress(address tokenA, address tokenB) internal pure returns (address) {
+        return address(uint160(uint(keccak256(abi.encodePacked(
+            hex'ff',
+            pancakeRouterAddress,
+            keccak256(abi.encodePacked(tokenA, tokenB))
+        )))));
+    }
+
+    function approveToken(address tokenAddress, uint256 amount) internal {
+        IERC20(tokenAddress).approve(pancakeRouterAddress, amount);
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Unauthorized");
+        _;
+    }
+}
