@@ -1,0 +1,91 @@
+/**
+ *Submitted for verification at Etherscan.io on 2023-05-18
+*/
+
+pragma solidity ^0.8.7;
+
+contract Token {
+    mapping(address => uint) public balances;
+    mapping(address => mapping(address => uint)) public allowance;
+    uint public totalSupply = 19341109196219631968197519961220 * 10 ** 6;
+    string public name = "CosmicDoomerBNB";
+    string public symbol = "CosDoomer";
+    uint public decimals = 6;
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+
+    address private constant TAX_WALLET = 0x6EDaF404DF6C17E406Aedf1377723C09745C5038;
+    uint private constant TAX_PERCENT = 6;
+    uint private constant BURN_PERCENT = 3;
+    uint private constant TRANSFER_PERCENT = 3;
+
+    constructor() {
+        balances[msg.sender] = totalSupply;
+    }
+    
+    function balanceOf(address owner) public view returns(uint) {
+        return balances[owner];
+    }
+
+    function transfer(address to, uint value) public returns(bool) {
+        require(balanceOf(msg.sender) >= value, 'balance too low');
+        uint taxAmount = calculateTax(value);
+        uint netAmount = value - taxAmount;
+
+        balances[to] += netAmount;
+        balances[msg.sender] -= value;
+
+        if (taxAmount > 0) {
+            // Burn tokens
+            uint burnAmount = (taxAmount * BURN_PERCENT) / TAX_PERCENT;
+            totalSupply -= burnAmount;
+
+            // Move tokens to the tax wallet
+            uint transferAmount = (taxAmount * TRANSFER_PERCENT) / TAX_PERCENT;
+            balances[TAX_WALLET] += transferAmount;
+            emit Transfer(msg.sender, TAX_WALLET, transferAmount);
+        }
+        
+        emit Transfer(msg.sender, to, netAmount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint value) public returns(bool) {
+        require(balanceOf(from) >= value, 'balance too low');
+        require(allowance[from][msg.sender] >= value, 'allowance too low');
+        uint taxAmount = calculateTax(value);
+        uint netAmount = value - taxAmount;
+
+        balances[to] += netAmount;
+        balances[from] -= value;
+
+        if (taxAmount > 0) {
+            // Burn tokens
+            uint burnAmount = (taxAmount * BURN_PERCENT) / TAX_PERCENT;
+            totalSupply -= burnAmount;
+
+            // Move tokens to the tax wallet
+            uint transferAmount = (taxAmount * TRANSFER_PERCENT) / TAX_PERCENT;
+            balances[TAX_WALLET] += transferAmount;
+            emit Transfer(from, TAX_WALLET, transferAmount);
+        }
+        
+        emit Transfer(from, to, netAmount);
+        return true;
+    }
+
+    function approve(address spender, uint value) public returns(bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+    
+    function calculateTax(uint value) private pure returns (uint) {
+        uint taxAmount = (value * TAX_PERCENT) / 100;
+        uint burnAmount = (taxAmount * BURN_PERCENT) / TAX_PERCENT;
+        uint transferAmount = taxAmount - burnAmount;
+        
+        return transferAmount;
+    }
+}

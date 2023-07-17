@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.19;
+
+interface INFT {
+    function ProcessTokenRequest(address account) external returns (bool);
+}
+
+interface IMooUp {
+    function data(address account) external view returns (uint256,uint256,uint256,uint256,bool);
+}
+
+contract permission {
+    mapping(address => mapping(string => bytes32)) private permit;
+
+    function newpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode(adr,str))); }
+
+    function clearpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode("null"))); }
+
+    function checkpermit(address adr,string memory str) public view returns (bool) {
+        if(permit[adr][str]==bytes32(keccak256(abi.encode(adr,str)))){ return true; }else{ return false; }
+    }
+
+    modifier forRole(string memory str) {
+        require(checkpermit(msg.sender,str),"Permit Revert!");
+        _;
+    }
+}
+
+contract MooMoohPackageMinter is permission {
+    
+    address public owner;
+
+    address public depositor = 0xf08133A1a2a0301832A03DF8D8F0C4406E39c5E6;
+    address public nftAddress = 0xE6981Efd5D6A08DC33A20Dd5fe31F80A904B392B;
+
+    uint256 nftdropAmount = 100 * 1e18;
+
+    mapping(address => uint256) public totalMinted;
+
+    bool locked;
+    modifier noReentrant() {
+        require(!locked, "No re-entrancy");
+        locked = true;
+        _;
+        locked = false;
+    }
+
+    constructor() {
+        newpermit(msg.sender,"permit");
+        newpermit(msg.sender,"owner");
+        owner = msg.sender;
+    }
+
+    function openPackageBOX() public noReentrant returns (bool) {
+        require(totalMinted[msg.sender]<getLimitMinted(msg.sender),"MOOMOOHMINTER REVERT: LIMITED MINT");
+        totalMinted[msg.sender] += 1;
+        INFT(nftAddress).ProcessTokenRequest(msg.sender);
+        return true;
+    }
+
+    function getLimitMinted(address account) public view returns (uint256) {
+        (,uint256 totalUSD,,,) = IMooUp(depositor).data(account);
+        return totalUSD / nftdropAmount;
+    }
+
+    function grantRole(address adr,string memory role) public forRole("owner") returns (bool) {
+        newpermit(adr,role);
+        return true;
+    }
+
+    function revokeRole(address adr,string memory role) public forRole("owner") returns (bool) {
+        clearpermit(adr,role);
+        return true;
+    }
+
+    function transferOwnership(address adr) public forRole("owner") returns (bool) {
+        newpermit(adr,"owner");
+        clearpermit(msg.sender,"owner");
+        owner = adr;
+        return true;
+    }
+
+    receive() external payable {}
+}

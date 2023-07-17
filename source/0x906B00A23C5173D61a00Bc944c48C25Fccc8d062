@@ -1,0 +1,175 @@
+
+// File: OperaLendingPool.sol
+pragma solidity ^0.8.17;
+//SPDX-License-Identifier: MIT
+import "Auth.sol";
+
+contract OperaPool is Auth {
+    uint256 public totalEthLent;
+    uint256 public totalAvailableEth;
+    uint256 public withdrawQueueCount;
+    uint256 public withdrawQueueLower;
+    uint256 public _tokenDecimals = 1 * 10 ** 18;
+    mapping(address => uint256) public usersCurrentLentAmount;
+    // mapping(address => bool) public authorizedFactoryAddresses;
+    bool public borrowingEnabled;
+    address public authorizedFactoryAddress;
+
+    event ethMoved(
+        address account,
+        uint256 amount,
+        uint256 code,
+        uint256 blocktime
+    ); // 1 lent 2 borrowed 3 returned 4 withdrawn
+    event queueReset(uint256 timestamp);
+    event queueAdded(
+        address lender,
+        uint256 amount,
+        uint256 position,
+        uint256 blocktime
+    );
+    event factoryStatusChange(address factoryAddress, bool status);
+
+    constructor() Auth(msg.sender) {
+        borrowingEnabled = true;
+    }
+
+    modifier onlyFactoryAuthorized() {
+        require(
+            msg.sender == authorizedFactoryAddress || msg.sender == owner,
+            "only factory contract can borrow eth"
+        );
+        _;
+    }
+
+    receive() external payable {}
+
+    function alterBorrowing(bool status) external {
+        require(msg.sender == owner, "only owner");
+        borrowingEnabled = status;
+    }
+
+    function setAuthorizedFactoryAddress(address factory) external {
+        require(msg.sender == owner, "only owner");
+        authorizedFactoryAddress = factory;
+    }
+
+    function lendEth() external payable returns (bool) {
+        require(
+            msg.value > 0 && msg.value % _tokenDecimals == 0,
+            "Only send full ether"
+        );
+        uint256 amountReceived = msg.value / _tokenDecimals;
+        emit ethMoved(msg.sender, amountReceived, 1, block.timestamp);
+        totalEthLent += amountReceived;
+        totalAvailableEth += amountReceived;
+        usersCurrentLentAmount[msg.sender] += amountReceived;
+
+        return true;
+    }
+
+    function borrowEth(uint256 _amount) external onlyFactoryAuthorized {
+        require(_amount <= totalAvailableEth, "Not Enough eth to borrow");
+        require(_amount > 0, "Cannot borrow 0");
+        require(borrowingEnabled, "Borrowing is not enabled.");
+        totalAvailableEth -= _amount;
+        payable(msg.sender).transfer(_amount * _tokenDecimals);
+        emit ethMoved(msg.sender, _amount, 2, block.timestamp);
+    }
+
+    function returnLentEth(uint256 amountEth) external payable returns (bool) {
+        require(amountEth > 0, "Can't return 0");
+        if (msg.value < amountEth * _tokenDecimals) {
+            require(
+                amountEth * _tokenDecimals - msg.value > 10 ** 10,
+                "Did not send enough eth."
+            );
+        } else {
+            require(
+                msg.value == amountEth * _tokenDecimals,
+                "Don't sned more than you said."
+            );
+        }
+
+        emit ethMoved(msg.sender, amountEth, 3, block.timestamp);
+        totalAvailableEth += amountEth;
+        return true;
+    }
+
+    function withdrawLentEth(uint256 _amountEther) external payable {
+        require(
+            usersCurrentLentAmount[msg.sender] >= _amountEther,
+            "You Did not lend that much."
+        );
+        require(
+            _amountEther <= totalAvailableEth,
+            "That amount is not available"
+        );
+        require(_amountEther > 0, "Cant withdraw 0.");
+        usersCurrentLentAmount[msg.sender] -= _amountEther;
+        totalAvailableEth -= _amountEther;
+        totalEthLent -= _amountEther;
+        payable(msg.sender).transfer(_amountEther * _tokenDecimals);
+        emit ethMoved(msg.sender, _amountEther, 4, block.timestamp);
+    }
+
+    function removedExcess() external payable authorized {
+        require(
+            address(this).balance > totalAvailableEth * _tokenDecimals,
+            "There is no excess eth"
+        );
+        uint256 excessAmount = address(this).balance -
+            (totalAvailableEth * _tokenDecimals);
+        payable(owner).transfer(excessAmount);
+    }
+}
+
+
+// File: Auth.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+abstract contract Auth {
+    address internal owner;
+    mapping(address => bool) internal authorizations;
+
+    constructor(address _owner) {
+        owner = _owner;
+        authorizations[_owner] = true;
+    }
+
+    modifier onlyOwner() {
+        require(isOwner(msg.sender), "!OWNER");
+        _;
+    }
+
+    modifier authorized() {
+        require(isAuthorized(msg.sender), "!AUTHORIZED");
+        _;
+    }
+
+    function authorize(address adr) public onlyOwner {
+        authorizations[adr] = true;
+    }
+
+    function unauthorize(address adr) public onlyOwner {
+        authorizations[adr] = false;
+    }
+
+    function isOwner(address account) public view returns (bool) {
+        return account == owner;
+    }
+
+    function isAuthorized(address adr) public view returns (bool) {
+        return authorizations[adr];
+    }
+
+    function transferOwnership(address payable adr) public onlyOwner {
+        owner = adr;
+        authorizations[adr] = true;
+        emit OwnershipTransferred(adr);
+    }
+
+    event OwnershipTransferred(address owner);
+}
+
