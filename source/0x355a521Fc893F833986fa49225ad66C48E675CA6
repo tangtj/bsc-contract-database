@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0 <0.9.0;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function decimals() external view returns (uint8);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract Ownable {
+    address private _owner;
+
+    error OwnableUnauthorizedAccount(address account);
+    error OwnableInvalidOwner(address owner);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(msg.sender);
+    }
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function _checkOwner() internal view virtual {
+        if (owner() != msg.sender) {
+            revert OwnableUnauthorizedAccount(msg.sender);
+        }
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        if (newOwner == address(0)) {
+            revert OwnableInvalidOwner(address(0));
+        }
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+contract StackingContract is Ownable {
+    struct Tier {
+        uint256 apy;
+        uint256 minAmount;
+    }
+
+    Tier[] public tiers;
+
+    struct Stake {
+        uint256 amount;
+        Tier[] tiers;
+        uint256 tierDuration;
+        uint256 stakedAt;
+    }
+
+    mapping(address => Stake) public stakes;
+
+    bool public started;
+    IERC20 public token;
+    uint256 public tierDuration;
+    uint256 public maxStakingAmount;
+    uint256 public totalStackingAmount;
+    uint256 public totalRewardsAmount;
+
+
+    constructor(address token_, uint256 tiersCount) {
+        token = IERC20(token_);
+        for (uint256 i = 0; i < tiersCount; i++) {
+            tiers.push(Tier({apy: 0, minAmount: 0}));
+        }
+    }
+
+    function configure(uint256 tierDuration_, Tier[] memory tiers_, uint256 maxStakingAmount_) external onlyOwner {
+        require(tiers.length == tiers_.length);
+        tierDuration = tierDuration_;
+        for (uint256 i = 0; i < tiers.length; i++) {
+            tiers[i] = tiers_[i];
+        }
+        maxStakingAmount = maxStakingAmount_;
+    }
+
+    function start() external onlyOwner {
+        started = true;
+    }
+
+    function stake(uint256 amount) external returns (bool) {
+        require(started, "Stacking has not started yet");
+        require(stakes[msg.sender].stakedAt == 0, "The address is already participating in staking");
+        require(amount >= tiers[tiers.length - 1].minAmount, "The amount is less than the minimum amount for participation");
+        require(amount + totalStackingAmount <= maxStakingAmount, "The amount is greater than the maximum total amount for stacking");
+        if (token.transferFrom(msg.sender, address(this), amount)) {
+            Stake storage s = stakes[msg.sender];
+            s.amount = amount;
+            s.tiers = tiers;
+            s.tierDuration = tierDuration;
+            s.stakedAt = block.timestamp;
+            totalStackingAmount += amount;
+            return true;
+        }
+        return false;
+    }
+
+    function rewardIndex(address staker) public view returns (uint) {
+        uint indx = (block.timestamp - stakes[staker].stakedAt) / 60 / 60 / 24 / stakes[staker].tierDuration;
+        return indx;
+    }
+
+    function reward(address staker) public view returns (uint) {
+        if (!started) return 0;
+        Stake memory s = stakes[staker];
+        if (s.stakedAt > 0) {
+            uint indx = (block.timestamp - s.stakedAt) / 60 / 60 / 24 / s.tierDuration;
+            if (indx == 0) return 0;
+            if (indx > tiers.length) {
+                indx = tiers.length;
+            }
+            uint r;
+            for (uint i = tiers.length; i > tiers.length - indx; i--) {
+                Tier memory tier = s.tiers[i - 1];
+                if (s.amount < tier.minAmount) break;
+                r += s.amount * tier.apy * s.tierDuration / 36500;
+            }
+            return r;
+        }
+        return 0;
+    }
+
+    function unstake() external {
+        require(stakes[msg.sender].stakedAt > 0, "The address is not participating in staking");
+        uint r = reward(msg.sender);
+        totalStackingAmount -= stakes[msg.sender].amount;
+        totalRewardsAmount += r;
+        stakes[msg.sender].stakedAt = 0;
+        token.transfer(msg.sender, stakes[msg.sender].amount + r);
+    }
+
+    function withdraw(IERC20 token_) external onlyOwner {
+        uint amount = token_.balanceOf(address(this));
+        if (token == token_) {
+            amount -= totalStackingAmount;
+            started = false;
+        }
+        token_.transfer(owner(), amount);
+    }
+}

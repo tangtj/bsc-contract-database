@@ -1,0 +1,633 @@
+
+// File: contracts/contracts/Bep20/ControllerV6.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+/*
+    IWalletStorage    = 1
+    IUserStorage      = 2
+    IDepositeStorage  = 3
+    IUnfrozen         = 4
+    IFrozenStorage    = 5
+    ITeam             = 7
+    IReferalFirstLine = 8
+    ITermsStorage     = 9
+    IBanStorage       = 10
+    IViewV2           = 11
+    EVOMG             = 12
+    IGiffter          = 13
+    EventEmitter      = 14
+*/
+import "../interfaces/IController.sol";
+import "../interfaces/ContractOwnerV2.sol";
+import "../interfaces/storages/IWalletStorage.sol";
+import "../interfaces/storages/IUserStorage.sol";
+import "../interfaces/storages/ITermsStorage.sol";
+import "../interfaces/storages/IDepositeStorage.sol";
+import "../interfaces/storages/IFrozenStorage.sol";
+import "../interfaces/IBEP20.sol";
+import "../interfaces/storages/ITeam.sol";
+import "../interfaces/storages/IReferalFirstLine.sol";
+import "../interfaces/storages/IUnfrozen.sol";
+import "../interfaces/storages/IBanStorage.sol";
+import "../interfaces/IViewV2.sol";
+import "../interfaces/IGifter.sol";
+import "../interfaces/storages/IEventEmitter.sol";
+
+contract ControllerV6 is IController, ContractOwnerV2 , IGifter
+{
+    mapping (uint8 => address) public Contracts;
+
+    modifier isEMG () 
+    {
+        require(msg.sender == Contracts[12], "no app");
+        _;
+    }
+    modifier isRegister(address userAddress)
+    {
+       require(IViewV2(Contracts[11]).isUserExist(userAddress), "User not registered");
+       _;
+    }
+    modifier isBanned(address userCheck)
+    {
+        require(!IBanStorage(Contracts[10]).isBanned(userCheck), "User banned");
+       _;
+    }
+
+    function gift(address to, uint amount) public returns(bool)
+    {
+        require(msg.sender == Contracts[13], "only gifter");
+        if (IViewV2(Contracts[11]).balanceOf(msg.sender) >= amount)
+        {
+            if (!IViewV2(Contracts[11]).getUnfrozenByAddress(to))
+            {
+                IUnfrozen(Contracts[4]).setUnfrozen(to);
+            }
+            IWalletStorage(Contracts[1]).subBalance(msg.sender, amount);
+            IWalletStorage(Contracts[1]).addBalance(address(this), amount);
+            IBEP20(_contractOwner).transfer(to, amount);
+            _dep(to,amount);
+            return true;
+        }
+        return false;
+    }
+
+/// TOKEN           
+    function transfer(address owner, address recipient, uint amount) isContractOwner isBanned(owner) public returns (bool)
+    {    
+        require(IViewV2(Contracts[11]).balanceWithFrozen(owner)>= amount, "not enougth token");
+        _trasfer(owner, recipient, amount);
+        return true;
+    }
+    function approve(address owner, address spender, uint amount)isContractOwner isBanned(owner) public returns (bool)
+    {
+        IWalletStorage(Contracts[1]).allow(owner,spender,amount);
+        return true;
+    } 
+    function burn(uint amount) isContractOwner public
+    {
+        require(IViewV2(Contracts[11]).balanceWithFrozen(msg.sender)>= amount,"much to burn");
+        _trasfer(msg.sender, payable(address(0x000000000000000000000000000000000000dEaD)), amount);
+    }
+///
+
+/// USER
+    function register(address user, uint refId) isEMG public
+    {
+        require(!IViewV2(Contracts[11]).isUserExist(user), "Alredy register");
+        if(!IViewV2(Contracts[11]).isUserExistById(refId))
+        {
+            refId = 1;
+        }
+        IUserStorage(Contracts[2]).addUser(user, refId);
+        uint id = IViewV2(Contracts[11]).getIdByAddress(user);
+        IReferalFirstLine(Contracts[8]).addReferal(id,refId);
+        uint8 rewardLine = 0;
+        bool isOwner = false;
+        while(rewardLine < 8 && !isOwner)
+        {
+            ITeam(Contracts[7]).addTeamer(refId,rewardLine);
+            IUserStorage(Contracts[2]).addReferal(refId);
+            if (refId == 1)
+            {
+                isOwner = true;
+            }
+            refId = IViewV2(Contracts[11]).getReferalIdById(refId);
+            rewardLine++;
+        }
+        IEventEmitter(Contracts[14]).onRegister(user,refId);
+    }
+
+    function updateStatus(address acc) public
+    {
+        uint id = IViewV2(Contracts[11]).getIdByAddress(acc);
+        require(IViewV2(Contracts[11]).checkUpdate(id));
+        IUserStorage(Contracts[2]).updateUserStatus(id);
+        IEventEmitter(Contracts[14]).onLevelUp (acc);
+    }
+///
+   
+/// Deposite
+    function deposite (address user, uint amount) isEMG isRegister(user)  public returns(bool)
+    {
+        require(IView(Contracts[11]).balanceOf(user) >= amount, "Not enought tokens");
+        _dep(user,amount);
+        return true;
+    }
+    function withdrawProfit(address user) isEMG isRegister(user) isBanned(user) public 
+    {
+        _withdrawProfit(user);
+    }
+    function withdrawAll(address user) isEMG isRegister(user) isBanned(user) public 
+    {
+        require(! IViewV2(Contracts[11]).getUnfrozenByAddress(user), "User unfrozened");
+        uint userId = IViewV2(Contracts[11]).getIdByAddress(user);   
+        uint frozenDate = IFrozenStorage(Contracts[5]).getFrozenDate(userId);
+        require(frozenDate == 0, "wait two week");
+        uint userDeposite = IViewV2(Contracts[11]).getDeposite(user);
+        require(userDeposite > 0, "Not enought tokens");
+        uint profit =  IViewV2(Contracts[11]).getDepositeProfit(user);
+        _sendClearProfit(user, profit);
+        IWalletStorage(Contracts[1]).addBalance(user,userDeposite);
+        IDepositeStorage(Contracts[3]).setDepDate(user, block.timestamp);
+        IDepositeStorage(Contracts[3]).subDep(user, userDeposite);
+        IFrozenStorage(Contracts[5]).setFrozenDate(userId, block.timestamp);
+        IFrozenStorage(Contracts[5]).setFrozenTokens(userId, userDeposite);
+        UpdateDepositeTeamAll(userId, userDeposite, false);
+        IEventEmitter(Contracts[14]).onWithdraw(user,userDeposite);
+    }
+    function reinvest(address user) isEMG isRegister(user) isBanned(user) public 
+    {
+        uint id = IViewV2(Contracts[11]).getIdByAddress(user);
+        uint profit = IViewV2(Contracts[11]).getDepositeProfit(user);   
+        _sendClearProfit(user, profit);
+        IWalletStorage(Contracts[1]).subBalance(user, profit);
+        IDepositeStorage(Contracts[3]).addDep(user, profit);
+        IDepositeStorage(Contracts[3]).setDepDate(user, block.timestamp);
+        UpdateDepositeTeamAll(id, profit, true);
+        IEventEmitter(Contracts[14]).onReinvest(user,profit,IViewV2(Contracts[11]).getDeposite(user));
+    }
+///
+
+
+/// UNFROZEN
+    function setUnfrozenUser(address user) isEMG isRegister(user) public 
+    {
+        require(!IViewV2(Contracts[11]).getUnfrozenByAddress(user));
+        _withdrawProfit(user);
+        IUnfrozen(Contracts[4]).setUnfrozen(user);
+        IEventEmitter(Contracts[14]).onGuilder(user);
+    }
+///
+
+    
+/// OLD API
+    function pay(address acc, uint amount) public pure override returns(bool, uint,uint) 
+    {
+        return (false, 0,amount);
+    }
+    function destroyToken(address acc, uint amount) public pure
+    {
+    }
+    function addTokenforCoin(address acc, uint amount) public pure
+    {
+    }
+///
+
+
+
+/// PRIVATE
+    function _trasfer(address owner, address repicient, uint amount) private
+    {
+        IWalletStorage(Contracts[1]).subBalance(owner, amount);
+        IWalletStorage(Contracts[1]).addBalance(repicient, amount);
+    }
+   
+    function _dep(address user, uint amount) private 
+    {
+        uint userId = IViewV2(Contracts[11]).getIdByAddress(user);
+        uint profit = IViewV2(Contracts[11]).getDepositeProfit(user);
+        _sendClearProfit(user, profit);
+        IWalletStorage(Contracts[1]).subBalance(user, amount);
+        IDepositeStorage(Contracts[3]).setDepDate(user,block.timestamp);
+        IDepositeStorage(Contracts[3]).addDep(user,amount);
+        UpdateDepositeTeamAll(userId, amount, true);   
+        IEventEmitter(Contracts[14]).onDeposite(user,amount);
+    }
+
+
+    function _sendClearProfit(address user, uint profit) private 
+    {
+        uint thisBalance = IViewV2(Contracts[11]).balanceOf(address(this));
+        if ( thisBalance < profit)
+        {
+            profit = thisBalance;
+        }
+        if (profit != 0)
+        {
+            IBEP20(_contractOwner).transfer(user, profit);
+            IEventEmitter(Contracts[14]).onClaim (user,profit);
+        }
+        
+    }
+    function UpdateDepositeTeamAll(uint id, uint amount, bool isUp) private 
+    {
+        uint refId = IViewV2(Contracts[11]).getReferalIdById(id);
+        uint8 lvl = 0;
+        bool isOwner = false;
+        while (lvl < 8 && !isOwner)
+        {
+            uint depositeTeam = IUserStorage(Contracts[2]).getUserDepositeTeam(refId);
+            if (isUp)
+            {
+               depositeTeam += amount;
+            } 
+            else 
+            {
+                if (depositeTeam >= amount)
+                {
+                    depositeTeam -= amount;
+                } 
+            }
+            IUserStorage(Contracts[2]).updateUserDepositeTeam(refId,depositeTeam);    
+            if (refId == 1)
+            {
+                isOwner = true;
+            }
+            refId = IViewV2(Contracts[11]).getReferalIdById(refId);
+            lvl++;
+        }
+    }
+    
+    function _withdrawProfit(address acc) private
+    {
+        uint profit = IViewV2(Contracts[11]).getDepositeProfit(acc);
+        require(profit > 0, "No profit");
+        uint thisBalance = IViewV2(Contracts[11]).balanceOf(address(this));
+        if (thisBalance < profit)
+        {
+            profit = thisBalance;
+        }
+        if (profit != 0)
+        {
+            uint clearProfit = IViewV2(Contracts[11]).getClearPercent(profit);
+            uint userId = IViewV2(Contracts[11]).getIdByAddress(acc);
+            uint NextReferalId = IViewV2(Contracts[11]).getReferalIdById(userId);
+            IBEP20(_contractOwner).transfer(acc, clearProfit);
+            IDepositeStorage(Contracts[3]).setDepDate(acc, block.timestamp);
+            for (uint8 rewardLine = 0; rewardLine < 8; rewardLine++ )
+            {
+                address rewardAddress; 
+                if (IViewV2(Contracts[11]).rewardPass(NextReferalId, rewardLine))
+                {
+                    rewardAddress =IViewV2(Contracts[11]).getAddressById(NextReferalId);        
+                }
+                else
+                {
+                    rewardAddress = IViewV2(Contracts[11]).getAddressById(1);
+                }
+                uint reward =  IViewV2(Contracts[11]).findReferalReward(profit, rewardLine);
+                IBEP20(_contractOwner).transfer(rewardAddress, reward);
+                NextReferalId = IViewV2(Contracts[11]).getReferalIdById(NextReferalId);
+            }  
+            IEventEmitter(Contracts[14]).onClaim(acc,clearProfit);      
+        }
+    }
+///
+
+/// ADMIN
+    function setContract (address newAdr, uint8 position) onlyOwner public
+    { 
+        Contracts[position] = newAdr;
+    }
+    function backup() onlyOwner public{
+        IBEP20(_contractOwner).transfer(_owner, IBEP20(_contractOwner).balanceOf(address(this)));
+    }
+///
+}
+
+// File: contracts/contracts/interfaces/storages/IEventEmitter.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface  IEventEmitter {
+    function onDeposite (address user, uint amount) external;
+    function onRegister (address user, uint referal) external;
+    function onClaim (address user, uint profit) external;
+    function onReinvest (address user, uint profit, uint newDep) external;
+    function onLevelUp (address user) external;
+    function onWithdraw(address user, uint deposite) external;
+    function onGuilder (address user) external;
+
+}
+
+
+// File: contracts/contracts/interfaces/IGifter.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IGifter {
+    function gift (address to, uint amount) external returns(bool);
+}
+
+// File: contracts/contracts/interfaces/IViewV2.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+
+import "./IView.sol";
+interface IViewV2 is IView
+{
+    function rewardPass(uint userId, uint8 lvl)external view returns(bool);
+    function findReferalReward(uint amount, uint8 line) external view returns (uint);
+    function getClearPercent(uint amount) external view returns(uint);
+    function getCount() external  view returns (uint);
+    function getUnfrozenById(uint userId) external  view returns (address);
+    function getUnfrozenByAddress(address acc) external  view returns (bool);
+    function getExtra(uint balance) external  view returns (uint8);
+}
+
+// File: contracts/contracts/interfaces/storages/IBanStorage.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IBanStorage
+{
+    function ban(address user, uint toDay) external;
+    function unBan(address user) external;
+
+    function isBanned(address user) external view returns (bool); 
+} 
+
+// File: contracts/contracts/interfaces/storages/IUnfrozen.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+
+interface IUnfrozen
+{
+    function getCount() external view returns (uint);
+    function getUnfrozenById(uint userId) external view returns (address);
+    function getUnfrozenByAddress(address acc) external view returns (bool);
+    function getExtra(uint balance) external view returns (uint8);
+    function setUnfrozen (address acc) external;
+}
+
+// File: contracts/contracts/interfaces/storages/IReferalFirstLine.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IReferalFirstLine
+{
+/// VIEW
+    function getReferalsCount(uint id) external view returns (uint);
+    function getReferals(uint id) external view returns(uint[] memory);
+///
+
+/// FUNC    
+    function addReferal(uint id, uint refId ) external;
+///    
+}
+
+// File: contracts/contracts/interfaces/storages/ITeam.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface ITeam
+{
+    function getTeamCountLVL(uint id, uint8 lvl) external view returns (uint);
+    function getTeamCountStats(uint id) external view returns (uint);
+    function addTeamer (uint id, uint8 lvl) external;
+    function addTeameStatus (uint id) external;
+    function clearTeameStatus (uint id)  external;
+}
+
+// File: contracts/contracts/interfaces/IBEP20.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address account) external view returns (uint);
+    function transfer(address recipient, uint amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint);
+    function approve(address spender, uint amount) external returns (bool);
+    function transferFrom(address sender,address recipient,uint amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+}
+
+// File: contracts/contracts/interfaces/storages/IFrozenStorage.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IFrozenStorage
+{
+    function getFrozenDate(uint id) external view returns(uint);
+    function getFrozenTokens(uint id) external view returns (uint);
+    function setFrozenDate(uint id,uint date) external;
+    function setFrozenTokens(uint id, uint tokens) external;
+}
+
+// File: contracts/contracts/interfaces/storages/IDepositeStorage.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IDepositeStorage
+{
+    function getDeposite(address acc) external view returns (uint);
+    function getDepDate (address acc) external view returns(uint);
+    function addDep(address acc, uint amount) external;
+    function subDep(address acc, uint amount) external;
+    function setDepDate(address acc, uint date) external;
+}
+
+// File: contracts/contracts/interfaces/storages/ITermsStorage.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+
+interface ITermsStorage
+{
+    function getTermsLength() external view returns(uint);
+    function getDepositePercent(uint8 lvl) external view returns(uint8);
+    function getFullReferalPercent() external view returns(uint);
+    function getOpenedLevel(uint lvl) external view returns(uint8);
+    function getReferalPercent(uint lvl) external view returns(uint);
+    function getFirstLineCount(uint lvl) external view returns(uint);
+    function getPersonalStacking(uint lvl) external view returns(uint);
+    function getTeamStacking(uint lvl) external view returns(uint);
+    function getFirstLineStatusLevelCount(uint lvl) external view returns(uint);
+}
+
+// File: contracts/contracts/interfaces/storages/IUserStorage.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IUserStorage
+{
+    function isUserExistByAddress(address user) external view returns(bool);
+    function isUserExistById(uint id) external view returns(bool);
+    function getReferalByAddress(address userAddress) external view returns(uint);
+    function getReferalById(uint id) external view returns(uint);
+    function getUserByAddress(address userAddress) external view returns(uint,uint,uint,uint8,uint);
+    function getUserById(uint id) external view returns(address,uint,uint,uint8,uint);
+    function getUserIdByAddress(address acc) external view returns(uint);
+    function getUserAddressById(uint id) external view returns(address);
+    function getUserDepositeTeam(uint id) external view returns(uint);
+    function getUserStatusLVL(uint id) external view returns(uint8);
+
+    //// UPDATE
+    function addUser(address user, uint referalId) external;
+    function addReferal (uint referalId) external;
+    function updateUserDepositeTeam(uint userId,uint depositeTeam) external;
+    function updateUserStatus(uint userId) external;
+    function updateUserTeamCount(uint userId,uint team) external;
+}
+
+// File: contracts/contracts/interfaces/storages/IWalletStorage.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IWalletStorage
+{
+    function getBalance(address acc) external view returns(uint);
+    function getAllow(address acc, address spender) external view returns (uint);
+    function addBalance(address acc, uint amount) external;
+    function subBalance(address acc, uint amount) external;
+    function allow(address acc, address rec, uint amount) external;
+}
+
+// File: contracts/contracts/interfaces/ContractOwnerV2.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+import "./OwnableV2.sol";
+
+abstract contract ContractOwnerV2 is OwnableV2
+{
+    address _contractOwner;
+
+    modifier isContractOwner()
+    {
+        require(msg.sender == _contractOwner, "no access");
+        _;
+    }
+    function setContractOwner(address contractOwner) onlyOwner public 
+    {
+        _contractOwner = contractOwner;
+    }
+}
+
+// File: contracts/contracts/interfaces/IController.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IController 
+{
+
+    /// ERC20 
+    function transfer(address owner, address recipient, uint amount) external returns (bool);
+    function approve(address owner,address spender, uint amount) external returns (bool);
+
+    //// USER
+    function register(address user, uint referlaId) external;
+    function updateStatus(address acc)  external;
+
+    //// Deposite
+    function deposite (address user,uint amount)external returns(bool);
+    function withdrawProfit(address user) external;
+    function withdrawAll(address user) external;
+    function reinvest(address user) external;
+
+    /// unfrozen
+    function setUnfrozenUser(address user) external;
+    //// API
+    function destroyToken(address acc, uint amount) external ;
+    function addTokenforCoin(address acc, uint amount) external;
+    function burn(uint amount) external;
+    //// Presale
+    function pay(address acc, uint amount) external returns(bool, uint,uint);
+}
+
+
+// File: contracts/contracts/interfaces/IView.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+interface IView 
+{
+    function isUserExist(address acc) external view returns(bool);
+    function isUserExistById(uint id) external view returns(bool);
+    function getReferalIdById(uint id) external view returns(uint);
+    function getAddressById(uint id) external view returns (address);
+    function getIdByAddress(address acc)external view returns(uint);
+    function getUser(uint id)external view returns(address,uint,uint,uint8,uint);
+    function getRefCount(uint id, uint8 lvl) external view returns (uint);
+    function getStatsCount(uint id) external view returns (uint);
+    function checkUpdate(uint id) external view returns(bool);
+    function getLine (uint id) external view returns (uint[] memory);
+    function totalSupply() external view returns (uint);
+    function getEmission() external view returns(uint);
+    function balanceOf(address account) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+    function getFrozenToken(address acc) external view returns(uint);
+    function getFrozenDate(address acc) external view returns(uint);
+    function balanceWithFrozen(address acc) external view returns(uint);
+    function getDeposite(address acc) external view returns(uint);
+    function getDepositeDate(address acc) external view returns(uint);
+    function getDepositeProfit(address acc) external view returns(uint);
+}
+
+// File: contracts/contracts/interfaces/OwnableV2.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.10;
+
+import "./Context.sol";
+
+abstract contract OwnableV2 is Context
+{
+    address _owner;
+    address public _newOwner;
+    constructor()  
+    {
+        _owner = payable(msg.sender);
+    }
+
+    modifier onlyOwner() 
+    {
+        require(_msgSender() == _owner, "Only owner");
+        _;
+    }
+
+    function changeOwner(address newOwner) onlyOwner public
+    {
+        _newOwner = newOwner;
+    }
+    function confirm() public
+    {
+        require(_newOwner == msg.sender);
+        _owner = _newOwner;
+    }
+}
+
+
+
+// File: contracts/contracts/interfaces/Context.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.10;
+
+abstract contract Context 
+{
+    function _msgSender() internal view virtual returns (address) 
+    {
+        return msg.sender;
+    }
+    function _msgData() internal view virtual returns (bytes calldata) 
+    {
+        this; 
+        return msg.data;
+    }
+}
+

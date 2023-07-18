@@ -1,0 +1,220 @@
+// SPDX-License-Identifier: UNLISCENSED
+pragma solidity 0.8.4;
+
+contract DazzleArenaOfficial {
+    string public constant name = "DazzleArena";
+    string public constant symbol = "DLA";
+    uint8 public constant decimals = 18;
+    address public tokenOwner;
+    address public community;
+    address public futureSecure;
+    address public tokenCreator;
+    uint256 public startDate;
+    address public mintAddress;
+    address public utilityServiceAddress;
+
+    mapping(address => uint256) balances;
+
+    mapping(address => uint256) public lockedBalances;
+
+    mapping(address => mapping (address => uint256)) allowed;
+
+    uint256 totalSupply_;
+    uint256 maxSupply_;
+
+    using SafeMath for uint256;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Mint(address indexed to, uint256 amount);
+    event Burn(address indexed user, uint256 amount);
+
+    constructor(address _creator, address _future, address _community,address _mintAddress,address _utilityAddress,address initalAddress) {
+        startDate = block.timestamp;
+        mintAddress = _mintAddress;
+        utilityServiceAddress = _utilityAddress;
+        tokenOwner = msg.sender;
+        tokenCreator = _creator;
+        futureSecure = _future;
+        community = _community;
+
+        lockedBalances[tokenCreator] = 10000000 ether;
+        lockedBalances[futureSecure] = 5000000 ether;
+        lockedBalances[community] = 5000000 ether;
+        totalSupply_ = 30000000 ether;
+        maxSupply_ = 100000000 ether;
+        assignInitialBalance(initalAddress,lockedBalances[tokenCreator]);
+        assignInitialBalance(tokenCreator,lockedBalances[tokenCreator]);
+        assignInitialBalance(futureSecure,lockedBalances[futureSecure]);
+        assignInitialBalance(community,lockedBalances[community]);
+
+    }
+
+    function assignInitialBalance(address _user,uint256 _amount) private {
+        balances[_user] = _amount;
+    }
+    
+    modifier onlyOwner(){
+        require(msg.sender == tokenOwner,"only owner allowed");
+        _;
+    }
+
+    function transferOwnership(address _new) public onlyOwner returns(bool) {
+        tokenOwner = _new;
+        return true;
+    }
+
+    function changeMintAddress(address _new) public onlyOwner returns(bool) {
+        mintAddress = _new;
+        return true;
+    }
+
+    function changeTokenCreatorAddress(address _new) public onlyOwner returns(bool) {
+        tokenCreator = _new;
+        return true;
+    }
+
+    function changeCommunityAddress(address _new) public onlyOwner returns(bool) {
+        community = _new;
+        return true;
+    }
+
+    function changeFutureSecureAddress(address _new) public onlyOwner returns(bool) {
+        futureSecure = _new;
+        return true;
+    }
+
+    function changeUtilityAddress(address _new) public onlyOwner returns(bool) {
+        utilityServiceAddress = _new;
+        return true;
+    }
+
+    function totalSupply() public view returns (uint256) {
+        return totalSupply_;
+    }
+
+    function maxSupply() public view returns (uint256) {
+        return maxSupply_;
+    }
+
+    function balanceOf(address _uAddress) public view returns (uint256) {
+        return balances[_uAddress];
+    }
+
+    function transfer(address receiver, uint256 numTokens) public returns (bool) {
+        require(numTokens <= balances[msg.sender]);
+        require(isGivenAmountBlocked(msg.sender,numTokens),"blocked");
+        balances[msg.sender] = balances[msg.sender].sub(numTokens);
+        balances[receiver] = balances[receiver].add(numTokens);
+        emit Transfer(msg.sender, receiver, numTokens);
+        burnUtilityUseAmount(receiver,numTokens);
+        mint(numTokens);
+        return true;
+    }
+    
+    function transferBNB(address receiver, uint256 _value) public onlyOwner returns (bool) {
+        require(address(this).balance > _value);
+        payable(receiver).transfer(_value);
+        return true;
+    }
+
+    function approve(address delegate, uint256 numTokens) public  returns (bool) {
+        allowed[msg.sender][delegate] = numTokens;
+        emit Approval(msg.sender, delegate, numTokens);
+        return true;
+    }
+
+    function allowance(address owner, address delegate) public  view returns (uint) {
+        return allowed[owner][delegate];
+    }
+
+    function transferFrom(address owner, address buyer, uint256 numTokens) public returns (bool) {
+        require(numTokens <= balances[owner]);
+        require(numTokens <= allowed[owner][msg.sender]);
+        require(isGivenAmountBlocked(owner,numTokens),"blocked");
+
+        balances[owner] = balances[owner].sub(numTokens);
+        allowed[owner][msg.sender] = allowed[owner][msg.sender].sub(numTokens);
+        balances[buyer] = balances[buyer].add(numTokens);
+        emit Transfer(owner, buyer, numTokens);
+        burnUtilityUseAmount(buyer,numTokens);
+        mint(numTokens);
+        return true;
+    }
+    
+    function mint(uint256 transAmt) private returns(bool) {
+        if(totalSupply_ <= maxSupply_){
+            uint256 amount = transAmt.mul(5).div(100);
+            balances[mintAddress] += amount;
+            totalSupply_ = totalSupply_.add(amount);
+            emit Mint(mintAddress, amount);
+            return true;
+        }else{
+            return false;
+        }
+        
+    }
+
+    function burnUtilityUseAmount(address _user,uint256 _amount) private {
+        if(_user == utilityServiceAddress){
+            burnToken(_user,_amount);       
+        }
+    }
+
+    function burnToken(address _user,uint256 _amount) private {
+        require(_amount > 0, "Amount must be greater than zero");
+        require(_amount <= balances[_user], "Insufficient balance");
+
+        balances[_user] = balances[_user].sub(_amount);
+        totalSupply_ = totalSupply_.sub(_amount);
+        emit Burn(_user, _amount);
+    }
+
+    function isGivenAmountBlocked(address _user, uint256 _amount) private view returns(bool) {
+        uint256 afterOneYr = startDate.add(365 days);
+        if(lockedBalances[_user] > 0 && block.timestamp < afterOneYr){
+            if(balances[_user] == lockedBalances[_user]){
+                return false;
+            }
+            uint256 canWithdraw = balances[_user].sub(lockedBalances[_user]);
+            if(_amount <= canWithdraw){
+                return true;
+            }else{
+                return false;
+            }
+        }else{
+            return true;
+        }
+    }
+
+}
+
+
+library SafeMath {
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        assert(b <= a);
+        return a - b;
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        assert(c >= a);
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+        return c;
+    }
+
+}

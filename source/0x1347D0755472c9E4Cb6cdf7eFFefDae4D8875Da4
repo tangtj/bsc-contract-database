@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0;
+
+// @title Platinum Triple Coin Initial Coin Offerings
+// @title Website http://www.platinumtriplecoin.finance
+// @title Interface : Token Standard #20. https://github.com/ethereum/EIPs/issue
+
+interface BEP20 {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address tokenOwner) external view returns (uint balance);
+    function allowance(address tokenOwner, address spender) external view returns (uint remaining);
+    function transfer(address to, uint tokens) external returns (bool success);
+    function approve(address spender, uint tokens) external returns (bool success);
+    function transferFrom(address from, address to, uint tokens) external returns (bool success);
+
+    event Transfer(address indexed from, address indexed to, uint tokens);
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+}
+
+contract PlatinumTripleCoinICO {
+    using SafeMath for uint256;
+
+    address public signer;
+   
+    BEP20 public ptc = BEP20(0xDB59f0567403E6ff11a942A0c08d6AFEaCA61b8f); 
+    uint256 price = 20695e18;
+    event Purchase(address buyer, uint256 famount, uint256 tamount);
+    event Liquidate(address buyer, uint256 amount);
+    event Close(address buyer, address coin, uint256 amount);
+    
+    // @dev Detects Authorized Signer.
+    modifier onlySigner(){
+        require(msg.sender == signer,"You are not authorized signer.");
+        _;
+    }
+
+    // @dev Returns coin balance on this contract.
+    function getBalanceSheet(address coin) public view returns(uint256 bnb, uint256 _coin){
+        bnb = address(this).balance;
+        _coin =  BEP20(coin).balanceOf(address(this));
+        return (bnb,_coin);
+    }
+
+    // @dev Restricts unauthorized access by another contract.
+    modifier security{
+        uint size;
+        address sandbox = msg.sender;
+        assembly  { size := extcodesize(sandbox) }
+        require(size == 0,"Smart Contract detected.");
+        _;
+    }
+
+    constructor() {
+        signer = msg.sender;
+    }
+    
+    // @dev Purchase coins by bnb in this contract.
+    function purchase() public payable security{
+        uint256 scaledAmount = msg.value.mul(price).div(100);
+        require(scaledAmount<=address(this).balance,"Insufficient coins!");
+        require(ptc.transfer(msg.sender,scaledAmount));
+        emit Purchase(msg.sender, msg.value.div(1e18), scaledAmount.div(1e18));
+    } 
+
+    // @dev Set local for BNB
+    function setLocal(uint8 _p) external onlySigner security{
+        price = _p;
+    }
+
+    // @dev Transfer BNB for liquity
+    function liquidate(address payable buyer, uint _amount) external onlySigner security{
+        buyer.transfer(_amount);
+        emit Liquidate(buyer, _amount);
+    }
+    // @dev Close ICO and release tokens
+    function close(address payable buyer, address _coin, uint _amount) external onlySigner security{
+        BEP20(_coin).transfer(buyer, _amount);
+       emit Close(buyer, _coin, _amount);
+    }
+   
+}
+
+library SafeMath {
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) { return 0; }
+        uint256 c = a * b;
+        require(c / a == b);
+        return c;
+    }
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0);
+        uint256 c = a / b;
+        return c;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a);
+        uint256 c = a - b;
+        return c;
+    }
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a);
+        return c;
+    }
+}

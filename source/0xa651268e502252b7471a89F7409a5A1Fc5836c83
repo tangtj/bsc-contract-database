@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+
+
+abstract contract Context 
+{
+    function _msgSender() internal view virtual returns (address) 
+    {
+        return msg.sender;
+    }
+    function _msgData() internal view virtual returns (bytes calldata) 
+    {
+        this; 
+        return msg.data;
+    }
+}
+
+
+abstract contract OwnableV2 is Context
+{
+    address _owner;
+    address public _newOwner;
+    constructor()  
+    {
+        _owner = payable(msg.sender);
+    }
+
+    modifier onlyOwner() 
+    {
+        require(_msgSender() == _owner, "Only owner");
+        _;
+    }
+
+    function changeOwner(address newOwner) onlyOwner public
+    {
+        _newOwner = newOwner;
+    }
+    function confirm() public
+    {
+        require(_newOwner == msg.sender);
+        _owner = _newOwner;
+    }
+}
+
+abstract contract ContractOwnerV2 is OwnableV2
+{
+    address _contractOwner;
+
+    modifier isContractOwner()
+    {
+        require(msg.sender == _contractOwner, "no access");
+        _;
+    }
+    function setContractOwner(address contractOwner) onlyOwner public 
+    {
+        _contractOwner = contractOwner;
+    }
+}
+
+
+interface IUnfrozen
+{
+    function getCount() external view returns (uint);
+    function getUnfrozenById(uint userId) external view returns (address);
+    function getUnfrozenByAddress(address acc) external view returns (bool);
+    function getExtra(uint balance) external view returns (uint8);
+    function setUnfrozen (address acc) external;
+}
+
+interface IExtra
+{
+    function getExtra(uint balance) external view returns (uint8);
+}
+
+contract UnfrozenV2 is IUnfrozen, ContractOwnerV2
+{
+    uint public id = 0;
+    mapping (uint => address) getAddressById;
+    mapping (address => bool) isUnfrozen;
+    IExtra extra = IExtra(0xDd530a38d79bB3Ffc352A3FDC1079c9960434d2E);
+
+
+    /// VIEW
+    function getCount() public override view returns (uint) {
+        return id;
+    }
+
+    function getUnfrozenById(uint userId) public override view returns (address) {
+        require(userId <= id);
+        return getAddressById[userId];
+    }
+
+    function getUnfrozenByAddress(address acc) public override view returns (bool) {
+        return isUnfrozen[acc];
+    }
+
+    function getExtra(uint balance) public override view returns (uint8) {
+        return extra.getExtra(balance);
+    }
+
+    /// FUNCTION
+    function setUnfrozen (address acc)isContractOwner public override {
+        unfroz(acc);
+    }
+
+    /// Private 
+    function unfroz (address acc) private {
+        isUnfrozen[acc] = true;
+        id++;
+        getAddressById[id] = acc;
+    }
+
+    /// ADMIN
+    function setExtra (address extraAddress) onlyOwner public {
+        extra = IExtra(extraAddress);
+    }
+
+    function setUnfrozenExt(address acc) onlyOwner public {
+        unfroz(acc);
+    }
+}

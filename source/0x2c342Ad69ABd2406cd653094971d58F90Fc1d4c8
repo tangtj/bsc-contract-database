@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address account) external view returns (uint);
+    function transfer(address recipient, uint amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint);
+    function approve(address spender, uint amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+}
+
+contract Alarmz_Pre_Sale {
+    address public owner;
+    IBEP20 public contractToken;
+    IBEP20 public nativeContractToken;
+    uint[28] public nativeTokenPrices;
+    uint[28] public slots;
+    uint public fundraised;
+    uint public tokensSold;
+    uint public tokensoldNOW;
+    address public Collector;
+
+    constructor (address usdAddress, address nativeToken, address collector) {
+        owner = msg.sender;
+        contractToken = IBEP20(usdAddress);
+        nativeContractToken = IBEP20(nativeToken);
+        Collector = collector;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not an owner");
+        _;
+    }
+
+    function changeNativeTokenPrice(uint slot, uint price) public onlyOwner {
+        require(slot < 28, "Invalid slot number");
+        nativeTokenPrices[slot] = price;
+    }
+
+    function changeSlot(uint slot, uint value) public onlyOwner {
+        require(slot < 28, "Invalid slot number");
+        slots[slot] = value;
+    }
+
+    function getFundraised() public view returns (uint) {
+        return fundraised;
+    }
+
+    function withdraw(uint amount) public onlyOwner {
+        nativeContractToken.transfer(owner, amount);
+    }
+
+    function setOwner(address _owner) public onlyOwner {
+        owner = _owner;
+    }
+    function setCollector(address _Collector) public onlyOwner {
+        Collector = _Collector;
+    }
+
+    function purchaseTokenALZ(uint amount) public {
+        sendToken(amount);
+        fundraised += amount;
+    }
+
+   function sendToken(uint amount) private {
+    uint slotIndex = 0;
+    uint remainingAmount = amount;
+
+    while (remainingAmount > 0 && slotIndex < 28) {
+        uint slotAmount = slots[slotIndex];
+        uint tokenPrice = nativeTokenPrices[slotIndex];
+
+        if (slotAmount > tokensSold) {
+            uint availableAmount = slotAmount - tokensSold;
+
+            if (remainingAmount >= availableAmount) {
+                uint tokenAmount = (availableAmount * 10000) / tokenPrice;
+                require(contractToken.allowance(msg.sender, address(this)) >= availableAmount, "Insufficient allowance");
+                require(contractToken.balanceOf(msg.sender) >= availableAmount, "Insufficient balance");
+                require(nativeContractToken.balanceOf(address(this)) >= tokenAmount, "Insufficient native token balance");
+
+                bool transferFromSuccess = contractToken.transferFrom(msg.sender, Collector, availableAmount);
+                require(transferFromSuccess, "Transfer from failed");
+
+                bool transferSuccess = nativeContractToken.transfer(msg.sender, tokenAmount);
+                require(transferSuccess, "Transfer failed");
+
+                tokensSold += availableAmount;
+                remainingAmount -= availableAmount;
+                tokensoldNOW +=tokenAmount;
+            } else {
+                uint tokenAmount = (remainingAmount * 10000) / tokenPrice;
+                require(contractToken.allowance(msg.sender, address(this)) >= remainingAmount, "Insufficient allowance");
+                require(contractToken.balanceOf(msg.sender) >= remainingAmount, "Insufficient balance");
+                require(nativeContractToken.balanceOf(address(this)) >= tokenAmount, "Insufficient native token balance");
+
+                bool transferFromSuccess = contractToken.transferFrom(msg.sender, Collector, remainingAmount);
+                require(transferFromSuccess, "Transfer from failed");
+
+                bool transferSuccess = nativeContractToken.transfer(msg.sender, tokenAmount);
+                require(transferSuccess, "Transfer failed");
+
+                tokensSold += remainingAmount;
+                remainingAmount = 0;
+                tokensoldNOW +=tokenAmount;
+            }
+        }
+
+        slotIndex++;
+    }
+}
+function getTokensReturn(uint amount) public view returns (uint[] memory) {
+    uint[] memory tokensReturned = new uint[](28);
+
+    uint slotIndex = 0;
+    uint remainingAmount = amount;
+
+    while (remainingAmount > 0 && slotIndex < 28) {
+        uint slotAmount = slots[slotIndex];
+        uint tokenPrice = nativeTokenPrices[slotIndex];
+
+        if (slotAmount > tokensSold) {
+            uint availableAmount = slotAmount - tokensSold;
+
+            if (remainingAmount >= availableAmount) {
+                uint tokenAmount = (availableAmount * 10000) / tokenPrice;
+                tokensReturned[slotIndex] = tokenAmount;
+                remainingAmount -= availableAmount;
+            } else {
+                uint tokenAmount = (remainingAmount * 10000) / tokenPrice;
+                tokensReturned[slotIndex] = tokenAmount;
+                remainingAmount = 0;
+            }
+        }
+
+        slotIndex++;
+    }
+
+    return tokensReturned;
+}
+
+
+
+}

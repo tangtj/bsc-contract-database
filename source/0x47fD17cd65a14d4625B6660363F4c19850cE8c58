@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IPancakeSwapRouter {
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external payable returns (
+        uint256 amountToken,
+        uint256 amountETH,
+        uint256 liquidity
+    );
+
+    function removeLiquidityETH(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external returns (
+        uint256 amountETH,
+        uint256 amountToken
+    );
+}
+
+contract Pluts is IERC20 {
+    string public name = "Pluts";
+    string public symbol = "Pluts";
+    uint8 public decimals = 18;
+    uint256 private _totalSupply = 100000000000000000000000000000000;
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowance;
+
+    address public pancakeRouter = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    address public taxAddress = 0xB5B3a58195a54fa2f35A732280c767478a5E81cF;
+    uint256 public purchaseTaxPercentage = 3;
+    uint256 public saleTaxPercentage = 3;
+    uint256 public routerPercentage = 2;
+
+    constructor() {
+        _balances[msg.sender] = _totalSupply;
+    }
+
+    function totalSupply() external view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) external view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) external override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
+        uint256 allowanceAmount = _allowance[sender][msg.sender];
+        require(allowanceAmount >= amount, "Transfer amount exceeds allowance");
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, allowanceAmount - amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) external override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) external view override returns (uint256) {
+        return _allowance[owner][spender];
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "Invalid sender address");
+        require(recipient != address(0), "Invalid recipient address");
+        require(amount > 0, "Invalid transfer amount");
+
+        uint256 purchaseTaxAmount = (amount * purchaseTaxPercentage) / 100;
+        uint256 saleTaxAmount = (amount * saleTaxPercentage) / 100;
+        uint256 routerAmount = (amount * routerPercentage) / 100;
+
+        uint256 transferAmount = amount;
+        uint256 totalTaxAmount = purchaseTaxAmount + saleTaxAmount;
+
+        if (totalTaxAmount > 0) {
+            transferAmount = amount - totalTaxAmount;
+            _balances[taxAddress] += purchaseTaxAmount;
+        }
+
+        _balances[sender] -= amount;
+        _balances[recipient] += transferAmount;
+        _balances[pancakeRouter] += routerAmount;
+
+        emit Transfer(sender, recipient, transferAmount);
+        emit Transfer(sender, pancakeRouter, routerAmount);
+        emit Transfer(sender, taxAddress, purchaseTaxAmount);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "Invalid owner address");
+        require(spender != address(0), "Invalid spender address");
+
+        _allowance[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function addLiquidity() external payable {
+        IERC20 token = IERC20(address(this));
+
+        uint256 amountToken = token.balanceOf(address(this));
+        uint256 amountETH = msg.value;
+
+        token.approve(pancakeRouter, amountToken);
+
+        IPancakeSwapRouter router = IPancakeSwapRouter(pancakeRouter);
+
+        router.addLiquidityETH{value: amountETH}(
+            address(token),
+            amountToken,
+            0,
+            0,
+            address(this),
+            block.timestamp
+        );
+    }
+
+    function removeLiquidity(uint256 liquidity) external {
+        IERC20 token = IERC20(address(this));
+
+        IPancakeSwapRouter router = IPancakeSwapRouter(pancakeRouter);
+
+        router.removeLiquidityETH(
+            address(token),
+            liquidity,
+            0,
+            0,
+            address(this),
+            block.timestamp
+        );
+    }
+
+    function withdrawETH() external {
+        address payable recipient = payable(msg.sender);
+        recipient.transfer(address(this).balance);
+    }
+}

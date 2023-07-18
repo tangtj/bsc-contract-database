@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity 0.8.19;
+
+interface INFT {
+    function ProcessTokenRequest(address account) external returns (bool);
+}
+
+interface IPresale {
+    function balanceOf(address account,address token) external view returns (uint256);
+}
+
+contract permission {
+    mapping(address => mapping(string => bytes32)) private permit;
+
+    function newpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode(adr,str))); }
+
+    function clearpermit(address adr,string memory str) internal { permit[adr][str] = bytes32(keccak256(abi.encode("null"))); }
+
+    function checkpermit(address adr,string memory str) public view returns (bool) {
+        if(permit[adr][str]==bytes32(keccak256(abi.encode(adr,str)))){ return true; }else{ return false; }
+    }
+
+    modifier forRole(string memory str) {
+        require(checkpermit(msg.sender,str),"Permit Revert!");
+        _;
+    }
+}
+
+contract MooMoohPresaleMinter is permission {
+    
+    address public owner;
+
+    address BUSD = 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56;
+    address USDT = 0x55d398326f99059fF775485246999027B3197955;
+
+    address public presaleAddress = 0x6b9640F10790dad56c92C35dFbCFF5bbefdb14dc;
+    address public nftAddress = 0xE6981Efd5D6A08DC33A20Dd5fe31F80A904B392B;
+
+    uint256 nftdropAmount = 100 * 1e18;
+
+    mapping(address => uint256) public totalMinted;
+
+    bool locked;
+    modifier noReentrant() {
+        require(!locked, "No re-entrancy");
+        locked = true;
+        _;
+        locked = false;
+    }
+
+    constructor() {
+        newpermit(msg.sender,"permit");
+        newpermit(msg.sender,"owner");
+        owner = msg.sender;
+    }
+
+    function openPresaleBOX() public noReentrant returns (bool) {
+        require(totalMinted[msg.sender]<getLimitMinted(msg.sender),"MOOMOOHMINTER REVERT: LIMITED MINT");
+        totalMinted[msg.sender] += 1;
+        INFT(nftAddress).ProcessTokenRequest(msg.sender);
+        return true;
+    }
+
+    function getLimitMinted(address account) public view returns (uint256) {
+        uint256 amountBUSD = IPresale(presaleAddress).balanceOf(account,BUSD);
+        uint256 amountUSDT = IPresale(presaleAddress).balanceOf(account,USDT);
+        uint256 totalUSD = amountBUSD + amountUSDT;
+        return totalUSD / nftdropAmount;
+    }
+
+    function grantRole(address adr,string memory role) public forRole("owner") returns (bool) {
+        newpermit(adr,role);
+        return true;
+    }
+
+    function revokeRole(address adr,string memory role) public forRole("owner") returns (bool) {
+        clearpermit(adr,role);
+        return true;
+    }
+
+    function transferOwnership(address adr) public forRole("owner") returns (bool) {
+        newpermit(adr,"owner");
+        clearpermit(msg.sender,"owner");
+        owner = adr;
+        return true;
+    }
+
+    receive() external payable {}
+}
