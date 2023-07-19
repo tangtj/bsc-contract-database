@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IRouter {
+    function getAmountsOut(uint256 amountIn, address[] memory path) external view returns (uint256[] memory amounts);
+    function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] memory path, address to, uint256 deadline) external returns (uint256[] memory amounts);
+}
+
+interface IERC20 {
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract MultihopSwap {
+    address private constant WBNB = address(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c);
+    address private constant ROUTER = address(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+
+    function performMultihopSwap(address[] calldata tokens, uint256 amount) external {
+        require(tokens.length >= 2, "At least two tokens required");
+
+        // Approve spending of the first token by the router
+        IERC20(tokens[0]).approve(ROUTER, type(uint256).max);
+
+        uint256[] memory swapAmounts = new uint256[](tokens.length);
+        swapAmounts[0] = amount;
+
+        for (uint256 i = 0; i < tokens.length - 1; i++) {
+            address[] memory path = new address[](2);
+            path[0] = tokens[i];
+            path[1] = tokens[i + 1];
+            
+            swapAmounts[i + 1] = IRouter(ROUTER).getAmountsOut(swapAmounts[i], path)[1];
+        }
+        
+        // Perform the multihop swap in a single transaction
+        IRouter(ROUTER).swapExactTokensForTokens(swapAmounts[0], swapAmounts[tokens.length - 1], tokens, address(this), block.timestamp);
+        
+        // Return any remaining WBNB to the smart contract balance
+        uint256 remainingAmount = IERC20(WBNB).balanceOf(address(this));
+        if (remainingAmount > 0) {
+            IERC20(WBNB).transfer(address(this), remainingAmount);
+        }
+    }
+
+    function depositWBNB(uint256 amount) external {
+        IERC20(WBNB).transferFrom(msg.sender, address(this), amount);
+    }
+
+    function withdrawWBNB(uint256 amount) external {
+        require(amount <= IERC20(WBNB).balanceOf(address(this)), "Insufficient balance");
+        IERC20(WBNB).transfer(msg.sender, amount);
+    }
+}

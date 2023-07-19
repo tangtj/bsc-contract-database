@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+
+library Address {
+
+    function isContract(address addr) internal view returns (bool) {
+        uint256 size;
+        assembly { size := extcodesize(addr) }
+        return size > 0;
+    }
+}
+
+library StorageSlot {
+    
+    struct AddressSlot {
+        address value;
+    }
+    
+    function getAddressSlot(bytes32 slot) internal pure returns (AddressSlot storage r) {
+        assembly {
+            r.slot := slot
+        }
+    }
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+abstract contract WingsNetProxy {
+
+    event Upgraded(address indexed implementation);
+    event AdminChanged(address previousAdmin, address newAdmin);
+
+    constructor(address newImplementation) payable {
+        _setAdmin(msg.sender);
+        _upgradeTo(newImplementation);
+    }
+
+    function _delegate(address implementation) internal {
+        assembly {
+            calldatacopy(0, 0, calldatasize())
+            let result := delegatecall(gas(), implementation, 0, calldatasize(), 0, 0)
+            returndatacopy(0, 0, returndatasize())
+
+            switch result
+            case 0 {
+                revert(0, returndatasize())
+            }
+            default {
+                return(0, returndatasize())
+            }
+        }
+    }
+
+    function _fallback() internal {
+        _delegate(_implementation());
+    }
+
+    fallback() external payable {
+        _fallback();
+    }
+
+    receive() external payable {
+        _fallback();
+    }
+
+    function _implementation() internal view returns (address) {
+        return StorageSlot.getAddressSlot(bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1)).value;
+    }
+
+    function _upgradeTo(address newImplementation) internal {
+        require(Address.isContract(newImplementation), "ERC1967Proxy: new implementation is not a contract!");
+        StorageSlot.getAddressSlot(bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1)).value = newImplementation;
+        emit Upgraded(newImplementation);
+    }
+
+    function _getAdmin() internal view returns (address) {
+        return StorageSlot.getAddressSlot(bytes32(uint256(keccak256("eip1967.owner")) -1)).value;
+    }
+
+    function _setAdmin(address newAdmin) internal {
+        StorageSlot.getAddressSlot(bytes32(uint256(keccak256("eip1967.owner")) -1)).value = newAdmin;
+    }
+
+    function _changeAdmin(address newAdmin) internal {
+        require(newAdmin != address(0), "ERC1967: new admin is the zero address!");
+        address oldAdmin = _getAdmin();
+        _setAdmin(newAdmin);
+        emit AdminChanged(oldAdmin, newAdmin);
+    }
+    
+    function _checkAdmin() internal view {
+        require(_getAdmin() == msg.sender, "ERC1967: caller is not the owner!");
+    }
+
+    modifier onlyAdmin() {
+        _checkAdmin();
+        _;
+    }
+}
+
+struct UserPackage {
+    address referral;
+    uint256 invest;
+    uint256 levelIncome;
+    uint256 nonWorkingIncome;
+    uint256 royaltyIncome;
+    uint256 nonLimit;
+    uint256 limit;
+}
+
+struct User {
+    bool isExists;
+    uint256 userId;
+    address referral;
+    uint256 totalInvest;
+    uint256 totalIncome;
+}
+
+contract WingsNet is WingsNetProxy {
+    
+    bool internal initialized;
+    address internal PayableToken;
+    address internal firstAccount;
+    address[] internal receivers;
+    
+    uint256 public totalUsers;
+    uint256 public totalInvestment;
+    uint256[] public plans;
+    mapping(uint256 => address) public user;
+    mapping(address => User) public users;
+    mapping(address => UserPackage[10]) public userPackages;
+    mapping(uint8 => address[]) public nonWorking;
+    mapping(uint8 => address[]) public royaltyAcheivers;
+
+    uint16[] internal levelDistribution;
+    uint16[] internal nonWorkingDistribution;
+    uint16[] internal royaltyDistribution;
+    mapping(address => mapping (uint8 => address[])) internal referTeam;
+    
+    constructor(address implementation_) payable WingsNetProxy(implementation_) {}
+
+    function getAdmin() external view returns (address) {
+        return _getAdmin();
+    }
+
+    function changeAdmin(address newAdmin) external onlyAdmin {
+        _changeAdmin(newAdmin);
+    }
+
+    function getImplementation() external view returns (address) {
+        return _implementation();
+    }
+
+    function upgradeTo(address newImplementation) external onlyAdmin {
+        _upgradeTo(newImplementation);
+    }
+
+    function referList(uint8 plan_, address user_) external view returns (address[] memory) {
+        return referTeam[user_][plan_];
+    }
+
+    function referCount(uint8 plan_, address user_) external view returns (uint256) {
+        return _referCount(plan_, user_);
+    }
+
+    function _referCount(uint8 plan_, address user_) internal view returns (uint256) {
+        return referTeam[user_][plan_].length;
+    }
+}

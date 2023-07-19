@@ -1,0 +1,652 @@
+// Sources flattened with hardhat v2.14.0 https://hardhat.org
+
+// File contracts/did/interfaces/IHashDB.sol
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.9;
+
+interface IPushItemSingle {
+    function pushElement(bytes32 itemKey, bytes memory itemValue) external;
+}
+
+interface IRemoveElement {
+    function removeElement(bytes32 itemKey) external;
+}
+
+interface IItemArray {
+    function itemArrayLength(bytes32 itemKey) external view returns (uint256);
+
+    function itemArraySlice(bytes32 itemKey, uint256 start, uint256 end) external view returns (bytes[] memory);
+}
+
+interface IGetElement {
+    function getElement(bytes32 itemKey, uint256 idx) external view returns (bytes memory);
+}
+
+interface IGetFirstElement {
+    function getFirstElement(bytes32 itemKey) external view returns (bytes memory);
+}
+
+interface IRemoveItemArray {
+    function removeItemArray(bytes32 itemKey) external;
+}
+
+interface IReplaceItemArray {
+    function replaceItemArray(bytes32 itemKey, bytes[] memory itemArray) external;
+}
+
+interface IReplaceItemArrayWithElement {
+    function replaceItemArray(bytes32 itemKey, bytes memory itemValue) external;
+}
+
+
+// File contracts/did/interfaces/IDB.sol
+
+// 
+
+pragma solidity ^0.8.9;
+
+interface ISetReverse {
+    function setReverse(address owner, bytes32 node) external;
+}
+
+interface INodeStatus {
+    function isNodeActive(bytes32 node) external view returns (bool);
+    function isNodeExisted(bytes32 node) external view returns (bool);
+}
+
+interface IActivate {
+    function activate(bytes32 parent, address owner, uint64 expire, string memory name, bytes memory _data)
+        external
+        returns (bytes32);
+}
+
+interface IDeactivate {
+    function deactivate(bytes32 node) external;
+}
+
+interface NodeStruct {
+    struct Node {
+        bytes32 parent;
+        address owner;
+        uint64 expire;
+        uint64 transfer;
+        string name;
+    }
+}
+
+interface INodeRecord is NodeStruct {
+    function getNodeRecord(bytes32 node) external view returns (Node memory);
+}
+
+interface IIsNodeActive {
+    function isNodeActive(bytes32 node) external view returns (bool);
+}
+
+interface IOwnerOf {
+    function ownerOf(uint256 tokenId) external view returns (address);
+}
+
+
+// File contracts/did/interfaces/IBeacon.sol
+
+// 
+
+pragma solidity ^0.8.9;
+
+interface IDAOBeacon {
+    function DAO() external view returns (address);
+}
+
+interface IDBBeacon {
+    function DB() external view returns (address);
+}
+
+interface IEditorBeacon {
+    function editor() external view returns (address);
+}
+
+interface IBufferBeacon {
+    function buffer() external view returns (address);
+}
+
+interface IVaultBeacon {
+    function vault() external view returns (address);
+}
+
+interface IBrandBeacon {
+    function brand() external view returns (address);
+}
+
+interface IHookBeacon {
+    function hook() external view returns (address);
+}
+
+interface IMarketBeacon {
+    function market() external view returns (address);
+}
+
+interface IResolverBeacon {
+    function resolver() external view returns (address);
+}
+
+interface IFilterBeacon {
+    function filter() external view returns (address);
+}
+
+interface IValueMiningBeacon {
+    function valueMining() external view returns (address);
+}
+
+
+// File contracts/did/platform/AccessControl.sol
+
+// 
+
+pragma solidity ^0.8.9;
+
+abstract contract AccessControl {
+    mapping(address => bool) public operators;
+
+    address public beacon;
+
+    event OperatorGranted(address operator, bool granted);
+
+    constructor(address _beacon) {
+        beacon = _beacon;
+    }
+
+    modifier onlyDAO() {
+        require(msg.sender == _DAO(), "Caller is not the DAO");
+        _;
+    }
+
+    modifier onlyOperator() {
+        require(operators[msg.sender], "Caller is not an operator");
+        _;
+    }
+
+    function _DAO() internal view virtual returns (address) {
+        return IDAOBeacon(beacon).DAO();
+    }
+
+    function setOperator(address addr, bool granted) external onlyDAO {
+        _setOperator(addr, granted);
+    }
+
+    function setOperators(address[] calldata addrs, bool granted) external onlyDAO {
+        for (uint256 i = 0; i < addrs.length; i++) {
+            _setOperator(addrs[i], granted);
+        }
+    }
+
+    function _setOperator(address addr, bool granted) internal {
+        operators[addr] = granted;
+        emit OperatorGranted(addr, granted);
+    }
+}
+
+
+// File @openzeppelin/contracts/security/ReentrancyGuard.sol@v4.8.3
+
+// 
+// OpenZeppelin Contracts (last updated v4.8.0) (security/ReentrancyGuard.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() private {
+        // On the first call to nonReentrant, _status will be _NOT_ENTERED
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+    }
+
+    function _nonReentrantAfter() private {
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+// File @openzeppelin/contracts/token/ERC20/IERC20.sol@v4.8.3
+
+// 
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+
+// File contracts/did/lib/KeyEnumBase.sol
+
+// 
+
+pragma solidity ^0.8.9;
+
+abstract contract KeyEnumBase {
+    bytes32 public constant ROOT = bytes32(0);
+    uint256 internal constant INDEX_NULL = 0;
+    address internal constant ADDRESS_NULL = address(0);
+    bytes32 internal constant KEY_NULL = bytes32(0);
+    // encodeToKey(bytes32 node, address owner, bytes32 keyHash, bytes32 keySub)
+
+    bytes32 internal constant KEY_BRAND = keccak256("KEY_BRAND");
+    // contract address for a domain to set customized tokenURI function for subdomain
+
+    bytes32 internal constant KEY_LIKE = keccak256("KEY_LIKE");
+    // maxLength == 100
+    // encodeToKey(node, address(0), KEY_LIKE, bytes32(0)) => [liker1, liker2, liker3...]
+    // maxLength == Type(uint256).max
+    // encodeToKey(node, address(0), KEY_LIKE, bytes32(1)) => [(likee1, timestamp1), (likee2, timestamp2)...]
+
+    bytes32 internal constant KEY_NODE_AGENT = keccak256("KEY_NODE_AGENT");
+
+    bytes32 internal constant KEY_ORDER = keccak256("KEY_ORDER");
+    // => [(market address, taker address, expire time, fixed price)]
+
+    bytes32 internal constant KEY_TTL = keccak256("KEY_TTL"); // => [time to live]
+
+    // !!! order and ttl should be cleared before transfer !!!
+
+    // bytes32 internal constant KEY_RESERVE = keccak256("KEY_RESERVE"); // => [marker]
+}
+
+
+// File contracts/did/lib/Parser.sol
+
+// 
+
+pragma solidity ^0.8.9;
+
+library Parser {
+    function encodeNameToNode(bytes32 parent, string memory name) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(parent, keccak256(abi.encodePacked(name))));
+    }
+
+    // !!! keyHash must be a hash value, but keySub might be converted from a unit256 number directly !!!
+    function encodeToKey(bytes32 node, address owner, bytes32 keyHash, bytes32 keySub)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encodePacked(node, owner, keyHash, keySub));
+    }
+
+    function abiBytesToAddressTime(bytes memory bys) internal pure returns (address addr, uint64 time) {
+        uint256 num = abiBytesToUint256(bys);
+        addr = address(uint160(num >> 96));
+        time = uint64(num & type(uint96).max);
+    }
+
+    //
+    //    function abiBytesToAddress(bytes memory bys) internal pure returns (address ret) {
+    //        require(bys.length == 32 || bys.length == 0, "Data bytes can not be decoded");
+    //        if (bys.length == 32) {
+    //            ret = abi.decode(bys, (address));
+    //        }
+    //        return ret;
+    //    }
+    //
+    //    function abiBytesToUint64(bytes memory bys) internal pure returns (uint64 ret) {
+    //        require(bys.length == 32 || bys.length == 0, "Data bytes can not be decoded");
+    //        if (bys.length == 32) {
+    //            ret = abi.decode(bys, (uint64));
+    //        }
+    //        return ret;
+    //    }
+    //
+    function abiBytesToUint256(bytes memory bys) internal pure returns (uint256 ret) {
+        require(bys.length == 32 || bys.length == 0, "Data bytes can not be decoded");
+        if (bys.length == 32) {
+            ret = abi.decode(bys, (uint256));
+        }
+        return ret;
+    }
+    //
+    //    function abiBytesToString(bytes memory bys) internal pure returns (string memory ret) {
+    //        if (bys.length > 0) {
+    //            ret = abi.decode(bys, (string));
+    //        }
+    //        return ret;
+    //    }
+    //
+
+    function abiBytesCutToAddress(bytes memory bys) internal pure returns (address addr) {
+        uint256 num = abiBytesToUint256(bys);
+        addr = address(uint160(num >> 96));
+    }
+}
+
+
+// File contracts/did/Registrar.sol
+
+// 
+
+pragma solidity ^0.8.9;
+
+
+
+
+
+
+interface IMarketTransferFrom {
+    function marketTransferFrom(address from, address to, uint256 tokenId, bytes memory data) external;
+
+    function ownerOf(uint256 tokenId) external view returns (address);
+}
+
+interface IFilter {
+    function validName(string memory name) external view returns (bool);
+}
+
+interface ITotalSupply {
+    function totalSupply() external view returns (uint256);
+}
+
+interface IBalanceOf {
+    function balanceOf(address owner) external view returns (uint256);
+}
+
+contract Registrar is AccessControl, KeyEnumBase, ReentrancyGuard {
+    // https://bscscan.com/address/0x55d398326f99059ff775485246999027b3197955#readContract
+    // Binance-Peg BSC-USD (BSC-USD) decimals == 18 !!!
+    uint256 public baseCost = 10 ether; // 10 USDT
+    address public constant USDT = 0x55d398326f99059fF775485246999027B3197955;
+
+    address public platform = 0x82feDA624d7fF8e8767255059c1ab0e0e84364A4;
+    address public developer1 = 0x9c847e99DF0Ad79f34bAde9C2eA3D446F4309550;
+    address public developer2 = 0xC031a330B002e53155c6bD470371FFcBAc0a8675;
+
+    bytes32 public immutable topLevelNode;
+    string public topLevelName;
+
+    mapping(address => uint256[]) internal agentRecord;
+
+    event BaseCostUpdated(uint256 cost);
+    event ReceiverUpdated(address platform, address developer1, address developer2);
+
+    constructor(address _beacon, string memory _name, uint256 _baseCost) AccessControl(_beacon) {
+        topLevelNode = keccak256(abi.encodePacked(ROOT, keccak256(abi.encodePacked(_name))));
+        topLevelName = _name;
+        if (_baseCost > 0) {
+            baseCost = _baseCost;
+        }
+    }
+
+    function setBaseCost(uint256 cost) external onlyOperator {
+        baseCost = cost;
+        emit BaseCostUpdated(cost);
+    }
+
+    function setReceiver(address _platform, address _developer1, address _developer2) external onlyOperator {
+        platform = _platform;
+        developer1 = _developer1;
+        developer1 = _developer2;
+
+        emit ReceiverUpdated(_platform, _developer1, _developer2);
+    }
+
+    function getCost(string memory name) public view returns (bytes32 node, address owner, uint256 totalCost) {
+        require(IFilter(IFilterBeacon(beacon).filter()).validName(name), "Invalid name");
+
+        node = Parser.encodeNameToNode(topLevelNode, name);
+
+        owner = INodeRecord(IDBBeacon(beacon).DB()).getNodeRecord(node).owner;
+        if (owner == address(0)) {
+            totalCost = _getBasePrice(name);
+        }
+    }
+
+    // 1L ~ 3L are reserved, <6L 10Matic> <5L, 30Matic> <4L 90Matic>...
+    function _getBasePrice(string memory name) internal view returns (uint256) {
+        require(IFilter(IFilterBeacon(beacon).filter()).validName(name), "Invalid name");
+        uint256 nameLength = bytes(name).length;
+        uint256 basePrice = baseCost;
+        if (nameLength < 6) {
+            basePrice = (3 ** (6 - nameLength)) * basePrice;
+        }
+        return basePrice;
+    }
+
+    function getBasePrice(string memory name) external view returns (uint256) {
+        return _getBasePrice(name);
+    }
+
+    function batchRegister(address to, string[] calldata names, address agent) external nonReentrant {
+        // msg.sender.code.length == 0 // contract-caller is not allowed
+        // require(tx.origin == msg.sender || operators[msg.sender]); // it is like [nonReentrant]
+        require(to != address(0), "Zero address");
+        address db = IDBBeacon(beacon).DB();
+
+        if (agent != address(0) && IBalanceOf(db).balanceOf(agent) == 0) {
+            agent = address(0);
+        }
+
+        uint256 toDev;
+        uint256 toAgent;
+        uint256 toPlatform;
+
+        for (uint256 i = 0; i < names.length; i++) {
+            uint256 price = _getBasePrice(names[i]);
+
+            uint256 tempDev = price * 3 / 10;
+            toDev += tempDev;
+
+            if (agent == address(0)) {
+                toPlatform += (price - tempDev);
+            } else {
+                uint256 tempAgent = price / 2;
+                toAgent += tempAgent;
+                toPlatform += (price - tempDev - tempAgent);
+            }
+
+            IActivate(db).activate(topLevelNode, to, 0, names[i], "");
+        }
+
+        toDev /= 2;
+        require(IERC20(USDT).transferFrom(tx.origin, developer1, toDev), "Transfer failed");
+        require(IERC20(USDT).transferFrom(tx.origin, developer2, toDev), "Transfer failed");
+        require(IERC20(USDT).transferFrom(tx.origin, platform, toPlatform), "Transfer failed");
+        if (agent != address(0)) {
+            // to record history of agent: address => [amount1, timestamp1, amount2, timestamp2...]
+            agentRecord[agent].push(toAgent);
+            agentRecord[agent].push(block.timestamp);
+            require(IERC20(USDT).transferFrom(tx.origin, agent, toAgent), "Transfer failed");
+        }
+    }
+
+    // return scope:  end > x >= start
+    function getAgentRecord(address agent, uint256 start, uint256 end)
+        external
+        view
+        returns (uint256 total, uint256[] memory amountList, uint256[] memory timestampList)
+    {
+        uint256 len = agentRecord[agent].length;
+        total = len / 2;
+        require(end > start && total >= end - start, "Illegal");
+
+        uint256 size = end - start;
+        amountList = new uint256[](size);
+        timestampList = new uint256[](size);
+        for (uint256 i = start; i < end; i++) {
+            uint256 j = i * 2;
+            amountList[i] = agentRecord[agent][j];
+            timestampList[i] = agentRecord[agent][j + 1];
+        }
+    }
+
+    // 0.2% of price will be deposited to a vault when trading in the secondary market
+    uint256 public constant PRECISION = 1e9;
+    uint256 public marketRatio = 2e6;
+
+    event TokenTaken(uint256 tokenId, uint256 price);
+    event RatioUpdated(uint256 ratio);
+
+    function setMarketRatio(uint256 ratio) external onlyDAO {
+        require(marketRatio != ratio, "Nothing changes");
+        marketRatio = ratio;
+        emit RatioUpdated(ratio);
+    }
+
+    function takeOrder(uint256 tokenId) external {
+        takeOrderFor(tokenId, msg.sender, IDBBeacon(beacon).DB());
+    }
+
+    function takeOrders(bytes32[] calldata tokenIds, address taker) external {
+        address db = IDBBeacon(beacon).DB();
+
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            takeOrderFor(uint256(tokenIds[i]), taker, db);
+        }
+    }
+
+    function takeOrderFor(uint256 tokenId, address recipient, address db) internal {
+        address owner = IMarketTransferFrom(db).ownerOf(tokenId);
+        require(recipient != owner, "Wrong recipient");
+
+        bytes32 orderKey = Parser.encodeToKey(bytes32(tokenId), owner, KEY_ORDER, KEY_NULL);
+
+        (, address taker, uint64 expire, uint256 price) =
+            abi.decode(IGetFirstElement(db).getFirstElement(orderKey), (address, address, uint64, uint256));
+        require(taker == address(0) || taker == recipient, "Wrong recipient");
+        require(price > 0 && expire > block.timestamp, "Not on sale or expired");
+
+        uint256 forVault = price * marketRatio / PRECISION;
+
+        IERC20 usdt = IERC20(USDT);
+        usdt.transferFrom(tx.origin, IVaultBeacon(beacon).vault(), forVault);
+        usdt.transferFrom(tx.origin, owner, price - forVault);
+        IMarketTransferFrom(db).marketTransferFrom(owner, recipient, tokenId, "");
+
+        emit TokenTaken(tokenId, price);
+    }
+}
