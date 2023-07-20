@@ -1,0 +1,387 @@
+//SPDX-License-Identifier: GPL-3.0
+
+pragma solidity >=0.5.0 <0.9.0;
+// ----------------------------------------------------------------------------
+// WinBulk Winsale Utilities
+// https://www.winbulk.com
+// Telegram: https://t.me/OfficialWinbulk
+// Founded by Prince Nna (BB)
+// This idea is the first of its kind in the crypto world
+//-----------------------------------------------------------------------------
+// EIP-20: ERC-20 Token Standard
+// https://eips.ethereum.org/EIPS/eip-20
+// -----------------------------------------
+
+interface ERC20Interface {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address tokenOwner) external view returns (uint balance);
+    function transfer(address to, uint tokens) external returns (bool success);
+    function allowance(address tokenOwner, address spender) external view returns (uint remaining);
+    function approve(address spender, uint tokens) external returns (bool success);
+    function transferFrom(address from, address to, uint tokens) external returns (bool success);
+
+    event Transfer(address indexed from, address indexed to, uint tokens);
+    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+}
+
+contract WinBulk is ERC20Interface {
+    string public name = "WinBulk";
+    string public symbol = "WBUK";
+    uint public decimals = 18;
+    uint public override totalSupply;
+
+    address public founder;
+    mapping(address => uint) public balances;
+    mapping(address => mapping(address => uint)) allowed;
+
+    constructor() {
+        totalSupply = 100000000000000000000000000000;
+        founder = msg.sender;
+        balances[founder] = totalSupply;
+    }
+
+
+    modifier onlyOwner() {
+        require(msg.sender == founder);
+        _;
+    }
+
+    event Burn(address indexed burner, uint amount); // Burn event
+
+    function balanceOf(address tokenOwner) public view override returns (uint balance) {
+        return balances[tokenOwner];
+    }
+
+    function transfer(address to, uint tokens) public virtual override returns (bool success) {
+        require(balances[msg.sender] >= tokens);
+        balances[to] += tokens;
+        balances[msg.sender] -= tokens;
+        emit Transfer(msg.sender, to, tokens);
+        return true;
+    }
+
+    function allowance(address tokenOwner, address spender) public view override returns (uint) {
+        return allowed[tokenOwner][spender];
+    }
+
+    function approve(address spender, uint tokens) public override returns (bool success) {
+        require(balances[msg.sender] >= tokens);
+        require(tokens > 0);
+        allowed[msg.sender][spender] = tokens;
+        emit Approval(msg.sender, spender, tokens);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint tokens) public virtual override returns (bool success) {
+        require(allowed[from][to] >= tokens);
+        require(balances[from] >= tokens);
+        balances[from] -= tokens;
+        balances[to] += tokens;
+        allowed[from][to] -= tokens;
+        emit Transfer(from, to, tokens);
+        return true;
+    }
+
+     function burn(uint amount) public onlyOwner {
+        require(amount <= balances[msg.sender], "Insufficient balance");
+        balances[msg.sender] -= amount;
+        totalSupply -= amount;
+        emit Transfer(msg.sender, address(0), amount);
+        emit Burn(msg.sender, amount); // Emitting the Burn event
+    }
+
+    
+
+}
+
+contract WinBulkSale is WinBulk {
+    address public admin;
+    address payable public deposit;
+    uint public tokenPrice = 0.00000002 ether;
+    uint public hardCap = 1000 ether;
+    uint public raisedAmount;
+    uint public saleStart;
+    uint public saleEnd;
+    uint public maxInvestment = 5 ether;
+    uint public minInvestment = 0.1 ether;
+    uint public feePercentage = 10;
+    uint public coreTeamPercentage = 5;
+    uint private topHoldersLimit = 20;
+    address payable[] public investorsWallets;
+    address payable[] public coreTeamWallets;
+    mapping(address => uint) public investedAmounts;
+    enum State { beforeStart, running, afterEnd, halted }
+    State public icoState;
+    uint public defaultDuration = 2592000; // Default duration: 30 days (2592000 seconds)
+
+    constructor(address payable _deposit) {
+        deposit = _deposit;
+        admin = msg.sender;
+        icoState = State.beforeStart;
+        distributeTokens();
+        populateCoreTeamWallets();
+        saleStart = 0; // Initialize saleStart to 0
+        saleEnd = 0; // Initialize saleEnd to 0
+    }
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin);
+        _;
+    }
+
+    function halt() public onlyAdmin {
+        icoState = State.halted;
+    }
+
+    function resume() public onlyAdmin {
+        icoState = State.running;
+    }
+
+    // Function to set the sales duration with an optional default value
+    function setDuration(uint duration) public onlyAdmin {
+        require(icoState == State.beforeStart, "Sales have already started");
+        require(duration > 0, "Duration must be greater than zero");
+        defaultDuration = duration;
+    }
+
+     // Function to start the sales with a specified duration or default duration
+    function start() public onlyAdmin {
+    require(icoState == State.beforeStart, "Sales have already started");
+    saleStart = block.timestamp;
+    saleEnd = saleStart + defaultDuration;
+    icoState = State.running;
+}
+
+
+
+
+    function changeDepositAddress(address payable newDeposit) public onlyAdmin {
+        deposit = newDeposit;
+    }
+
+    function setTokenPrice(uint _newPrice) public onlyAdmin {
+        tokenPrice = _newPrice;
+    }
+
+
+    // adjust investment amount
+
+    function increaseMaxInvestment(uint newMaxInvestment) external onlyAdmin {
+        require(newMaxInvestment > maxInvestment, "New max investment should be greater than the current max investment.");
+        maxInvestment = newMaxInvestment;
+    }
+
+    function decreaseMaxInvestment(uint newMaxInvestment) external onlyAdmin {
+        require(newMaxInvestment < maxInvestment, "New max investment should be less than the current max investment.");
+        maxInvestment = newMaxInvestment;
+    }
+
+    function increaseMinInvestment(uint newMinInvestment) external onlyAdmin {
+        require(newMinInvestment > minInvestment, "New min investment should be greater than the current min investment.");
+        minInvestment = newMinInvestment;
+    }
+
+    function decreaseMinInvestment(uint newMinInvestment) external onlyAdmin {
+        require(newMinInvestment < minInvestment, "New min investment should be less than the current min investment.");
+        minInvestment = newMinInvestment;
+    }
+
+
+    // core team wallet address function
+
+    function updateCoreTeamWallets(address payable _address) public {
+        coreTeamWallets.push(_address);
+    }
+
+    function removeCoreTeamWallets(address payable wallet) public onlyAdmin {
+        for (uint i = 0; i < coreTeamWallets.length; i++) {
+            if (coreTeamWallets[i] == wallet) {
+                coreTeamWallets[i] = coreTeamWallets[coreTeamWallets.length - 1];
+                coreTeamWallets.pop();
+                break;
+            }
+        }
+    }
+
+    // set core team percentage and top holder percentage
+
+    function setCoreTeamPercentage(uint _newPercent) public onlyAdmin returns (uint){
+        return coreTeamPercentage = _newPercent;
+    }
+
+    function setFeePercentage(uint _newPercent) public onlyAdmin returns (uint){
+        return feePercentage = _newPercent;
+    }
+
+    function populateCoreTeamWallets() internal {
+        coreTeamWallets = new address payable[](4);
+        coreTeamWallets[0] = payable(address(uint160(0xe025bB70A3CCb5d131120d52F0f58fB6e31fec31)));
+        coreTeamWallets[1] = payable(address(uint160(0xd0622bdC617f51C2e4F414a24B597b4E30Ff7476)));
+        coreTeamWallets[2] = payable(address(uint160(0xA25D29Abe744090B0bc618093c05BCB3D1A5Ab0C)));
+        coreTeamWallets[3] = payable(address(uint160(0x9DF989525B86fF09433D0a990A1fecfa31766Fa2)));
+    }
+    uint decimalsMultiplier = 10**18;
+
+    function distributeTokens() internal onlyAdmin {
+    require(icoState == State.beforeStart, "Tokens can only be distributed before the sale starts");
+
+    uint tokenDecimal = 10**18;
+    uint tokensToDistribute = balances[founder];
+
+    // Specify the token amounts with 18 decimal places
+    uint tokensToMarketing = 10000000000 * tokenDecimal; // 10 billion tokens
+    uint tokensToTeam = 15000000000 * tokenDecimal; // 15 billion tokens
+    uint tokensToCommunityReward = 5000000000 * tokenDecimal; // 5 billion tokens
+    uint tokensToReserve = 20000000000 * tokenDecimal; // 20 billion tokens
+
+    require(tokensToDistribute >= (tokensToMarketing + tokensToTeam + tokensToCommunityReward + tokensToReserve),
+        "Insufficient balance for token distribution");
+
+    // Distribute tokens from founder's balance to the different wallets
+    transfer(0x65a626BeD83cbf26fAb002CB2fBbEeBC4A995876, tokensToMarketing);
+    transfer(0xe8E433e6d67126F91255b198d89e635227fB8511, tokensToTeam);
+    transfer(0x3ba994AFfda46D497D3ebf482210D12A7AB3929d, tokensToCommunityReward);
+    transfer(0xCD86A7602e63bd9761e6E4Fb1E4Ec5D2546E5413, tokensToReserve);
+}
+
+
+
+
+    function getCurrentState() public view returns (State) {
+        if (icoState == State.halted) {
+            return State.halted;
+        } else if (block.timestamp < saleStart) {
+            return State.beforeStart;
+        } else if (block.timestamp >= saleStart && block.timestamp <= saleEnd) {
+            return State.running;
+        } else {
+            return State.afterEnd;
+        }
+    }
+
+    event Invest(address investor, uint value, uint tokens);
+
+    function invest() payable public returns (bool) {
+    icoState = getCurrentState();
+    require(icoState == State.running, "Sales have not yet started");
+    require(msg.value >= minInvestment && msg.value <= maxInvestment);
+    require(raisedAmount + msg.value <= hardCap);
+    require(investedAmounts[msg.sender] + msg.value <= maxInvestment, "Maximum investment limit exceeded for this wallet.");
+
+    // Check if the investor's wallet is not already present in investorsWallets
+    bool isNewInvestor = true;
+    for (uint i = 0; i < investorsWallets.length; i++) {
+        if (investorsWallets[i] == payable(msg.sender)) {
+            isNewInvestor = false;
+            break;
+        }
+    }
+
+    if (isNewInvestor) {
+        investorsWallets.push(payable(msg.sender));
+    }
+
+    uint feeAmount = (msg.value * feePercentage) / 100;
+    uint teamFeeAmount = (msg.value * coreTeamPercentage) / 100;
+    uint investedAmount = msg.value - (feeAmount + teamFeeAmount);
+
+    raisedAmount += investedAmount;
+
+    uint tokens = (investedAmount * (10 ** decimals)) / tokenPrice;
+
+    uint share = teamFeeAmount / coreTeamWallets.length;
+    for (uint i = 0; i < coreTeamWallets.length; i++) {
+        address payable wallet = coreTeamWallets[i];
+        wallet.transfer(share);
+        emit Transfer(address(this), wallet, share);
+    }
+
+    balances[msg.sender] += tokens;
+    balances[founder] -= tokens;
+    deposit.transfer(investedAmount);
+
+    emit Transfer(founder, msg.sender, tokens);
+    emit Invest(msg.sender, investedAmount, tokens);
+
+    uint feePerWallet = 0;
+    uint totalWallets = investorsWallets.length;
+
+    if (totalWallets > topHoldersLimit) {
+        totalWallets = topHoldersLimit;
+    }
+
+    if (totalWallets > 0) {
+        feePerWallet = feeAmount / totalWallets;
+    }
+
+    for (uint i = 0; i < totalWallets; i++) {
+        address payable wallet = investorsWallets[i];
+        wallet.transfer(feePerWallet);
+        emit Transfer(address(this), wallet, feePerWallet);
+    }
+
+    return true;
+}
+
+
+    receive() payable external {
+        invest();
+    }
+
+    function getTopTokenHolders() public view returns (address[] memory) {
+        address[] memory topHolders = new address[](topHoldersLimit);
+        uint[] memory balancesTemp = new uint[](topHoldersLimit);
+
+        for (uint i = 0; i < topHoldersLimit; i++) {
+            topHolders[i] = address(0);
+            balancesTemp[i] = 0;
+        }
+
+        for (uint i = 0; i < investorsWallets.length; i++) {
+            address holder = investorsWallets[i];
+            uint balance = balanceOf(holder);
+
+            if (balance > balancesTemp[topHoldersLimit - 1]) {
+                topHolders[topHoldersLimit - 1] = holder;
+                balancesTemp[topHoldersLimit - 1] = balance;
+
+                for (uint j = topHoldersLimit - 1; j > 0; j--) {
+                    if (balancesTemp[j] > balancesTemp[j - 1]) {
+                        (topHolders[j], topHolders[j - 1]) = (topHolders[j - 1], topHolders[j]);
+                        (balancesTemp[j], balancesTemp[j - 1]) = (balancesTemp[j - 1], balancesTemp[j]);
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        return topHolders;
+    }
+
+    function setTopHoldersLimit(uint newLimit) onlyAdmin external {
+        require(newLimit > 0, "Limit must be greater than zero");
+        topHoldersLimit = newLimit;
+    }
+
+    function getTopHoldersLimit() public onlyAdmin view returns (uint) {
+        return topHoldersLimit;
+    }
+
+    function burnFromSales() public onlyAdmin returns (bool) {
+        icoState = getCurrentState();
+        require(icoState == State.afterEnd);
+        balances[founder] = 0;
+        return true;
+    }
+
+    function transfer(address to, uint tokens) public override returns (bool success) {
+        super.transfer(to, tokens);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint tokens) public override returns (bool success) {
+        super.transferFrom(from, to, tokens);
+        return true;
+    }
+}

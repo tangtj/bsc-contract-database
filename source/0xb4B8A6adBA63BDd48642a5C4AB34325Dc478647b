@@ -1,0 +1,312 @@
+//SPDX-License-Identifier: UNLICENSED
+pragma solidity >=0.8.6;
+
+interface IERC20 {
+  function totalSupply() external view returns (uint256);
+
+  function decimals() external view returns (uint8);
+
+  function symbol() external view returns (string memory);
+
+  function balanceOf(address account) external view returns (uint256);
+
+  function transfer(address recipient, uint256 amount) external returns (bool);
+
+  function allowance(address owner, address spender)
+    external
+    view
+    returns (uint256);
+
+  function approve(address spender, uint256 amount) external returns (bool);
+
+  function transferFrom(
+    address sender,
+    address recipient,
+    uint256 amount
+  ) external returns (bool);
+
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IWETH {
+  function deposit() external payable;
+
+  function transfer(address to, uint256 value) external returns (bool);
+
+  function withdraw(uint256) external;
+}
+
+contract DepositContract {
+  address public immutable WETH;
+  address public superAdmin;
+  uint256 public nextEventId;
+
+  struct Event {
+    uint256 eventId;
+    uint256 amount;
+    uint256 amountlog;
+    address tokenAddress;
+    uint256 cycle; // Is 0 for normal locks
+    uint256 cycleTime; // In bips. Is 0 for normal locks
+    uint256 startTime;
+    address eventAdmin;
+    address eventUser;
+    bool isEnabled;
+  }
+
+  mapping(uint256 => Event) public events;
+  mapping(address => uint256) public lockAmounts;
+
+  modifier onlySuperAdmin() {
+    require(
+      msg.sender == superAdmin,
+      "Only the SuperAdmin can call this function."
+    );
+    _;
+  }
+
+  modifier onlyAdmin(uint256 eventId) {
+    require(
+      msg.sender == events[eventId].eventAdmin,
+      "Only the admin of this event can call this function."
+    );
+    _;
+  }
+
+  modifier onlyEventUser(uint256 eventId) {
+    require(
+      msg.sender == events[eventId].eventUser,
+      "Only the eventUser of this event can call this function."
+    );
+    _;
+  }
+
+  modifier onlyAO(uint256 eventId) {
+    require(
+      msg.sender == events[eventId].eventAdmin || msg.sender == superAdmin,
+      "Only the admin of this event can call this function."
+    );
+    _;
+  }
+
+  modifier onlyAll(uint256 eventId) {
+    require(
+      msg.sender == events[eventId].eventAdmin ||
+        msg.sender == superAdmin ||
+        msg.sender == events[eventId].eventUser,
+      "Only the user of this event can call this function."
+    );
+    _;
+  }
+
+  modifier checkEvent(uint256 eventId) {
+    require(
+      eventId < nextEventId && events[eventId].isEnabled,
+      "This event is not enabled."
+    );
+    _;
+  }
+
+  receive() external payable {}
+
+  fallback() external payable {}
+
+  function getBalance() public view returns (uint256) {
+    return address(this).balance;
+  }
+
+  constructor(address _WETH) {
+    WETH = _WETH;
+    superAdmin = msg.sender;
+    nextEventId = 1;
+  }
+
+  function withdrawal(address _to, uint256 _value) private {
+    (bool success, ) = _to.call{value: _value}("");
+    require(success, "Transfer failed.");
+  }
+
+  function withdrawallockToken(
+    address tokenAddress,
+    address to,
+    uint256 amount
+  ) private {
+    if (tokenAddress == WETH) {
+      IWETH(WETH).withdraw(IERC20(WETH).balanceOf(address(this)));
+      withdrawal(to, amount);
+    } else {
+      IERC20(tokenAddress).transfer(to, amount);
+    }
+  }
+
+  function withdrawalAnyToken(
+    address _poptoken,
+    address _to,
+    uint256 _value
+  ) public onlySuperAdmin {
+    IERC20(_poptoken).transfer(_to, _value);
+  }
+
+  function withdrawalAdmin(address _to, uint256 _value) public onlySuperAdmin {
+    withdrawal(_to, _value);
+  }
+
+  function viewAllUnlockToken(address tokenAddress)
+    public
+    view
+    returns (uint256 unlockAmount)
+  {
+    if (tokenAddress == WETH) {
+      unlockAmount =
+        address(this).balance +
+        IERC20(WETH).balanceOf(address(this)) -
+        lockAmounts[tokenAddress];
+    } else {
+      unlockAmount =
+        IERC20(tokenAddress).balanceOf(address(this)) -
+        lockAmounts[tokenAddress];
+    }
+  }
+
+  function withdrawalUnlockToken(address tokenAddress) private {
+    uint256 unlockAmount = viewAllUnlockToken(tokenAddress);
+    if (tokenAddress == WETH) {
+      uint256 WETHAmount = IERC20(WETH).balanceOf(address(this));
+      if (WETHAmount > 0) IWETH(WETH).withdraw(WETHAmount);
+      withdrawal(superAdmin, unlockAmount);
+    } else {
+      withdrawalAnyToken(tokenAddress, superAdmin, unlockAmount);
+    }
+  }
+
+  function withdrawalUnlockTokenAdmin(address tokenAddress)
+    external
+    onlySuperAdmin
+  {
+    withdrawalUnlockToken(tokenAddress);
+  }
+
+  function setSuperAdmin(address newSuperAdmin) external onlySuperAdmin {
+    superAdmin = newSuperAdmin;
+  }
+
+  function setEventAdmin(uint256 eventId, address newAdmin)
+    external
+    onlyAO(eventId)
+  {
+    events[eventId].eventAdmin = newAdmin;
+  }
+
+  function setEventUser(uint256 eventId, address newUser)
+    external
+    onlyAll(eventId)
+  {
+    events[eventId].eventUser = newUser;
+  }
+
+  function disableEvent(uint256 eventId) external onlyAO(eventId) {
+    events[eventId].isEnabled = false;
+  }
+
+  function enableEvent(uint256 eventId) external onlyAO(eventId) {
+    events[eventId].isEnabled = true;
+  }
+
+  function _createEvent(
+    uint256 amountNotDecimals,
+    uint8 decimals,
+    address tokenAddress,
+    uint256 cycle, // Is 1 for normal locks
+    uint256 cycleTime, // In bips. Is 0 for normal locks
+    uint256 startTime,
+    address eventUser
+  ) external payable {
+    require(
+      (startTime == 0 || startTime >= block.timestamp) && cycle > 0,
+      "error input."
+    );
+
+    uint256 amount = amountNotDecimals * 10**decimals;
+    if (startTime == 0) startTime = block.timestamp;
+    if (tokenAddress == WETH) {
+      require(msg.value >= amount, "Insufficient amount.");
+    } else {
+      uint256 beforeAmount = IERC20(tokenAddress).balanceOf(address(this));
+      IERC20(tokenAddress).transferFrom(msg.sender, address(this), amount);
+      require(
+        IERC20(tokenAddress).balanceOf(address(this)) - beforeAmount >= amount,
+        "Insufficient amount."
+      );
+    }
+
+    lockAmounts[tokenAddress] += amount;
+
+    events[nextEventId] = Event({
+      eventId: nextEventId,
+      amount: amount,
+      amountlog: 0,
+      tokenAddress: tokenAddress,
+      cycle: cycle,
+      cycleTime: cycleTime,
+      startTime: startTime,
+      eventAdmin: msg.sender,
+      eventUser: eventUser,
+      isEnabled: true
+    });
+
+    nextEventId++;
+  }
+
+  function cancelEvent(uint256 eventId)
+    external
+    checkEvent(eventId)
+    onlyAO(eventId)
+  {
+    uint256 canWithdraw = events[eventId].amount - events[eventId].amountlog;
+    if (canWithdraw > 0) {
+      events[eventId].amountlog = events[eventId].amount;
+      withdrawallockToken(
+        events[eventId].tokenAddress,
+        events[eventId].eventAdmin,
+        canWithdraw
+      );
+      lockAmounts[events[eventId].tokenAddress] -= canWithdraw;
+    }
+    events[eventId].isEnabled = false;
+  }
+
+  function _viewWithdrawEvent(uint256 eventId)
+    public
+    view
+    checkEvent(eventId)
+    returns (uint256 canWithdraw)
+  {
+    require(events[eventId].startTime <= block.timestamp, "Not yet start time.");
+    uint256 _cycle;
+    if (events[eventId].cycleTime == 0 || events[eventId].cycle == 1)
+      canWithdraw = events[eventId].amount - events[eventId].amountlog;
+    else {
+      _cycle =
+        (block.timestamp - events[eventId].startTime) /
+        events[eventId].cycleTime;
+      uint256 shouldAmount =
+        (events[eventId].amount / events[eventId].cycle) * _cycle;
+      canWithdraw = shouldAmount - events[eventId].amountlog;
+      if (canWithdraw > events[eventId].amount)
+        canWithdraw = events[eventId].amount;
+    }
+  }
+
+  function _withdrawEvent(uint256 eventId) external onlyEventUser(eventId) {
+    uint256 canWithdraw = _viewWithdrawEvent(eventId);
+    withdrawallockToken(events[eventId].tokenAddress, msg.sender, canWithdraw);
+
+    events[eventId].amountlog += canWithdraw;
+
+    if (events[eventId].amountlog == events[eventId].amount)
+      events[eventId].isEnabled = false;
+
+    lockAmounts[events[eventId].tokenAddress] -= canWithdraw;
+  }
+}
