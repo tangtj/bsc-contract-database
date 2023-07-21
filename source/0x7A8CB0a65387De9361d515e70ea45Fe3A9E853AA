@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IToken {
+    function totalSupply() external view returns(uint256);
+    function balanceOf(address account) external view returns(uint256);
+    function transfer(address recipient, uint256 amount) external returns(bool);
+}
+
+contract AngryBullPresale {
+    address public admin;
+    IToken public token;
+    uint256 public rate; // Tokens per BNB
+    uint256 public totalTokens; // Total tokens available for presale
+    uint256 public totalBNB; // Total BNB raised during presale
+    bool public isPresaleActive;
+
+    mapping(address => uint256) public presaleBalances;
+
+    event TokensPurchased(address indexed buyer, uint256 amount);
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "Only the admin can call this function");
+        _;
+    }
+
+    modifier isActivePresale() {
+        require(isPresaleActive, "Presale is not active");
+        _;
+    }
+
+    constructor(
+        address _tokenAddress,
+        uint256 _rate,
+        uint256 _totalTokens
+    ) {
+        admin = msg.sender;
+        token = IToken(_tokenAddress);
+        rate = _rate;
+        totalTokens = _totalTokens;
+        isPresaleActive = true;
+    }
+
+    // Function to start the presale
+    function startPresale() external onlyAdmin {
+        require(isPresaleActive == false, "Presale is already active");
+        isPresaleActive = true;
+    }
+
+    // Function to end the presale
+    function endPresale() external onlyAdmin {
+        require(isPresaleActive == true, "Presale is already ended");
+        isPresaleActive = false;
+    }
+
+    // Function to purchase tokens during the presale
+    function purchaseTokens() external payable isActivePresale {
+        uint256 bnbAmount = msg.value;
+        uint256 tokensToPurchase = bnbAmount * rate;
+
+        require(tokensToPurchase > 0, "Insufficient BNB sent");
+
+        require(totalTokens >= tokensToPurchase, "Not enough tokens available for purchase");
+
+        // Transfer tokens to the buyer
+        token.transfer(msg.sender, tokensToPurchase);
+
+        // Update balances and totals
+        presaleBalances[msg.sender] += bnbAmount;
+        totalTokens -= tokensToPurchase;
+        totalBNB += bnbAmount;
+
+        emit TokensPurchased(msg.sender, tokensToPurchase);
+    }
+
+    // Function to withdraw BNB from the presale after it ends
+    function withdrawBNB() external onlyAdmin {
+        require(isPresaleActive == false, "Presale is still active");
+        require(totalBNB > 0, "No BNB available for withdrawal");
+
+        uint256 amountToWithdraw = totalBNB;
+        totalBNB = 0;
+        payable(admin).transfer(amountToWithdraw);
+    }
+
+    // Function to withdraw any unsold tokens back to the admin
+    function withdrawUnsoldTokens() external onlyAdmin {
+        require(isPresaleActive == false, "Presale is still active");
+
+        uint256 unsoldTokens = token.balanceOf(address(this));
+        token.transfer(admin, unsoldTokens);
+    }
+
+    // Function to check the contract balance of the AngryBull token
+    function getTokenBalance() external view returns (uint256) {
+        return token.balanceOf(address(this));
+    }
+}

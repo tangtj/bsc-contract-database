@@ -1,0 +1,147 @@
+
+// File: Bluofc.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IBUSD {
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    // Outras funções específicas do contrato do token BUSD da Binance Smart Chain, se existirem
+}
+
+contract BluesevenInvestment {
+    address private owner;
+    address private partner;
+    uint256 private totalInvested;
+    uint256 private constant MIN_INVESTMENT = 5 ether; // Investimento mínimo é de 5 BUSD
+    uint256 private constant INTEREST_RATE = 1; // 1% ao dia de juros
+    uint256 private constant WEEK_IN_SECONDS = 1 weeks;
+    uint256 private constant LOTTERY_INTERVAL = 1 weeks;
+    uint256 private constant LOTTERY_DIGITS = 5;
+    uint256 private constant MIN_LOTTERY_INVESTMENT = 200 ether; // Investimento mínimo para participar da loteria é de 200 BUSD
+    uint256 private constant REFERRAL_BONUS_RATE = 3; // 3% de bônus para referência
+    uint256 private constant CUSTOM_LINK_BONUS_RATE = 10; // bônus para links personalizados
+
+    IBUSD private busd;
+    mapping(address => Investor) private investors;
+
+    uint256 private busdBalance; // Saldo total de BUSD no contrato
+
+    struct Investor {
+        uint256 investedAmount;
+        uint256 lastDepositTimestamp;
+        uint256 lastWithdrawalTimestamp;
+        uint256 referralBonus;
+        uint256 lotteryNumber;
+    }
+
+    event Deposit(address indexed investor, uint256 amount);
+    event Withdrawal(address indexed investor, uint256 amount);
+    event LotteryWinner(address indexed investor, uint256 lotteryNumber);
+    event TransferToTelegram(string message);
+
+    constructor(address _busdAddress, address _partner) {
+        owner = msg.sender;
+        partner = _partner;
+        busd = IBUSD(_busdAddress);
+    }
+
+    modifier onlyOwnerOrPartner() {
+        require(msg.sender == owner || msg.sender == partner, "Only owner or partner can perform this action.");
+        _;
+    }
+
+    modifier onlyOnSaturday() {
+        require((block.timestamp % 1 weeks) == 6 days, "Withdrawals are only allowed on Saturdays.");
+        _;
+    }
+
+    function invest(uint256 amount) external {
+        require(amount >= MIN_INVESTMENT, "Minimum investment amount not reached.");
+
+        uint256 lotteryNumber = 0;
+        if (amount >= MIN_LOTTERY_INVESTMENT) {
+            lotteryNumber = generateLotteryNumber();
+        }
+
+        investors[msg.sender] = Investor({
+            investedAmount: amount,
+            lastDepositTimestamp: block.timestamp,
+            lastWithdrawalTimestamp: block.timestamp,
+            referralBonus: 0,
+            lotteryNumber: lotteryNumber
+        });
+
+        totalInvested += amount;
+
+        // Transfira os fundos de BUSD do investidor para o contrato
+        require(busd.transferFrom(msg.sender, address(this), amount), "Failed to transfer BUSD.");
+
+        // Atualize o saldo total de BUSD no contrato
+        busdBalance += amount;
+
+        emit Deposit(msg.sender, amount);
+    }
+
+    function generateLotteryNumber() private view returns (uint256) {
+        return uint256(keccak256(abi.encodePacked(block.timestamp, msg.sender))) % (10 ** LOTTERY_DIGITS);
+    }
+
+    function calculateProfit(address investorAddress) private view returns (uint256) {
+        Investor memory investor = investors[investorAddress];
+        uint256 timeDiff = block.timestamp - investor.lastDepositTimestamp;
+        uint256 dailyProfit = (investor.investedAmount * INTEREST_RATE) / 100;
+        uint256 totalProfit = (timeDiff / WEEK_IN_SECONDS) * dailyProfit * 5; // Multiplicado por 5 dias úteis (segunda a sexta)
+        return totalProfit;
+    }
+
+    function withdrawProfit() external onlyOnSaturday {
+        Investor storage investor = investors[msg.sender];
+        require(investor.investedAmount > 0, "No investment found.");
+
+        uint256 profit = calculateProfit(msg.sender);
+        require(profit > 0, "No profit available for withdrawal.");
+
+        // Atualiza o timestamp do último saque para o momento atual
+        investor.lastWithdrawalTimestamp = block.timestamp;
+
+        // Transfere os lucros para o investidor
+        require(busd.transfer(msg.sender, profit), "Failed to transfer profit.");
+
+        emit Withdrawal(msg.sender, profit);
+    }
+
+    // Função para permitir que o proprietário e o sócio possam sacar os fundos de BUSD do contrato
+    function withdrawFunds() external onlyOwnerOrPartner {
+        uint256 contractBalance = busdBalance;
+        require(contractBalance > 0, "No funds available for withdrawal.");
+        require(busd.transfer(owner, contractBalance), "Failed to transfer BUSD.");
+
+        // Reduza o saldo total de BUSD no contrato após o saque
+        busdBalance = 0;
+    }
+
+    // Função adicional para verificar o saldo disponível de BUSD no contrato
+    function getContractBalance() external view onlyOwnerOrPartner returns (uint256) {
+        return busdBalance;
+    }
+
+    // Função para gerar um link de indicação com o endereço do investidor
+    function getReferralLink(address investorAddress) external pure returns (string memory) {
+    bytes32 hash = keccak256(abi.encodePacked(investorAddress));
+    string memory baseLink = "https://example.com/referral?ref=";
+    return string(abi.encodePacked(baseLink, toAsciiString(hash)));
+}
+
+
+function toAsciiString(bytes32 data) private pure returns (string memory) {
+    bytes memory s = new bytes(64);
+    for (uint i = 0; i < 32; i++) {
+        uint8 b = uint8(data[i]);
+        s[i * 2] = bytes1(uint8(b / 16 + 48));
+        s[i * 2 + 1] = bytes1(uint8(b % 16 + 48));
+    }
+    return string(s);
+}
+
+}

@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract AngryBull {
+    string public name = "AngryBull";
+    string public symbol = "ABULL";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 42000000000 * 10**uint256(decimals);
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public isBlacklisted;
+
+    address public burnAddress = 0x000000000000000000000000000000000000dEaD;
+    address public devTaxAddress = address(0); // Change this to the actual dev tax address
+    address public liquidityPoolAddress = address(0); // Change this to the actual liquidity pool address
+
+    uint256 public burnTaxPercent = 1; // 1% of each transfer will be burned
+    uint256 public liquidityTaxPercent = 1; // 1% of each transfer will be added to the liquidity pool
+    uint256 public devTaxPercent = 1; // 1% of each transfer will go to dev tax wallet
+
+    address payable private contractOwner; // Change the data type to address payable
+    bool public paused = false;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Burn(address indexed from, uint256 value);
+    event DevTax(address indexed from, uint256 value);
+    event LiquidityPoolUpdated(address indexed oldLiquidityPool, address indexed newLiquidityPool);
+    event Burned(address indexed burner, uint256 value);
+    event Minted(address indexed to, uint256 value);
+    event Paused(bool status);
+    event Blacklisted(address indexed wallet);
+    event Unblacklisted(address indexed wallet);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event DecimalsChanged(uint8 previousDecimals, uint8 newDecimals);
+    event NameChanged(string previousName, string newName);
+    event SymbolChanged(string previousSymbol, string newSymbol);
+
+    modifier onlyOwner() {
+        require(msg.sender == contractOwner, "Only the contract owner can call this function");
+        _;
+    }
+
+    modifier whenNotPaused() {
+        require(!paused, "Token transfers are currently paused");
+        _;
+    }
+
+    constructor() {
+        contractOwner = payable(msg.sender);
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    function transfer(address to, uint256 value) external whenNotPaused returns (bool) {
+        require(to != address(0), "Invalid recipient address");
+        require(!isBlacklisted[msg.sender], "Sender is blacklisted");
+        require(!isBlacklisted[to], "Recipient is blacklisted");
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+
+        uint256 burnAmount = (value * burnTaxPercent) / 100;
+        uint256 liquidityTaxAmount = (value * liquidityTaxPercent) / 100;
+        uint256 devTaxAmount = (value * devTaxPercent) / 100;
+        uint256 transferAmount = value - burnAmount - liquidityTaxAmount - devTaxAmount;
+
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += transferAmount;
+        balanceOf[burnAddress] += burnAmount;
+        balanceOf[liquidityPoolAddress] += liquidityTaxAmount;
+        balanceOf[devTaxAddress] += devTaxAmount;
+
+        emit Transfer(msg.sender, to, transferAmount);
+        emit Transfer(msg.sender, burnAddress, burnAmount);
+        emit Transfer(msg.sender, liquidityPoolAddress, liquidityTaxAmount);
+        emit Transfer(msg.sender, devTaxAddress, devTaxAmount);
+
+        return true;
+    }
+
+    function approve(address spender, uint256 value) external whenNotPaused returns (bool) {
+        require(spender != address(0), "Invalid spender address");
+        require(!isBlacklisted[spender], "Spender is blacklisted");
+
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function setLiquidityPool(address newLiquidityPool) external onlyOwner {
+        require(newLiquidityPool != address(0), "Invalid liquidity pool address");
+        emit LiquidityPoolUpdated(liquidityPoolAddress, newLiquidityPool);
+        liquidityPoolAddress = newLiquidityPool;
+    }
+
+    function setDevTaxAddress(address _devTaxAddress) external onlyOwner {
+        require(_devTaxAddress != address(0), "Invalid dev tax address");
+        devTaxAddress = _devTaxAddress;
+    }
+
+    function setBurnTaxPercent(uint256 _burnTaxPercent) external onlyOwner {
+        burnTaxPercent = _burnTaxPercent;
+    }
+
+    function setLiquidityTaxPercent(uint256 _liquidityTaxPercent) external onlyOwner {
+        liquidityTaxPercent = _liquidityTaxPercent;
+    }
+
+    function setDevTaxPercent(uint256 _devTaxPercent) external onlyOwner {
+        devTaxPercent = _devTaxPercent;
+    }
+
+    function burn(uint256 value) external onlyOwner {
+        require(value <= balanceOf[msg.sender], "Insufficient balance for burning");
+        require(value > 0, "Cannot burn zero tokens");
+
+        balanceOf[msg.sender] -= value;
+        totalSupply -= value;
+
+        emit Burned(msg.sender, value);
+    }
+
+    function mint(address to, uint256 value) external onlyOwner {
+        require(to != address(0), "Invalid recipient address");
+        require(value > 0, "Cannot mint zero tokens");
+
+        balanceOf[to] += value;
+        totalSupply += value;
+
+        emit Minted(to, value);
+        emit Transfer(address(0), to, value);
+    }
+
+    function pause(bool _paused) external onlyOwner {
+        paused = _paused;
+        emit Paused(paused);
+    }
+
+    function blacklistWallet(address wallet) external onlyOwner {
+        require(wallet != address(0), "Invalid wallet address");
+        isBlacklisted[wallet] = true;
+        emit Blacklisted(wallet);
+    }
+
+    function unblacklistWallet(address wallet) external onlyOwner {
+        require(wallet != address(0), "Invalid wallet address");
+        isBlacklisted[wallet] = false;
+        emit Unblacklisted(wallet);
+    }
+
+    function setBurnAddress(address newBurnAddress) external onlyOwner {
+        require(newBurnAddress != address(0), "Invalid burn address");
+        burnAddress = newBurnAddress;
+    }
+
+    function emergencyWithdraw() external onlyOwner {
+        uint256 contractBalance = address(this).balance;
+        require(contractBalance > 0, "No funds available for withdrawal");
+        contractOwner.transfer(contractBalance);
+    }
+
+    function emergencyPause() external onlyOwner {
+        paused = true;
+        emit Paused(true);
+    }
+
+    function renounceOwnership() external onlyOwner {
+        emit OwnershipTransferred(contractOwner, address(0));
+        contractOwner = payable(address(0));
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Invalid new owner address");
+        emit OwnershipTransferred(contractOwner, newOwner);
+        contractOwner = payable(newOwner);
+    }
+
+    function changeDecimals(uint8 newDecimals) external onlyOwner {
+        require(newDecimals != decimals, "Decimals are already set to this value");
+        emit DecimalsChanged(decimals, newDecimals);
+        decimals = newDecimals;
+    }
+
+    function changeName(string memory newName) external onlyOwner {
+        require(bytes(newName).length > 0, "Name cannot be empty");
+        emit NameChanged(name, newName);
+        name = newName;
+    }
+
+    function changeSymbol(string memory newSymbol) external onlyOwner {
+        require(bytes(newSymbol).length > 0, "Symbol cannot be empty");
+        emit SymbolChanged(symbol, newSymbol);
+        symbol = newSymbol;
+    }
+}

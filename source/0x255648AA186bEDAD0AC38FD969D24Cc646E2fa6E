@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract StarVerse {
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+    uint256 private _totalSupply;
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    uint256 private _modifiableTax;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event ModifiableTaxUpdated(uint256 newTax);
+    event Burn(address indexed from, uint256 value);
+
+    constructor(string memory tokenName, string memory tokenSymbol, uint8 tokenDecimals) {
+        name = tokenName;
+        symbol = tokenSymbol;
+        decimals = tokenDecimals;
+        uint256 initialSupply = 100000000000 * (10**uint256(decimals)); // 100 billion tokens with specified decimals
+        _totalSupply = initialSupply;
+        _balances[msg.sender] = initialSupply;
+        _modifiableTax = 3; // 3% tax
+
+        emit Transfer(address(0), msg.sender, initialSupply);
+    }
+
+    function totalSupply() public view returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return _balances[account];
+    }
+
+    function modifiableTax() public view returns (uint256) {
+        return _modifiableTax;
+    }
+
+    function setModifiableTax(uint256 newTax) external {
+        require(newTax <= 100, "Tax percentage cannot exceed 100%");
+        _modifiableTax = newTax;
+
+        emit ModifiableTaxUpdated(newTax);
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        require(amount > 0, "Amount must be greater than zero");
+        require(_balances[msg.sender] >= amount, "Insufficient balance");
+
+        uint256 taxAmount = (amount * _modifiableTax) / 100;
+        uint256 transferAmount = amount - taxAmount;
+
+        _balances[msg.sender] -= amount;
+        _balances[recipient] += transferAmount;
+        _balances[address(this)] += taxAmount;
+
+        emit Transfer(msg.sender, recipient, transferAmount);
+        emit Transfer(msg.sender, address(this), taxAmount);
+
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+        require(amount > 0, "Amount must be greater than zero");
+        require(_balances[sender] >= amount, "Insufficient balance");
+        require(_allowances[sender][msg.sender] >= amount, "Insufficient allowance");
+
+        uint256 taxAmount = (amount * _modifiableTax) / 100;
+        uint256 transferAmount = amount - taxAmount;
+
+        _balances[sender] -= amount;
+        _balances[recipient] += transferAmount;
+        _balances[address(this)] += taxAmount;
+        _allowances[sender][msg.sender] -= amount;
+
+        emit Transfer(sender, recipient, transferAmount);
+        emit Transfer(sender, address(this), taxAmount);
+        emit Approval(sender, msg.sender, _allowances[sender][msg.sender]);
+
+        return true;
+    }
+
+    function burn(uint256 amount) external returns (bool) {
+        require(amount > 0, "Amount must be greater than zero");
+        require(_balances[msg.sender] >= amount, "Insufficient balance");
+
+        _balances[msg.sender] -= amount;
+        _totalSupply -= amount;
+
+        emit Burn(msg.sender, amount);
+        emit Transfer(msg.sender, address(0), amount);
+
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+
+        emit Approval(msg.sender, spender, amount);
+
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+}

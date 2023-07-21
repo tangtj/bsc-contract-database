@@ -1,0 +1,201 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract MemeToken {
+    string public name = "The Wagner Group";
+    string public symbol = "Wagner Group";
+    uint8 public decimals = 18;
+    uint256 public totalSupply;
+    uint256 private constant INITIAL_SUPPLY = 400000000000000000000000000000; // 400 quadrillion tokens
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) private isExcludedFromFee;
+    address[] private _excluded;
+
+    // Fee percentages
+    uint256 public constant sellDexTokenFee = 500; // 5% (divided by 10000)
+    uint256 public constant sellDexTokenCharityFee = 125;       // 1.25% (divided by 10000)
+    uint256 public constant sellDexTokenMarketingFee = 125;     // 1.25% (divided by 10000)
+    uint256 public constant sellDexTokenBurningFee = 10;       // 0.10% (divided by 10000)
+    uint256 public constant sellDexTokenDeveloperFee = 25;      // 0.25% (divided by 10000)
+    uint256 public constant sellDexTokenMarketingPoolFee = 100; // 1.00% (divided by 10000)
+    uint256 public constant sellDexTokenSharedHoldersFee = 115; // 1.15% (divided by 10000)
+
+    uint256 public constant buyDexTokenFee = 100; // 1% (divided by 10000)
+    uint256 public constant buyDexTokenCharityFee = 50;    // 0.50% (divided by 10000)
+    uint256 public constant buyDexTokenMarketingFee = 10;  // 0.10% (divided by 10000)
+    uint256 public constant buyDexTokenBurningFee = 5;     // 0.05% (divided by 10000)
+    uint256 public constant buyDexTokenSharedHoldersFee = 35; // 0.35% (divided by 10000)
+
+    uint256 public constant transferTokenFee = 5; // 0.05% (divided by 10000)
+    uint256 public constant transferTokenBurningFee = 1;       // 0.01% (divided by 10000)
+    uint256 public constant transferTokenCharityFee = 39;      // 0.39% (divided by 10000)
+    uint256 public constant transferTokenMarketingFee = 10;    // 0.10% (divided by 10000)
+    uint256 public constant transferTokenSharedHoldersFee = 10; // 0.10% (divided by 10000)
+
+    uint256 public constant distributionInterval = 3 days; // Distribution interval every 3 days
+    uint256 public lastDistributionTime; // Time of last token allocation
+
+    address public charityWallet = 0xD14F9Bcd6f1DB4461A81b7fb4D2551A241d1979d;
+    address public marketingWallet = 0xD14F9Bcd6f1DB4461A81b7fb4D2551A241d1979d;
+    address public burningWallet = 0x000000000000000000000000000000000000dEaD;
+    address public developerWallet = 0xD14F9Bcd6f1DB4461A81b7fb4D2551A241d1979d;
+    address public marketingPoolWallet = 0xD14F9Bcd6f1DB4461A81b7fb4D2551A241d1979d;
+    address public sharedHoldersWallet = 0xD14F9Bcd6f1DB4461A81b7fb4D2551A241d1979d;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event TokensDistributed(address indexed holder, uint256 amount);
+
+    constructor() {
+        totalSupply = INITIAL_SUPPLY;
+        balanceOf[msg.sender] = totalSupply;
+
+       // Exclude certain addresses from commissions (e.g. contract addresses)
+        isExcludedFromFee[msg.sender] = true;
+        isExcludedFromFee[address(this)] = true;
+        isExcludedFromFee[charityWallet] = true;
+        isExcludedFromFee[marketingWallet] = true;
+        isExcludedFromFee[burningWallet] = true;
+        isExcludedFromFee[developerWallet] = true;
+        isExcludedFromFee[marketingPoolWallet] = true;
+        isExcludedFromFee[sharedHoldersWallet] = true;
+
+        _excluded.push(msg.sender);
+        _excluded.push(address(this));
+        _excluded.push(charityWallet);
+        _excluded.push(marketingWallet);
+        _excluded.push(burningWallet);
+        _excluded.push(developerWallet);
+        _excluded.push(marketingPoolWallet);
+        _excluded.push(sharedHoldersWallet);
+    }
+
+    function calculateTotalFees() public view returns (uint256) {
+        return balanceOf[charityWallet] + balanceOf[marketingWallet] + balanceOf[burningWallet] +
+               balanceOf[developerWallet] + balanceOf[marketingPoolWallet] + balanceOf[sharedHoldersWallet];
+    }
+
+    function isExcluded(address account) external view returns (bool) {
+        return isExcludedFromFee[account];
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) private {
+        uint256 feeAmount;
+        if (msg.sender == address(this)) {
+            feeAmount = amount * sellDexTokenFee / 10000;
+        } else if (sender == address(this)) {
+            feeAmount = amount * buyDexTokenFee / 10000;
+        } else {
+            feeAmount = amount * transferTokenFee / 10000;
+        }
+
+        // Calculate the amount to distribute to each wallet
+        uint256 charityAmount;
+        uint256 marketingAmount;
+        uint256 burningAmount;
+        uint256 developerAmount;
+        uint256 marketingPoolAmount;
+        uint256 sharedHoldersAmount;
+
+        if (msg.sender == address(this)) {
+            // Продажа на DEX Token Exchange
+            charityAmount = feeAmount * sellDexTokenCharityFee / sellDexTokenFee;
+            marketingAmount = feeAmount * sellDexTokenMarketingFee / sellDexTokenFee;
+            burningAmount = feeAmount * sellDexTokenBurningFee / sellDexTokenFee;
+            developerAmount = feeAmount * sellDexTokenDeveloperFee / sellDexTokenFee;
+            marketingPoolAmount = feeAmount * sellDexTokenMarketingPoolFee / sellDexTokenFee;
+            sharedHoldersAmount = feeAmount * sellDexTokenSharedHoldersFee / sellDexTokenFee;
+        } else if (sender == address(this)) {
+            // Покупка на DEX Token Exchange
+            burningAmount = feeAmount * buyDexTokenBurningFee / buyDexTokenFee;
+            sharedHoldersAmount = feeAmount * buyDexTokenSharedHoldersFee / buyDexTokenFee;
+            charityAmount = feeAmount * buyDexTokenCharityFee / buyDexTokenFee;
+            marketingAmount = feeAmount * buyDexTokenMarketingFee / buyDexTokenFee;
+        } else {
+            // Transfer tokens between users
+            burningAmount = feeAmount * transferTokenBurningFee / transferTokenFee;
+            sharedHoldersAmount = feeAmount * transferTokenSharedHoldersFee / transferTokenFee;
+            charityAmount = feeAmount * transferTokenCharityFee / transferTokenFee;
+            marketingAmount = feeAmount * transferTokenMarketingFee / transferTokenFee;
+        }
+
+        // Exclude commissions from the transfer amount
+        uint256 transferAmount = amount - feeAmount;
+
+        // Transfer tokens
+        balanceOf[sender] -= amount;
+        balanceOf[recipient] += transferAmount;
+
+        // Allocate commissions
+        balanceOf[charityWallet] += charityAmount;
+        balanceOf[marketingWallet] += marketingAmount;
+        balanceOf[burningWallet] += burningAmount;
+        balanceOf[developerWallet] += developerAmount;
+        balanceOf[marketingPoolWallet] += marketingPoolAmount;
+        balanceOf[sharedHoldersWallet] += sharedHoldersAmount;
+
+        emit Transfer(sender, recipient, transferAmount);
+        emit Transfer(sender, charityWallet, charityAmount);
+        emit Transfer(sender, marketingWallet, marketingAmount);
+        emit Transfer(sender, burningWallet, burningAmount);
+        emit Transfer(sender, developerWallet, developerAmount);
+        emit Transfer(sender, marketingPoolWallet, marketingPoolAmount);
+        emit Transfer(sender, sharedHoldersWallet, sharedHoldersAmount);
+    }
+
+    function transfer(address recipient, uint256 amount) public returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) public returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public returns (bool) {
+    require(allowance[sender][msg.sender] >= amount, "Allowance exceeded");
+
+        allowance[sender][msg.sender] -= amount;
+        _transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function excludeFromFee(address account) external {
+        require(msg.sender == charityWallet || msg.sender == marketingWallet, "Only charity and marketing wallets can perform this action");
+        isExcludedFromFee[account] = true;
+        _excluded.push(account);
+    }
+
+    function includeInFee(address account) external {
+        require(msg.sender == charityWallet || msg.sender == marketingWallet, "Only charity and marketing wallets can perform this action");
+        isExcludedFromFee[account] = false;
+        for (uint256 i = 0; i < _excluded.length; i++) {
+            if (_excluded[i] == account) {
+                _excluded[i] = _excluded[_excluded.length - 1];
+                _excluded.pop();
+                break;
+            }
+        }
+    }
+
+    function distributeToHolders() external {
+        require(block.timestamp >= lastDistributionTime + distributionInterval, "The allocation interval has not yet expired");
+        uint256 totalFeesAmount = calculateTotalFees();
+        uint256 holdersCount = _excluded.length;
+        uint256 amountPerHolder = totalFeesAmount / holdersCount;
+
+        for (uint256 i = 0; i < holdersCount; i++) {
+            address holder = _excluded[i];
+            if (holder != address(0)) {
+                balanceOf[holder] += amountPerHolder;
+                emit TokensDistributed(holder, amountPerHolder);
+            }
+        }
+
+        lastDistributionTime = block.timestamp;
+    }
+}

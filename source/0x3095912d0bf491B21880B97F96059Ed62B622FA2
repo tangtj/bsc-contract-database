@@ -1,0 +1,247 @@
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity 0.8.18;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint);
+    function balanceOf(address account) external view returns (uint);
+    function transfer(address recipient, uint amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint);
+    function approve(address spender, uint amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
+}
+contract Context {
+    constructor() {}
+    function _msgSender() internal view returns (address payable) {
+        return payable (msg.sender);
+    }
+    function _msgData() internal view returns (bytes memory) {
+        this; 
+        return msg.data;
+    }
+}
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+        return c;
+    }
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        return c;
+    }
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+contract Ownable is Context {
+    address private _owner;
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+    constructor() {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+    function owner() public view returns (address) {
+        return _owner;
+    }
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+    function renounceOwnership() public onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+    function transferOwnership(address newOwner) public onlyOwner {
+        _transferOwnership(newOwner);
+    }
+    function _transferOwnership(address newOwner) internal {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract Gli_Lock is Context, Ownable {
+    uint MIN_LOCK = 10;
+    uint MAX_LOCK = 10000;
+
+    uint time_1M = 2592000;
+    uint time_2M = 5184000;
+    uint time_3M = 7776000;
+    
+    uint reward_ratio_1m = 500;
+    uint reward_ratio_2m = 1100;
+    uint reward_ratio_3m = 1700;
+
+    IERC20 GLI_TOKEN;
+
+    struct LockedUser {
+        address addr;
+        uint lock_type;
+        uint lock_time;
+        uint lock_amount;
+        uint lock_reward;
+        bool is_locked;
+    }
+
+    mapping (address => LockedUser) locked_user_data;
+
+    modifier ValidateLockType(uint lock_type) {
+        require(lock_type == 1 || lock_type == 2 || lock_type == 3, "Error: Invalid lock type.");
+        _;
+    }
+    modifier ValidateLockAmount(uint lock_amount) {
+        require(lock_amount >= MIN_LOCK, "Error: Please lock at least: 10 GLI");
+        require(lock_amount <= MAX_LOCK, "Error: Please lock at most: 10.000 GLI");
+        _;
+    }
+
+    constructor(IERC20 _gli_address) {
+        GLI_TOKEN = _gli_address;
+    }
+
+    function lockGli(uint _amount, uint _lockType) ValidateLockType(_lockType) ValidateLockAmount(_amount) external {
+        address senderAddr = _msgSender();
+        LockedUser memory currentUser = locked_user_data[senderAddr];
+
+        require(currentUser.is_locked == false, "Error: User already locked.");
+
+        uint expiryTime = calculateTime(_lockType);       
+        uint userReward = calculateReward(_lockType, _amount);
+
+
+        locked_user_data[senderAddr] = LockedUser({
+            addr: senderAddr,
+            lock_type: _lockType,
+            lock_amount: _amount,
+            lock_time: expiryTime,
+            lock_reward: userReward,
+            is_locked: true            
+        });
+
+        require(GLI_TOKEN.transferFrom(senderAddr, address(this), _amount*(10**9)), "Transaction Error: Can not lock GLI Tokens.");
+    }
+    function unlockGli() external {
+       address currentUsrAddr = _msgSender();
+       LockedUser memory currentUser = locked_user_data[currentUsrAddr];
+        
+       uint lockAmount = currentUser.lock_amount;
+       uint lockReward = currentUser.lock_reward;
+       uint lockTime = currentUser.lock_time;
+
+       require(currentUser.is_locked == true, "Error: User already unlocked.");
+       require(lockTime < block.timestamp, "Error: Lock time is not expired yet.");
+       require(lockAmount >= MIN_LOCK, "Error: You don't have any locked tokens.");
+       require(lockReward == 0, "Error: User already unlocked.");
+
+        locked_user_data[currentUsrAddr].lock_time = 0;
+        locked_user_data[currentUsrAddr].lock_amount = 0;
+        locked_user_data[currentUsrAddr].is_locked = false;
+
+       require( GLI_TOKEN.transfer(currentUsrAddr, lockAmount*(10**9)), "Error: Can not unlock GLI Tokens.");
+    
+    }
+    function getUser(address _user_addr) external view returns (LockedUser memory) {
+       LockedUser memory user = locked_user_data[_user_addr];
+        return user;
+    }
+    // utils
+    function calculateReward(uint _lock_type, uint _lock_amount) public view returns(uint){
+        if(_lock_type == 1) {
+            return (_lock_amount*reward_ratio_1m)/240;
+        } 
+        else if(_lock_type == 2) {
+            return (_lock_amount*reward_ratio_2m)/240;
+        }
+        else if(_lock_type == 3) {
+            return (_lock_amount*reward_ratio_3m)/240;
+        }
+        else {
+            revert("Error: Invalid lock type when unlocking the tokens.");
+        }
+    }
+    function calculateTime(uint _lock_type) public view returns(uint){
+        if(_lock_type == 1) {
+            return (block.timestamp + time_1M);
+        } 
+        else if(_lock_type == 2) {
+            return (block.timestamp + time_2M);
+        }
+        else if(_lock_type == 3) {
+            return (block.timestamp + time_3M);
+        }
+        else {
+            revert("Error: Invalid lock type when locking the tokens.");
+        }
+    }
+    // owner
+    function setMinLock(uint _new_min) external onlyOwner {
+        MIN_LOCK = _new_min;
+    }
+    function setMaxLock(uint _new_max) external onlyOwner {
+        MAX_LOCK = _new_max;
+    }
+    function setRewardRatio1M(uint _new_rew_rat) external onlyOwner {
+        reward_ratio_1m = _new_rew_rat;
+    }
+    function setRewardRatio2M(uint _new_rew_rat) external onlyOwner {
+        reward_ratio_2m = _new_rew_rat;
+    }
+    function setRewardRatio3M(uint _new_rew_rat) external onlyOwner {
+        reward_ratio_3m = _new_rew_rat;
+    }
+    function withdrawAllTokens(address _token_addr, uint _token_amount, address _dest_addr) external  onlyOwner {
+        IERC20 newToken = IERC20(_token_addr);
+        address payable destinationAddr = payable(_dest_addr);
+        require(newToken.transfer(destinationAddr, _token_amount),"Error: Can not get all the tokens");
+    }
+    function setLockTokenAddress(address _lock_token_address) external onlyOwner {
+        GLI_TOKEN = IERC20(_lock_token_address);
+    }
+}
