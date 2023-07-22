@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract PepeChain {
+    string public name = "Pepe Chain";
+    string public symbol = "PC";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 420000000000 * (10**uint256(decimals));
+
+    address public owner = 0x90F406c554E0084361eb2825a7fdc303d175111a;
+    uint256 public liquidityLockDuration = 30 days;
+    uint256 public liquidityLockExpiration;
+    uint256 public liquidityUnlockAmount = totalSupply / 10; // 10% liquidity unlock
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event BuyTax(address indexed buyer, uint256 amount);
+    event SellTax(address indexed seller, uint256 amount);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "You are not the owner");
+        _;
+    }
+
+    constructor() {
+        balanceOf[owner] = totalSupply;
+        liquidityLockExpiration = block.timestamp + liquidityLockDuration;
+    }
+
+    function transfer(address to, uint256 value) external returns (bool) {
+        require(to != address(0), "Invalid recipient");
+        require(value > 0, "Invalid amount");
+
+        uint256 senderBalance = balanceOf[msg.sender];
+        require(senderBalance >= value, "Insufficient balance");
+
+        balanceOf[msg.sender] = senderBalance - value;
+        balanceOf[to] += value;
+
+        emit Transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) external returns (bool) {
+        require(spender != address(0), "Invalid spender");
+
+        allowance[msg.sender][spender] = value;
+
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) external returns (bool) {
+        require(from != address(0), "Invalid sender");
+        require(to != address(0), "Invalid recipient");
+        require(value > 0, "Invalid amount");
+
+        uint256 senderBalance = balanceOf[from];
+        require(senderBalance >= value, "Insufficient balance");
+
+        uint256 allowedAmount = allowance[from][msg.sender];
+        require(allowedAmount >= value, "Allowance exceeded");
+
+        balanceOf[from] = senderBalance - value;
+        balanceOf[to] += value;
+        allowance[from][msg.sender] = allowedAmount - value;
+
+        emit Transfer(from, to, value);
+        return true;
+    }
+
+    function buyTax(uint256 amount) internal pure returns (uint256) {
+        return amount / 100; // 購買稅 1%
+    }
+
+    function sellTax(uint256 amount) internal pure returns (uint256) {
+        return amount / 100; // 販賣稅 1%
+    }
+
+    function buyTokens(uint256 amount) external payable returns (bool) {
+        require(msg.value >= amount, "Insufficient BNB");
+        uint256 purchaseTax = buyTax(amount);
+        uint256 netValue = amount - purchaseTax;
+        balanceOf[owner] += purchaseTax;
+        balanceOf[msg.sender] += netValue;
+        emit BuyTax(msg.sender, purchaseTax);
+        emit Transfer(owner, msg.sender, netValue);
+        return true;
+    }
+
+    function sellTokens(uint256 amount) external returns (bool) {
+        uint256 sellerBalance = balanceOf[msg.sender];
+        require(sellerBalance >= amount, "Insufficient balance");
+        uint256 saleTax = sellTax(amount);
+        uint256 netValue = amount - saleTax;
+        balanceOf[owner] += saleTax;
+        balanceOf[msg.sender] = sellerBalance - amount;
+        payable(msg.sender).transfer(netValue);
+        emit SellTax(msg.sender, saleTax);
+        emit Transfer(msg.sender, owner, amount);
+        return true;
+    }
+
+    function unlockLiquidity() external onlyOwner {
+        require(block.timestamp >= liquidityLockExpiration, "Liquidity is still locked");
+        uint256 unlockAmount = liquidityUnlockAmount;
+        balanceOf[owner] += unlockAmount;
+        totalSupply += unlockAmount;
+        liquidityUnlockAmount = 0;
+    }
+}
