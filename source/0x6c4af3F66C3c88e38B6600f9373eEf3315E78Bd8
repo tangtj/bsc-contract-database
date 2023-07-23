@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract PERIToken {
+    string public name = "$PERI";
+    string public symbol = "PERI";
+    uint8 public decimals = 8;
+    uint256 public totalSupply = 420000000000000000; // 4,200,000,000,000 tokens with 8 decimal places
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public frozenAccount;
+    bool public isFunctionalityEnabled = true;
+    address public owner;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Mint(address indexed to, uint256 amount);
+    event Burn(address indexed from, uint256 amount);
+    event FrozenAccount(address indexed target, bool isFrozen);
+    event FunctionalityStatus(bool isEnabled);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        owner = msg.sender;
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can call this function");
+        _;
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        require(to != address(0), "Invalid recipient");
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+        require(!frozenAccount[msg.sender], "Your account is frozen");
+
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += value;
+        emit Transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        require(!frozenAccount[msg.sender], "Your account is frozen");
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(from != address(0), "Invalid sender");
+        require(to != address(0), "Invalid recipient");
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Allowance exceeded");
+        require(!frozenAccount[from], "Sender's account is frozen");
+
+        balanceOf[from] -= value;
+        balanceOf[to] += value;
+        allowance[from][msg.sender] -= value;
+        emit Transfer(from, to, value);
+        return true;
+    }
+
+    function mint(address to, uint256 amount) public onlyOwner {
+        require(amount > 0, "Amount should be greater than zero");
+        require(totalSupply + amount <= 2**256 - 1, "Exceeds maximum supply");
+        require(isFunctionalityEnabled, "Minting functionality is disabled");
+
+        balanceOf[to] += amount;
+        totalSupply += amount;
+        emit Mint(to, amount);
+        emit Transfer(address(0), to, amount);
+    }
+
+    function burn(uint256 amount) public {
+        require(amount > 0, "Amount should be greater than zero");
+        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
+        require(isFunctionalityEnabled, "Burning functionality is disabled");
+
+        balanceOf[msg.sender] -= amount;
+        totalSupply -= amount;
+        emit Burn(msg.sender, amount);
+        emit Transfer(msg.sender, address(0), amount);
+    }
+
+    function distributeTokens(address[] memory recipients, uint256[] memory amounts) public onlyOwner {
+        require(recipients.length == amounts.length, "Arrays length mismatch");
+
+        for (uint256 i = 0; i < recipients.length; i++) {
+            require(recipients[i] != address(0), "Invalid recipient");
+            require(totalSupply + amounts[i] <= 2**256 - 1, "Exceeds maximum supply");
+
+            balanceOf[recipients[i]] += amounts[i];
+            totalSupply += amounts[i];
+            emit Mint(recipients[i], amounts[i]);
+            emit Transfer(address(0), recipients[i], amounts[i]);
+        }
+    }
+
+    function freezeAccount(address target, bool isFrozen) public onlyOwner {
+        require(target != address(0), "Invalid target address");
+
+        frozenAccount[target] = isFrozen;
+        emit FrozenAccount(target, isFrozen);
+    }
+
+    function toggleFunctionality() public onlyOwner {
+        isFunctionalityEnabled = !isFunctionalityEnabled;
+        emit FunctionalityStatus(isFunctionalityEnabled);
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "Invalid new owner");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+}
