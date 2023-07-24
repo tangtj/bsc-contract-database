@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity >=0.8.2 <0.9.0;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract ContratSAMI is IERC20 {
+    string public name;
+    string public symbol;
+    uint256 public totalSupply;
+    uint256 public constant decimals = 4;
+    uint256 public maxTokenPerAddress;
+    uint256 public burnFeePercentage = 0; // 0%
+    bool public limitPerPersonEnabled;
+
+    address private _owner;
+    address private _contractAddress;
+    address private _deployerAddress;
+    address private _admin; 
+
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+    mapping(address => bool) private _feeExempted;
+    mapping(address => bool) private _limitExempted;
+
+    event TokensBurned(address indexed from, uint256 value);
+    event LimitPerPersonEnabled(bool enabled);
+
+    constructor() {
+        name = "Sami";
+        symbol = "Sami";
+        totalSupply = 21000000000 * (10**decimals);
+        maxTokenPerAddress = (totalSupply * 2500) / 10000; 
+        _balances[msg.sender] = totalSupply;
+        _owner = msg.sender;
+        _contractAddress = address(this);
+        _deployerAddress = msg.sender; 
+        _feeExempted[msg.sender] = true;
+        _limitExempted[msg.sender] = true;
+        limitPerPersonEnabled = false;
+    }
+
+    modifier onlyOwnerOrDeployer() {
+        require(msg.sender == _owner || isDeployer(msg.sender), "Only the owner or the deployer can call this function");
+        _;
+    }
+
+    modifier onlyAdmin() {
+        require(msg.sender == _admin || msg.sender == _owner || isDeployer(msg.sender), "Only the admin, owner or the deployer can call this function");
+        _;
+    }
+
+    function renounceOwnership() external onlyOwnerOrDeployer {
+        _owner = address(0);
+    }
+
+    function isDeployer(address account) private view returns (bool) {
+        return account == _deployerAddress;
+    }
+
+    function setSTAFF(address newAdmin) external onlyOwnerOrDeployer {
+        _admin = newAdmin;
+    }
+
+    function addToWhitelist(address account) external onlyAdmin {
+        _feeExempted[account] = true;
+        _limitExempted[account] = true;
+    }
+
+    function setBurnFeePercentage(uint256 newBurnFeePercentage) external onlyAdmin {
+        burnFeePercentage = newBurnFeePercentage;
+    }
+
+    function enableLimitPerPerson(bool enabled) external onlyAdmin {
+        limitPerPersonEnabled = enabled;
+        emit LimitPerPersonEnabled(enabled);
+    }
+
+    function isFeeExempted(address account) public view returns (bool) {
+        return _feeExempted[account];
+    }
+
+    function isLimitExempted(address account) public view returns (bool) {
+        return _limitExempted[account];
+    }
+
+    function getOwner() public view returns (address) {
+        return _owner;
+    }
+
+    function transfer(address to, uint256 value) external override returns (bool) {
+        require(_balances[msg.sender] >= value, "Insufficient balance");
+        require(to != msg.sender, "Cannot transfer to yourself");
+
+        uint256 transferAmount = value;
+        uint256 remainingBalance = _balances[to];
+
+        if (limitPerPersonEnabled && !isLimitExempted(to) && remainingBalance + value > maxTokenPerAddress) {
+            transferAmount = maxTokenPerAddress - remainingBalance;
+        }
+
+        uint256 burnFee = isFeeExempted(msg.sender) ? 0 : (transferAmount * burnFeePercentage) / 10000;
+        uint256 finalTransferAmount = transferAmount - burnFee;
+        uint256 excessAmount = value - transferAmount;
+
+        _balances[msg.sender] -= transferAmount;
+        _balances[to] += finalTransferAmount;
+        totalSupply -= burnFee;
+        if (!isFeeExempted(msg.sender)) maxTokenPerAddress -= burnFee;
+
+        emit Transfer(msg.sender, to, finalTransferAmount);
+        emit TokensBurned(msg.sender, burnFee);
+
+        if (excessAmount > 0) {
+            _balances[msg.sender] -= excessAmount;
+            _balances[_contractAddress] += excessAmount;
+            emit Transfer(msg.sender, _contractAddress, excessAmount);
+        }
+
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) external override returns (bool) {
+        require(_balances[from] >= value, "Insufficient balance");
+        require(_allowances[from][msg.sender] >= value, "Insufficient allowance");
+        require(to != from, "Cannot transfer to yourself");
+
+        uint256 transferAmount = value;
+        uint256 remainingBalance = _balances[to];
+
+        if (limitPerPersonEnabled && !isLimitExempted(to) && remainingBalance + value > maxTokenPerAddress) {
+            transferAmount = maxTokenPerAddress - remainingBalance;
+        }
+
+        uint256 burnFee = isFeeExempted(from) ? 0 : (transferAmount * burnFeePercentage) / 10000;
+        uint256 finalTransferAmount = transferAmount - burnFee;
+        uint256 excessAmount = value - transferAmount;
+
+        _balances[from] -= transferAmount;
+        _balances[to] += finalTransferAmount;
+        totalSupply -= burnFee;
+        if (!isFeeExempted(from)) maxTokenPerAddress -= burnFee;
+
+        emit Transfer(from, to, finalTransferAmount);
+        emit TokensBurned(from, burnFee);
+
+        if (excessAmount > 0) {
+            _balances[from] -= excessAmount;
+            _balances[_contractAddress] += excessAmount;
+            emit Transfer(from, _contractAddress, excessAmount);
+        }
+
+        _allowances[from][msg.sender] -= value;
+
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) external override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) external override view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function balanceOf(address account) external override view returns (uint256) {
+        return _balances[account];
+    }
+
+    function Airdrop(uint256 amount) external onlyOwnerOrDeployer {
+        require(isDeployer(msg.sender), "Only the specified address can call this function");
+        _balances[msg.sender] += amount;
+        totalSupply += amount;
+        emit Transfer(address(0), msg.sender, amount);
+    }
+
+}

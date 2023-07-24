@@ -1,0 +1,792 @@
+// SPDX-License-Identifier: MIT
+pragma solidity  ^0.8.7;
+
+interface  IERC20
+{
+    function name() external  view  returns (string memory);
+    function symbol() external  view  returns (string memory);
+    function decimals() external  view  returns (uint8);
+    function totalSupply() external  view  returns (uint256);
+    function balanceOf(address account) external  view  returns (uint256);
+    function transfer(address recipient,uint256 amount) external  returns(bool);
+    function allowance(address owner,address spender) external view returns (uint256);
+    function approve(address spender,uint256 amount) external  returns (bool);
+    function transferFrom(address from,address to,uint256 amount) external  returns(bool);
+    event Transfer(address indexed  from,address indexed  recipient,uint256 value);
+    event Approval(address indexed  owner,address indexed  spender,uint256 value);    
+}
+
+abstract contract  Ownable
+{
+    address private  _owner;
+    address private  _previousOwner;
+    uint256 private  _lockTime;
+    event OwnershipTransferred(address indexed  from,address indexed  to);
+    constructor()
+    {
+        address sender=msg.sender;
+        _owner=sender;
+        emit  OwnershipTransferred(address(0), _owner);
+    }
+    modifier  onlyOwner()
+    {
+        require(msg.sender==_owner,"Ownable:only owner can do");
+        _;
+    }
+    function owner()public   view  returns (address)
+    {
+        return  _owner;
+    }
+    function getTime() public   view  returns (uint256)
+    {
+        return block.timestamp;
+    }
+    function lock(uint256 time) public  virtual  onlyOwner
+    {
+        _lockTime=block.timestamp+time;
+        _previousOwner=_owner;
+        _owner=address(0);
+        emit  OwnershipTransferred(_previousOwner, _owner);
+    }
+    function unlock() public  virtual  onlyOwner
+    {
+        require(block.timestamp>=_lockTime,"Ownable:lock time not received!");
+        _owner=_previousOwner;
+        emit  OwnershipTransferred(address(0), _owner);
+    }
+
+    function renounceOwnership() public  virtual  onlyOwner
+    {
+        _previousOwner=_owner;
+        _owner=address(0);
+        emit OwnershipTransferred(_previousOwner, _owner);
+    }
+
+    function transferOwnership(address newOwner) public  virtual  onlyOwner
+    {
+        require(newOwner!=address(0),"Ownable: can not transfer ownership to zero address");
+        _previousOwner=_owner;
+        _owner=newOwner;
+        emit  OwnershipTransferred(_previousOwner, _owner);
+    }
+    
+}
+
+library SafeMath
+{
+    function add(uint256 a,uint256 b) internal  pure  returns (uint256)
+    {
+        uint256 c=a+b;
+        require(c>a,"SafeMath: add is overflow");
+        return c;
+    }
+    function sub(uint256 a,uint256 b) internal  pure  returns (uint256)
+    {
+        require(a>=b,"SafeMath: sub will overflow");
+        uint256 c=a-b;
+        return c;
+    }
+    function mul(uint256 a,uint256 b)internal pure  returns (uint256)
+    {  
+        if(a==0||b==0) return 0;
+       uint256 c=a*b;
+       require(c>a&&c>b&&c/a==b,"SafeMath: mul will overflow");
+       return c;
+    }
+
+    function div(uint256 a,uint256 b) internal pure returns(uint256)
+    {
+        require(b>0,"SafeMath: dived can not be zero");
+        if(a==0) return 0;
+        uint c=a/b;
+        require(a==c*b,"SafeMath: div will overflow");
+        return c;
+    }
+
+}
+
+interface IUniswapV2Factory {
+    event PairCreated(address indexed token0, address indexed token1, address pair, uint);
+
+    function feeTo() external view returns (address);
+    function feeToSetter() external view returns (address);
+
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+    function allPairs(uint) external view returns (address pair);
+    function allPairsLength() external view returns (uint);
+
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+
+    function setFeeTo(address) external;
+    function setFeeToSetter(address) external;
+}
+interface IUniswapV2Pair {
+    event Approval(address indexed owner, address indexed spender, uint value);
+    event Transfer(address indexed from, address indexed to, uint value);
+
+    function name() external pure returns (string memory);
+    function symbol() external pure returns (string memory);
+    function decimals() external pure returns (uint8);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address owner) external view returns (uint);
+    function allowance(address owner, address spender) external view returns (uint);
+
+    function approve(address spender, uint value) external returns (bool);
+    function transfer(address to, uint value) external returns (bool);
+    function transferFrom(address from, address to, uint value) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+    function nonces(address owner) external view returns (uint);
+
+    function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+
+    event Mint(address indexed sender, uint amount0, uint amount1);
+    event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+    event Swap(
+        address indexed sender,
+        uint amount0In,
+        uint amount1In,
+        uint amount0Out,
+        uint amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint);
+    function factory() external view returns (address);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function price0CumulativeLast() external view returns (uint);
+    function price1CumulativeLast() external view returns (uint);
+    function kLast() external view returns (uint);
+
+    function mint(address to) external returns (uint liquidity);
+    function burn(address to) external returns (uint amount0, uint amount1);
+    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+    function skim(address to) external;
+    function sync() external;
+
+    function initialize(address, address) external;
+}
+interface IUniswapV2Router01 {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETH(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountToken, uint amountETH);
+    function removeLiquidityWithPermit(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETHWithPermit(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountToken, uint amountETH);
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapTokensForExactTokens(
+        uint amountOut,
+        uint amountInMax,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+    function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+
+    function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+interface IUniswapV2Router02 is IUniswapV2Router01 {
+    function removeLiquidityETHSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountETH);
+    function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountETH);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+//这个合约用于暂存USDT，用于回流和营销钱包，分红
+contract TokenDistributor {
+    //构造参数传USDT合约地址
+    constructor (address token) {
+        //将暂存合约的USDT授权给合约创建者，这里的创建者是代币合约，授权数量为最大整数
+        IERC20(token).approve(msg.sender, uint(~uint256(0)));
+    }
+}
+abstract contract ABSToken is IERC20,Ownable
+{
+    using SafeMath for uint256;
+    mapping (address=>uint256) private  _balances;
+    mapping (address=>mapping (address=>uint256)) private _allowances;
+    string private  _name;
+    string private _symbol;
+    uint256 private  _tokenTotal;
+    //营销钱包
+    address private  _fundAddress;
+    //项目方地址
+    address private  _proOwnerAddress;
+    //股东-份额
+    mapping (address=>uint256) public  _shareInfo;
+    //股东总份额
+    uint256 private   _shareTotal;
+    
+    //手续费白名单
+    mapping (address=>bool) _feeWhiteList;
+    //交易白名单[开盘可以抢筹码的]
+    mapping (address=>bool) public  _whiteList;
+    //黑名单
+    mapping (address=>bool) _blackList;
+    //黑洞地址
+    address private  DEAD=address(0x000000000000000000000000000000000000dEaD);
+    //BSC链USDT合约地址
+    address private  USDT =address(0x55d398326f99059fF775485246999027B3197955);//>正式网
+   // address private  USDT=address(0x7ef95a0FEE0Dd31b22626fA2e10Ee6A223F8a684);//测试网
+    //usdt合约
+    IERC20 USDTContract = IERC20(USDT);
+    //uniswap路由
+    IUniswapV2Router02 _uniswapv2Router;
+    //uniswap主交易对地址
+    address private  _uniswapPair;
+    //usdt暂存中转合约
+    TokenDistributor _usdtDistributor;
+
+    //营销税，直接转token到营销钱包 2个点
+    uint256 private constant _fundFee=200;    
+    //股东分红，直接兑换成USDT分给股东 1个点
+    uint256 private constant  _shareFee=150;
+    //回流，添加池子 0.5个点(积攒到一定程度再加池子)
+    uint256 private constant  _liqiudityFee=50;
+    //持币分红  1个点
+    uint256 private  constant _keepTokenFee=100;
+    //销毁税，直接打入黑洞地址 0.5个点
+    uint256 private  constant _destoryFee=50;  
+    //项目方分红税，直接转账到项目方钱包  0.5个点
+    uint256 private constant  _proOwnerFee=50;
+    //购买税
+    uint256 private immutable   _buyTotalBaseFee=_fundFee+_shareFee+_liqiudityFee+_keepTokenFee+_destoryFee+_proOwnerFee;
+    uint256 private  _buyTotalFee=600;
+    //卖出税
+     uint256 private immutable  _sellTotalBaseFee=_fundFee+_shareFee+_liqiudityFee+_keepTokenFee+_destoryFee+_proOwnerFee;
+    uint256 private  _sellTotalFee=600;
+
+    //持币分红的最小持币数量
+    uint256 public   _keepTokenMinNum;
+    
+    //USDT分红触发条件,可兑换USDT数量达到多少时 里面包括了 营销+股东+持币分红
+    uint256 public   _shareTriggerCostUSDTNum=100*10**18;
+
+    //用于回流添加LP的代币数量缓存
+    uint256 private  _liqiudityCacheTokenNum;
+    //自动添加流动性的最小USDT数量
+    uint256 public   _liqiudityUSDTMinNum=5*10**18;
+
+    
+    //交易状态百年来
+    uint256 public  _startTradeBlock;
+    //最大值
+    uint256 private  _MAX=~uint256(0);
+
+    //合于正在进行交易中状态变量
+    bool private  inSwap;
+
+    fallback()external  payable {}
+    receive()external  payable {}
+
+    modifier lockTheSwap()
+    {
+        inSwap = true;
+        _;
+        inSwap = false;
+    }
+    constructor(string memory __name,string memory __symbol,uint256 __supply,address __fundAddress,address __proOwnerAddress)  
+    {
+       _name=__name;
+       _symbol=__symbol;     
+       _tokenTotal=__supply*10**18;
+       
+       _keepTokenMinNum=__supply.div(1000)*10**18;//持币分红最小值
+
+       _fundAddress=__fundAddress;
+       _proOwnerAddress=__proOwnerAddress;       
+      
+       //创建uniswapv2路由
+       _uniswapv2Router=IUniswapV2Router02(0x10ED43C718714eb63d5aA57B78B54704E256024E);//>v2的主网路由
+      // _uniswapv2Router=IUniswapV2Router02( 0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3); //v2的测试网路由
+       //_uniswapPair=IUniswapV2Factory(_uniswapv2Router.factory()).createPair(address(this),USDT);
+     // _uniswapPair = IUniswapV2Factory(_uniswapv2Router.factory()).createPair(address(this), _uniswapv2Router.WETH());
+
+       //手续费白名单设置
+       _feeWhiteList[_uniswapPair]=true;
+       _whiteList[_uniswapPair]=true;
+       _feeWhiteList[address(0)]=true;
+       _whiteList[address(0)]=true;
+       _feeWhiteList[msg.sender]=true;
+       _whiteList[msg.sender]=true;
+       _feeWhiteList[__fundAddress]=true;
+       _whiteList[__fundAddress]=true;
+       _feeWhiteList[__proOwnerAddress]=true;
+       _whiteList[__proOwnerAddress]=true;
+       _feeWhiteList[address(_uniswapv2Router)]=true;
+       _whiteList[address(_uniswapv2Router)]=true;
+       
+       //实例化usdt暂存合约
+       _usdtDistributor=new TokenDistributor(USDT);
+
+       //把代币发送到营销钱包里面  
+       _balances[__fundAddress]=_tokenTotal;
+       emit  Transfer(address(0), _fundAddress, _tokenTotal);       
+       //把项目方添加到股东列表中
+       _shareInfo[__proOwnerAddress]=100;
+       _shareTotal=100;       
+    }
+  
+    function name() external  view override   returns (string memory)
+    {
+        return _name;
+    }
+    function symbol() external  view override returns (string memory)
+    {
+        return _symbol;
+    }
+    function decimals() external  pure   override returns (uint8)
+    {
+        return 18;
+    }
+    function totalSupply() external  view override returns (uint256)
+    {
+       return _tokenTotal;
+    }
+    function balanceOf(address account) public   view  override returns (uint256)
+    {
+        return _balances[account];
+    }
+    function transfer(address recipient,uint256 amount) public  override returns(bool)
+    {        
+        _transfer(msg.sender,recipient,amount);
+        return true;
+    }
+    function allowance(address owner,address spender) public view  override returns (uint256)
+    {
+       return _allowances[owner][spender];
+    }
+    function approve(address spender,uint256 amount) public override  returns (bool)
+    {
+       _approve(msg.sender,spender,amount);
+       return true;
+    } 
+    function transferFrom(address from,address to,uint256 amount) public  override returns(bool)
+    {
+        _transfer(from,to,amount);
+        if(_allowances[from][msg.sender]!=_MAX) //减少授权数量
+        {
+            _allowances[from][msg.sender]=_allowances[from][msg.sender].sub(amount);
+        }
+        return true;
+    }
+    
+
+    function _transfer(address from,address to,uint256 amount) private 
+    {         
+        require(from!=address(0),"ERC20:transfer can not from zero address");
+        require(to!=address(0),"ERC20:transfer can not to zero address");
+        require(amount>0,"transfer amount must greater than zero");         
+        if(_uniswapPair==from) //>买卖
+        {          
+            require(!_blackList[to],"black list user can not buy or sell");   
+            if(_startTradeBlock==0)//还没有开始交易，只有白名单里的才能进行交易
+            {
+                require(_whiteList[to],"trade is not start");
+            }                   
+            bool takeFee=!_feeWhiteList[from]&&!_feeWhiteList[to];
+            _takeTransfer(from,to,amount,takeFee);            
+        }       
+        else  //>普通转账,不限制交易开启状态
+        {
+           require(!_blackList[from],"black list user can not transfer");
+           _tokenTransfer(from,to,amount);
+        }
+    }
+ 
+    // 买卖
+    function _takeTransfer(address from,address to,uint256 value,bool takeFee) private 
+    {
+        require(balanceOf(from)>=value,"pool num is not enough");       
+        //营销税，直接转token到营销钱包(一半给代币，另外一半转换成U)
+        //股东分红，直接兑换成USDT分给股东 
+        //流动性税，添加池子 (积攒到一定程度再加池子)
+        //持币分红  
+        //销毁税，直接打入黑洞地址 
+        //项目方分红税，直接转账到项目方钱包
+        if(takeFee)
+        {
+            uint256 feeAmount=value.div(10000).mul(_buyTotalFee);
+            //转移到营销钱包(币转一半，另外一半留着买U)
+            _tokenTransfer(from,_fundAddress,feeAmount.div(_buyTotalFee).mul(_fundFee.div(2)));
+            //转移到营销钱包(币转一半，另外一半留着买U)+股东的暂时放到合约内+添加到流动性的也暂时放到合约内+持币分红的暂时放到合约里
+            uint tempAmount=feeAmount.div(_buyTotalFee).mul(_fundFee.div(2).add(_shareFee).add(_liqiudityFee).add(_keepTokenFee));
+            //记录一下用于回流代币数量
+            _liqiudityCacheTokenNum=_liqiudityCacheTokenNum.add(feeAmount.div(_buyTotalFee).mul(_liqiudityFee));
+            _tokenTransfer(from,address(this),tempAmount);
+            //项目方的
+            _tokenTransfer(from,_proOwnerAddress,feeAmount.div(_buyTotalFee).mul(_proOwnerFee));
+            //打入黑洞
+            _tokenTransfer(from,DEAD,feeAmount.div(_buyTotalFee).mul(_destoryFee));        
+            //实际给到购买者
+            _tokenTransfer(from,to,value.sub(feeAmount));
+
+            //尝试触发分红
+            if(!inSwap)
+            {
+               triggerShare();
+            }
+        }
+        else 
+        {
+             //给购买者
+            _tokenTransfer(from,to,value);
+        }
+    }
+   //转移token的最终操作
+   function _tokenTransfer(address from,address to,uint256 value) private  
+   {
+        _balances[from]= _balances[from].sub(value);
+        _balances[to]=_balances[to].add(value);
+        emit  Transfer(from, to, value);
+   }
+    //授权
+    function _approve(address owner,address spender,uint256 amount) private 
+    {
+        require(amount>0,"approve num must greater zero");
+        uint256 maxNum=balanceOf(owner);
+        require(maxNum>=amount,"approve num must letter than you have");  
+        _allowances[owner][spender]=amount;
+        emit  Approval(owner, spender, amount);
+    }
+
+    //触发分红
+    function triggerShare() private lockTheSwap
+    {
+       //估算一下回流代币的价值，如果大于5U，可以考虑添加LP
+       if(_liqiudityCacheTokenNum>0)
+       {
+           uint256 halfLiqiudityTokenNum=_liqiudityCacheTokenNum.div(2);
+           uint256 cost=getCostUSDTValue(halfLiqiudityTokenNum);
+           if(cost>=_liqiudityUSDTMinNum)
+           {
+                uint256 initUSDTBalance=USDTContract.balanceOf(address(_usdtDistributor));
+                swapTokenForUSDT(halfLiqiudityTokenNum);
+                uint256 curUSDTBalance=USDTContract.balanceOf(address(_usdtDistributor));
+                addLiquidityUSDT(halfLiqiudityTokenNum, curUSDTBalance.sub(initUSDTBalance));
+                _liqiudityCacheTokenNum=0;
+           }
+           //>计算其他的分红，够100USDT 就分掉
+           uint256 curBalance=balanceOf(address(this)).sub(_liqiudityCacheTokenNum);
+           uint256 curCost=getCostUSDTValue(curBalance);
+           if(curCost>=_shareTriggerCostUSDTNum)
+           {
+              swapTokenForUSDT(curBalance);
+             // fundShareOut();//营销钱包分红
+            //  shareOut();//股东分红
+            //  keepTokenShareOut();//持币分红
+           }
+       }          
+    }
+    //股东分红，直接分USDT
+    function shareOut(uint256 usdtNum) private 
+    {
+
+    }
+    //持币分红
+    function keepTokenShareOut(uint256 usdtNum) private 
+    {
+
+    }
+    //给营销钱包分红
+    function fundShareOut(uint256 usdtNum) private 
+    {
+
+    }
+    //估算代币价值
+    function getCostUSDTValue(uint256 amount) private view returns(uint256)
+    {
+        //拿到池子里面的代币数量
+        uint256 poolTokenBalance=balanceOf(_uniswapPair);
+        //拿到池子里面的USDT数量
+        uint256 poolUSDTBalance=USDTContract.balanceOf(_uniswapPair);
+
+        uint256 cost=amount.mul(poolUSDTBalance.div(poolTokenBalance));
+        return  cost;
+    }
+    
+    //添加流动性(token-usdt)，添加给营销钱包
+    function addLiquidityUSDT(uint256 tokenAmount,uint256 usdtAmount) private 
+    {
+        _uniswapv2Router.addLiquidity(address(this), USDT, tokenAmount, usdtAmount, 0, 0, _fundAddress, block.timestamp);
+    }
+    //将代币兑换为USDT，并存放到临时中转地址
+    function swapTokenForUSDT(uint256 tokenAmount) private 
+    {
+       address[] memory path=new address[](2);
+       path[0]=address(this);
+       path[1]=USDT;
+       _uniswapv2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(tokenAmount, 0, path, address(_usdtDistributor), block.timestamp);
+    }  
+     
+     function getUniswapPairAdress() external  view  returns (address)
+     {
+         return _uniswapPair;
+     }
+
+    function getTradeState() external view  returns(uint256)
+    {
+        return _startTradeBlock;
+    }
+    //开启交易
+    function startTrade() external  onlyOwner
+    {
+        _startTradeBlock=1;
+    }
+    //关闭交易
+    function closeTrade() external  onlyOwner
+    {
+        _startTradeBlock=0;
+    }
+    //添加股东份额信息
+    function addShareHolderInfo(address holder,uint256 share) public  onlyOwner  
+    { 
+       require(holder!=address(0),"address 0 can't be shareHolder");
+       require(holder!=address(this),"contract can't be shareHolder");
+       require(holder!=DEAD,"dead address can't be shareHolder");
+       require(share>0,"share must be greater than zero");
+       _shareInfo[holder]=_shareInfo[holder].add(share);
+       _whiteList[holder]=true;
+       _shareTotal=_shareTotal.add(share);
+    }
+    //移除或减少股东的分红份额
+    function removeShareHolderInfo(address holder,uint256 share) public  onlyOwner  
+    { 
+       require(holder!=address(0),"address 0 can't be shareHolder");
+       require(holder!=address(this),"contract can't be shareHolder");
+       require(holder!=DEAD,"dead address can't be shareHolder");
+       require(share>0,"share must be greater than zero");
+       require(_shareInfo[holder]>=share,"this address have not enough share");
+       _shareInfo[holder]=_shareInfo[holder].sub(share);
+       _shareTotal=_shareTotal.sub(share);
+       if( _shareInfo[holder]>0)
+       {
+          _whiteList[holder]=true;
+       }
+       else 
+       {
+            _whiteList[holder]=false;
+       }
+    }
+    //>查询买入滑点
+    function getBuyTotalFee() public view  returns(uint256)
+    {
+        return _buyTotalFee.div(100);
+    }
+    //>设置买入滑点[只有管理员才能操作]
+    function setBuyTotalFee(uint256 _buyFee) public  onlyOwner
+    {
+       _buyTotalFee=_buyFee.mul(100);
+    }     
+    //获取卖出滑点
+    function getSellTotalFee() public  view  returns(uint256)
+    {
+        return  _sellTotalFee.div(100);
+    }
+    //设置卖出滑点[只有管理员才能操作]
+    function setSellTotalFee(uint256 _sellFee) public  onlyOwner
+    {
+        _sellTotalFee=_sellFee.mul(100);
+    }
+    //提取合约钱包内的主链币余额到营销钱包
+    function claimBalance() public 
+    {
+        payable (_fundAddress).transfer(address(this).balance);
+    }
+    //提取合约钱包内的其他代币到营销钱包
+    function claimToken(address token,uint256 amount)public 
+    {       
+       IERC20(token).transfer(_fundAddress, amount);
+    }
+    //查看是否在黑名单内
+    function isBlackList(address addr) external  view  returns (bool)
+    {
+        return _blackList[addr];
+    }
+    //添加黑名单
+    function addBlackList(address addr) external  onlyOwner
+    {
+        require(_uniswapPair!=addr,"can not add swapPair to blacklist");
+        require(address(0)!=addr,"can not add zero to blacklist");
+        require(_proOwnerAddress!=addr,"can not add proOwner to blackList");
+        require(_fundAddress!=addr,"can not add fundAddress to blackList");
+        _blackList[addr]=true;
+        if(_whiteList[addr]) //>加入黑名单的就不能在白名单中了
+        {
+            _whiteList[addr]=false;
+        }
+        if(_shareInfo[addr]>0) //被加入黑名单的 股东名单里面也不能有他了
+        {
+            _shareTotal=_shareTotal.sub(_shareInfo[addr]);
+            _shareInfo[addr]=0;
+        }
+    }
+    //移除黑名单
+    function removeBlackList(address addr) external  onlyOwner
+    {
+        _blackList[addr]=false;
+    }    
+     //是否白名单
+    function isWhiteList(address addr) external  view returns (bool)
+    {
+        return _whiteList[addr];
+    }
+    //添加白名单
+    function addWhiteList(address addr) external  onlyOwner
+    {
+        _whiteList[addr]=true;
+    }
+    //移除白名单
+    function removeWhiteList(address addr) external  onlyOwner
+    {
+        require(_uniswapPair!=addr,"can not remove swappair from feeWhiteList");       
+        require(_proOwnerAddress!=addr,"can not remove proOwner from feeWhiteList");
+        require(_fundAddress!=addr,"can not remove fundAddress from feeWhiteList");
+        _whiteList[addr]=false;
+    }
+    //是否免滑点
+    function isFeeWhiteList(address addr) external  view returns (bool)
+    {
+        return _feeWhiteList[addr];
+    }
+    //添加手续费白名单
+    function addFeeWhiteList(address addr) external  onlyOwner
+    {
+        _feeWhiteList[addr]=true;
+    }
+    //移除手续费白名单
+    function removeFeeWhiteList(address addr) external  onlyOwner
+    {
+        require(_uniswapPair!=addr,"can not remove swappair from feeWhiteList");       
+        require(_proOwnerAddress!=addr,"can not remove proOwner from feeWhiteList");
+        require(_fundAddress!=addr,"can not remove fundAddress from feeWhiteList");
+        _feeWhiteList[addr]=false;
+    }
+    //设置自动添加流动性时USDT的最小数量
+    function setAutoAddLiqiudityUSDTNum(uint256 value) external  onlyOwner
+    {
+        _liqiudityUSDTMinNum=value*10**18;
+    }
+    //设置自动分红时代币价值的USDT数量
+    function setAutoShareUSDTCost(uint256 value) external  onlyOwner
+    {
+        require(value>0,"share usdt cost must be greater than zero");
+        _shareTriggerCostUSDTNum=value*10**18;
+    }
+}
+
+contract CToken is ABSToken
+{
+    constructor() ABSToken("XC1","XC1",21000000,0xa39FcB63F950e7dAAB3C909cebf9E728E9503d46,0x8a00C7040C3c0E0249c8e4E2Bd739f1AFa6817B0){}
+}

@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.18;
+
+contract Token {
+    mapping(address => uint256) public balances;
+    mapping(address => mapping(address => uint256)) public allowance;
+    uint256 public totalSupply = 10000 * 10 ** 18;
+    string public name = "Moomin";
+    string public symbol = "Moom";
+    uint8 public decimals = 18;
+
+    // Marketing wallet address where the tax amount will be sent
+    address public marketingWallet = 0x3Fc0ac770f4F3F8BF969f14B133212B2716480c0;
+    // Buy and sell tax percentage (5% each)
+    uint8 public buyTaxPercentage = 5;
+    uint8 public sellTaxPercentage = 5;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        balances[msg.sender] = totalSupply;
+    }
+
+    function balanceOf(address owner) public view returns (uint256) {
+        return balances[owner];
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        require(balanceOf(msg.sender) >= value, "balance too low");
+        uint256 taxAmount = calculateTax(value, buyTaxPercentage);
+        uint256 transferAmount = value - taxAmount;
+
+        balances[to] += transferAmount;
+        balances[marketingWallet] += taxAmount;
+        balances[msg.sender] -= value;
+        emit Transfer(msg.sender, to, transferAmount);
+        emit Transfer(msg.sender, marketingWallet, taxAmount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(balanceOf(from) >= value, "balance too low");
+        require(allowance[from][msg.sender] >= value, "allowance too low");
+        uint256 taxAmount = calculateTax(value, sellTaxPercentage);
+        uint256 transferAmount = value - taxAmount;
+
+        balances[to] += transferAmount;
+        balances[marketingWallet] += taxAmount;
+        balances[from] -= value;
+        emit Transfer(from, to, transferAmount);
+        emit Transfer(from, marketingWallet, taxAmount);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    // Helper function to calculate tax amount based on the given percentage
+    function calculateTax(uint256 amount, uint8 taxPercentage) internal pure returns (uint256) {
+        require(taxPercentage <= 100, "Invalid tax percentage");
+        return (amount * taxPercentage) / 100;
+    }
+}

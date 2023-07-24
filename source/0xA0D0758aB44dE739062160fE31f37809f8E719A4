@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0;
+
+interface Token{
+    function transferFrom(address,address,uint) external;
+    function transfer(address,uint) external;
+    function approve(address,uint) external;
+    function balanceOf(address) external view returns(uint);
+}
+
+contract Donation  {
+
+    mapping (address => uint) public wards;
+    function rely(address usr) external  auth { wards[usr] = 1; }
+    function deny(address usr) external  auth { wards[usr] = 0; }
+    modifier auth {
+        require(wards[msg.sender] == 1, "Donation/not-authorized");
+        _;
+    }
+ 
+    address                                           public  foundaddress = 0x23D7E66266FBB0e5a30B3b2a199Cc74E082C96E7;
+    Token                                             public  usdt = Token(0x55d398326f99059fF775485246999027B3197955);
+    Token                                             public  tmd = Token(0x0f27d12182f7f4D879d267B31BD02dd27086e7Ce);
+    uint256                                           public  userMax =  50*1E18;
+    uint256                                           public  dayMax =  1600*1E18;
+    uint256                                           public  price = 2*1E18;
+    uint256                                           public  day = 1;
+    mapping (uint => uint)                            public  startTime;
+    mapping (uint => uint)                            public  dayAmount;
+    mapping (address => mapping (uint => uint))       public  userAmount;
+
+    struct Info { 
+        uint256    price;
+        uint256    balance;
+        uint256    startTime;
+        uint256    maxAmount;
+        uint256    usdtAmount;
+    }
+    constructor() {
+        wards[msg.sender] = 1;
+    }
+    function global(uint256 what,address usr,uint256 data) external auth {                                               
+        if (what == 1) foundaddress = usr; 
+        else if (what == 2) userMax = data;  
+        else if (what == 3) dayMax = data;
+        else if (what == 4) price = data;  
+        else if (what == 5) day = data;                  
+        else revert("Donation/setdata-unrecognized-param");
+    }
+    function setStart(uint256 _day,uint newtime) external auth {                                               
+        startTime[_day] = newtime;
+    }
+    function depositTmd(uint256 wad) public {
+        require(block.timestamp >= startTime[day],"Donation/1");
+        require(dayAmount[day] + wad <= dayMax,"Donation/2");
+        require(userAmount[msg.sender][day] + wad <= userMax,"Donation/3");
+        uint usdtAmount = price*wad/1E18;
+        usdt.transferFrom(msg.sender, foundaddress, usdtAmount);
+        tmd.transfer(msg.sender, wad);
+        dayAmount[day] += wad;
+        userAmount[msg.sender][day] += wad;
+        if(dayAmount[day] == dayMax){
+            day +=1;
+            startTime[day] = startTime[day-1]+86400;
+        }
+    } 
+    function  getUserMaxAmount(address user) public view returns(uint){
+        uint amount1 = userMax - userAmount[user][day];
+        uint amount2 = dayMax - dayAmount[day];
+        if(amount1<=amount2) return amount1;
+        else return amount2;
+    }
+    function  getUsdtAmount(uint wad) public view returns(uint usdtAmount){
+        usdtAmount = price*wad/1E18;
+    }
+    function  getInfo(address user) public view returns(Info memory info){
+        info.price = price;
+        info.balance = dayMax - dayAmount[day];
+        info.startTime = startTime[day];
+        info.maxAmount = getUserMaxAmount(user);
+        info.usdtAmount = getUsdtAmount(info.maxAmount);
+    }
+    function withdraw(address asses, uint256 amount, address ust) public auth {
+        Token(asses).transfer(ust, amount);
+    }
+}
