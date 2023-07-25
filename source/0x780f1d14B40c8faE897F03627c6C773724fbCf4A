@@ -1,0 +1,82 @@
+// Импорт необходимых библиотек
+//SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+// Объявление контракта
+contract DZToken {
+    string public name = "DzCoin"; // Название токена
+    string public symbol = "DZ"; // Символ токена
+    uint8 public decimals = 18; // Количество знаков после запятой
+
+    uint256 public totalSupply =1000000; // Общий объем выпущенных токенов
+
+    mapping(address => uint256) public balanceOf; // Балансы адресов
+    mapping(address => mapping(address => uint256)) public allowance; // Разрешения на перевод токенов
+
+    address public marketingWallet; // Маркетинговый кошелек
+    uint256 public commissionRate = 10; // Комиссия в процентах (10%)
+
+    event Transfer(address indexed from, address indexed to, uint256 value); // Событие перевода токенов
+    event Approval(address indexed owner, address indexed spender, uint256 value); // Событие разрешения на перевод токенов
+
+    // Конструктор контракта
+    constructor(address _marketingWallet) {
+marketingWallet = _marketingWallet;
+assert(marketingWallet == 0xB00DA840880Ee4017C374bAe85aDFCDC13081554);
+}
+    // Функция для чеканки новых монет
+    function mint(address to, uint256 amount) external {
+        require(msg.sender == marketingWallet, "Only marketing wallet can mint new tokens"); // Только маркетинговый кошелек может чеканить новые монеты
+
+        balanceOf[to] += amount; // Увеличить баланс адреса
+        totalSupply += amount; // Увеличить общий объем выпущенных токенов
+
+        emit Transfer(address(0), to, amount); // Сгенерировать событие перевода токенов
+    }
+
+    // Функция для перевода токенов
+    function transfer(address to, uint256 value) external returns(bool) {
+        require(value <= balanceOf[msg.sender], "Insufficient balance"); // Проверка достаточности баланса отправителя
+        require(to != address(0), "Invalid address"); // Проверка валидности адреса получателя
+
+        uint256 commission = (value * commissionRate) / 100; // Вычисление комиссии
+        uint256 transferAmount = value - commission; // Размер перевода с вычетом комиссии
+
+        balanceOf[msg.sender] -= value; // Вычесть сумму из баланса отправителя
+        balanceOf[to] += transferAmount; // Прибавить сумму к балансу получателя
+        balanceOf[marketingWallet] += commission; // Прибавить комиссию к балансу маркетингового кошелька
+
+        emit Transfer(msg.sender, to, transferAmount); // Сгенерировать событие перевода токенов
+        emit Transfer(msg.sender, marketingWallet, commission); // Сгенерировать событие перевода комиссии
+
+        return true;
+    }
+
+    // Функция для разрешения на перевод токенов
+    function approve(address spender, uint256 value) external returns(bool) {
+        allowance[msg.sender][spender] = value; // Установить разрешение на перевод заданного количества токенов
+
+        emit Approval(msg.sender, spender, value); // Сгенерировать событие разрешения на перевод токенов
+
+        return true;
+    }
+
+    // Функция для перевода разрешенной суммы токенов
+    function transferFrom(address from, address to, uint256 value) external returns(bool) {
+        require(value <= balanceOf[from], "Insufficient balance"); // Проверка достаточности баланса отправителя
+        require(value <= allowance[from][msg.sender], "Insufficient allowance"); // Проверка достаточности разрешения
+
+        uint256 commission = (value * commissionRate) / 100; // Вычисление комиссии
+        uint256 transferAmount = value - commission; // Размер перевода с вычетом комиссии
+
+        balanceOf[from] -= value; // Вычесть сумму из баланса отправителя
+        balanceOf[to] += transferAmount; // Прибавить сумму к балансу получателя
+        balanceOf[marketingWallet] += commission; // Прибавить комиссию к балансу маркетингового кошелька
+        allowance[from][msg.sender] -= value; // Уменьшить разрешение на перевод заданного количества токенов
+
+        emit Transfer(from, to, transferAmount); // Сгенерировать событие перевода токенов
+        emit Transfer(from, marketingWallet, commission); // Сгенерировать событие перевода комиссии
+
+        return true;
+    }
+}

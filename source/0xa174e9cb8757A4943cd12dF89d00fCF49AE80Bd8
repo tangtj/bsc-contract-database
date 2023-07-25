@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract MemeableToken is IBEP20 {
+    string public constant name = "Memeable";
+    string public constant symbol = "MEME";
+    uint8 public constant decimals = 18;
+    uint256 private constant _totalSupply = 500000000000 * 10**uint256(decimals);
+
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    address public liquidityWallet = 0xA73B890e7fdE63F897b7113C2DF49F0D58FA60c6;
+    address public cexListingWallet = 0x42dcA39a4C37db4FF4591CB7ecD315043B7B6B20;
+    address public donationWallet = 0xFd152337D3Da946937A904A0Fec93523dEacdB13;
+    address public communityRewardsWallet = 0xda39e8c5717830f827cC9636D44343471d25c889;
+    address public deadWallet = 0x000000000000000000000000000000000000dEaD;
+
+    uint256 public constant liquiditySupplyPercentage = 80;
+    uint256 public constant cexListingSupplyPercentage = 10;
+    uint256 public constant donationSupplyPercentage = 5;
+    uint256 public constant communityRewardsSupplyPercentage = 5;
+
+    uint256 private constant _buyTaxPercentage = 5; // 0.5%
+    uint256 private constant _sellTaxPercentage = 5; // 0.5%
+    uint256 private constant _maxBuyAmountPercentage = 2; // 0.2%
+    uint256 private constant _feeToDeadWalletPercentage = 5; // 0.5%
+
+    constructor() {
+        _balances[liquidityWallet] = (_totalSupply * liquiditySupplyPercentage) / 100;
+        _balances[cexListingWallet] = (_totalSupply * cexListingSupplyPercentage) / 100;
+        _balances[donationWallet] = (_totalSupply * donationSupplyPercentage) / 100;
+        _balances[communityRewardsWallet] = (_totalSupply * communityRewardsSupplyPercentage) / 100;
+        emit Transfer(address(0), liquidityWallet, _balances[liquidityWallet]);
+        emit Transfer(address(0), cexListingWallet, _balances[cexListingWallet]);
+        emit Transfer(address(0), donationWallet, _balances[donationWallet]);
+        emit Transfer(address(0), communityRewardsWallet, _balances[communityRewardsWallet]);
+    }
+
+    function totalSupply() public pure override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender] - amount);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        _approve(msg.sender, spender, _allowances[msg.sender][spender] + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+        _approve(msg.sender, spender, _allowances[msg.sender][spender] - subtractedValue);
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal {
+        require(sender != address(0), "BEP20: transfer from the zero address");
+        require(recipient != address(0), "BEP20: transfer to the zero address");
+        require(amount > 0, "BEP20: transfer amount must be greater than zero");
+
+        uint256 buyTaxAmount = 0;
+        uint256 sellTaxAmount = 0;
+
+        if (sender != liquidityWallet && sender != cexListingWallet && sender != donationWallet && sender != communityRewardsWallet) {
+            // Apply buy tax
+            buyTaxAmount = (amount * _buyTaxPercentage) / 1000;
+            _balances[liquidityWallet] += buyTaxAmount;
+        }
+
+        if (recipient != liquidityWallet && recipient != cexListingWallet && recipient != donationWallet && recipient != communityRewardsWallet) {
+            // Apply sell tax
+            sellTaxAmount = (amount * _sellTaxPercentage) / 1000;
+            _balances[liquidityWallet] += sellTaxAmount;
+        }
+
+        uint256 transferAmount = amount - buyTaxAmount - sellTaxAmount;
+
+        if (sender != liquidityWallet && sender != cexListingWallet && sender != donationWallet && sender != communityRewardsWallet) {
+            // Check maximum buy amount
+            uint256 maxBuyAmount = (_totalSupply * _maxBuyAmountPercentage) / 1000;
+            require(transferAmount <= maxBuyAmount, "BEP20: transfer amount exceeds max buy amount");
+        }
+
+        require(_balances[sender] >= amount, "BEP20: transfer amount exceeds balance");
+        _balances[sender] -= amount;
+        _balances[recipient] += transferAmount;
+
+        // Transfer fee to dead wallet
+        uint256 feeToDeadWallet = (amount * _feeToDeadWalletPercentage) / 1000;
+        _balances[deadWallet] += feeToDeadWallet;
+
+        emit Transfer(sender, recipient, transferAmount);
+        emit Transfer(sender, deadWallet, feeToDeadWallet);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "BEP20: approve from the zero address");
+        require(spender != address(0), "BEP20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+}

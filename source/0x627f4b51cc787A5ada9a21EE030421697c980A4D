@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity 0.8.0;
+
+contract TellBlockChainACode {
+
+    event TellACodeToBlockChain(uint code);
+
+    function tellACodeToBlockChain(uint _code) public {
+        emit TellACodeToBlockChain(_code);
+    }
+
+}

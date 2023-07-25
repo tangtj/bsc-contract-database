@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: UNLICENSED
+
+pragma solidity ^0.8.18;
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+        return c;
+    }
+}
+
+contract BettingGame {
+    using SafeMath for uint256;
+
+    address public owner;
+    uint256 public phase1EndTime;
+    uint256 public phase2StartTime;
+    uint256 public phase2EndTime;
+
+    uint256 public minimumBet;
+    uint256 public maximumBet;
+    
+    mapping(address => uint256) public userBetsOnSideA;
+    mapping(address => uint256) public userBetsOnSideB;
+    address[] private _userList;
+    
+    enum Phase { NotStarted, Phase1, Pause, Phase2, Finished }
+    Phase public currentPhase;
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function startRound(uint256 _phase1Duration, uint256 _phase2Duration, uint256 _minimumBet, uint256 _maximumBet) external onlyOwner {
+        require(currentPhase == Phase.NotStarted, "The round has already started");
+        
+        phase1EndTime = block.timestamp.add(_phase1Duration);
+        phase2StartTime = phase1EndTime.add(1 minutes);
+        phase2EndTime = phase2StartTime.add(_phase2Duration);
+        
+        minimumBet = _minimumBet.mul(1 wei);
+        maximumBet = _maximumBet.mul(1 wei);
+
+        currentPhase = Phase.Phase1;
+    }
+
+    function placeBetA() external payable {
+        require(currentPhase == Phase.Phase1, "Betting for Side A is not allowed at the moment");
+        require(block.timestamp < phase1EndTime, "Phase 1 has ended");
+        require(msg.value >= minimumBet && msg.value <= maximumBet, "Bet amount is outside the allowed range");
+
+        userBetsOnSideA[msg.sender] = userBetsOnSideA[msg.sender].add(msg.value);
+        if (!_userExists(msg.sender)) {
+            _userList.push(msg.sender);
+        }
+    }
+
+    function placeBetB() external payable {
+        require(currentPhase == Phase.Phase1, "Betting for Side B is not allowed at the moment");
+        require(block.timestamp < phase1EndTime, "Phase 1 has ended");
+        require(msg.value >= minimumBet && msg.value <= maximumBet, "Bet amount is outside the allowed range");
+
+        userBetsOnSideB[msg.sender] = userBetsOnSideB[msg.sender].add(msg.value);
+        if (!_userExists(msg.sender)) {
+            _userList.push(msg.sender);
+        }
+    }
+
+    function finishRound() external {
+        require(currentPhase == Phase.Phase2, "The round has not yet ended");
+        require(block.timestamp >= phase2EndTime, "Phase 2 is still active");
+        currentPhase = Phase.Finished;
+    }
+
+    function claimWinnings() external {
+        require(currentPhase == Phase.Finished, "The round is not yet finished");
+        
+        uint256 totalASide = totalBetsOnSideA();
+        uint256 totalBSide = totalBetsOnSideB();
+        uint256 userPrize = 0;
+        
+        if (totalASide < totalBSide) {
+            userPrize = userBetsOnSideB[msg.sender].mul(totalASide).div(totalBetsOnSideB());
+        } else if (totalBSide < totalASide) {
+            userPrize = userBetsOnSideA[msg.sender].mul(totalBSide).div(totalBetsOnSideA());
+        } else {
+            userPrize = userBetsOnSideA[msg.sender].add(userBetsOnSideB[msg.sender]);
+        }
+        
+        require(userPrize > 0, "You have no winnings to claim");
+        
+        userBetsOnSideA[msg.sender] = 0;
+        userBetsOnSideB[msg.sender] = 0;
+        
+        payable(msg.sender).transfer(userPrize);
+    }
+
+    function totalBetsOnSideA() public view returns (uint256) {
+        uint256 totalBets = 0;
+        for (uint256 i = 0; i < _userList.length; i++) {
+            totalBets = totalBets.add(userBetsOnSideA[_userList[i]]);
+        }
+        return totalBets;
+    }
+
+    function totalBetsOnSideB() public view returns (uint256) {
+        uint256 totalBets = 0;
+        for (uint256 i = 0; i < _userList.length; i++) {
+            totalBets = totalBets.add(userBetsOnSideB[_userList[i]]);
+        }
+        return totalBets;
+    }
+    
+    function _userExists(address user) private view returns (bool) {
+        for (uint256 i = 0; i < _userList.length; i++) {
+            if (_userList[i] == user) {
+                return true;
+            }
+        }
+        return false;
+    }
+}

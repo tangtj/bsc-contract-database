@@ -1,0 +1,181 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+        return c;
+    }
+}
+
+contract BettingGame {
+    using SafeMath for uint256;
+
+    address public owner;
+    bool public isPhase1Active;
+    bool public isPhase2Active;
+    uint256 public phase1EndTime;
+    uint256 public phase2EndTime;
+    uint256 public constant MINIMUM_BET = 0.01 ether; // Set the minimum bet amount here
+    uint256 public constant MAXIMUM_BET = 1 ether; // Set the maximum bet amount here
+    uint256 public constant PHASE1_DURATION = 5 minutes; // Set the duration of phase 1 here
+    uint256 public constant PHASE2_DURATION = 15 seconds; // Set the duration of phase 2 here
+    mapping(address => uint256) public userBetsOnSideA;
+    mapping(address => uint256) public userBetsOnSideB;
+    address[] private _userList;
+
+    event BetPlaced(address indexed user, string side, uint256 amount);
+    event WinnerDeclared(string side, uint256 prize);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function startRound() external onlyOwner {
+        require(!isPhase1Active && !isPhase2Active, "Previous round not ended yet");
+        isPhase1Active = true;
+        phase1EndTime = block.timestamp + PHASE1_DURATION;
+        phase2EndTime = 0;
+    }
+
+    function endPhase1() external onlyOwner {
+        require(isPhase1Active, "Phase 1 is not active");
+        isPhase1Active = false;
+        phase2EndTime = block.timestamp + 1 minutes; // Add a pause of 1 minute before Phase 2 starts
+    }
+
+    function startPhase2() external {
+        require(!isPhase1Active && phase2EndTime > 0, "Phase 2 has not started yet");
+        require(block.timestamp >= phase2EndTime, "Phase 2 has not started yet");
+        isPhase2Active = true;
+        phase2EndTime = block.timestamp + PHASE2_DURATION;
+    }
+
+    function placeBetA() external payable {
+        require(isPhase1Active, "Phase 1 is not active");
+        require(msg.value >= MINIMUM_BET && msg.value <= MAXIMUM_BET, "Invalid bet amount");
+
+        userBetsOnSideA[msg.sender] = userBetsOnSideA[msg.sender].add(msg.value);
+        _userList.push(msg.sender);
+
+        emit BetPlaced(msg.sender, "Side A", msg.value);
+    }
+
+    function placeBetB() external payable {
+        require(isPhase1Active, "Phase 1 is not active");
+        require(msg.value >= MINIMUM_BET && msg.value <= MAXIMUM_BET, "Invalid bet amount");
+
+        userBetsOnSideB[msg.sender] = userBetsOnSideB[msg.sender].add(msg.value);
+        _userList.push(msg.sender);
+
+        emit BetPlaced(msg.sender, "Side B", msg.value);
+    }
+
+    function claimWinnings() external {
+        require(!isPhase1Active && isPhase2Active, "Phase 2 is not active");
+        require(phase2EndTime > 0 && block.timestamp >= phase2EndTime, "Phase 2 has not ended yet");
+
+        uint256 totalASide = address(this).balance - totalBetsOnSideB();
+        uint256 totalBSide = totalBetsOnSideB();
+
+        // Reset user bets
+        uint256 userBetA = userBetsOnSideA[msg.sender];
+        uint256 userBetB = userBetsOnSideB[msg.sender];
+        userBetsOnSideA[msg.sender] = 0;
+        userBetsOnSideB[msg.sender] = 0;
+
+        // Check if the user has winnings to claim
+        uint256 userPrize = 0;
+        if (totalASide < totalBSide) {
+            userPrize = userBetB.mul(totalASide).div(totalBetsOnSideB());
+        } else if (totalBSide < totalASide) {
+            userPrize = userBetA.mul(totalBSide).div(totalBetsOnSideA());
+        } else {
+            userPrize = userBetA.add(userBetB);
+        }
+
+        require(userPrize > 0, "You have no winnings to claim");
+        payable(msg.sender).transfer(userPrize);
+    }
+
+    function withdrawBets() external {
+        require(!isPhase1Active, "Phase 1 is still active");
+        require(!isPhase2Active, "Phase 2 is still active");
+
+        uint256 userBetA = userBetsOnSideA[msg.sender];
+        uint256 userBetB = userBetsOnSideB[msg.sender];
+        userBetsOnSideA[msg.sender] = 0;
+        userBetsOnSideB[msg.sender] = 0;
+
+        uint256 totalRefund = userBetA.add(userBetB);
+        require(totalRefund > 0, "You have no bets to refund");
+        payable(msg.sender).transfer(totalRefund);
+    }
+
+    function totalBetsOnSideA() internal view returns (uint256) {
+        uint256 totalBets = 0;
+        for (uint256 i = 0; i < _userList.length; i++) {
+            totalBets = totalBets.add(userBetsOnSideA[_userList[i]]);
+        }
+        return totalBets;
+    }
+
+    function totalBetsOnSideB() internal view returns (uint256) {
+        uint256 totalBets = 0;
+        for (uint256 i = 0; i < _userList.length; i++) {
+            totalBets = totalBets.add(userBetsOnSideB[_userList[i]]);
+        }
+        return totalBets;
+    }
+
+    function getEthBalanceSideA() external view returns (uint256) {
+        return address(this).balance - totalBetsOnSideB();
+    }
+
+    function getEthBalanceSideB() external view returns (uint256) {
+        return totalBetsOnSideB();
+    }
+
+    function getPhase1TimeCountdown() external view returns (uint256) {
+        return phase1EndTime > 0 ? phase1EndTime - block.timestamp : 0;
+    }
+
+    function getPhase2TimeCountdown() external view returns (uint256) {
+        return phase2EndTime > 0 ? phase2EndTime - block.timestamp : 0;
+    }
+
+    // Function to allow the owner to claim any stuck ETH on the contract
+    function claimStuckEth() external onlyOwner {
+        require(!isPhase1Active, "Phase 1 is still active");
+        require(!isPhase2Active, "Phase 2 is still active");
+        require(address(this).balance > 0, "No ETH to claim");
+        payable(owner).transfer(address(this).balance);
+    }
+}

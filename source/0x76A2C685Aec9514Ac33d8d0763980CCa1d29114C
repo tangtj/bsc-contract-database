@@ -1,0 +1,171 @@
+//SPDX-License-Identifier: UNLICENSED
+
+pragma solidity 0.8.11;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+contract staCoinStake is ReentrancyGuard, Ownable {
+
+    event Stake(
+        uint256 _order_id,
+        address indexed _creator,
+        address indexed _stakeAddress,
+        uint256 indexed _amount,
+        uint256 _stakeUntil,
+        uint256 _timestamp
+    );
+
+    event UnStake(
+        uint256 _order_id,
+        address indexed _beneficiary,
+        address indexed _caller
+    );
+
+    event lockAdminAdd(address indexed _account);
+
+    struct StakeUsers {
+        uint256 order_id;
+        address creator;
+        address beneficiary;
+        uint256 amount;
+        uint256 stakeUntil;
+        uint256 timestamp;
+    }
+
+    // IERC20 public token;
+
+    mapping(uint256 => StakeUsers) public stakeUsers;
+    mapping(address => bool) public lockAdmin;
+
+    modifier onlyLockAdmin(address _account) {
+        require(lockAdmin[_account] == true);
+        _;
+    }
+
+    constructor() {
+        // token = _token;
+        setLockAdmin(msg.sender);
+    }
+
+    function setLockAdmin(address _account) public onlyOwner {
+        lockAdmin[_account] = true;
+        emit lockAdminAdd(_account);
+    }
+
+    function unsetLockAdmin(address _account) public onlyOwner {
+        lockAdmin[_account] = false;
+        emit lockAdminAdd(_account);
+    }
+
+    function coinStake(address payable  _locker, address _stakeAddress, uint256 _stakeUntil, uint256 _order_id) public payable {
+        require(_order_id > 0, "Order Required for Lock Transaction!");
+        require(_stakeAddress != address(0), "You cannot lock up tokens for the zero address!");
+        require(msg.value > 0, "Stake amount of zero coins is invalid!");
+        require(stakeUsers[_order_id].amount == 0, "Coin have already been staked for the given order id!");
+
+        stakeUsers[_order_id] = StakeUsers({
+            order_id : _order_id,
+            creator : msg.sender,
+            beneficiary : _stakeAddress,
+            amount : msg.value,
+            stakeUntil : _stakeUntil,
+            timestamp : block.timestamp
+            
+        });
+
+        _locker.transfer(msg.value);
+
+        emit Stake(_order_id, msg.sender, _stakeAddress, msg.value, _stakeUntil, block.timestamp);
+    }
+
+    function unStake(uint256 _order_id) public payable {
+        require(_order_id > 0, "Order Required for Rewert Transaction!");
+        StakeUsers storage lockup = stakeUsers[_order_id];
+        require(lockup.beneficiary == msg.sender, "Invaild Wallet Address, You can't withdraw another wallet balance!");
+        require(lockup.amount > 0, "There are no coins stake for this address");
+        require(block.timestamp >= lockup.stakeUntil, "Coins are still locked up");
+        lockup.amount = 0;
+        payable(lockup.beneficiary).transfer(msg.value);
+        emit UnStake(_order_id,msg.sender, msg.sender);
+    }
+    
+
+}

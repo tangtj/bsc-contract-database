@@ -1,0 +1,176 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+
+contract GG {
+    address public owner;
+    uint256 public phase1Duration = 1 minutes;
+    uint256 public phase2Duration = 15 seconds;
+    uint256 public minimumBet = 0.01 ether;
+    uint256 public maximumBet = 1 ether;
+    uint256 public phase1EndTime;
+    uint256 public phase2StartTime;
+    bool public isPhase1Active;
+    bool public isPhase2Active;
+    mapping(address => uint256) public userBetsOnSideA;
+    mapping(address => uint256) public userBetsOnSideB;
+
+    event BetPlaced(address indexed user, uint256 amount, string side);
+    event WinnerDeclared(string side, uint256 totalPrize);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "You are not the owner");
+        _;
+    }
+
+    modifier onlyDuringPhase1() {
+        require(isPhase1Active, "Phase 1 is not active");
+        require(block.timestamp <= phase1EndTime, "Phase 1 has ended");
+        _;
+    }
+
+    modifier onlyDuringPhase2() {
+        require(isPhase2Active, "Phase 2 is not active");
+        require(block.timestamp >= phase2StartTime, "Phase 2 has not started");
+        _;
+    }
+
+    modifier onlyAfterPhase2() {
+        require(!isPhase2Active, "Phase 2 is still active");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function startRound() external onlyOwner {
+        require(!isPhase1Active && !isPhase2Active, "A round is already active");
+
+        // Start Phase 1
+        isPhase1Active = true;
+        phase1EndTime = block.timestamp + phase1Duration;
+
+        // Start Phase 2 after 1 minute from Phase 1 end
+        phase2StartTime = phase1EndTime + 1 minutes;
+        isPhase2Active = false;
+    }
+
+    function placeBetA() external payable onlyDuringPhase1 {
+        require(msg.value >= minimumBet && msg.value <= maximumBet, "Invalid bet amount");
+        userBetsOnSideA[msg.sender] += msg.value;
+        emit BetPlaced(msg.sender, msg.value, "Side A");
+    }
+
+    function placeBetB() external payable onlyDuringPhase1 {
+        require(msg.value >= minimumBet && msg.value <= maximumBet, "Invalid bet amount");
+        userBetsOnSideB[msg.sender] += msg.value;
+        emit BetPlaced(msg.sender, msg.value, "Side B");
+    }
+
+    function declareWinners() external onlyAfterPhase2 onlyOwner {
+        require(
+            userBetsOnSideA[msg.sender] > 0 || userBetsOnSideB[msg.sender] > 0,
+            "You did not place any bets"
+        );
+
+        // Calculate the total ETH amounts gathered on each side
+        uint256 totalASide = address(this).balance - userBetsOnSideB[msg.sender];
+        uint256 totalBSide = address(this).balance - userBetsOnSideA[msg.sender];
+
+        // Determine the winning side
+        string memory winningSide;
+        uint256 totalPrize;
+        if (totalASide < totalBSide) {
+            winningSide = "Side A";
+            totalPrize = totalASide;
+        } else {
+            winningSide = "Side B";
+            totalPrize = totalBSide;
+        }
+
+        // The contract does not automatically distribute the winnings
+        // Users must manually claim their winnings using the `claimWinnings` function
+
+        emit WinnerDeclared(winningSide, totalPrize);
+
+        // Reset the game for the next round
+        isPhase1Active = false;
+        isPhase2Active = false;
+        userBetsOnSideA[msg.sender] = 0;
+        userBetsOnSideB[msg.sender] = 0;
+    }
+
+    function claimWinnings() external onlyAfterPhase2 {
+        uint256 totalUserBets = userBetsOnSideA[msg.sender] + userBetsOnSideB[msg.sender];
+        require(totalUserBets > 0, "No winnings to claim");
+
+        uint256 totalPrize;
+        if (userBetsOnSideA[msg.sender] > 0) {
+            totalPrize = address(this).balance - userBetsOnSideB[msg.sender];
+        } else {
+            totalPrize = address(this).balance - userBetsOnSideA[msg.sender];
+        }
+
+        uint256 userPrize = totalUserBets * totalPrize / address(this).balance;
+        require(userPrize > 0, "You did not bet on the winning side");
+
+        // Reset user bets for the next round
+        userBetsOnSideA[msg.sender] = 0;
+        userBetsOnSideB[msg.sender] = 0;
+
+        // Transfer the winnings to the user
+        payable(msg.sender).transfer(userPrize);
+    }
+
+    // Function to allow users to claim their remaining balance (in case they didn't win)
+    function claimBalance() external onlyAfterPhase2 {
+        uint256 totalUserBets = userBetsOnSideA[msg.sender] + userBetsOnSideB[msg.sender];
+        require(totalUserBets > 0, "No balance to claim");
+
+        userBetsOnSideA[msg.sender] = 0;
+        userBetsOnSideB[msg.sender] = 0;
+        payable(msg.sender).transfer(totalUserBets);
+    }
+
+    // Function to get the ETH balance of Side A
+    function getETHBalanceOfSideA() external view returns (uint256) {
+        return address(this).balance - userBetsOnSideB[msg.sender];
+    }
+
+    // Function to get the ETH balance of Side B
+    function getETHBalanceOfSideB() external view returns (uint256) {
+        return address(this).balance - userBetsOnSideA[msg.sender];
+    }
+
+    // Function to get the remaining time for Phase 1 and Phase 2
+    function getRemainingTime() external view returns (uint256 phase1Time, uint256 phase2Time) {
+        phase1Time = 0;
+        phase2Time = 0;
+
+        if (isPhase1Active) {
+            phase1Time = phase1EndTime - block.timestamp;
+        } else if (isPhase2Active) {
+            phase2Time = phase2StartTime - block.timestamp;
+        }
+    }
+
+    // Function to set the minimum bet (only callable by the owner)
+    function setMinimumBet(uint256 newMinimumBet) external onlyOwner {
+        minimumBet = newMinimumBet;
+    }
+
+    // Function to set the maximum bet (only callable by the owner)
+    function setMaximumBet(uint256 newMaximumBet) external onlyOwner {
+        maximumBet = newMaximumBet;
+    }
+
+    // Function to set the Phase 1 duration (only callable by the owner)
+    function setPhase1Duration(uint256 newDuration) external onlyOwner {
+        phase1Duration = newDuration;
+    }
+
+    // Function to set the Phase 2 duration (only callable by the owner)
+    function setPhase2Duration(uint256 newDuration) external onlyOwner {
+        phase2Duration = newDuration;
+    }
+}

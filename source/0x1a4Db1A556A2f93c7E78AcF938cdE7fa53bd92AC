@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.18;
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) return 0;
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+        return c;
+    }
+}
+
+contract BettingGame {
+    using SafeMath for uint256;
+
+    uint256 public phase1StartTime;
+    uint256 public phase1EndTime;
+    uint256 public phase2StartTime;
+    uint256 public phase2EndTime;
+    uint256 public minimumBet;
+    uint256 public maximumBet;
+    uint256 public phase1Duration;
+    uint256 public phase2Duration;
+
+    address public owner;
+
+    enum Side {A, B}
+    mapping(address => uint256) public userBetsOnSideA;
+    mapping(address => uint256) public userBetsOnSideB;
+    address[] private _userList;
+
+    event BetPlaced(address indexed user, uint256 amount, Side side);
+    event WinnerDeclared(string winningSide, uint256 totalPrize);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function");
+        _;
+    }
+
+    modifier inPhase1() {
+        require(block.timestamp >= phase1StartTime && block.timestamp <= phase1EndTime, "Phase 1 is not active");
+        _;
+    }
+
+    modifier inPhase2() {
+        require(block.timestamp >= phase2StartTime && block.timestamp <= phase2EndTime, "Phase 2 is not active");
+        _;
+    }
+
+    modifier afterPhase2() {
+        require(block.timestamp > phase2EndTime, "Phase 2 is still active");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function startRound(uint256 _phase1Duration, uint256 _phase2Duration, uint256 _minimumBet, uint256 _maximumBet) public onlyOwner {
+        require(_phase1Duration > 0, "Phase 1 duration must be greater than zero");
+        require(_phase2Duration > 0, "Phase 2 duration must be greater than zero");
+        require(_minimumBet > 0, "Minimum bet must be greater than zero");
+        require(_maximumBet > _minimumBet, "Maximum bet must be greater than minimum bet");
+
+        phase1Duration = _phase1Duration;
+        phase2Duration = _phase2Duration;
+        minimumBet = _minimumBet;
+        maximumBet = _maximumBet;
+
+        phase1StartTime = block.timestamp;
+        phase1EndTime = phase1StartTime.add(phase1Duration);
+        phase2StartTime = phase1EndTime.add(60); // 60 seconds after phase 1 ends
+        phase2EndTime = phase2StartTime.add(phase2Duration);
+    }
+
+    function placeBet(Side side) public payable inPhase1 {
+        require(msg.value >= minimumBet && msg.value <= maximumBet, "Invalid bet amount");
+        if (side == Side.A) {
+            userBetsOnSideA[msg.sender] = userBetsOnSideA[msg.sender].add(msg.value);
+        } else {
+            userBetsOnSideB[msg.sender] = userBetsOnSideB[msg.sender].add(msg.value);
+        }
+        _userList.push(msg.sender);
+        emit BetPlaced(msg.sender, msg.value, side);
+    }
+
+    function claimWinnings() external inPhase2 {
+        uint256 totalASide = address(this).balance.sub(totalBetsOnSideA());
+        uint256 totalBSide = address(this).balance.sub(totalASide);
+
+        uint256 userPrize = 0;
+        if (totalASide < totalBSide) {
+            userPrize = userBetsOnSideB[msg.sender].mul(totalASide).div(totalBetsOnSideB());
+        } else if (totalBSide < totalASide) {
+            userPrize = userBetsOnSideA[msg.sender].mul(totalBSide).div(totalBetsOnSideA());
+        } else {
+            userPrize = userBetsOnSideA[msg.sender] + userBetsOnSideB[msg.sender];
+        }
+
+        require(userPrize > 0, "You have no winnings to claim");
+        payable(msg.sender).transfer(userPrize);
+        userBetsOnSideA[msg.sender] = 0;
+        userBetsOnSideB[msg.sender] = 0;
+    }
+
+    function declareWinner() external afterPhase2 {
+        uint256 totalASide = address(this).balance.sub(totalBetsOnSideA());
+        uint256 totalBSide = address(this).balance - totalASide;
+
+        string memory winningSide;
+        uint256 totalPrize;
+
+        if (totalASide < totalBSide) {
+            winningSide = "Side B";
+            totalPrize = totalBetsOnSideB();
+        } else if (totalBSide < totalASide) {
+            winningSide = "Side A";
+            totalPrize = totalBetsOnSideA();
+        } else {
+            winningSide = "Draw";
+            totalPrize = totalBetsOnSideA() + totalBetsOnSideB();
+        }
+
+        emit WinnerDeclared(winningSide, totalPrize);
+    }
+
+    function totalBetsOnSideA() public view returns (uint256) {
+        uint256 totalBets = 0;
+        for (uint256 i = 0; i < _userList.length; i++) {
+            totalBets = totalBets.add(userBetsOnSideA[_userList[i]]);
+        }
+        return totalBets;
+    }
+
+    function totalBetsOnSideB() public view returns (uint256) {
+        uint256 totalBets = 0;
+        for (uint256 i = 0; i < _userList.length; i++) {
+            totalBets = totalBets.add(userBetsOnSideB[_userList[i]]);
+        }
+        return totalBets;
+    }
+
+    function phase1TimeCountdown() public view returns (uint256) {
+        return phase1EndTime > block.timestamp ? phase1EndTime - block.timestamp : 0;
+    }
+
+    function phase2TimeCountdown() public view returns (uint256) {
+        return phase2EndTime > block.timestamp ? phase2EndTime - block.timestamp : 0;
+    }
+
+    function phase1ToPhase2Transition() public view returns (uint256) {
+        return phase2StartTime > block.timestamp ? phase2StartTime - block.timestamp : 0;
+    }
+
+    function getWinner() public view afterPhase2 returns (string memory) {
+        uint256 totalASide = address(this).balance.sub(totalBetsOnSideA());
+        uint256 totalBSide = address(this).balance - totalASide;
+
+        if (totalASide < totalBSide) {
+            return "Side B";
+        } else if (totalBSide < totalASide) {
+            return "Side A";
+        } else {
+            return "Draw";
+        }
+    }
+}

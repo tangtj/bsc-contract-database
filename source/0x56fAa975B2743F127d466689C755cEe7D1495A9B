@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+contract BettingGame {
+    address public owner;
+    uint256 public phase1Duration = 5 minutes; // Set the phase 1 duration here (5 minutes as an example)
+    uint256 public phase2Duration = 10 minutes; // Set the phase 2 duration here (10 minutes as an example)
+    uint256 public phase1EndTime;
+    uint256 public phase2StartTime;
+    uint256 public phase2EndTime;
+    uint256 public minimumBet = 0.01 ether; // Set the minimum bet value here
+    uint256 public maximumBet = 1 ether; // Set the maximum bet value here
+    uint256 private constant pauseTime = 1 minutes; // 1 minute pause time between phases
+    mapping(address => uint256) public userBetsOnSideA;
+    mapping(address => uint256) public userBetsOnSideB;
+    enum Phase { NotStarted, Phase1, Phase2, Ended }
+    Phase public currentPhase;
+    address[] private _userList;
+
+    event PhaseStarted(Phase phase, uint256 startTime);
+    event WinnerDeclared(string winningSide, uint256 totalPrize);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function");
+        _;
+    }
+
+    modifier onlyBeforePhase1() {
+        require(currentPhase == Phase.NotStarted, "Phase 1 has already started");
+        _;
+    }
+
+    modifier onlyBeforePhase2() {
+        require(currentPhase == Phase.Phase1, "Phase 2 has already started");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+        currentPhase = Phase.NotStarted;
+    }
+
+    function setPhaseDurations(uint256 _phase1Duration, uint256 _phase2Duration) public onlyOwner {
+        require(_phase1Duration > 0 && _phase2Duration > 0, "Invalid phase durations");
+        phase1Duration = _phase1Duration;
+        phase2Duration = _phase2Duration;
+    }
+
+    function setBetLimits(uint256 _minimumBet, uint256 _maximumBet) public onlyOwner {
+        require(_minimumBet > 0 && _maximumBet >= _minimumBet, "Invalid bet limits");
+        minimumBet = _minimumBet;
+        maximumBet = _maximumBet;
+    }
+
+    function startRound() external onlyOwner onlyBeforePhase1 {
+        phase1EndTime = block.timestamp + phase1Duration;
+        phase2StartTime = phase1EndTime + pauseTime;
+        phase2EndTime = phase2StartTime + phase2Duration;
+        currentPhase = Phase.Phase1;
+        emit PhaseStarted(currentPhase, phase1EndTime);
+    }
+
+    function placeBet(uint256 amount, string memory side) external onlyBeforePhase2 {
+        require(currentPhase == Phase.Phase1, "Betting is only allowed during Phase 1");
+        require(amount >= minimumBet && amount <= maximumBet, "Bet amount is outside the allowed range");
+        require(keccak256(abi.encodePacked(side)) == keccak256("A") || keccak256(abi.encodePacked(side)) == keccak256("B"), "Invalid side");
+
+        if (keccak256(abi.encodePacked(side)) == keccak256("A")) {
+            userBetsOnSideA[msg.sender] += amount;
+        } else {
+            userBetsOnSideB[msg.sender] += amount;
+        }
+        _userList.push(msg.sender);
+    }
+
+    function getPhase1RemainingTime() public view returns (uint256) {
+        return currentPhase == Phase.NotStarted ? 0 : (currentPhase == Phase.Phase1 ? phase1EndTime - block.timestamp : 0);
+    }
+
+    function getPhase2RemainingTime() public view returns (uint256) {
+        return currentPhase == Phase.Phase2 ? phase2EndTime - block.timestamp : 0;
+    }
+
+    function getPhase1ToPhase2TransitionTime() public view returns (uint256) {
+        return currentPhase == Phase.Phase1 ? phase2StartTime - block.timestamp : 0;
+    }
+
+    function totalBetsOnSideA() public view returns (uint256) {
+        uint256 totalBets = 0;
+        for (uint256 i = 0; i < _userList.length; i++) {
+            totalBets += userBetsOnSideA[_userList[i]];
+        }
+        return totalBets;
+    }
+
+    function totalBetsOnSideB() public view returns (uint256) {
+        uint256 totalBets = 0;
+        for (uint256 i = 0; i < _userList.length; i++) {
+            totalBets += userBetsOnSideB[_userList[i]];
+        }
+        return totalBets;
+    }
+
+    function finishRound() external {
+        require(currentPhase == Phase.Phase2, "Round can only be finished during Phase 2");
+        currentPhase = Phase.Ended;
+        emit WinnerDeclared(getWinningSide(), address(this).balance);
+    }
+
+    function claimWinnings() external {
+        require(currentPhase == Phase.Ended, "Winnings can only be claimed after the round has ended");
+        uint256 userPrize = 0;
+        string memory winningSide = getWinningSide();
+        if (keccak256(abi.encodePacked(winningSide)) == keccak256("A")) {
+            userPrize = userBetsOnSideA[msg.sender] * totalBetsOnSideB() / totalBetsOnSideA();
+        } else if (keccak256(abi.encodePacked(winningSide)) == keccak256("B")) {
+            userPrize = userBetsOnSideB[msg.sender] * totalBetsOnSideA() / totalBetsOnSideB();
+        }
+        require(userPrize > 0, "You have no winnings to claim");
+        payable(msg.sender).transfer(userPrize);
+    }
+
+    function getWinningSide() internal view returns (string memory) {
+        uint256 totalASide = totalBetsOnSideA();
+        uint256 totalBSide = totalBetsOnSideB();
+
+        if (totalASide < totalBSide) {
+            return "A";
+        } else if (totalASide > totalBSide) {
+            return "B";
+        } else {
+            return "Draw";
+        }
+    }
+
+    // Function to claim all ETH on the contract by the owner
+    function claimAllEth() external onlyOwner {
+        require(currentPhase == Phase.Ended, "Contract balance can only be claimed after the round has ended");
+        payable(owner).transfer(address(this).balance);
+    }
+}
