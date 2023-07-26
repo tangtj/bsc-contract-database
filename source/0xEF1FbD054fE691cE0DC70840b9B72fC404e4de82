@@ -1,0 +1,1223 @@
+// Developed by TRII DIENSTLEISTUNG SARL
+
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+// This abstract contract provides a basic implementation of functions to retrieve
+// the message sender and message data for a contract. It serves as a building block
+// for other contracts to access the sender and data of the current message (transaction).
+
+abstract contract Context {
+    // Returns the address of the sender of the current message (transaction).
+    // The internal keyword restricts its usage to internal functions within derived contracts.
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    // Returns the data of the current message (transaction).
+    // The internal keyword restricts its usage to internal functions within derived contracts.
+    function _msgData() internal view virtual returns (bytes calldata) {
+        // The 'this' keyword refers to the current contract instance.
+        // In this context, it's used to suppress a state mutability warning
+        // related to generating bytecode in older versions of Solidity.
+        // See https://github.com/ethereum/solidity/issues/2691 for more details.
+        this;
+        return msg.data;
+    }
+}
+
+// Interface for the ERC-20 standard token
+
+interface IERC20 {
+    // Get the total supply of the token
+    function totalSupply() external view returns (uint256);
+
+    // Get the token balance of a specific account
+    function balanceOf(address account) external view returns (uint256);
+
+    // Transfer tokens from the caller's account to the recipient
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    // Get the remaining allowance for a spender to spend on behalf of the owner
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    // Allow a spender to spend tokens on behalf of the caller up to a specified amount
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    // Transfer tokens from one account (the sender) to another account (the recipient)
+    // The caller must have an allowance from the sender to spend the specified amount
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    // Event emitted when tokens are transferred from one account to another
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    // Event emitted when an allowance is set for a spender to spend on behalf of an owner
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+// Context provides information about the current execution context of the contract
+abstract contract Ownable is Context {
+    // Stores the address of the contract owner
+    address private _owner;
+
+    // Event triggered whenever ownership is transferred
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    // Constructor to set the initial contract owner
+    constructor() {
+        // Set the contract creator's address as the initial owner
+        _setOwner(_msgSender());
+    }
+
+    // Function to retrieve the address of the contract owner
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    // Modifier that allows only the contract owner to call the function
+    modifier onlyOwner() {
+        // Check if the caller is the contract owner
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    // Function to renounce ownership, making the contract ownerless
+    function renounceOwnership() public virtual onlyOwner {
+        // Set the contract owner's address to zero, effectively renouncing ownership
+        _setOwner(address(0));
+    }
+
+    // Function to transfer ownership to a new address
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        // Ensure the new owner's address is not the zero address
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        // Set the new owner
+        _setOwner(newOwner);
+    }
+
+    // Internal function to set the owner's address
+    function _setOwner(address newOwner) private {
+        // Store the current owner's address
+        address oldOwner = _owner;
+        // Set the new owner's address
+        _owner = newOwner;
+        // Emit an event to indicate the ownership transfer
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+library Address {
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+
+        (bool success, ) = recipient.call{ value: amount }("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+}
+
+// Interface for Factory contract used in decentralized exchanges (DEXs)
+interface IFactory {
+    // Function to create a trading pair for two tokens (tokenA and tokenB)
+    // Returns the address of the newly created trading pair
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+// Interface for a decentralized exchange router contract
+interface IRouter {
+    // Get the address of the factory contract
+    function factory() external pure returns (address);
+
+    // Get the address of the Wrapped Ether (WETH) contract
+    function WETH() external pure returns (address);
+
+    // Add liquidity to a pool with ETH
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        payable
+        returns (
+            uint256 amountToken,
+            uint256 amountETH,
+            uint256 liquidity
+        );
+
+    // Swap an exact amount of tokens for ETH, supporting tokens with transfer fees
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+}
+
+// Importing required libraries and interfaces
+contract TRII is Context, IERC20, Ownable {
+    // Using the Address library to work with address type
+    using Address for address payable;
+   
+   // Mapping to track the reflection balance of each address (used for RFI mechanism)
+    mapping(address => uint256) private _rOwned;
+    
+    // Mapping to track the token balance of each address (used for regular transfer)
+    mapping(address => uint256) private _tOwned;
+    
+    // Mapping to track the approved allowance of one address to spend tokens on behalf of another
+    mapping(address => mapping(address => uint256)) private _allowances;
+   
+    // Mapping to exclude specific addresses from the reward (reflection) distribution
+    mapping(address => bool) private _isExcludedFromFee;
+    
+    // Mapping used to keep track of addresses that are excluded from certain fees and reflections
+    mapping(address => bool) private _isExcluded;
+    
+    // Mapping to allow specific addresses to transfer tokens even when trading is not enabled
+    mapping(address => bool) public allowedTransfer;
+    
+    // Mapping to blacklist specific addresses from trading
+    mapping(address => bool) private _isBlacklisted;
+
+    // Store the addresses of accounts that are excluded from earning reflections
+    address[] private _excluded;
+
+    // Private variable to store the address that should be excluded from special handling in the code.
+    // This address will not have its balance adjusted to avoid having a balance less than 10 tokens.
+    address private addressToExclude;
+
+
+
+    //This is the name of the state variable, which indicates whether trading is enabled or not, using either true or false.
+    bool public tradingEnabled;
+    
+    // Determines whether swapping of tokens for liquidity and fees is enabled or not.
+    bool public swapEnabled;
+   
+   // A flag to track whether the contract is currently in the process of swapping tokens.
+    bool private swapping;
+    
+    // The 'deadblocks' variable determines the number of blocks after the contract deployment during which certain restrictions may be in place.
+    // For example, it can be used to set a cooldown period after trading is enabled, during which selling transactions might have higher taxes.
+    // By setting 'deadblocks' to a value greater than 0, the contract owner can introduce a delay before certain tokenomics features take effect.
+    // After the specified number of blocks, the contract behavior may change based on the owner's defined settings for taxes, limits, etc.
+    // Typically, 'deadblocks' is used to allow initial distribution and setup of the token before enabling full functionality and trading.
+    // Setting 'deadblocks' to 0 means that the contract features will be active immediately after deployment, without any initial delay.
+    uint256 public deadblocks = 1;
+
+    // Mapping to keep track of the last timestamp when a wallet address performed a sell transaction
+    // This is used to implement a cooldown period for selling tokens to prevent excessive sell activity and discourage price manipulation.
+    mapping(address => uint256) private _lastSell;
+    // Flag indicating whether the cooldown period is enabled or not.
+    bool public coolDownEnabled = true;
+
+    // The duration (in seconds) of the cooldown period after a sell transaction.
+    // During the cooldown period, a seller cannot make another sell transaction.
+    // This is used to prevent rapid and consecutive selling that may adversely affect the token's price.
+    uint256 public coolDownTime = 120 seconds;
+
+    // Modifier to prevent bot-like behavior during trading
+    modifier antiBot(address account) {
+        // Require that trading is enabled or the account is explicitly allowed to transfer
+        require(tradingEnabled || allowedTransfer[account], "Trading not enabled yet");
+        _; // Continue with the execution of the modified function
+    }
+
+    // IRouter instance used for interacting with the decentralized exchange router.
+    IRouter public router;
+    // Address of the pair contract representing the token's pair with the native token on the decentralized exchange. This pair is used for swapping and liquidity provision.
+    address public pair;
+
+    // Number of decimal places used for the token. In this case, the token uses 18 decimal places.
+    uint8 private constant _decimals = 18;
+
+    // The maximum value that a uint256 variable can hold
+    uint256 private constant MAX = ~uint256(0);
+
+    // Total supply of the token (10 billions $TRII )
+    uint256 private _tTotal = 10e9 * 10**_decimals;
+
+    // _rTotal is the total reflection supply of the token, which represents the total amount of reflections across all holders.
+    // It is calculated as the maximum possible reflection value (MAX) minus the remainder of dividing MAX by the total token supply (_tTotal).
+    // This ensures that the reflection supply is evenly distributed across all tokens and prevents potential overflow issues.
+    // Reflections are used in the tokenomics to distribute fees among holders based on their proportion of the total reflection supply.
+    uint256 private _rTotal = (MAX - (MAX % _tTotal));
+
+    // The `swapTokensAtAmount` represents the minimum number of tokens that the contract should hold
+    // before triggering an automatic swap and liquidity addition to the PancakeSwap pool. When the contract
+    // balance reaches or exceeds this amount, the `swapAndLiquify` function will be called to swap a portion of the tokens to BNB and add liquidity to the PancakeSwap pool.
+    // The value of `swapTokensAtAmount` is set to 3 million tokens (3,000,000) multiplied by 10^9 to account for
+    // The token's decimals (9 decimal places). This means that the contract will trigger a swap when its balance reaches or exceeds 3 million tokens.
+    uint256 public swapTokensAtAmount = 3_000_000 * 10**9;
+
+    // The maximum amount of tokens that can be bought in a single transaction
+    uint256 public maxBuyLimit = 20_000_000 * 10**9;
+    
+    // The maximum amount of tokens that can be sold in a single transaction
+    uint256 public maxSellLimit = 20_000_000 * 10**9;
+
+    // Maximum Wallet Limit
+    // This variable determines the maximum number of tokens that a single wallet address can hold.
+    // The value is represented in wei, where 1 wei is equivalent to 1 token.
+    // For example, if maxWalletLimit is set to 30,000,000 * 10**9, it means the maximum limit for a wallet is 30,000,000 tokens.
+    // This is used to prevent a single wallet from holding an excessive amount of tokens, which can help to avoid large price swings caused by whales.
+    uint256 public maxWalletLimit = 30_000_000 * 10**9;
+
+    // Timestamp of the block when the token's trading functionality was first enabled
+    uint256 public genesis_block;
+
+    // Address where marketing tokens are held.
+    address public marketingWallet = 0x70a1678CbbE4940B210BA771B40310fe37f1b842;
+    // Address where buisness developement tokens are held.
+    address public devWallet = 0x70a1678CbbE4940B210BA771B40310fe37f1b842;
+    // The address where team tokens will be sent.
+    address public teamWallet = 0x70a1678CbbE4940B210BA771B40310fe37f1b842;
+
+    // Private constant variable to store the name of the token
+    string private constant _name = "TRII Token";
+    // The token symbol for the TRII token
+    string private constant _symbol = "TRII";
+
+    // Struct to store the various tax percentages applied to token transactions.
+    struct Taxes {
+    uint256 rfi;       // Reflection Fee (RFI) percentage. This fee is redistributed to all token holders as reflection rewards.
+    uint256 marketing; // Marketing Fee percentage. This fee is used for marketing and promotion of the token.
+    uint256 liquidity; // Liquidity Fee percentage. This fee is added to the liquidity pool to provide stability and liquidity to the token.
+    uint256 dev;       // Developer Fee percentage. This fee is allocated to the development team for project maintenance and updates.
+    uint256 team;      // Team Fee percentage. This fee is allocated to the project team for their contributions to the project.
+    }
+
+    // Declare a public variable of the Taxes struct to hold the initial tax percentages.These percentages can be set and updated by the contract owner.
+    Taxes public taxes = Taxes(2, 2, 2, 2, 2);
+    // Struct to hold tax percentages for selling tokens
+    // Taxes(2, 2, 2, 2, 2) means:
+    // - 2% Reflection Fee (RFI): Tokens are redistributed to all holders when someone sells
+    // - 2% Marketing Fee: Tokens go to the marketing wallet when someone sells
+    // - 2% Liquidity Fee: Tokens are added to the liquidity pool when someone sells
+    // - 2% Dev Fee: Tokens go to the development wallet when someone sells
+    // - 2% Team Fee: Tokens go to the team wallet when someone sells
+    Taxes public sellTaxes = Taxes(2, 2, 2, 2, 2);
+
+    // Taxes struct representing the high taxes applied to transactions.
+    // The values are in percentage, represented as integers from 0 to 100.
+    // highTaxes represents the fees applied to transactions in certain scenarios,
+    // such as during a high-volume trading period or a specific event.
+    // The structure of the Taxes is as follows: Taxes(rfi, marketing, liquidity, dev, team)
+    // - rfi: Reflection Fee - The percentage of the transaction fee allocated to reward holders through reflection.
+    // - marketing: Marketing Fee - The percentage of the transaction fee allocated for marketing purposes.
+    // - liquidity: Liquidity Fee - The percentage of the transaction fee allocated for adding liquidity to the liquidity pool.
+    // - dev: Development Fee - The percentage of the transaction fee allocated for the development team.
+    // - team: Team Fee - The percentage of the transaction fee allocated for the project team.
+    Taxes public highTaxes = Taxes(2, 60, 10, 8, 20);
+
+    // Struct to keep track of the total fees paid for each category (RFI, Marketing, Liquidity, Dev, Team)
+    struct TotFeesPaidStruct {
+    uint256 rfi;         // Total reflection (RFI) fees paid
+    uint256 marketing;   // Total marketing fees paid
+    uint256 liquidity;   // Total liquidity fees paid
+    uint256 dev;         // Total development fees paid
+    uint256 team;        // Total team fees paid
+    }
+
+    // This struct keeps track of the total fees paid by the contract during different transactions.
+    // It stores the cumulative amount of fees distributed for each type of fee (RFI, marketing, liquidity, dev, and team).
+    // These fee amounts are used for accounting purposes and to keep track of the total fees collected and utilized.
+    TotFeesPaidStruct public totFeesPaid;
+
+    // Struct to hold the result of calculations from the _getValues function
+    struct valuesFromGetValues {
+    uint256 rAmount;        // Reflection amount (token amount converted to reflection)
+    uint256 rTransferAmount; // Reflection transfer amount (token amount to be transferred converted to reflection)
+    uint256 rRfi;           // Reflection amount of RFI fee (in reflection)
+    uint256 rMarketing;     // Reflection amount of marketing fee (in reflection)
+    uint256 rLiquidity;     // Reflection amount of liquidity fee (in reflection)
+    uint256 rDev;           // Reflection amount of dev fee (in reflection)
+    uint256 rTeam;          // Reflection amount of team fee (in reflection)
+    uint256 tTransferAmount; // Token amount to be transferred (excluding fees)
+    uint256 tRfi;           // Token amount of RFI fee
+    uint256 tMarketing;     // Token amount of marketing fee
+    uint256 tLiquidity;     // Token amount of liquidity fee
+    uint256 tDev;           // Token amount of dev fee
+    uint256 tTeam;          // Token amount of team fee
+    }
+
+    // Event emitted when the fees (taxes) for different operations are changed.
+    event FeesChanged();
+
+    // Event emitted when the router address is updated.
+    event UpdatedRouter(address oldRouter, address newRouter);
+
+    // Modifier to prevent concurrent swap operations
+    // It is used to lock the swap during certain critical functions
+    //This helps prevent potential issues related to race conditions and reentrancy during swap operations.
+    modifier lockTheSwap() {
+        // Set a boolean flag 'swapping' to true before executing the function
+        swapping = true;
+        
+        // The function is executed
+        _;
+        
+        // Set the 'swapping' flag back to false after the function execution is completed
+        swapping = false;
+    }
+
+
+    // Constructor function - Initializes the contract
+    constructor(address routerAddress) {
+
+        // Create a pair in the PancakeSwap Router using the provided router address
+        IRouter _router = IRouter(routerAddress);
+        address _pair = IFactory(_router.factory()).createPair(address(this), _router.WETH());
+
+        // Initialize the router and pair variables
+        router = _router;
+        pair = _pair;
+
+        // Exclude the pair address from reflection rewards
+        excludeFromReward(pair);
+
+        // Set the initial balance of the contract owner to the total supply
+        _rOwned[owner()] = _rTotal;
+
+        // Exclude certain addresses from fees and transfers
+        _isExcludedFromFee[address(this)] = true;
+        _isExcludedFromFee[owner()] = true;
+        _isExcludedFromFee[marketingWallet] = true;
+        _isExcludedFromFee[devWallet] = true;
+        _isExcludedFromFee[teamWallet] = true;
+
+        // Enable transfers for specific addresses
+        allowedTransfer[address(this)] = true;
+        allowedTransfer[owner()] = true;
+        allowedTransfer[pair] = true;
+        allowedTransfer[marketingWallet] = true;
+        allowedTransfer[devWallet] = true;
+        allowedTransfer[teamWallet] = true;
+
+        // Emit a Transfer event to indicate the minting of the initial total supply to the contract owner
+        emit Transfer(address(0), owner(), _tTotal);
+    }
+
+    // ERC20 Standard:
+    // Function to get the name of the token
+    // Returns: string representing the name of the token
+    function name() public pure returns (string memory) {
+    return _name;
+    }
+
+    // Function to get the symbol of the token
+    // Returns: string representing the symbol of the token
+    function symbol() public pure returns (string memory) {
+    return _symbol;
+    }
+
+    // Function to get the number of decimals used for token representation
+    // Returns: uint8 representing the number of decimals
+    function decimals() public pure returns (uint8) {
+    return _decimals;
+    }
+
+
+    //Override ERC20 :
+       // Function to get the total supply of the token
+    function totalSupply() public view override returns (uint256) {
+        return _tTotal;
+    }
+
+    // Function to get the token balance of an account
+    function balanceOf(address account) public view override returns (uint256) {
+        // Check if the account is excluded from reflection (bypasses reflection mechanics)
+        if (_isExcluded[account])
+            return _tOwned[account]; // Return the token balance directly (excluded from reflection)
+        return tokenFromReflection(_rOwned[account]); // Convert reflection balance to token balance
+    }
+
+    // Function to check the allowance of a spender to spend tokens on behalf of an owner
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    // Function to approve a spender to spend a specified amount of tokens on behalf of the caller
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(_msgSender(), spender, amount); // Internal function to handle approval
+        return true;
+    }
+
+    // Function to transfer tokens from the sender's account to a recipient
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        // Check if there are high taxes to be applied based on fee exclusions and block number
+        bool hasHighTaxes = !_isExcludedFromFee[sender] &&
+            !_isExcludedFromFee[recipient] &&
+            block.number <= genesis_block + deadblocks;
+
+        // Perform the token transfer with or without taxes based on 'hasHighTaxes'
+        _transfer(sender, recipient, amount, hasHighTaxes);
+
+        // Update the allowance for the spender
+        uint256 currentAllowance = _allowances[sender][_msgSender()];
+        require(currentAllowance >= amount, "TRII: transfer amount exceeds allowance");
+        _approve(sender, _msgSender(), currentAllowance - amount);
+
+        return true;
+    }
+
+    // Function to increase the allowance of a spender to spend more tokens on behalf of the caller
+    function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue); // Internal function to handle allowance increase
+        return true;
+    }
+
+    // Function to decrease the allowance of a spender to spend fewer tokens on behalf of the caller
+    function decreaseAllowance(address spender, uint256 subtractedValue)
+        public
+        returns (bool)
+    {
+        uint256 currentAllowance = _allowances[_msgSender()][spender];
+        require(currentAllowance >= subtractedValue, "TRII: decreased allowance below zero");
+        _approve(_msgSender(), spender, currentAllowance - subtractedValue); // Internal function to handle allowance decrease
+
+        return true;
+    }
+
+    // Function to transfer tokens to a recipient
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        // Check if there are high taxes to be applied based on fee exclusions and block number
+        bool hasHighTaxes = !_isExcludedFromFee[_msgSender()] &&
+            !_isExcludedFromFee[recipient] &&
+            block.number <= genesis_block + deadblocks;
+
+        // Perform the token transfer with or without taxes based on 'hasHighTaxes'
+        _transfer(msg.sender, recipient, amount, hasHighTaxes);
+        return true;
+    }
+
+    // Function to check if an account is excluded from receiving reflection rewards
+    function isExcludedFromReward(address account) public view returns (bool) {
+        return _isExcluded[account];
+    }
+
+    // Function to convert token amount to reflection amount
+    function reflectionFromToken(uint256 tAmount, bool deductTransferRfi)
+        public
+        view
+        returns (uint256)
+    {
+        require(tAmount <= _tTotal, "Amount must be less than supply");
+        if (!deductTransferRfi) {
+            valuesFromGetValues memory s = _getValues(tAmount, true, false, false);
+            return s.rAmount;
+        } else {
+            valuesFromGetValues memory s = _getValues(tAmount, true, false, false);
+            return s.rTransferAmount;
+        }
+    }
+
+    // Function to set trading status and deadblocks (blocks before transfer taxes apply)
+    function setTradingStatus(bool state, uint256 _deadblocks) external onlyOwner {
+        tradingEnabled = state;
+        swapEnabled = state;
+        deadblocks = _deadblocks;
+        if (state == true && genesis_block == 0) genesis_block = block.number;
+    }
+
+    // Function to convert reflection amount to token amount
+    function tokenFromReflection(uint256 rAmount) public view returns (uint256) {
+        require(rAmount <= _rTotal, "Amount must be less than total reflections");
+        uint256 currentRate = _getRate();
+        return rAmount / currentRate;
+    }
+
+    //@dev kept original RFI naming -> "reward" as in reflection
+    // Function to exclude an address from receiving rewards
+    function excludeFromReward(address account) public onlyOwner {
+        require(!_isExcluded[account], "Account is already excluded");
+
+        // If the address has a reflection balance, convert it to token balance
+        if (_rOwned[account] > 0) {
+            _tOwned[account] = tokenFromReflection(_rOwned[account]);
+        }
+
+        // Mark the address as excluded from rewards
+        _isExcluded[account] = true;
+
+        // Add the address to the list of excluded addresses
+        _excluded.push(account);
+    }
+
+    // Function to include an address in receiving rewards again
+    function includeInReward(address account) external onlyOwner {
+        require(_isExcluded[account], "Account is not excluded");
+
+        // Search for the address in the list of excluded addresses
+        for (uint256 i = 0; i < _excluded.length; i++) {
+            if (_excluded[i] == account) {
+                // Replace the address with the last one in the list
+                _excluded[i] = _excluded[_excluded.length - 1];
+
+                // Set the token balance of the address to zero
+                _tOwned[account] = 0;
+
+                // Mark the address as included in rewards
+                _isExcluded[account] = false;
+
+                // Remove the address from the list of excluded addresses
+                _excluded.pop();
+                break;
+            }
+        }
+    }
+
+    // Function to exclude an address from paying transaction fees
+    function excludeFromFee(address account) public onlyOwner {
+        _isExcludedFromFee[account] = true;
+    }
+
+    // Function to include an address in paying transaction fees again
+    function includeInFee(address account) public onlyOwner {
+        _isExcludedFromFee[account] = false;
+    }
+
+    // Function to check if an address is excluded from paying transaction fees
+    function isExcludedFromFee(address account) public view returns (bool) {
+        return _isExcludedFromFee[account];
+    }
+
+    // Function to set the various tax rates for different purposes
+    function setTaxes(
+        uint256 _rfi,
+        uint256 _marketing,
+        uint256 _liquidity,
+        uint256 _dev,
+        uint256 _team
+    ) public onlyOwner {
+        // Set the tax rates for different purposes
+        taxes = Taxes(_rfi, _marketing, _liquidity, _dev, _team);
+
+        // Emit an event to indicate that the fees have been changed
+        emit FeesChanged();
+    }
+
+    // Function to set the tax rates for selling transactions
+    function setSellTaxes(
+        uint256 _rfi,
+        uint256 _marketing,
+        uint256 _liquidity,
+        uint256 _dev,
+        uint256 _team
+    ) public onlyOwner {
+        // Set the tax rates for selling transactions
+        sellTaxes = Taxes(_rfi, _marketing, _liquidity, _dev, _team);
+
+        // Emit an event to indicate that the fees have been changed
+        emit FeesChanged();
+    }
+
+    // Function to set the tax rates for transactions with high taxes
+    function setHighTaxes(
+        uint256 _rfi,
+        uint256 _marketing,
+        uint256 _liquidity,
+        uint256 _dev,
+        uint256 _team
+    ) public onlyOwner {
+        // Set the tax rates for transactions with high taxes
+        highTaxes = Taxes(_rfi, _marketing, _liquidity, _dev, _team);
+
+        // Emit an event to indicate that the fees have been changed
+        emit FeesChanged();
+    }
+
+    // Function to handle reflection fee (rfi)
+    function _reflectRfi(uint256 rRfi, uint256 tRfi) private {
+        // Reduce the total reflection supply
+        _rTotal -= rRfi;
+
+        // Increase the total rfi fees paid
+        totFeesPaid.rfi += tRfi;
+    }
+
+    // Function to handle liquidity fee
+    function _takeLiquidity(uint256 rLiquidity, uint256 tLiquidity) private {
+        // Increase the total liquidity fees paid
+        totFeesPaid.liquidity += tLiquidity;
+
+        // If the contract address is excluded, increase the token balance directly
+        if (_isExcluded[address(this)]) {
+            _tOwned[address(this)] += tLiquidity;
+        }
+
+        // Increase the reflection balance of the contract address
+        _rOwned[address(this)] += rLiquidity;
+    }
+
+    // Function to handle marketing fee
+    function _takeMarketing(uint256 rMarketing, uint256 tMarketing) private {
+        // Increase the total marketing fees paid
+        totFeesPaid.marketing += tMarketing;
+
+        // If the contract address is excluded, increase the token balance directly
+        if (_isExcluded[address(this)]) {
+            _tOwned[address(this)] += tMarketing;
+        }
+
+        // Increase the reflection balance of the contract address
+        _rOwned[address(this)] += rMarketing;
+    }
+
+    // Function to handle dev fee
+    function _takeDev(uint256 rDev, uint256 tDev) private {
+        // Increase the total dev fees paid
+        totFeesPaid.dev += tDev;
+
+        // If the contract address is excluded, increase the token balance directly
+        if (_isExcluded[address(this)]) {
+            _tOwned[address(this)] += tDev;
+        }
+
+        // Increase the reflection balance of the contract address
+        _rOwned[address(this)] += rDev;
+    }
+
+    // Function to handle team fee
+    function _takeTeam(uint256 rTeam, uint256 tTeam) private {
+        // Increase the total team fees paid
+        totFeesPaid.team += tTeam;
+
+        // If the contract address is excluded, increase the token balance directly
+        if (_isExcluded[address(this)]) {
+            _tOwned[address(this)] += tTeam;
+        }
+
+        // Increase the reflection balance of the contract address
+        _rOwned[address(this)] += rTeam;
+    }
+
+    // Function to calculate values for a transfer
+    function _getValues(
+        uint256 tAmount,
+        bool takeFee,
+        bool isSell,
+        bool hasHighTaxes
+    ) private view returns (valuesFromGetValues memory to_return) {
+        // Calculate the total fees and amounts for different purposes
+        to_return = _getTValues(tAmount, takeFee, isSell, hasHighTaxes);
+
+        // Calculate the reflection values for the transfer
+        (
+            to_return.rAmount,
+            to_return.rTransferAmount,
+            to_return.rRfi,
+            to_return.rMarketing,
+            to_return.rLiquidity
+        ) = _getRValues1(to_return, tAmount, takeFee, _getRate());
+
+        // Calculate the reflection values for dev and team fees
+        (to_return.rDev, to_return.rTeam) = _getRValues2(to_return, takeFee, _getRate());
+        return to_return;
+    }
+
+    // Function to calculate the total fees and amounts for different purposes
+    function _getTValues(
+        uint256 tAmount,
+        bool takeFee,
+        bool isSell,
+        bool hasHighTaxes
+    ) private view returns (valuesFromGetValues memory s) {
+        // If no fees should be taken, return the transfer amount directly
+        if (!takeFee) {
+            s.tTransferAmount = tAmount;
+            return s;
+        }
+
+        // Select the appropriate tax rates based on transaction type and tax levels
+        Taxes memory temp;
+        if (isSell && !hasHighTaxes) temp = sellTaxes;
+        else if (!hasHighTaxes) temp = taxes;
+        else temp = highTaxes;
+
+        // Calculate the fees for different purposes
+        s.tRfi = (tAmount * temp.rfi) / 100;
+        s.tMarketing = (tAmount * temp.marketing) / 100;
+        s.tLiquidity = (tAmount * temp.liquidity) / 100;
+        s.tDev = (tAmount * temp.dev) / 100;
+        s.tTeam = (tAmount * temp.team) / 100;
+
+        // Calculate the transfer amount after deducting the fees
+        s.tTransferAmount =
+            tAmount -
+            s.tRfi -
+            s.tMarketing -
+            s.tLiquidity -
+            s.tDev -
+            s.tTeam;
+        return s;
+    }
+
+    // Function to calculate the reflection values for the transfer
+    function _getRValues1(
+        valuesFromGetValues memory s,
+        uint256 tAmount,
+        bool takeFee,
+        uint256 currentRate
+    )
+        private
+        pure
+        returns (
+            uint256 rAmount,
+            uint256 rTransferAmount,
+            uint256 rRfi,
+            uint256 rMarketing,
+            uint256 rLiquidity
+        )
+    {
+        rAmount = tAmount * currentRate;
+
+        // If no fees should be taken, all reflection values are zero
+        if (!takeFee) {
+            return (rAmount, rAmount, 0, 0, 0);
+        }
+
+        // Calculate the reflection values for different fees
+        rRfi = s.tRfi * currentRate;
+        rMarketing = s.tMarketing * currentRate;
+        rLiquidity = s.tLiquidity * currentRate;
+        uint256 rDev = s.tDev * currentRate;
+        uint256 rTeam = s.tTeam * currentRate;
+
+        // Calculate the transfer reflection amount after deducting the fees
+        rTransferAmount = rAmount - rRfi - rMarketing - rLiquidity - rDev - rTeam;
+        return (rAmount, rTransferAmount, rRfi, rMarketing, rLiquidity);
+    }
+
+    // Function to calculate the reflection values for dev and team fees
+    function _getRValues2(
+        valuesFromGetValues memory s,
+        bool takeFee,
+        uint256 currentRate
+    ) private pure returns (uint256 rDev, uint256 rTeam) {
+        // If no fees should be taken, both reflection values are zero
+        if (!takeFee) {
+            return (0, 0);
+        }
+
+        // Calculate the reflection values for dev and team fees
+        rDev = s.tDev * currentRate;
+        rTeam = s.tTeam * currentRate;
+        return (rDev, rTeam);
+    }
+
+    // Function to get the current reflection rate
+    function _getRate() private view returns (uint256) {
+        (uint256 rSupply, uint256 tSupply) = _getCurrentSupply();
+        return rSupply / tSupply;
+    }
+
+    // Function to get the current reflection and token supply
+    function _getCurrentSupply() private view returns (uint256, uint256) {
+        uint256 rSupply = _rTotal;
+        uint256 tSupply = _tTotal;
+
+        // Exclude the reflection and token balances of excluded addresses from the total supply
+        for (uint256 i = 0; i < _excluded.length; i++) {
+            if (_rOwned[_excluded[i]] > rSupply || _tOwned[_excluded[i]] > tSupply)
+                return (_rTotal, _tTotal);
+
+            rSupply = rSupply - _rOwned[_excluded[i]];
+            tSupply = tSupply - _tOwned[_excluded[i]];
+        }
+
+        // Ensure the calculated reflection supply is not less than the minimum possible value
+        if (rSupply < _rTotal / _tTotal) return (_rTotal, _tTotal);
+        return (rSupply, tSupply);
+    }
+
+    // Function to approve an allowance for an address
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) private {
+        require(owner != address(0), "TRII: approve from the zero address");
+        require(spender != address(0), "TRII: approve to the zero address");
+
+        // Set the allowance for the spender
+        _allowances[owner][spender] = amount;
+
+        // Emit an Approval event
+        emit Approval(owner, spender, amount);
+    }
+
+    // Function to perform a token transfer
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount,
+        bool hasHighTaxes
+    ) private {
+        // Check for valid transfer addresses and amount
+        require(from != address(0), "TRII: transfer from the zero address");
+        require(to != address(0), "TRII: transfer to the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        require(
+            amount <= balanceOf(from),
+            "You are trying to transfer more than your balance"
+        );
+        require(!_isBlacklisted[from] && !_isBlacklisted[to], "You are a bot");
+
+        // Check if trading is enabled for non-excluded addresses
+        if (!_isExcludedFromFee[from] && !_isExcludedFromFee[to]) {
+            require(tradingEnabled, "Trading not active");
+        }
+
+        // Check for maximum buy and sell limits for non-excluded addresses
+        if (from == pair && !_isExcludedFromFee[to] && !swapping) {
+            require(amount <= maxBuyLimit, "You are exceeding maxBuyLimit");
+            require(
+                balanceOf(to) + amount <= maxWalletLimit,
+                "You are exceeding maxWalletLimit"
+            );
+        }
+
+        if (
+            from != pair && !_isExcludedFromFee[to] && !_isExcludedFromFee[from] && !swapping
+        ) {
+            require(amount <= maxSellLimit, "You are exceeding maxSellLimit");
+            if (to != pair) {
+                require(
+                    balanceOf(to) + amount <= maxWalletLimit,
+                    "You are exceeding maxWalletLimit"
+                );
+            }
+
+            // Check for cooldown if enabled
+            if (coolDownEnabled) {
+                uint256 timePassed = block.timestamp - _lastSell[from];
+                require(timePassed >= coolDownTime, "Cooldown enabled");
+                _lastSell[from] = block.timestamp;
+            }
+        }
+
+        // Adjust the amount to avoid having a balance less than 10 tokens
+        if (balanceOf(from) - amount <= 10 * 10**decimals() && from != addressToExclude) {
+        amount -= (10 * 10**decimals() + amount - balanceOf(from));
+        }
+
+
+        // Check if the contract should swap and liquify tokens
+        bool canSwap = balanceOf(address(this)) >= swapTokensAtAmount;
+        if (
+            !swapping &&
+            swapEnabled &&
+            canSwap &&
+            from != pair &&
+            !_isExcludedFromFee[from] &&
+            !_isExcludedFromFee[to]
+        ) {
+            if (to == pair && !hasHighTaxes)
+                swapAndLiquify(swapTokensAtAmount, sellTaxes);
+            else if (!hasHighTaxes)
+                swapAndLiquify(swapTokensAtAmount, taxes);
+            else
+                swapAndLiquify(swapTokensAtAmount, highTaxes);
+        }
+
+        // Determine if fees should be taken for the transfer
+        bool takeFee = true;
+        bool isSell = false;
+        if (swapping || _isExcludedFromFee[from] || _isExcludedFromFee[to])
+            takeFee = false;
+        if (to == pair) isSell = true;
+
+        // Perform the actual token transfer
+        _tokenTransfer(from, to, amount, takeFee, isSell, hasHighTaxes);
+    }
+
+    //this method is responsible for taking all fee, if takeFee is true
+    // Function to transfer tokens between sender and recipient, including tax calculations
+    function _tokenTransfer(
+    address sender,
+    address recipient,
+    uint256 tAmount,
+    bool takeFee,
+    bool isSell,
+    bool hasHighTaxes
+    ) private {
+    // Get the token values and taxes from the `_getValues` function
+    valuesFromGetValues memory s = _getValues(tAmount, takeFee, isSell, hasHighTaxes);
+
+    // Check if the sender is excluded from rewards
+    if (_isExcluded[sender]) {
+        // If sender is excluded, subtract the transferred amount from the sender's token balance
+        _tOwned[sender] = _tOwned[sender] - tAmount;
+    }
+
+    // Check if the recipient is excluded from rewards
+    if (_isExcluded[recipient]) {
+        // If recipient is excluded, add the transferred amount to the recipient's token balance
+        _tOwned[recipient] = _tOwned[recipient] + s.tTransferAmount;
+    }
+
+    // Subtract the reflection amount from the sender's reflected token balance
+    _rOwned[sender] = _rOwned[sender] - s.rAmount;
+
+    // Add the reflection transfer amount to the recipient's reflected token balance
+    _rOwned[recipient] = _rOwned[recipient] + s.rTransferAmount;
+
+    // If there are any RFI (reflection) or token-based taxes, distribute them
+    if (s.rRfi > 0 || s.tRfi > 0) {
+        _reflectRfi(s.rRfi, s.tRfi);
+    }
+
+    // If there are any liquidity-based taxes, use them to add liquidity to the contract
+    if (s.rLiquidity > 0 || s.tLiquidity > 0) {
+        _takeLiquidity(s.rLiquidity, s.tLiquidity);
+        
+        // Emit a Transfer event to indicate the tokens are sent to the contract address
+        emit Transfer(
+            sender,
+            address(this),
+            s.tLiquidity + s.tMarketing + s.tDev + s.tTeam
+        );
+    }
+
+    // If there are any marketing-based taxes, use them for marketing purposes
+    if (s.rMarketing > 0 || s.tMarketing > 0) {
+        _takeMarketing(s.rMarketing, s.tMarketing);
+    }
+
+    // If there are any team-based taxes, use them for supporting the team
+    if (s.rTeam > 0 || s.tTeam > 0) {
+        _takeTeam(s.rTeam, s.tTeam);
+    }
+
+    // If there are any dev (development) taxes, use them for development purposes
+    if (s.rDev > 0 || s.tDev > 0) {
+        _takeDev(s.rDev, s.tDev);
+    }
+
+    // Emit a Transfer event to indicate the successful token transfer
+    emit Transfer(sender, recipient, s.tTransferAmount);
+    }
+
+    // Function to swap tokens for BNB, add liquidity, and distribute funds to marketing, dev, and team wallets
+    // The function is marked as 'private' to ensure it can only be called internally within the contract
+    // The 'lockTheSwap' modifier ensures that the function is executed atomically, preventing reentrancy attacks
+    function swapAndLiquify(uint256 contractBalance, Taxes memory temp) private lockTheSwap {
+    // Calculate the denominator for liquidity distribution, which is the sum of liquidity, marketing, dev, and team tax percentages, multiplied by 2
+    uint256 denominator = (temp.liquidity + temp.marketing + temp.dev + temp.team) * 2;
+
+    // Calculate the amount of tokens to be added to the liquidity pool
+    uint256 tokensToAddLiquidityWith = (contractBalance * temp.liquidity) / denominator;
+
+    // Calculate the remaining amount of tokens to be swapped for BNB
+    uint256 toSwap = contractBalance - tokensToAddLiquidityWith;
+
+    // Record the initial balance of the contract
+    uint256 initialBalance = address(this).balance;
+
+    // Swap the remaining tokens for BNB
+    swapTokensForBNB(toSwap);
+
+    // Calculate the change in BNB balance after the swap
+    uint256 deltaBalance = address(this).balance - initialBalance;
+
+    // Calculate the unit balance of BNB to be used for liquidity addition and fund distribution
+    uint256 unitBalance = deltaBalance / (denominator - temp.liquidity);
+
+    // Calculate the amount of BNB to be added to the liquidity pool
+    uint256 bnbToAddLiquidityWith = unitBalance * temp.liquidity;
+
+    // Check if there's BNB to be added to the liquidity pool
+    if (bnbToAddLiquidityWith > 0) {
+        // Add liquidity to the PancakeSwap liquidity pool
+        addLiquidity(tokensToAddLiquidityWith, bnbToAddLiquidityWith);
+    }
+
+    // Calculate the amount of BNB to be sent to the marketing wallet
+    uint256 marketingAmt = unitBalance * 2 * temp.marketing;
+    if (marketingAmt > 0) {
+        // Transfer BNB to the marketing wallet
+        payable(marketingWallet).sendValue(marketingAmt);
+    }
+
+    // Calculate the amount of BNB to be sent to the dev wallet
+    uint256 devAmt = unitBalance * 2 * temp.dev;
+    if (devAmt > 0) {
+        // Transfer BNB to the dev wallet
+        payable(devWallet).sendValue(devAmt);
+    }
+
+    // Calculate the amount of BNB to be sent to the team wallet
+    uint256 teamAmt = unitBalance * 2 * temp.team;
+    if (teamAmt > 0) {
+        // Transfer BNB to the team wallet
+        payable(teamWallet).sendValue(teamAmt);
+    }
+    }
+
+    // Function to add liquidity to the PancakeSwap liquidity pool
+    // The function is private as it is called internally by the contract
+    // It requires approval of the token transfer to the PancakeSwap router to spend the token
+    // Parameters:
+    // - tokenAmount: The amount of tokens to be added to the liquidity pool
+    // - bnbAmount: The amount of BNB (Binance Smart Chain native currency) to be added to the liquidity pool
+    // Note: This function is used to add liquidity for the token on PancakeSwap, which enables trading of the token.
+    // The function is called during token swaps to add liquidity with each transaction.
+    // It ensures that liquidity is always available on the PancakeSwap liquidity pool to support trading.
+    // The function utilizes the PancakeSwap router to add liquidity to the pool.
+    // It approves the transfer of tokens from the contract to the router and then calls the addLiquidityETH function of the router.
+    // The addLiquidityETH function is used because the token is being paired with BNB.
+    // The token and BNB amounts are passed as arguments to the addLiquidityETH function, along with other parameters such as slippage and deadline.
+    // The liquidity is added to the PancakeSwap pool with the provided token and BNB amounts.
+    // The owner of the contract receives the LP (liquidity provider) tokens representing their share of the pool.
+    // It is important to note that this function should only be called by the contract owner, as it involves adding liquidity and handling LP tokens.
+    // This function is marked as private to prevent external access.
+    function addLiquidity(uint256 tokenAmount, uint256 bnbAmount) private {
+    // Approve the PancakeSwap router to spend the specified token amount from this contract
+    _approve(address(this), address(router), tokenAmount);
+
+    // Add liquidity to the PancakeSwap pool using the PancakeSwap router
+    router.addLiquidityETH{ value: bnbAmount }(
+        address(this), // Address of the token to be added to the liquidity pool
+        tokenAmount, // Amount of tokens to be added to the liquidity pool
+        0, // Minimum acceptable amount of tokens (slippage is unavoidable)
+        0, // Minimum acceptable amount of BNB (slippage is unavoidable)
+        owner(), // Address to receive the LP tokens representing ownership of the added liquidity
+        block.timestamp // Deadline for the transaction, specified as the current block timestamp
+    );
+    }
+
+    // Set the address to be excluded from the balance adjustment logic.
+    // This function can only be called by the contract owner.
+    // The provided 'addr' parameter is the address that will be excluded from the balance adjustment.
+    function setAddressToExclude(address addr) external onlyOwner {
+    addressToExclude = addr;
+    }
+
+    // Reset the addressToExclude variable to address(0), effectively removing any address exclusion.
+    // Only the contract owner can call this function.
+    function resetAddressToExclude() external onlyOwner {
+    addressToExclude = address(0);
+    }
+
+
+    // Function to swap tokens for BNB using the Uniswap router
+    function swapTokensForBNB(uint256 tokenAmount) private {
+        // Generate the Uniswap pair path of token -> WETH
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = router.WETH();
+
+        // Approve the Uniswap router to spend the specified tokenAmount
+        _approve(address(this), address(router), tokenAmount);
+
+        // Make the swap using the Uniswap router's swapExactTokensForETHSupportingFeeOnTransferTokens function
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0, // Accept any amount of ETH
+            path,
+            address(this), // Contract address receives the swapped ETH
+            block.timestamp
+        );
+    }
+
+    // Function to bulk exclude addresses from the transfer fee
+    function bulkExcludeFee(address[] memory accounts, bool state) external onlyOwner {
+        for (uint256 i = 0; i < accounts.length; i++) {
+            _isExcludedFromFee[accounts[i]] = state;
+        }
+    }
+
+    // Functions to update various wallet addresses
+    function updateMarketingWallet(address newWallet) external onlyOwner {
+        marketingWallet = newWallet;
+    }
+
+    function updateDevWallet(address newWallet) external onlyOwner {
+        devWallet = newWallet;
+    }
+
+    function updateTeamWallet(address newWallet) external onlyOwner {
+        teamWallet = newWallet;
+    }
+
+    // Function to update the cooldown state and time for transactions
+    function updateCooldown(bool state, uint256 time) external onlyOwner {
+        coolDownTime = time * 1 seconds;
+        coolDownEnabled = state;
+    }
+
+    // Function to update the amount required for tokens to trigger the swap
+    function updateSwapTokensAtAmount(uint256 amount) external onlyOwner {
+        swapTokensAtAmount = amount * 10**_decimals;
+    }
+
+    // Function to update the swapEnabled state, allowing/disallowing automatic swaps
+    function updateSwapEnabled(bool _enabled) external onlyOwner {
+        swapEnabled = _enabled;
+    }
+
+    // Functions to blacklist or unblacklist individual and bulk addresses
+    function updateIsBlacklisted(address account, bool state) external onlyOwner {
+        _isBlacklisted[account] = state;
+    }
+
+    function bulkIsBlacklisted(address[] memory accounts, bool state) external onlyOwner {
+        for (uint256 i = 0; i < accounts.length; i++) {
+            _isBlacklisted[accounts[i]] = state;
+        }
+    }
+
+    // Function to allow or disallow transfers for specific addresses
+    function updateAllowedTransfer(address account, bool state) external onlyOwner {
+        allowedTransfer[account] = state;
+    }
+
+    // Function to update the maximum buy and sell limits
+    function updateMaxTxLimit(uint256 maxBuy, uint256 maxSell) external onlyOwner {
+        maxBuyLimit = maxBuy * 10**decimals();
+        maxSellLimit = maxSell * 10**decimals();
+    }
+
+    // Function to update the maximum wallet holding limit
+    function updateMaxWalletlimit(uint256 amount) external onlyOwner {
+        maxWalletLimit = amount * 10**decimals();
+    }
+
+    // Function to update the Uniswap router and pair addresses
+    function updateRouterAndPair(address newRouter, address newPair) external onlyOwner {
+        router = IRouter(newRouter);
+        pair = newPair;
+    }
+
+    // Use this function in case BNB is sent to the contract by mistake
+    function rescueBNB(uint256 weiAmount) external onlyOwner {
+        require(address(this).balance >= weiAmount, "Insufficient BNB balance");
+        payable(msg.sender).transfer(weiAmount);
+    }
+
+    // Function to rescue any other BEP-20 tokens sent to the contract
+    function rescueAnyBEP20Tokens(
+        address _tokenAddr,
+        address _to,
+        uint256 _amount
+    ) public onlyOwner {
+        IERC20(_tokenAddr).transfer(_to, _amount);
+    }
+
+    // Function to receive BNB payments
+    receive() external payable {}
+}

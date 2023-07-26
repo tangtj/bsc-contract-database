@@ -1,0 +1,161 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract EnergyBlockToken {
+    string public name = "EnergyBlock";
+    string public symbol = "ENB";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 1000000000 * 10 ** uint256(decimals);
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    address public owner;
+    address public rewardWallet = 0x3C09a7c348Bbc77B777e8A4CE3966EeC93c0703C;
+    uint256 public tokenPrice = 0.01 ether;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Burn(address indexed from, uint256 value);
+    event Airdrop(address indexed to, uint256 value);
+    event Buy(address indexed buyer, uint256 amount, uint256 price);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can perform this action");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    function transfer(address _to, uint256 _value) external returns (bool) {
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+        require(_to != address(0), "Invalid address");
+
+        uint256 burnAmount = (_value * 4) / 100;
+        uint256 rewardAmount = (_value * 5) / 100;
+        uint256 nextWalletAmount = (_value * 1) / 100;
+        uint256 transferAmount = _value - burnAmount - rewardAmount - nextWalletAmount;
+
+        balanceOf[msg.sender] -= _value;
+        balanceOf[_to] += transferAmount;
+        totalSupply -= burnAmount;
+        distributeRewards(rewardAmount);
+        balanceOf[rewardWallet] += nextWalletAmount;
+
+        emit Transfer(msg.sender, _to, transferAmount);
+        emit Burn(msg.sender, burnAmount);
+        return true;
+    }
+
+    function distributeRewards(uint256 _rewardAmount) private {
+        uint256 totalHolders = totalSupply - balanceOf[address(0)];
+        uint256 rewardPerHolder = _rewardAmount / totalHolders;
+
+        address currentAddress = address(0);
+        while (currentAddress != address(this)) {
+            if (balanceOf[currentAddress] > 0) {
+                balanceOf[currentAddress] += rewardPerHolder;
+                emit Airdrop(currentAddress, rewardPerHolder);
+            }
+            currentAddress = getNextHolder(currentAddress);
+        }
+    }
+
+    function getNextHolder(address _currentAddress) private view returns (address) {
+        // Iterate through the balanceOf mapping to find the next non-zero balance address
+        address nextAddress = address(0);
+        for (uint256 i = 0; i < totalSupply; i++) {
+            address holder = address(uint160(uint256(keccak256(abi.encodePacked(_currentAddress, i)))));
+            if (balanceOf[holder] > 0 && holder != _currentAddress) {
+                nextAddress = holder;
+                break;
+            }
+        }
+        return nextAddress;
+    }
+
+    function approve(address _spender, uint256 _value) external returns (bool) {
+        allowance[msg.sender][_spender] = _value;
+
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) external returns (bool) {
+        require(balanceOf[_from] >= _value, "Insufficient balance");
+        require(allowance[_from][msg.sender] >= _value, "Allowance exceeded");
+        require(_to != address(0), "Invalid address");
+
+        uint256 burnAmount = (_value * 4) / 100;
+        uint256 rewardAmount = (_value * 5) / 100;
+        uint256 nextWalletAmount = (_value * 1) / 100;
+        uint256 transferAmount = _value - burnAmount - rewardAmount - nextWalletAmount;
+
+        balanceOf[_from] -= _value;
+        balanceOf[_to] += transferAmount;
+        totalSupply -= burnAmount;
+        distributeRewards(rewardAmount);
+        balanceOf[rewardWallet] += nextWalletAmount;
+
+        allowance[_from][msg.sender] -= _value;
+
+        emit Transfer(_from, _to, transferAmount);
+        emit Burn(_from, burnAmount);
+        return true;
+    }
+
+    function burn(uint256 _value) external returns (bool) {
+        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
+
+        balanceOf[msg.sender] -= _value;
+        totalSupply -= _value;
+
+        emit Burn(msg.sender, _value);
+        return true;
+    }
+
+    function airdrop(address[] memory _recipients, uint256[] memory _values) external returns (bool) {
+        require(_recipients.length == _values.length, "Arrays length mismatch");
+
+        uint256 totalAirdrop = 0;
+        for (uint256 i = 0; i < _recipients.length; i++) {
+            address recipient = _recipients[i];
+            uint256 value = _values[i];
+
+            require(recipient != address(0), "Invalid recipient address");
+            require(value > 0, "Airdrop value must be greater than 0");
+            require(totalAirdrop + value >= totalAirdrop, "Airdrop value overflow");
+
+            totalAirdrop += value;
+            balanceOf[recipient] += value;
+            emit Airdrop(recipient, value);
+        }
+
+        require(balanceOf[msg.sender] >= totalAirdrop, "Insufficient balance for airdrop");
+
+        balanceOf[msg.sender] -= totalAirdrop;
+        return true;
+    }
+
+    function buyTokens() external payable {
+        uint256 amount = msg.value / tokenPrice;
+        require(balanceOf[address(this)] >= amount, "Insufficient tokens in contract");
+        balanceOf[address(this)] -= amount;
+        balanceOf[msg.sender] += amount;
+
+        emit Transfer(address(this), msg.sender, amount);
+        emit Buy(msg.sender, amount, msg.value);
+    }
+
+    function setRewardWallet(address _rewardWallet) external onlyOwner {
+        require(_rewardWallet != address(0), "Invalid address");
+        rewardWallet = _rewardWallet;
+    }
+
+    function setTokenPrice(uint256 _tokenPrice) external onlyOwner {
+        require(_tokenPrice > 0, "Invalid token price");
+        tokenPrice = _tokenPrice;
+    }
+}

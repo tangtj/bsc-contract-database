@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IPancakeRouter {
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external payable returns (
+        uint256 amountToken,
+        uint256 amountETH,
+        uint256 liquidity
+    );
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+}
+
+contract MyToken {
+    string public name = "MITRA";
+    string public symbol = "MTR";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 1000000000 * 10**uint256(decimals); // 1 million tokens
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    address public pancakeRouterAddress; 
+    address public liquidityPoolAddress; // Address of the liquidity pool
+    address public owner;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function");
+        _;
+    }
+
+    constructor(address _pancakeRouterAddress) {
+        balanceOf[msg.sender] = totalSupply;
+        pancakeRouterAddress = _pancakeRouterAddress;
+        owner = msg.sender;
+    }
+
+    function setPancakeRouterAddress(address _pancakeRouterAddress) external onlyOwner {
+        pancakeRouterAddress = _pancakeRouterAddress;
+    }
+
+    function setLiquidityPoolAddress(address _liquidityPoolAddress) external onlyOwner {
+        liquidityPoolAddress = _liquidityPoolAddress;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal {
+        require(from != address(0), "Invalid sender address");
+        require(to != address(0), "Invalid recipient address");
+        require(value > 0, "Value must be greater than zero");
+
+        uint256 buyTax = 0;
+        uint256 sellTax = 0;
+
+        if (from != address(this) && to != address(this)) {
+            buyTax = (msg.sender == pancakeRouterAddress) ? 0 : (value * 2) / 100; // 2% buy tax
+            sellTax = (msg.sender == pancakeRouterAddress) ? (value * 3) / 100 : 0; // 3% sell tax
+
+            // Deduct tax from the sender
+            balanceOf[from] -= value + sellTax;
+
+            // Add liquidity tax to the contract
+            if (liquidityPoolAddress != address(0) && msg.sender == pancakeRouterAddress) {
+                uint256 liquidityTax = (value * 1) / 100; // 1% liquidity tax
+                balanceOf[address(this)] += liquidityTax;
+                emit Transfer(from, address(this), liquidityTax);
+            }
+        }
+
+        // Add tax to the receiver
+        balanceOf[to] += value - buyTax;
+
+        emit Transfer(from, to, value - buyTax - sellTax);
+    }
+
+    function transfer(address to, uint256 value) external returns (bool) {
+        _transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) external returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) external returns (bool) {
+        require(value <= allowance[from][msg.sender], "Insufficient allowance");
+        allowance[from][msg.sender] -= value;
+        _transfer(from, to, value);
+        return true;
+    }
+
+    // Function to add liquidity to PancakeSwap
+    function addLiquidity() external onlyOwner {
+        require(liquidityPoolAddress != address(0), "Liquidity pool address not set");
+
+        uint256 contractTokenBalance = balanceOf[address(this)];
+        require(contractTokenBalance > 0, "Contract token balance is zero");
+
+        IPancakeRouter pancakeRouter = IPancakeRouter(pancakeRouterAddress);
+
+        // Approve the PancakeSwap router to spend the token
+        _approve(address(this), pancakeRouterAddress, contractTokenBalance);
+
+        // Add liquidity to PancakeSwap
+        pancakeRouter.addLiquidityETH{value: address(this).balance}(
+            address(this),
+            contractTokenBalance,
+            0,
+            0,
+            liquidityPoolAddress,
+            block.timestamp + 300 // 5 minutes deadline
+        );
+    }
+
+    // Function to sell tokens for ETH through PancakeSwap
+    function sellTokensForEth(uint256 amountIn, uint256 amountOutMin, address[] calldata path) external onlyOwner {
+        IPancakeRouter pancakeRouter = IPancakeRouter(pancakeRouterAddress);
+        _approve(address(this), pancakeRouterAddress, amountIn);
+
+        pancakeRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amountIn,
+            amountOutMin,
+            path,
+            owner, // Sending the ETH to the token owner
+            block.timestamp + 300 // 5 minutes deadline
+        );
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        allowance[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+}

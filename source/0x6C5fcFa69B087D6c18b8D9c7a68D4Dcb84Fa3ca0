@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.6.12;
+
+interface GEMT9 {
+    function balanceOf(address account) external view returns (uint256 balance);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 value) external returns (bool success);
+
+    function programs(uint256 refno) external view returns (bool eth, address maker, uint256 value, uint256 petri, uint256 open);
+    function program(uint256 refno, uint256 petri, uint256 value) external payable returns (bool success);
+    function invests(uint256 refno,address investor) external view returns (uint256 amount, uint256 start);
+    function invest(uint256 refno, uint256 value) external payable returns (bool success);
+    function withdraw(uint256 refno) external returns (bool success);
+    function close(uint256 refno, bool half) external returns (bool success);
+}
+
+contract Whitening {
+    string public constant name = "GEMT9 WHITENING WITH NO GOVERNANCE";
+    string public constant author = "Xi";
+    address public constant t = 0x9F57B97a6723b1620A6360af33B28d006806EC0d;
+    mapping(uint => Program) public programs;
+    struct Program {
+        address maker;
+        uint256 value;
+        uint256 petri;
+        uint256 open;
+        uint256 commit;
+        uint256 rate;
+        uint256 taken;
+    }
+
+    function program(uint256 refno, uint256 petri, uint256 value, uint256 commitment, uint256 rate) external returns (bool success) {
+        GEMT9 gemt9 = GEMT9(t);
+        gemt9.transferFrom(msg.sender, address(this), value);
+
+        if (!gemt9.program(refno, petri, 1)) {
+            revert();
+        }
+        if (!gemt9.invest(refno, value - 1)) {
+            revert();
+        }
+
+        Program memory pi;
+        pi.maker = msg.sender;
+        pi.value = value;
+        pi.petri = petri;
+        pi.open = block.timestamp;
+        pi.commit = pi.open + 60 * 60 * 24 * commitment;
+        pi.rate = rate;
+        programs[refno] = pi;
+        return true;
+    }
+
+    function close(uint refno, bool half) public returns (bool success) {
+        Program storage pi = programs[refno];
+        require(pi.maker == msg.sender, "#user");
+        require(pi.commit <= block.timestamp, "#commit");
+
+        GEMT9 gemt9 = GEMT9(t);
+        uint256 beforeBalance = gemt9.balanceOf(address(this));
+        if (!gemt9.close(refno, half)) {
+            revert();
+        }
+        uint256 afterBalance = gemt9.balanceOf(address(this));
+        if (afterBalance <= beforeBalance) { revert(); }
+        if (!gemt9.transfer(pi.maker, afterBalance - beforeBalance)) { revert(); }
+        if (!half) pi.maker = address(this);
+        return true;
+    }
+
+    function withdraw(uint256 refno) external returns (bool success) {
+        Program storage pi = programs[refno];
+        require(pi.maker == msg.sender, "#user");
+
+        GEMT9 gemt9 = GEMT9(t);
+        (uint256 amount, ) = gemt9.invests(refno, address(this));
+        require(amount > 0, "#taken");
+        uint256 p0 = pi.rate * ((pi.value * pi.petri) / 10 ** 9) * (block.timestamp - pi.open);
+        uint256 p1 = p0 - pi.taken;
+
+        uint256 beforeBalance = gemt9.balanceOf(address(this));
+        if (!gemt9.withdraw(refno)) { revert(); }
+        uint256 cap = gemt9.balanceOf(address(this)) - beforeBalance;
+
+        if (cap > p1) {
+            if (!gemt9.transfer(pi.maker, p1)) { revert(); }
+            if (!gemt9.invest(refno, cap - p1)) { revert(); }
+            pi.taken += p1;
+        } else {
+            if (!gemt9.transfer(pi.maker, cap)) { revert(); }
+        }
+        return true;
+    }
+}
