@@ -1,0 +1,467 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.10;
+
+abstract contract ReentrancyGuard {
+    uint8 private constant _NOT_ENTERED = 1;
+    uint8 private constant _ENTERED = 2;
+
+    uint8 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+        _;
+        _status = _NOT_ENTERED;
+    }
+}
+
+abstract contract Context is ReentrancyGuard {
+
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this;
+        return msg.data;
+    }
+
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+    address private _previousOwner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+library SafeMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        return c;
+    }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function symbol() external view returns(string memory);
+    function name() external view returns(string memory);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function decimals() external view returns (uint8);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract Token is IERC20, Ownable {
+    using SafeMath for uint256;
+
+    string private constant _name = "SHARE";
+    string private constant _symbol = "SHARE";
+
+    uint8 private constant _decimals = 18;
+
+    uint256 private _totalSupply;
+    uint256 private _total_users;
+    uint256 private _total_txs;
+
+    uint256 private constant precision = 10**18;
+    uint256 private constant feeDenominator = 10**5;
+
+    mapping (address => uint8) private _users;
+    mapping (address => uint256) private _balances;
+    mapping (address => mapping (address => uint256)) private _allowances;
+
+    // 5% buy and sell Fees
+    uint256 public mintFee = 95000;
+    uint256 public sellFee = 95000;
+
+    /** Events **/
+    event Burn(address from, uint256 amountBurned);
+    event Minted(address recipient, uint256 amountSHARE);
+    event Redeemed(address seller, uint256 amountSHARE, uint256 amountBASE);
+    event PriceChange(uint256 previousPrice, uint256 currentPrice, uint256 totalSupply);
+
+    constructor() Ownable() {
+        
+    }
+
+    /** Returns the total number of tokens in existence */
+    function totalSupply() external view override returns (uint256) { 
+        return _totalSupply; 
+    }
+
+    /** Returns the number of tokens owned by `account` */
+    function balanceOf(address account) public view override returns (uint256) { 
+        return _balances[account]; 
+    }
+
+    /** Returns the number of tokens `spender` can transfer from `holder` */
+    function allowance(address holder, address spender) external view override returns (uint256) { 
+        return _allowances[holder][spender]; 
+    }
+    
+    /** Token Name */
+    function name() public pure override returns (string memory) {
+        return _name;
+    }
+
+    /** Token Ticker Symbol */
+    function symbol() public pure override returns (string memory) {
+        return _symbol;
+    }
+
+    /** Tokens decimals */
+    function decimals() public pure override returns (uint8) {
+        return _decimals;
+    }
+
+    /** Approves `spender` to transfer `amount` tokens from caller */
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        emit Approval(msg.sender, spender, amount);
+        return true;
+    }
+  
+    /** Transfer Function */
+    function transfer(address recipient, uint256 amount) external override nonReentrant returns (bool) {
+        return _transferFrom(msg.sender, recipient, amount);
+    }
+
+    /** Transfer Function */
+    function transferFrom(address sender, address recipient, uint256 amount) external override nonReentrant returns (bool) {
+        _allowances[sender][msg.sender] = _allowances[sender][msg.sender].sub(amount, 'Insufficient Allowance');
+        return _transferFrom(sender, recipient, amount);
+    }
+
+    ////////////////////
+    // VIEW FUNCTIONS //
+    ////////////////////
+
+    /** Price Of SHARE in BASE With 18 Points Of Precision */
+    function calculatePrice() external view returns (uint256) {
+        return _calculatePrice();
+    }
+
+    function underlyingBalance() public view returns (uint256) {
+        return address(this).balance;
+    }
+
+    // Amount Of Underlying To Receive For `numTokens` of SHARE
+    function amountOut(uint256 numTokens) public view returns (uint256) {
+        return _calculatePrice().mul(numTokens).div(precision);
+    }
+
+    /** Returns the value of `holder`'s holdings */
+    function getValueOfHoldings(address holder) public view returns(uint256) {
+        return amountOut(_balances[holder]);
+    }
+
+    /** Returns the amount of SHARE given numtokens of BASE; accounting for fees**/
+    function estimateMinted(uint256 numTokens) public view returns (uint256) {
+        uint balance = underlyingBalance();
+        return _totalSupply == 0 ? numTokens.mul(mintFee).div(feeDenominator) : _totalSupply.mul(numTokens).div(balance).mul(mintFee).div(feeDenominator);
+    }
+
+    /** Returns the amount of BASE given numtokens of SHARE **/
+    function estimateRedeemed(uint256 numTokens) public view returns (uint256) {
+        return amountOut(numTokens.mul(sellFee).div(feeDenominator));
+    }
+
+    /** Returns basic contract stats **/
+    function getInfo() public view returns(uint256 users, uint256 txs, uint256 underlyingSupply, uint256 supply, uint256 price){
+        users = _total_users;
+        txs = _total_txs;
+        underlyingSupply = underlyingBalance();
+        supply = _totalSupply;
+        price = _calculatePrice();
+    }
+
+    /////////////////////
+    // WRITE FUNCTIONS //
+    /////////////////////
+
+    // Mint SHARE Tokens for the user according to the rate of BASE per SHARE Token
+    function mintWithBacking(address recipient) payable external nonReentrant returns (uint256) {
+        _checkGarbageCollector();
+        
+        uint256 amount = msg.value;
+        require(amount > 0, "INVALID_AMOUNT");
+
+        return _mintWithBacking(amount, recipient);
+    }
+
+    // Burns Sender's SHARE Tokens and redeems their value in BASE
+    function redeem(uint256 tokenAmount) external nonReentrant returns (uint256) {
+        return _redeem(msg.sender, tokenAmount, msg.sender);
+    }
+    
+    // Burns Sender's SHARE Tokens and redeems their value in BASE for `recipient`
+    function redeemTo(uint256 tokenAmount, address recipient) external nonReentrant returns (uint256) {
+        return _redeem(msg.sender, tokenAmount, recipient);
+    }
+    
+    // Burn Sender's SHARE Tokens without awarding any BASE
+    function burn(uint256 amount) external nonReentrant {
+        // get balance of caller
+        uint256 bal = _balances[msg.sender];
+        require(bal >= amount && bal > 0, 'Zero Holdings');
+        // Track Change In Price
+        uint256 oldPrice = _calculatePrice();
+       
+        // burn tokens from sender + supply
+        _burn(msg.sender, amount);
+        // require price rises
+        _requirePriceRises(oldPrice);
+        // Emit Call
+        emit Burn(msg.sender, amount);
+    }
+
+    //////////////////////////
+    // OWNER-ONLY FUNCTIONS //
+    //////////////////////////
+
+    /** Withdraws Tokens Incorrectly Sent To SHARE */
+    function withdrawNonStableToken(IERC20 token) external onlyOwner {
+        require(address(token) != address(0), 'Zero Address');
+        token.transfer(msg.sender, token.balanceOf(address(this)));
+    }
+
+    //////////////////////////////////
+    // INTERNAL & PRIVATE FUNCTIONS //
+    //////////////////////////////////
+
+    /** Requires The Price Of SHARE To Rise For The Transaction To Conclude */
+    function _requirePriceRises(uint256 oldPrice) internal {
+        // Calculate Price After Transaction
+        uint256 newPrice = _calculatePrice();
+        // Require Current Price >= Last Price
+        require(newPrice >= oldPrice, 'Price Cannot Fall');
+        // Emit The Price Change
+        emit PriceChange(oldPrice, newPrice, _totalSupply);
+    }
+    
+    /** Mints Tokens to the Receivers Address */
+    function _mint(address receiver, uint amount) private {
+        //user count is based on whenever a new account has been minted to
+        if (_users[receiver] == 0){
+            _users[receiver] = 1;
+            _total_users += 1;
+        }
+
+        _balances[receiver] = _balances[receiver].add(amount);
+        _totalSupply = _totalSupply.add(amount);
+        emit Transfer(address(0), receiver, amount);
+    }
+    
+    /** Burns `amount` of tokens from `account` */
+    function _burn(address account, uint amount) private {
+        _balances[account] = _balances[account].sub(amount, 'Insufficient Balance');
+        _totalSupply = _totalSupply.sub(amount, 'Negative Supply');
+        emit Transfer(account, address(0), amount);
+    }
+
+    /** Make Sure there's no Native Tokens in contract */
+    function _checkGarbageCollector() internal {
+        uint256 bal = balanceOf(address(this));
+
+        if (bal > 1000) {
+            
+            // Track Change In Price
+            uint256 oldPrice = _calculatePrice();    
+            
+            // burn amount
+            _burn(address(this), bal);
+
+            // Emit Price Difference
+            emit PriceChange(oldPrice, _calculatePrice(), _totalSupply);
+        }
+    }
+
+    /** Returns the Current Price of 1 Token */
+    function _calculatePrice() internal view returns (uint256) {
+        return _totalSupply == 0 ? 10**18 : (underlyingBalance().mul(precision)).div(_totalSupply);
+    }
+
+    /** Stake Tokens and Deposits SHARE in Sender's Address, Must Have Prior Approval For BASE */
+    function _mintWithBacking(uint256 amount, address recipient) internal returns (uint256) {
+
+        // users token balance
+        uint256 userTokenBalance = (msg.sender).balance;
+        
+        // ensure user has enough to send
+        require(userTokenBalance > 0 && amount <= userTokenBalance, 'Insufficient Balance');
+
+        // calculate price change
+        uint256 oldPrice = _calculatePrice();
+
+        // amount of underlying
+        uint256 amountUnderlying = underlyingBalance();
+
+        // Handle Minting
+        return _mintTo(recipient, amount, amountUnderlying, oldPrice);
+    }
+    
+    /** Burns SHARE Tokens And Deposits BASE Tokens into Recipients's Address */
+    function _redeem(address seller, uint256 tokenAmount, address recipient) internal returns (uint256) {
+        require(tokenAmount > 0 && _balances[seller] >= tokenAmount);
+        require(seller != address(0) && recipient != address(0));
+        
+        // calculate price change
+        uint256 oldPrice = _calculatePrice();
+
+        // tokens post fee to swap for underlying asset
+        uint256 tokensToSwap = tokenAmount.mul(sellFee).div(feeDenominator);
+
+        // value of taxed tokens
+        uint256 amountUnderlyingAsset = amountOut(tokensToSwap);
+
+        // burn from sender + supply 
+        _burn(seller, tokenAmount);
+
+        // send Tokens to Seller
+        payable(recipient).transfer(amountUnderlyingAsset);
+
+        // require price rises
+        _requirePriceRises(oldPrice);
+
+        //update globals
+        _total_txs += 1;
+
+        // Differentiate Sell
+        emit Redeemed(seller, tokenAmount, amountUnderlyingAsset);
+
+        // return token redeemed and amount underlying
+        return amountUnderlyingAsset;
+    }
+
+    /** Internal Transfer */
+    function _transferFrom(address sender, address recipient, uint256 amount) internal returns (bool) {
+        // make standard checks
+        require(recipient != address(0) && sender != address(0), "Transfer To Zero");
+        require(amount > 0, "Transfer Amt Zero");
+        // track price change
+        uint256 oldPrice = _calculatePrice();
+        
+        // subtract from sender
+        _balances[sender] = _balances[sender].sub(amount, "Insufficient Balance");
+
+        // give reduced amount to receiver
+        _balances[recipient] = _balances[recipient].add(amount);
+
+        
+        // require price rises
+        _requirePriceRises(oldPrice);
+
+        //update globals
+        _total_txs += 1;
+
+        // Transfer Event
+        emit Transfer(sender, recipient, amount);
+        return true;
+    }
+
+    /** Handles Minting Logic To Create New SHARE */
+    function _mintTo(address recipient, uint256 received, uint256 totalBacking, uint256 oldPrice) private returns(uint256) {
+        
+        // find the number of tokens we should mint to keep up with the current price
+        uint256 tokensToMintNoTax = _totalSupply == 0 ? received : _totalSupply.mul(received).div(totalBacking);
+        
+        // apply fee to minted tokens to inflate price relative to total supply
+        uint256 tokensToMint = tokensToMintNoTax.mul(mintFee).div(feeDenominator);
+        
+        require(tokensToMint > 0, 'Zero Amount');
+        
+        // mint to Buyer
+        _mint(recipient, tokensToMint);
+
+        // require price rises
+        _requirePriceRises(oldPrice);
+
+        //update globals
+        _total_txs += 1;
+
+        // differentiate purchase
+        emit Minted(recipient, tokensToMint);
+        return tokensToMint;
+    }
+}

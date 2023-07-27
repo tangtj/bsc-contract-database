@@ -1,0 +1,309 @@
+
+// File: contracts/CashLand.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.7;
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/Context.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+interface IDEXRouter {
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        returns (
+            uint256 amountA,
+            uint256 amountB,
+            uint256 liquidity
+        );
+
+    function getAmountsIn(uint256 amountOut, address[] calldata path) external pure returns (uint256[] memory);
+
+    function getAmountsOut(uint256 amountIn, address[] calldata path) external pure returns (uint256[] memory);
+}
+
+contract CashLand is Context, Ownable {
+    IERC20 public cashToken = IERC20(0x2429B68e565552F0F8BABCb19FA78779c1354ae5); // Need to update
+    IERC20 public BUSD = IERC20(0xCB31aBc91382FECE4ff505082C625f959cf3140d); // 0xe9e7cea3dedca5984780bafc599bd69add087d56 
+    IDEXRouter public router = IDEXRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+    uint256 constant public growingTime = 60 days;
+
+    mapping(uint256 => address) public landOwners;
+    mapping(address => uint256[]) public ownerToPoints;
+    mapping(uint256 => uint256) public purchasedTime;
+    mapping(uint256 => uint256) public purchasedCount;
+    mapping(uint256 => bool) public onSale;
+    mapping(uint256 => uint256) public salePrice;
+    
+
+    event PURCAHSED(address indexed addr, uint256 indexed point, uint256 time);
+    event CLAIMED(address indexed addr, uint256 indexed point, uint256 amount, uint256 num);
+    event SELLLAND(address indexed addr, uint256 indexed point, uint256 price);
+    event BUYLAND(address indexed addr, uint256 indexed point, uint256 price);
+    constructor() {}
+    
+    function getCashTokenAmount(uint256 busdAmount) view public returns(uint256) {
+        if(busdAmount==0) return 0;
+        address[] memory path = new address[](2);
+        path[0] = address(BUSD);
+        path[1] = address(cashToken);
+        return router.getAmountsOut(busdAmount, path)[1];
+    }
+
+    function _buyCashLand(uint256 point) internal {
+        require(point <= 90000, "out of range");
+        require(landOwners[point] == address(0), "already sold");
+        uint256 cashAmount = getCashTokenAmount(100*10**18);
+        cashToken.transferFrom(msg.sender, address(this), cashAmount);
+        landOwners[point] = msg.sender;
+        ownerToPoints[msg.sender].push(point);
+        purchasedTime[point] = block.timestamp;
+        emit PURCAHSED(msg.sender, point, block.timestamp);
+    }
+
+    function buyCashLand(uint256[] memory points) external {
+        uint256 cashAmount = getCashTokenAmount(points.length * 100 * 10**18);
+        cashToken.transferFrom(msg.sender, address(this), cashAmount);
+        for(uint256 i=0; i< points.length; i++) {
+            _buyCashLand(points[i]);
+        }
+    }
+
+    function claim(uint256 point) external {
+        require(landOwners[point]==msg.sender, "not land owner");
+        require(block.timestamp < purchasedTime[point] + 365 days, "expired to claim");
+        require(block.timestamp > purchasedTime[point] + growingTime + purchasedCount[point]*30 days, "didn't grow yet");
+        uint256 cashAmount = getCashTokenAmount(20*10**18);
+        cashToken.transfer(msg.sender, cashAmount);
+        emit CLAIMED(msg.sender, point, cashAmount, purchasedCount[point]);
+        purchasedCount[point]++;
+    }
+
+    function sellLand(uint256 point, uint256 price) external {
+        require(landOwners[point]==msg.sender, "not land owner");
+        require(onSale[point]==false, "already on sale");
+        salePrice[point] = price;
+        onSale[point] = true;
+        emit SELLLAND(msg.sender, point, price);
+    }
+
+    function buyLand(uint256 point) external {
+        require(landOwners[point]!=msg.sender, "you are owner");
+        require(onSale[point]==true, "not on sale");
+        cashToken.transferFrom(msg.sender, landOwners[point], salePrice[point]);
+        onSale[point] = false;
+        ownerToPoints[msg.sender].push(point);
+        for(uint i=0; i<ownerToPoints[landOwners[point]].length; i++) {
+            if(ownerToPoints[landOwners[point]][i]==point) {
+                ownerToPoints[landOwners[point]][i] = ownerToPoints[landOwners[point]][ownerToPoints[landOwners[point]].length-1];
+                ownerToPoints[landOwners[point]].pop();
+            }
+        }
+        landOwners[point] = msg.sender;
+        emit BUYLAND(msg.sender, point, salePrice[point]);
+    }
+
+    function getLands(address addr) external view returns (uint256[] memory) {
+        return ownerToPoints[addr];
+    }
+
+}
+
+
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.5.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+// File: @openzeppelin/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+// File: @openzeppelin/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
