@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract Baa {
+    string public name = "Baa";
+    string public symbol = "BAA";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 7900000000 * 10**uint256(decimals);
+
+    // Other state variables the ten minutes to prevent abuse & pump n dump
+    uint256 private constant cooldownDuration = 10 minutes;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => uint256) private lastTransactionTime;
+
+    // Tax rates and receivers super low taxes of 0.5 and 1%
+    address public taxReceiver1 = 0x7Bf4c0F39A279E6Ec2F21692E83C0f269b31B8e8;
+    address public taxReceiver2 = 0x67a3B65E5BC433030D48F25EbC5c21E1270Ba1d2;
+    uint256 public buyTaxRate = 1;
+    uint256 public sellTaxRate = 1;
+    uint256 public transferTaxRate = 1;
+    uint256 public rewardTaxRate = 5; // Represents 0.5 with one decimal place
+    uint256 public liquidityTaxRate = 5; // Represents 0.5 with one decimal place
+
+    // Owner and contract status
+    address private owner;
+    bool private paused = false;
+
+    // Events
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Burn(address indexed from, uint256 value); // Event for burning tokens
+    event CooldownPeriodUpdated(uint256 period);
+
+    // Modifiers
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can call this function");
+        _;
+    }
+
+    modifier notPaused() {
+        require(!paused, "Contract is paused");
+        _;
+    }
+
+    // Constructor
+    constructor() {
+        owner = msg.sender;
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    // Token transfer functions
+    function transfer(address to, uint256 value) public notPaused returns (bool) {
+        require(to != address(0), "Invalid recipient");
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += value;
+        emit Transfer(msg.sender, to, value);
+        updateLastTransactionTime(msg.sender);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public notPaused returns (bool) {
+        require(spender != address(0), "Invalid spender");
+
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public notPaused returns (bool) {
+        require(from != address(0), "Invalid sender");
+        require(to != address(0), "Invalid recipient");
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Allowance exceeded");
+
+        balanceOf[from] -= value;
+        balanceOf[to] += value;
+        allowance[from][msg.sender] -= value;
+        emit Transfer(from, to, value);
+        updateLastTransactionTime(from);
+        return true;
+    }
+
+    // Burn function
+    function burn(uint256 value) public notPaused {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+
+        balanceOf[msg.sender] -= value;
+        totalSupply -= value;
+        emit Transfer(msg.sender, address(0), value); // Burned tokens are sent to address(0) or burned forever
+        emit Burn(msg.sender, value);
+    }
+
+    // Tax-related functions
+    function setTaxRates(uint256 buyRate, uint256 sellRate, uint256 transferRate, uint256 rewardRate, uint256 liquidityRate) public onlyOwner {
+        require(buyRate + sellRate + transferRate + rewardRate + liquidityRate <= 100, "Total tax rates must not exceed 100");
+        buyTaxRate = buyRate;
+        sellTaxRate = sellRate;
+        transferTaxRate = transferRate;
+        rewardTaxRate = rewardRate;
+        liquidityTaxRate = liquidityRate;
+    }
+
+    function setTaxReceivers(address receiver1, address receiver2) public onlyOwner {
+        taxReceiver1 = receiver1;
+        taxReceiver2 = receiver2;
+    }
+
+    // Helper function to update last transaction time for anti-bot cooldown
+    function updateLastTransactionTime(address wallet) private {
+        lastTransactionTime[wallet] = block.timestamp;
+    }
+
+    // Owner management functions
+    function setAntiBotCooldown() public onlyOwner {
+        emit CooldownPeriodUpdated(cooldownDuration);
+    }
+
+    function pause() public onlyOwner {
+        paused = true;
+    }
+
+    function unpause() public onlyOwner {
+        paused = false;
+    }
+
+        function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "Invalid new owner address");
+        owner = newOwner;
+    }
+
+    function renounceOwnership() public onlyOwner {
+        owner = address(0);
+    }
+
+    // Anti-bot cooldown check
+    function isBot(address wallet) public view returns (bool) {
+        return block.timestamp < lastTransactionTime[wallet] + cooldownDuration;
+    }
+
+    // Collect taxes on each transaction
+    function collectTaxes(uint256 amount) private {
+        uint256 buyTaxAmount = amount * buyTaxRate / 100;
+        uint256 sellTaxAmount = amount * sellTaxRate / 100;
+        uint256 transferTaxAmount = amount * transferTaxRate / 100;
+        uint256 rewardTaxAmount = amount * rewardTaxRate / 100;
+        uint256 liquidityTaxAmount = amount * liquidityTaxRate / 100;
+
+        balanceOf[msg.sender] -= buyTaxAmount + sellTaxAmount + transferTaxAmount;
+        balanceOf[taxReceiver1] += buyTaxAmount + rewardTaxAmount;
+        balanceOf[taxReceiver2] += sellTaxAmount + liquidityTaxAmount;
+        totalSupply -= transferTaxAmount;
+        emit Transfer(msg.sender, taxReceiver1, buyTaxAmount + rewardTaxAmount);
+        emit Transfer(msg.sender, taxReceiver2, sellTaxAmount + liquidityTaxAmount);
+        emit Transfer(msg.sender, address(0), transferTaxAmount); // Burned tokens are sent to address(0) or burned forever
+        emit Burn(msg.sender, transferTaxAmount);
+    }
+}

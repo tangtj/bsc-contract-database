@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract BETOBETO {
+    string public name = "BETOBETO";
+    string public symbol = "BETOBETO";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 8000000000000000000000000000; // 8 quadrillion tokens with 18 decimals
+
+    address private contractOwner;
+    bool private isOwnershipRenounced;
+
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) private allowances;
+
+    // Team Wallets
+    address public devWallet = 0xa88983e4f7b1C26961dd8d54514247B32c032A31; // Replace with the actual dev wallet address
+    address public teamWallet = 0xa88983e4f7b1C26961dd8d54514247B32c032A31; // Replace with the actual team wallet address
+    address public marketingWallet = 0xa88983e4f7b1C26961dd8d54514247B32c032A31; // Replace with the actual marketing wallet address
+
+    // Transaction Fees
+    uint8 public taxFeePercentage = 3; // 3% total tax fee
+    uint8 public reflectionFeePercentage = 2; // 2% distributed to holders
+    uint8 public marketingFeePercentage = 1; // 1% allocated to marketing
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor() {
+        contractOwner = msg.sender;
+        balances[msg.sender] = totalSupply;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == contractOwner, "BETOBETO: Only the contract owner can perform this action");
+        _;
+    }
+
+    function renounceOwnership() public onlyOwner {
+        isOwnershipRenounced = true;
+    }
+
+    function isOwner() public view returns (bool) {
+        return msg.sender == contractOwner && !isOwnershipRenounced;
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return balances[account];
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        allowances[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return allowances[owner][spender];
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(to != address(0), "ERC20: transfer to the zero address");
+        require(value <= balances[from], "ERC20: insufficient balance");
+        require(value <= allowances[from][msg.sender], "ERC20: insufficient allowance");
+
+        // Calculate transaction fees
+        uint256 taxFee = (value * taxFeePercentage) / 100;
+        uint256 reflectionFee = (taxFee * reflectionFeePercentage) / 100;
+        uint256 marketingFee = (taxFee * marketingFeePercentage) / 100;
+
+        // Deduct fees from the transfer amount
+        uint256 transferAmount = value - taxFee;
+        balances[from] -= value;
+        balances[to] += transferAmount;
+
+        // Distribute reflection fee to holders
+        balances[from] += reflectionFee;
+
+        // Send marketing fee as BNB to the marketing wallet
+        payable(marketingWallet).transfer(marketingFee);
+
+        allowances[from][msg.sender] -= value;
+
+        emit Transfer(from, to, transferAmount);
+        return true;
+    }
+}
