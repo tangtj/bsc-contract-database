@@ -1,0 +1,176 @@
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+contract PresaleICO is Ownable {
+    IBEP20 public token;
+    IBEP20 public usdtToken;
+    uint256 public bnbRate = 10900e18; // 1 BNB = 10900 Tokens
+    uint256 public usdtRate = 45e18; // 1 USDT = 45 Tokens
+    uint256 public bnbRaised;
+    uint256 public usdtRaised;
+
+    uint256 public minBnbBuy = 0.5 ether; // Minimum: 0.5 BNB
+    uint256 public maxBnbBuy = 100 ether; // Maximum: 100 BNB
+    uint256 public minUsdtBuy = 100e18; // Minimum: 100 USDT
+    uint256 public maxUsdtBuy = 25000e18; // Maximum: 25000 USDT
+
+    event TokensPurchased(address indexed buyer, uint256 amount);
+    event TokensRecovered(address indexed sender, address indexed tokenAddress, uint256 amount);
+
+    constructor(address _tokenAddress, address _usdtTokenAddress) {
+        token = IBEP20(_tokenAddress);
+        usdtToken = IBEP20(_usdtTokenAddress);
+        _transferOwnership(msg.sender);
+    }  
+
+    function buyTokensWithBNB() external payable {
+        require(msg.value >= minBnbBuy, "BNB amount is below minimum");
+        require(msg.value <= maxBnbBuy, "BNB amount exceeds maximum");
+
+        uint256 bnbAmount = msg.value;
+        uint256 tokens = bnbAmount * bnbRate;
+
+        require(tokens <= token.balanceOf(address(this)), "Not enough tokens available");
+
+        // Transfer the received BNB directly to the owner's address
+        payable(owner()).transfer(bnbAmount);
+
+        token.transfer(msg.sender, tokens);
+        bnbRaised += bnbAmount;
+
+        emit TokensPurchased(msg.sender, tokens);
+    }
+
+    function buyTokensWithUSDT(uint256 usdtAmount) external {
+        require(usdtAmount >= minUsdtBuy, "USDT amount is below minimum");
+        require(usdtAmount <= maxUsdtBuy, "USDT amount exceeds maximum");
+
+        uint256 tokensToBuy = usdtAmount * usdtRate;
+
+        require(tokensToBuy <= token.balanceOf(address(this)), "Not enough tokens available");
+        require(usdtToken.transferFrom(msg.sender, owner(), usdtAmount), "USDT transfer failed");
+
+        token.transfer(msg.sender, tokensToBuy);
+        usdtRaised += usdtAmount;
+
+        emit TokensPurchased(msg.sender, tokensToBuy);
+    }
+
+    function setBnbRate(uint256 newBnbRate) external onlyOwner {
+        bnbRate = newBnbRate;
+    }
+
+    function setUsdtRate(uint256 newUsdtRate) external onlyOwner {
+        usdtRate = newUsdtRate;
+    }
+
+    function setMinBnbBuy(uint256 newMinBnbBuy) external onlyOwner {
+        minBnbBuy = newMinBnbBuy;
+    }
+
+    function setMaxBnbBuy(uint256 newMaxBnbBuy) external onlyOwner {
+        maxBnbBuy = newMaxBnbBuy;
+    }
+
+    function setMinUsdtBuy(uint256 newMinUsdtBuy) external onlyOwner {
+        minUsdtBuy = newMinUsdtBuy;
+    }
+
+    function setMaxUsdtBuy(uint256 newMaxUsdtBuy) external onlyOwner {
+        maxUsdtBuy = newMaxUsdtBuy;
+    }
+
+    function calculateTokensWithBNB(uint256 bnbAmount) public view returns (uint256) {
+        return bnbAmount * bnbRate;
+    }
+
+    function calculateTokensWithUSDT(uint256 usdtAmount) public view returns (uint256) {
+        return usdtAmount * usdtRate;
+    }
+
+    function setTokenContract(address newTokenAddress) external onlyOwner {
+        require(newTokenAddress != address(0), "Token contract address cannot be zero");
+        token = IBEP20(newTokenAddress);
+    }
+
+    function setUsdtTokenContract(address newUsdtTokenAddress) external onlyOwner {
+        require(newUsdtTokenAddress != address(0), "USDT Token contract address cannot be zero");
+        usdtToken = IBEP20(newUsdtTokenAddress);
+    }
+
+    function withdrawFunds() external onlyOwner {
+        uint256 bnbBalance = address(this).balance;
+        payable(msg.sender).transfer(bnbBalance);
+    }
+
+    function recoverWrongTokens(address _tokenAddress) external onlyOwner {
+        IBEP20 wrongToken = IBEP20(_tokenAddress);
+        uint256 balance = wrongToken.balanceOf(address(this));
+        require(balance > 0, "No tokens to recover");
+
+        require(wrongToken.transfer(owner(), balance), "Token recovery failed");
+
+        emit TokensRecovered(msg.sender, _tokenAddress, balance);
+    }
+}

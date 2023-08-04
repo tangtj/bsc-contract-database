@@ -1,0 +1,116 @@
+pragma solidity ^0.8.2;
+
+contract Token {
+    mapping(address => uint256) public balances;
+    mapping(address => mapping(address => uint256)) public allowance;
+    uint256 public totalSupply = 1000000 * 10 ** 18;
+    string public name = "Agbado Coin";
+    string public symbol = "$AGBC";
+    uint8 public decimals = 18;
+    uint256 public taxPercentage = 4;
+    uint256 public burnPercentage = 1;
+    address public taxWallet;
+    address private _contractOwner;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+    event TokensBurned(address indexed from, uint256 value);
+    event TaxWalletUpdated(
+        address indexed oldTaxWallet,
+        address indexed newTaxWallet
+    );
+
+    modifier onlyOwner() {
+        require(
+            msg.sender == _contractOwner,
+            "Only the contract owner can call this function"
+        );
+        _;
+    }
+
+    constructor() {
+        balances[msg.sender] = totalSupply;
+        taxWallet = msg.sender; // Set the contract deployer's address as the initial tax wallet
+        _contractOwner = msg.sender; // Set the contract deployer as the owner
+    }
+
+    function balanceOf(address owner) public view returns (uint256) {
+        return balances[owner];
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        require(
+            to != address(0) && to != address(this),
+            "Invalid recipient address"
+        );
+        require(balanceOf(msg.sender) >= value, "Insufficient balance");
+        require(value > 0, "Value must be greater than zero");
+
+        uint256 taxAmount = (value * taxPercentage) / 100;
+        uint256 burnAmount = (value * burnPercentage) / 100;
+        uint256 transferAmount = value - taxAmount - burnAmount;
+
+        balances[to] += transferAmount;
+        balances[msg.sender] -= value;
+        balances[taxWallet] += taxAmount;
+        totalSupply -= burnAmount;
+
+        emit Transfer(msg.sender, to, transferAmount);
+        emit Transfer(msg.sender, taxWallet, taxAmount);
+        emit TokensBurned(msg.sender, burnAmount);
+
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) public returns (bool) {
+        require(
+            to != address(0) && to != address(this),
+            "Invalid recipient address"
+        );
+        require(from != address(0), "Invalid sender address");
+        require(balanceOf(from) >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Insufficient allowance");
+        require(value > 0, "Value must be greater than zero");
+
+        uint256 taxAmount = (value * taxPercentage) / 100;
+        uint256 burnAmount = (value * burnPercentage) / 100;
+        uint256 transferAmount = value - taxAmount - burnAmount;
+
+        balances[to] += transferAmount;
+        balances[from] -= value;
+        balances[taxWallet] += taxAmount;
+        totalSupply -= burnAmount;
+
+        emit Transfer(from, to, transferAmount);
+        emit Transfer(from, taxWallet, taxAmount);
+        emit TokensBurned(from, burnAmount);
+
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        require(spender != address(0), "Invalid spender address");
+
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function setTaxWallet(address newTaxWallet) public onlyOwner {
+        require(newTaxWallet != address(0), "Invalid tax wallet address");
+        require(newTaxWallet != taxWallet, "Same tax wallet address");
+
+        address oldTaxWallet = taxWallet;
+        taxWallet = newTaxWallet;
+
+        emit TaxWalletUpdated(oldTaxWallet, newTaxWallet);
+    }
+}
