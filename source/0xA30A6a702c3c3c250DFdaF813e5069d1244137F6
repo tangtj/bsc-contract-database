@@ -1,0 +1,88 @@
+
+// File: contracts/MulticallHelper.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+contract MulticallHelper {
+    bytes32 constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
+
+    event CollectRewards(
+        address controller,
+        address strategy,
+        address caller,
+        uint256 timestamp
+    );
+    event Rescale(
+        address controller,
+        address strategy,
+        address caller,
+        uint256 timestamp
+    );
+
+    modifier onlyExecutor(address controller) {
+        bool _hasRole = IController(controller).hasRole(
+            EXECUTOR_ROLE,
+            msg.sender
+        );
+
+        require(_hasRole, "not valid executor");
+        _;
+    }
+
+    function multicallCollectRewards(
+        address controller,
+        address[] calldata _strategyContractList
+    ) public onlyExecutor(controller) {
+        for (uint i = 0; i < _strategyContractList.length; i++) {
+            (bool success, ) = controller.call(
+                abi.encodeWithSelector(
+                    IController.collectRewards.selector,
+                    _strategyContractList[i]
+                )
+            );
+            require(success, "Collect Rewards Multi Call failed");
+
+            emit CollectRewards(
+                controller,
+                _strategyContractList[i],
+                msg.sender,
+                block.timestamp
+            );
+        }
+    }
+
+    function multicallRescale(
+        address controller,
+        address[] calldata _strategyContractList
+    ) public onlyExecutor(controller) {
+        for (uint i = 0; i < _strategyContractList.length; i++) {
+            (bool success, ) = controller.call(
+                abi.encodeWithSelector(
+                    IController.rescale.selector,
+                    _strategyContractList[i]
+                )
+            );
+            require(success, "Rescale Multi Call failed");
+
+            emit Rescale(
+                controller,
+                _strategyContractList[i],
+                msg.sender,
+                block.timestamp
+            );
+        }
+    }
+}
+
+interface IController {
+    function collectRewards(address strategyContract) external;
+
+    function rescale(address strategyContract) external;
+
+    function hasRole(
+        bytes32 role,
+        address account
+    ) external view returns (bool);
+}
+
