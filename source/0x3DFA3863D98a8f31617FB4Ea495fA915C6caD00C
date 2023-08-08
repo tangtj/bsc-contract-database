@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract liquidityReward {
+    address public owner;
+
+    uint256 public dailyInterestRate = 200;  // Daily interest rate in basis points (2%)
+    uint256 public secondsInADay = 86400;  // Number of seconds in a day
+    uint256 public minDepositTime = 1 days;  // Minimum time for deposits to accrue interest
+
+    struct DepositInfo {
+        uint256 amount;
+        uint256 time;
+    }
+
+    mapping(address => DepositInfo) public deposits;
+
+    event TokensWithdrawn(address indexed user, uint256 tokenAmount, address tokenAddress);
+    event Deposit(address indexed user, uint256 tokenAmount, address tokenAddress, uint256 depositTime);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function");
+        _;
+    }
+
+    function updateInterestRate(uint256 _dailyInterestRate) external onlyOwner {
+        dailyInterestRate = _dailyInterestRate;
+    }
+
+    function calculateInterest(address _user) public view returns (uint256) {
+        uint256 depositAmount = deposits[_user].amount;
+        uint256 depositTime = deposits[_user].time;
+        uint256 currentTime = block.timestamp;
+
+        if (currentTime < depositTime + minDepositTime) {
+            return 0;  // No interest accrued if not enough time has passed
+        }
+
+        uint256 elapsedTime = currentTime - depositTime;
+        uint256 numDays = elapsedTime / secondsInADay;
+        uint256 interestAmount = (depositAmount * dailyInterestRate * numDays) / 10000;
+
+        return interestAmount;
+    }
+
+    function Harvest(address _tokenAddress) external {
+        address user = msg.sender;
+        uint256 interestAmount = calculateInterest(user);
+        require(interestAmount > 0, "No interest to harvest");
+
+        IERC20 token = IERC20(_tokenAddress);
+        uint256 contractBalance = token.balanceOf(address(this));
+        require(contractBalance >= interestAmount, "Contract does not have enough tokens");
+
+        require(token.transfer(user, interestAmount), "Token transfer failed");
+
+        emit TokensWithdrawn(user, interestAmount, _tokenAddress);
+
+        deposits[user].time = block.timestamp;  // Reset deposit time after harvesting
+    }
+
+    function DepositTokens(address _tokenAddress, uint256 _amount) external {
+        require(_amount > 0, "Amount must be greater than 0");
+
+        IERC20 token = IERC20(_tokenAddress);
+        require(token.transfer(address(this), _amount), "Token transfer failed");
+
+        deposits[msg.sender].amount += _amount;
+        deposits[msg.sender].time = block.timestamp;
+
+        emit Deposit(msg.sender, _amount, _tokenAddress, block.timestamp);
+
+        calculateAndHarvest(msg.sender, _tokenAddress);  // Calculate and harvest interest after each deposit
+    }
+
+    function calculateAndHarvest(address _user, address _tokenAddress) internal {
+        uint256 interestAmount = calculateInterest(_user);
+        if (interestAmount > 0) {
+            IERC20 token = IERC20(_tokenAddress);
+            require(token.transfer(_user, interestAmount), "Token transfer failed");
+
+            emit TokensWithdrawn(_user, interestAmount, _tokenAddress);
+            deposits[_user].time = block.timestamp;  // Reset deposit time after harvesting
+        }
+    }
+
+    function getTotalDeposit(address _userAddress) external view returns (uint256) {
+        return deposits[_userAddress].amount;
+    }
+
+    function getDepositTime(address _userAddress) external view returns (uint256) {
+        return deposits[_userAddress].time;
+    }
+}
