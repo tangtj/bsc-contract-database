@@ -1,0 +1,485 @@
+
+// File: /C/Users/John/Desktop/BSC/OCTDice/contracts/OCTDice.sol
+// SPDX-License-Identifier: UNLICENSED
+
+/*
+   _______
+  /\ o o o\
+ /o \ o o o\_______
+<    >------>   o /|
+ \ o/  o   /_____/o|
+  \/______/     |oo|
+        |   o   |o/
+        |_______|/
+
+   ____  ________________  ____________   ____  ________________
+  / __ \/ ____/_  __/ __ \/ ____/ ____/  / __ \/  _/ ____/ ____/
+ / / / / /     / / / /_/ / __/ / __/    / / / // // /   / __/
+/ /_/ / /___  / / / _, _/ /___/ /___   / /_/ // // /___/ /___
+\____/\____/ /_/ /_/ |_/_____/_____/  /_____/___/\____/_____/
+
+
+Deflationary OCT token charges 3% transfer fee (2% burned forever, 1% distributed for holders)
+Dice Fee is 1%
+
++---------+--------+------------+
+| Numbers | Chance | Multiplier |
++---------+--------+------------+
+|       1 | 16.66% | x5.94      |
+|       2 | 33.33% | x2.97      |
+|       3 | 50%    | x1.98      |
+|       4 | 66.66% | x1.47      |
+|       5 | 83.33% | x1.18      |
++---------+--------+------------+
+
+How it works in case of OCT Token deflationary model:
+
+1. Player bet 1 OCT with 1 number and wins
+2. Payout: x5.94 from the initial bet (1% fee = 0.06 OCT goes to Dice)
+3. Contract transfer 5.94 OCT to the Player
+4. Player receive 5.7618 OCT
+
+Octree platform - https://octree.finance/
+Telegram: https://t.me/octree_bsc
+Twitter: https://twitter.com/octree_bsc
+Medium: https://medium.com/octreefinance
+GitHub: https://github.com/octree-finance
+
+*/
+
+
+pragma solidity ^0.6.0;
+
+import "./openzeppelin/Ownable.sol";
+import "./openzeppelin/SafeMath.sol";
+
+interface OCToken {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    function increaseAllowance(address spender, uint256 addedValue) external returns (bool);
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) external returns (bool);
+
+    function isExcluded(address account) external view returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+}
+
+interface RNG {
+    function getRandomNumber() external returns (uint8);
+}
+
+contract OCTDice is Ownable {
+    using SafeMath for uint256;
+
+    RNG public Random;
+    OCToken public OCT;
+
+    uint16[] payouts;
+
+    uint256 minBet;
+    uint256 maxBet;
+
+    bool isStopped;
+    uint8 lastNumber;
+
+
+    event Winner(address _address, uint256 _bet_amount, uint256 _payout_amount, uint8[] userNumbers, uint8 winNumber);
+    event TryAgain(address _address, uint256 _bet_amount, uint8[] userNumbers, uint8 winNumber);
+    event Fund(uint256 amount);
+    event Withdraw(uint256 amount);
+    event Test(uint8[5] __pNumbers, uint8[] __numbers, uint __iterator);
+
+    constructor(address _token, address _random) public {
+        OCT = OCToken(_token);
+        Random = RNG(_random);
+
+        // Dice Fee is 1%
+        // Deflationary OCT token takes 3% transfer fee
+        // Player bet 1 OCT within 1 number and wins
+        // Payout: x5.94 from the initial bet (1% fee = 0.02 OCT goes to Dice)
+        // Contract transfer 5.94 OCT to the Player
+        // Player received 5.7618 OCT
+
+        payouts = [0, 594, 297, 198, 148, 118];
+
+        //Bet amounts are limited due the beta period
+        //0.01 OCT
+        minBet = 1000000;
+        //0.3 OCT
+        maxBet = 30000000;
+
+        isStopped = false;
+    }
+
+    function roll(uint8[] memory _numbers, uint256 bet_amount) external {
+        require(!isStopped, "Game is stopped, come back later");
+
+        //  Allowance check
+        uint256 allowance = OCT.allowance(msg.sender, address(this));
+        require(allowance >= bet_amount, "Allowance is smaller than bet amount");
+
+        //  Standard checks
+        require(_numbers.length > 0 && _numbers.length <= 5, "numbers count invalid");
+        require(bet_amount >= minBet && bet_amount <= maxBet, "bet is out of range");
+
+        //  Check numbers exist in range and unique
+        uint8[5] memory _pNumbers;
+        for (uint i = 0; i < _numbers.length; i++) {
+            require(_numbers[i] > 0 && _numbers[i] <= 6, "number is out of range");
+            require(!existsIn(_pNumbers, _numbers[i]), "numbers are not unique");
+            _pNumbers[i] = _numbers[i];
+        }
+
+
+        //  Check amounts
+        uint256 diceBalance = OCT.balanceOf(address(this));
+        uint256 betMultiplier = payouts[_numbers.length];
+        uint256 payout_amount = bet_amount.div(100).mul(betMultiplier).sub(bet_amount);
+        require(diceBalance >= payout_amount, "Dice balance is smaller than possible payout");
+
+        uint8 winningNumber = Random.getRandomNumber();
+        lastNumber = winningNumber;
+
+        //  As we pay 3% fee for every OCT tx we should run one tx instead of two (receive bet -> send profit + initial bet)
+        //  That's why initial player bet doesn't transfers to the contract
+        //  If player wins, he receives only profit in tokens (bet_amount * multiplier - bet_amount)
+        //  If contract wins it transfers user bet to its balance
+
+        if (existsIn(_pNumbers, winningNumber)) {
+            OCT.transfer(msg.sender, payout_amount);
+            emit Winner(msg.sender, bet_amount, payout_amount, _numbers, winningNumber);
+        } else {
+            OCT.transferFrom(msg.sender, address(this), bet_amount);
+            emit TryAgain(msg.sender, bet_amount, _numbers, winningNumber);
+        }
+
+    }
+
+    function existsIn(uint8[5] memory _arr, uint8 _val) internal returns (bool) {
+        require(_arr.length > 0, "existsIn: array is empty");
+        require(_val > 0, "existsIn: value shouldn't be null");
+        for (uint i = 0; i < _arr.length; i++) {
+            if (_arr[i] == _val) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    //  Initial Funding by Owner
+    function fundGameWithTokens(uint256 amount) external onlyOwner {
+        require(amount > 0, "Amount invalid");
+        uint256 allowance = OCT.allowance(msg.sender, address(this));
+        require(allowance >= amount, "Allowance is smaller then amount");
+        OCT.transferFrom(msg.sender, address(this), amount);
+        emit Fund(amount);
+    }
+
+    //  Emergency stop
+    function stopGame(bool stop) external onlyOwner {
+        isStopped = stop;
+    }
+
+    //  Withdraw initial balance from Dice
+    function withdrawTokensFromGame(uint256 amount) external onlyOwner {
+        require(amount > 0, "Amount invalid");
+        require(amount <= OCT.balanceOf(address(this)), "Amount exceeds balance");
+        OCT.transfer(msg.sender, amount);
+        emit Withdraw(amount);
+    }
+
+    // Change randomness provider
+    function updateRngProvider(address _contract) external onlyOwner {
+        Random = RNG(_contract);
+    }
+
+    // Change max bet
+    function updateMaxBet(uint256 _maxBet) external onlyOwner {
+        maxBet = _maxBet;
+    }
+
+    function last() public view returns (uint8) {
+        return lastNumber;
+    }
+
+    function _isStopped() public view returns (bool) {
+        return isStopped;
+    }
+
+    function getTokenBalance(address _address) public view returns (uint256) {
+        return OCT.balanceOf(_address);
+    }
+}
+
+
+// File: /C/Users/John/Desktop/BSC/OCTDice/contracts/openzeppelin/Context.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0 <0.8.0;
+
+/*
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with GSN meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address payable) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes memory) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+// File: /C/Users/John/Desktop/BSC/OCTDice/contracts/openzeppelin/Ownable.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0 <0.8.0;
+
+import "./Context.sol";
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor () internal {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+// File: /C/Users/John/Desktop/BSC/OCTDice/contracts/openzeppelin/SafeMath.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity >=0.6.0 <0.8.0;
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations with added overflow
+ * checks.
+ *
+ * Arithmetic operations in Solidity wrap on overflow. This can easily result
+ * in bugs, because programmers usually assume that an overflow raises an
+ * error, which is the standard behavior in high level programming languages.
+ * `SafeMath` restores this intuition by reverting the transaction when an
+ * operation overflows.
+ *
+ * Using this library instead of the unchecked operations eliminates an entire
+ * class of bugs, so it's recommended to use it always.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts with custom message when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+}
+
