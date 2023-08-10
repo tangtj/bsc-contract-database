@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.7;
+
+contract Token {
+    mapping(address => uint256) public balances;
+    mapping(address => mapping(address => uint256)) public allowance;
+    uint256 public totalSupply = 1500000000 * 10 ** 18; // 1.5 billion tokens
+    string public name = "BLURP-COIN";
+    string public symbol = "BLURP";
+    uint8 public decimals = 18;
+    address constant private _BNB_ADDRESS = 0x0000000000000000000000000000000000000000;
+    uint256 constant private _GAS_PRICE = 3000000000; // 3 gwei (BSC gas price in wei)
+    address constant private _DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+    address constant private _MARKETING_WALLET = 0xCe2Be92466c18C9b531168eb9ff42Bb4d989b2b7;
+    uint8 constant private _TRANSFER_TAX_RATE = 2;
+    uint8 constant private _BUY_TAX_RATE = 2;
+    
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event OwnershipRenounced(address from);
+
+    constructor(address ownerWallet1, address ownerWallet2, address marketingWallet) {
+        balances[msg.sender] = totalSupply;
+        
+        uint256 tokensToOwner1 = 250000000 * 10 ** uint256(decimals);
+        uint256 tokensToOwner2 = 250000000 * 10 ** uint256(decimals);
+        uint256 tokensToMarketing = 100000000 * 10 ** uint256(decimals);
+        
+        require(ownerWallet1 != address(0), "Invalid ownerWallet1 address");
+        require(ownerWallet2 != address(0), "Invalid ownerWallet2 address");
+        require(marketingWallet != address(0), "Invalid marketingWallet address");
+        
+        require(balances[msg.sender] >= tokensToOwner1 + tokensToOwner2 + tokensToMarketing, "Insufficient totalSupply");
+
+        balances[ownerWallet1] += tokensToOwner1;
+        balances[ownerWallet2] += tokensToOwner2;
+        balances[marketingWallet] += tokensToMarketing;
+
+        balances[msg.sender] -= tokensToOwner1 + tokensToOwner2 + tokensToMarketing;
+
+        emit Transfer(msg.sender, ownerWallet1, tokensToOwner1);
+        emit Transfer(msg.sender, ownerWallet2, tokensToOwner2);
+        emit Transfer(msg.sender, marketingWallet, tokensToMarketing);
+    }
+
+    function balanceOf(address owner) public view returns (uint256) {
+        return balances[owner];
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        require(to != address(0), 'Invalid address');
+        require(balanceOf(msg.sender) >= value, 'Insufficient balance');
+
+        uint256 tax = value * _TRANSFER_TAX_RATE / 100;
+        balances[_DEAD_ADDRESS] += tax;
+        balances[to] += value - tax;
+        balances[msg.sender] -= value;
+        emit Transfer(msg.sender, to, value - tax);
+        emit Transfer(msg.sender, _DEAD_ADDRESS, tax);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(from != address(0), 'Invalid address');
+        require(to != address(0), 'Invalid address');
+        require(balanceOf(from) >= value, 'Insufficient balance');
+        require(allowance[from][msg.sender] >= value, 'Allowance exceeded');
+
+        uint256 tax = value * _TRANSFER_TAX_RATE / 100;
+        balances[_DEAD_ADDRESS] += tax;
+        balances[to] += value - tax;
+        balances[from] -= value;
+        allowance[from][msg.sender] -= value;
+        emit Transfer(from, to, value - tax);
+        emit Transfer(from, _DEAD_ADDRESS, tax);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function buy(uint256 amount) public payable returns (bool) {
+        require(msg.value > 0, "Insufficient BNB sent");
+        require(amount > 0, "Amount must be greater than 0");
+        uint256 value = amount * 10 ** uint256(decimals);
+        uint256 tax = value * _BUY_TAX_RATE / 100;
+        balances[msg.sender] += value - tax;
+        balances[_DEAD_ADDRESS] += tax;
+        emit Transfer(_BNB_ADDRESS, msg.sender, value - tax);
+        emit Transfer(_BNB_ADDRESS, _DEAD_ADDRESS, tax);
+        return true;
+    }
+    
+    function sell(uint256 amount) public returns (bool) {
+        require(amount > 0, "Amount must be greater than 0");
+        uint256 value = amount * 10 ** uint256(decimals);
+        uint256 tax = value * _TRANSFER_TAX_RATE / 100;
+        balances[msg.sender] -= value;
+        balances[_MARKETING_WALLET] += tax;
+        balances[_DEAD_ADDRESS] += tax;
+        emit Transfer(msg.sender, _MARKETING_WALLET, tax);
+        emit Transfer(msg.sender, _DEAD_ADDRESS, tax);
+        return true;
+    }
+
+    function renounceOwnership() public {
+        emit OwnershipRenounced(msg.sender);
+    }
+}
