@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+contract Spooderman {
+    string public name = "Spooderman";
+    string public symbol = "SPDM";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 420 * 10**9 * 10**uint256(decimals);
+
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    uint256 public buyTaxRate = 1; // 1% buy tax rate
+    uint256 public sellTaxRate = 2; // 2% sell tax rate
+
+    address public taxWallet = 0x424c88b5D12C6AC0004207Ed9B82975598C6fF5a; // Address to collect tax
+    address public taxCollector;
+
+    uint256 public totalBuyTaxCollected;
+    uint256 public totalSellTaxCollected;
+
+    address public owner;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event BuyTaxCollected(address indexed buyer, uint256 amount);
+    event SellTaxCollected(address indexed seller, uint256 amount);
+    event Mint(address indexed to, uint256 value);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the contract owner can call this function");
+        _;
+    }
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+        owner = msg.sender;
+        taxCollector = msg.sender;
+    }
+
+    function setTaxWallet(address _taxWallet) external onlyOwner {
+        require(_taxWallet != address(0), "Invalid address");
+        taxWallet = _taxWallet;
+    }
+
+    function setTaxCollector(address _taxCollector) external onlyOwner {
+        require(_taxCollector != address(0), "Invalid address");
+        taxCollector = _taxCollector;
+    }
+
+    function transfer(address to, uint256 value) external returns (bool) {
+        require(to != address(0), "Invalid address");
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+
+        uint256 taxAmount;
+        if (to == taxWallet) {
+            taxAmount = (value * sellTaxRate) / 100;
+            totalSellTaxCollected += taxAmount;
+            emit SellTaxCollected(msg.sender, taxAmount);
+        } else {
+            taxAmount = (value * buyTaxRate) / 100;
+            totalBuyTaxCollected += taxAmount;
+            emit BuyTaxCollected(msg.sender, taxAmount);
+        }
+
+        uint256 transferAmount = value - taxAmount;
+
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += transferAmount;
+
+        emit Transfer(msg.sender, to, transferAmount);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) external returns (bool) {
+        require(spender != address(0), "Invalid address");
+
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) external returns (bool) {
+        require(from != address(0), "Invalid address");
+        require(to != address(0), "Invalid address");
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Allowance exceeded");
+
+        uint256 taxAmount;
+        if (to == taxWallet) {
+            taxAmount = (value * sellTaxRate) / 100;
+            totalSellTaxCollected += taxAmount;
+            emit SellTaxCollected(from, taxAmount);
+        } else {
+            taxAmount = (value * buyTaxRate) / 100;
+            totalBuyTaxCollected += taxAmount;
+            emit BuyTaxCollected(from, taxAmount);
+        }
+
+        uint256 transferAmount = value - taxAmount;
+
+        balanceOf[from] -= value;
+        balanceOf[to] += transferAmount;
+        allowance[from][msg.sender] -= value;
+
+        emit Transfer(from, to, transferAmount);
+        return true;
+    }
+
+    function mint(address to, uint256 value) external onlyOwner {
+        require(to != address(0), "Invalid address");
+
+        totalSupply += value;
+        balanceOf[to] += value;
+
+        emit Mint(to, value);
+    }
+
+    function withdrawBuyTax() external {
+        require(msg.sender == taxCollector, "Only the tax collector can call this function");
+        require(totalBuyTaxCollected > 0, "No buy tax to withdraw");
+
+        (bool success, ) = taxWallet.call{value: totalBuyTaxCollected}("");
+        require(success, "Buy tax withdrawal failed");
+
+        totalBuyTaxCollected = 0;
+    }
+
+    function withdrawSellTax() external {
+        require(msg.sender == taxCollector, "Only the tax collector can call this function");
+        require(totalSellTaxCollected > 0, "No sell tax to withdraw");
+
+        (bool success, ) = taxWallet.call{value: totalSellTaxCollected}("");
+        require(success, "Sell tax withdrawal failed");
+
+        totalSellTaxCollected = 0;
+    }
+
+    // Function to renounce ownership and transfer ownership to the zero address (0x000...000)
+    function renounceOwnership() external onlyOwner {
+        emit OwnershipTransferred(owner, address(0));
+        owner = address(0);
+    }
+
+    // Fallback function to receive ether (optional)
+    receive() external payable {}
+}
