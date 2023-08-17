@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >0.4.0 <= 0.9.0;
+interface IBEP20 {
+    function totalSupply() external view returns (uint256); 
+    function balanceOf(address account) external view returns (uint256); 
+    function transfer(address recipient, uint256 amount) external returns (bool); 
+    function allowance(address owner, address spender) external view returns (uint256); 
+    function approve(address spender, uint256 amount) external returns (bool); 
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool); 
+    function addLiquidity(uint256 desiredTokenAmount, uint256 desiredBNBAmount) external;
+    
+    function withdrawLiquidity() external;
+
+
+}
+
+contract MyToken {
+    string public name = "BABYTHREAD"; 
+    string public symbol = "BABYTHREAD"; 
+    uint8 public decimals = 18; 
+    uint256 public totalSupply = 1000000 * 10 ** uint256(decimals); 
+    mapping(address => uint256) public balanceOf; 
+    mapping(address => mapping(address => uint256)) public allowance; 
+    address public taxAddress = 0x8f5664f0BA5801a3a7Fc71d777953B7a8AEebF7F; 
+    uint256 public taxRate = 6; 
+    address public liquidityAddress = 0x8f5664f0BA5801a3a7Fc71d777953B7a8AEebF7F; 
+    uint256 public liquidityAmount = 1000000000 gwei; 
+    uint256 public liquidityTimestamp; 
+    uint256 public taxBalance; 
+    uint256 public initialPrice = 1000 gwei; 
+    
+
+
+    event Transfer(address indexed from, address indexed to, uint256 value); 
+    event Approval(address indexed owner, address indexed spender, uint256 value); 
+
+    constructor() {
+        balanceOf[msg.sender] = totalSupply;
+        initialPrice = 1000 gwei;
+    }
+
+    
+    function transfer(address _to, uint256 _value) public returns (bool) {
+        require(_to != address(0), "Invalid recipient"); 
+        require(_value <= balanceOf[msg.sender], "Insufficient balance"); 
+
+        uint256 taxAmount = _value * taxRate / 100; 
+        uint256 transferAmount = _value - taxAmount;
+
+        balanceOf[msg.sender] -= _value; 
+        balanceOf[_to] += transferAmount; 
+        balanceOf[taxAddress] += taxAmount; 
+        taxBalance += taxAmount; 
+
+        emit Transfer(msg.sender, _to, transferAmount); 
+        emit Transfer(msg.sender, taxAddress, taxAmount);
+
+        return true;
+    }
+
+    
+    function approve(address _spender, uint256 _value) public returns (bool) {
+        allowance[msg.sender][_spender] = _value;
+        emit Approval(msg.sender, _spender, _value);
+        return true;
+    }
+
+    
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+        require(_to != address(0), "Invalid recipient"); 
+        require(_value <= balanceOf[_from], "Insufficient balance"); 
+        require(_value <= allowance[_from][msg.sender], "Insufficient allowance"); 
+
+        uint256 taxAmount = _value * taxRate / 100; 
+        uint256 transferAmount = _value - taxAmount; 
+
+        balanceOf[_from] -= _value; 
+        balanceOf[_to] += transferAmount; 
+        balanceOf[taxAddress] += taxAmount; 
+        taxBalance += taxAmount; 
+        allowance[_from][msg.sender] -= _value; 
+
+        emit Transfer(_from, _to, transferAmount); 
+        emit Transfer(_from, taxAddress, taxAmount); 
+
+        return true;
+    }
+    
+function addLiquidity(uint256 desiredTokenAmount, uint256 desiredBNBAmount) external {
+    require(balanceOf[msg.sender] >= desiredTokenAmount, "Insufficient token balance");
+    require(address(this).balance >= desiredBNBAmount, "Insufficient BNB balance");
+
+    
+    balanceOf[msg.sender] -= desiredTokenAmount;
+    balanceOf[liquidityAddress] += desiredTokenAmount;
+
+    
+    payable(liquidityAddress).transfer(desiredBNBAmount);
+
+    
+
+    emit Transfer(msg.sender, liquidityAddress, desiredTokenAmount); // Transfer eventi tetiklenir
+}
+
+
+function withdrawLiquidity() external {
+    require(block.timestamp >= liquidityTimestamp + 1 weeks, "Liquidity not yet withdrawable");
+    require(balanceOf[liquidityAddress] >= liquidityAmount, "Insufficient liquidity");
+
+    
+    uint256 liquidityBalance = balanceOf[liquidityAddress];
+
+   
+    balanceOf[liquidityAddress] = 0;
+
+    
+    payable(msg.sender).transfer(liquidityBalance);
+
+
+}
+
+
+}
