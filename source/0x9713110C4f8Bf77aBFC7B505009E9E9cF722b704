@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract MemecoinX {
+    string public name = "MemecoinX";
+    string public symbol = "MCX";
+    uint256 public totalSupply = 1000000000 * 10**18; // 1 миллиард токенов
+    uint256 public feePercentage = 5; // Комиссия на покупку и продажу 5%
+    address public marketingWallet; // Маркетинговый кошелек
+    mapping(address => bool) public isExcludedFromFee; // Адреса, исключенные из комиссии
+
+    mapping(address => uint256) private balances;
+    mapping(address => mapping(address => uint256)) private allowances;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor(address _marketingWallet) {
+        marketingWallet = _marketingWallet;
+        balances[msg.sender] = totalSupply;
+        emit Transfer(address(0), msg.sender, totalSupply);
+    }
+
+    function balanceOf(address _account) public view returns (uint256) {
+        return balances[_account];
+    }
+
+    function transfer(address _to, uint256 _amount) public returns (bool) {
+        _transfer(msg.sender, _to, _amount);
+        return true;
+    }
+
+    function transferFrom(address _from, address _to, uint256 _amount) public returns (bool) {
+        _transfer(_from, _to, _amount);
+        _approve(_from, msg.sender, allowances[_from][msg.sender] - _amount);
+        return true;
+    }
+
+    function approve(address _spender, uint256 _amount) public returns (bool) {
+        _approve(msg.sender, _spender, _amount);
+        return true;
+    }
+
+    function increaseAllowance(address _spender, uint256 _addedValue) public returns (bool) {
+        _approve(msg.sender, _spender, allowances[msg.sender][_spender] + _addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address _spender, uint256 _subtractedValue) public returns (bool) {
+        _approve(msg.sender, _spender, allowances[msg.sender][_spender] - _subtractedValue);
+        return true;
+    }
+
+    function excludeFromFee(address _address) public {
+        require(msg.sender == marketingWallet, "Only marketing wallet can exclude addresses from fee");
+        isExcludedFromFee[_address] = true;
+    }
+
+    function includeInFee(address _address) public {
+        require(msg.sender == marketingWallet, "Only marketing wallet can include addresses in fee");
+        isExcludedFromFee[_address] = false;
+    }
+
+    function _transfer(address _from, address _to, uint256 _amount) internal {
+        require(_from != address(0), "Transfer from the zero address");
+        require(_to != address(0), "Transfer to the zero address");
+        require(_amount > 0, "Transfer amount must be greater than zero");
+        require(balances[_from] >= _amount, "Insufficient balance");
+
+        uint256 feeAmount = 0;
+        if (!isExcludedFromFee[_from] && !isExcludedFromFee[_to]) {
+            feeAmount = (_amount * feePercentage) / 100;
+            balances[marketingWallet] += feeAmount;
+            emit Transfer(_from, marketingWallet, feeAmount);
+        }
+
+        balances[_from] -= _amount;
+        balances[_to] += (_amount - feeAmount);
+        emit Transfer(_from, _to, _amount - feeAmount);
+    }
+
+    function _approve(address _owner, address _spender, uint256 _amount) internal {
+        require(_owner != address(0), "Approve from the zero address");
+        require(_spender != address(0), "Approve to the zero address");
+
+        allowances[_owner][_spender] = _amount;
+        emit Approval(_owner, _spender, _amount);
+    }
+}
