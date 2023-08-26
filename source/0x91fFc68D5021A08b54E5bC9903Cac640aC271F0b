@@ -1,0 +1,291 @@
+
+// File: contracts/admin/AvoMultisigAdmin.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract AvoMultisigAdminStructs {
+    /// @notice Transaction represents a executeable transaction and it's multisig status
+    struct Transaction {
+        /// @notice The hash of the transaction, keccak(encodePacked(target, data)))
+        bytes30 hash;
+        /// @notice The number of confirmations for the transaction
+        uint8 confirmation;
+        /// @notice The number of revokes for the transaction
+        uint8 revoke;
+    }
+}
+
+contract AvoMultisigAdminErrors {
+    /// @notice Error if input params are invalid
+    error AvoMultisigAdmin__InvalidParams();
+
+    /// @notice Error if msg.sender is not authorized
+    error AvoMultisigAdmin__Unauthorized();
+
+    /// @notice Error if signer is not a signer
+    error AvoMultisigAdmin__InvalidSigner();
+
+    /// @notice Error if transaction is already created
+    error AvoMultisigAdmin__TransactionAlreadyCreated();
+
+    /// @notice Error if transaction is already confirmed by the signer
+    error AvoMultisigAdmin__TransactionAlreadyConfirmed();
+
+    /// @notice Error if transaction is already revoked by the signer
+    error AvoMultisigAdmin__TransactionAlreadyRevoked();
+
+    /// @notice Error if transaction is already confirmed or revoked
+    error AvoMultisigAdmin__TransactionError();
+
+    /// @notice Error if transaction is not found
+    error AvoMultisigAdmin__TransactionNotFoundError();
+}
+
+abstract contract AvoMultisigAdminConstants is AvoMultisigAdminErrors {
+    /// @notice The number of signers required to confirm a transaction
+    uint256 public immutable REQUIRED_CONFIRMATIONS;
+
+    /// @notice Addresses for the signers
+    address public immutable SIGNER_1;
+    address public immutable SIGNER_2;
+    address public immutable SIGNER_3;
+    address public immutable SIGNER_4;
+    address public immutable SIGNER_5;
+    address public immutable SIGNER_6;
+
+    /// @notice sets up the immutable vars: signers and required confirmations.
+    constructor(
+        address signer1_,
+        address signer2_,
+        address signer3_,
+        address signer4_,
+        address signer5_,
+        address signer6_,
+        uint256 requiredConfirmations_
+    ) {
+        if (
+            signer1_ == address(0) ||
+            signer2_ == address(0) ||
+            signer3_ == address(0) ||
+            signer4_ == address(0) ||
+            signer5_ == address(0) ||
+            signer6_ == address(0)
+        ) {
+            revert AvoMultisigAdmin__InvalidParams();
+        }
+
+        if (requiredConfirmations_ == 0 || requiredConfirmations_ > 6) {
+            revert AvoMultisigAdmin__InvalidParams();
+        }
+
+        SIGNER_1 = signer1_;
+        SIGNER_2 = signer2_;
+        SIGNER_3 = signer3_;
+        SIGNER_4 = signer4_;
+        SIGNER_5 = signer5_;
+        SIGNER_6 = signer6_;
+
+        REQUIRED_CONFIRMATIONS = requiredConfirmations_;
+    }
+}
+
+contract AvoMultisigAdminVariables {
+    /// @notice The mapping of the hash of (targetAddress, data, salt) to the transaction
+    mapping(bytes30 => AvoMultisigAdminStructs.Transaction) public hashToTransaction;
+
+    /// @notice The mapping of signer to transaction hash to whether or not they've confirmed
+    mapping(address => mapping(bytes30 => bool)) public signedTx;
+
+    /// @notice The mapping of signer to transaction hash to whether or not they've revoked
+    mapping(address => mapping(bytes30 => bool)) public revokeTx;
+}
+
+contract AvoMultisigAdminEvents {
+    /// @notice Emitted when a transaction is created
+    event TransactionCreated(bytes30 indexed hash, address indexed creator, address target, bytes data, bytes32 salt);
+
+    /// @notice Emitted when a transaction is confirmed
+    event TransactionConfirmed(bytes30 indexed hash, address indexed confirmator, uint8 newConfirmationCount);
+
+    /// @notice Emitted when a transaction is revoked
+    event TransactionRevoked(bytes30 indexed hash, address indexed revoker, uint8 newConfirmationCount);
+
+    /// @notice Emitted when a transaction is executed
+    event TransactionExecuted(bytes30 indexed hash, address indexed executor);
+
+    /// @notice Emitted when a transaction fails
+    event TransactionFailed(bytes30 indexed hash, address indexed executor, bytes returnData);
+}
+
+/// @title   Static Multisignature Wallet Contract
+/// @notice  This contract represents a multisignature wallet with a static configuration of hardcoded addresses for confirmation.
+///          Each address can confirm or revoke a transaction on-chain.
+contract AvoMultisigAdmin is
+    AvoMultisigAdminStructs,
+    AvoMultisigAdminErrors,
+    AvoMultisigAdminConstants,
+    AvoMultisigAdminVariables,
+    AvoMultisigAdminEvents
+{
+    modifier onlySigner() {
+        if (
+            msg.sender != SIGNER_1 &&
+            msg.sender != SIGNER_2 &&
+            msg.sender != SIGNER_3 &&
+            msg.sender != SIGNER_4 &&
+            msg.sender != SIGNER_5 &&
+            msg.sender != SIGNER_6
+        ) revert AvoMultisigAdmin__InvalidSigner();
+        _;
+    }
+
+    /// @notice constructor sets up the immutable vars: signers and required confirmations.
+    constructor(
+        address signer1_,
+        address signer2_,
+        address signer3_,
+        address signer4_,
+        address signer5_,
+        address signer6_,
+        uint256 requiredConfirmations_
+    ) AvoMultisigAdminConstants(signer1_, signer2_, signer3_, signer4_, signer5_, signer6_, requiredConfirmations_) {}
+
+    /// @notice          Create a new transaction
+    /// @param target_   The address of the target contract or account for the transaction
+    /// @param data_     The data payload of the transaction
+    /// @param salt_     The salt used to make the transaction hash unique
+    function create(address target_, bytes memory data_, bytes32 salt_) external onlySigner {
+        bytes30 txHash_ = hashTransactionData(target_, data_, salt_);
+
+        if (hashToTransaction[txHash_].hash != bytes30(0)) revert AvoMultisigAdmin__TransactionAlreadyCreated();
+
+        hashToTransaction[txHash_] = Transaction(txHash_, 1, 0);
+        signedTx[msg.sender][txHash_] = true;
+
+        emit TransactionCreated(txHash_, msg.sender, target_, data_, salt_);
+    }
+
+    /// @notice          Confirm a transaction
+    /// @dev             Confirming is not allowed if `confirmation` or `revoke` is already 3 (transaction executed or cancelled).
+    /// @param target_   The address of the target contract or account for the transaction
+    /// @param data_     The data payload of the transaction
+    /// @param salt_     The salt used to make the transaction hash unique
+    function confirm(address target_, bytes memory data_, bytes32 salt_) external onlySigner {
+        bytes30 txHash_ = hashTransactionData(target_, data_, salt_);
+
+        if (hashToTransaction[txHash_].hash == bytes30(0)) revert AvoMultisigAdmin__TransactionNotFoundError();
+
+        if (signedTx[msg.sender][txHash_]) revert AvoMultisigAdmin__TransactionAlreadyConfirmed();
+
+        Transaction memory txInfo_ = hashToTransaction[txHash_];
+
+        if (txInfo_.confirmation == REQUIRED_CONFIRMATIONS || txInfo_.revoke == REQUIRED_CONFIRMATIONS)
+            revert AvoMultisigAdmin__TransactionError();
+
+        signedTx[msg.sender][txHash_] = true;
+        hashToTransaction[txHash_].confirmation = ++txInfo_.confirmation;
+
+        if (txInfo_.confirmation == REQUIRED_CONFIRMATIONS) {
+            // Execute the transaction
+            bool success_;
+            bytes memory retData_;
+            (success_, retData_) = target_.call(data_);
+            if (success_) {
+                emit TransactionExecuted(txHash_, msg.sender);
+            } else {
+                emit TransactionFailed(txHash_, msg.sender, retData_);
+            }
+        }
+
+        emit TransactionConfirmed(txHash_, msg.sender, txInfo_.confirmation);
+    }
+
+    /// @notice          Revoke a transaction confirmation.
+    /// @dev             Revoking is not allowed if `confirmation` or `revoke` is already 3 (transaction executed or cancelled).
+    /// @param target_   The address of the target contract or account for the transaction
+    /// @param data_     The data payload of the transaction
+    /// @param salt_     The salt used to make the transaction hash unique
+    function revoke(address target_, bytes memory data_, bytes32 salt_) external onlySigner {
+        bytes30 txHash_ = hashTransactionData(target_, data_, salt_);
+
+        if (hashToTransaction[txHash_].hash == bytes30(0)) revert AvoMultisigAdmin__TransactionNotFoundError();
+
+        Transaction memory txInfo_ = hashToTransaction[txHash_];
+
+        if (txInfo_.confirmation == REQUIRED_CONFIRMATIONS || txInfo_.revoke == REQUIRED_CONFIRMATIONS)
+            revert AvoMultisigAdmin__TransactionError();
+
+        hashToTransaction[txHash_].revoke = ++txInfo_.revoke;
+
+        if (revokeTx[msg.sender][txInfo_.hash] == false) {
+            revokeTx[msg.sender][txInfo_.hash] = true;
+        } else {
+            revert AvoMultisigAdmin__TransactionAlreadyRevoked();
+        }
+
+        emit TransactionRevoked(txHash_, msg.sender, txInfo_.revoke);
+    }
+
+    /// @notice          Hashes the transaction data
+    /// @param target_   The address of the target contract or account for the transaction
+    /// @param data_     The data payload of the transaction
+    /// @param salt_     The salt used to make the transaction hash unique
+    /// @return hash_    The unique hash representing this transaction
+    function hashTransactionData(
+        address target_,
+        bytes memory data_,
+        bytes32 salt_
+    ) public pure returns (bytes30 hash_) {
+        hash_ = bytes30(keccak256(abi.encodePacked(target_, data_, salt_)));
+    }
+
+    // Code for Multicall below directly taken from https://github.com/mds1/multicall/blob/main/src/Multicall3.sol#L98
+    // Copyright (c) 2023 Matt Solomon
+    struct Call3 {
+        address target;
+        bool allowFailure;
+        bytes callData;
+    }
+    struct Result {
+        bool success;
+        bytes returnData;
+    }
+
+    /// @notice Aggregate calls, ensuring each returns success if required. Can only be called by self.
+    /// @param calls An array of Call3 structs
+    /// @return returnData An array of Result structs
+    function aggregate3(Call3[] calldata calls) public returns (Result[] memory returnData) {
+        // @dev check for only self is added to original code
+        if (msg.sender != address(this)) {
+            revert AvoMultisigAdmin__Unauthorized();
+        }
+
+        uint256 length = calls.length;
+        returnData = new Result[](length);
+        Call3 calldata calli;
+        for (uint256 i = 0; i < length; ) {
+            Result memory result = returnData[i];
+            calli = calls[i];
+            (result.success, result.returnData) = calli.target.call(calli.callData);
+            assembly {
+                // Revert if the call fails and failure is not allowed
+                // `allowFailure := calldataload(add(calli, 0x20))` and `success := mload(result)`
+                if iszero(or(calldataload(add(calli, 0x20)), mload(result))) {
+                    // set "Error(string)" signature: bytes32(bytes4(keccak256("Error(string)")))
+                    mstore(0x00, 0x08c379a000000000000000000000000000000000000000000000000000000000)
+                    // set data offset
+                    mstore(0x04, 0x0000000000000000000000000000000000000000000000000000000000000020)
+                    // set length of revert string
+                    mstore(0x24, 0x0000000000000000000000000000000000000000000000000000000000000017)
+                    // set revert string: bytes32(abi.encodePacked("Multicall3: call failed"))
+                    mstore(0x44, 0x4d756c746963616c6c333a2063616c6c206661696c6564000000000000000000)
+                    revert(0x00, 0x64)
+                }
+            }
+            unchecked {
+                ++i;
+            }
+        }
+    }
+}
+
