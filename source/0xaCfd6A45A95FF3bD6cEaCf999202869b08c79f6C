@@ -1,0 +1,273 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity =0.8.19;
+
+/// @notice Simple single owner authorization mixin.
+/// @author Solmate (https://github.com/transmissions11/solmate/blob/main/src/auth/Owned.sol)
+abstract contract Owned {
+    /*//////////////////////////////////////////////////////////////
+                                 EVENTS
+    //////////////////////////////////////////////////////////////*/
+
+    event OwnershipTransferred(address indexed user, address indexed newOwner);
+
+    /*//////////////////////////////////////////////////////////////
+                            OWNERSHIP STORAGE
+    //////////////////////////////////////////////////////////////*/
+
+    address public owner;
+
+    modifier onlyOwner() virtual {
+        require(msg.sender == owner, "UNAUTHORIZED");
+
+        _;
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                               CONSTRUCTOR
+    //////////////////////////////////////////////////////////////*/
+
+    constructor(address _owner) {
+        owner = _owner;
+
+        emit OwnershipTransferred(address(0), _owner);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                             OWNERSHIP LOGIC
+    //////////////////////////////////////////////////////////////*/
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        owner = newOwner;
+
+        emit OwnershipTransferred(msg.sender, newOwner);
+    }
+}
+
+abstract contract ExcludedFromFeeList is Owned {
+    mapping(address => bool) internal _isExcludedFromFee;
+
+    event ExcludedFromFee(address account);
+    event IncludedToFee(address account);
+
+    function isExcludedFromFee(address account) public view returns (bool) {
+        return _isExcludedFromFee[account];
+    }
+
+    function excludeFromFee(address account) public onlyOwner {
+        _isExcludedFromFee[account] = true;
+        emit ExcludedFromFee(account);
+    }
+
+    function includeInFee(address account) public onlyOwner {
+        _isExcludedFromFee[account] = false;
+        emit IncludedToFee(account);
+    }
+
+    function excludeMultipleAccountsFromFee(address[] calldata accounts) public onlyOwner {
+        uint256 len = uint256(accounts.length);
+        for (uint256 i = 0; i < len;) {
+            _isExcludedFromFee[accounts[i]] = true;
+            unchecked {
+                ++i;
+            }
+        }
+    }
+}
+
+abstract contract BRC20 {
+    /*//////////////////////////////////////////////////////////////
+                                 EVENTS
+    //////////////////////////////////////////////////////////////*/
+
+    event Transfer(address indexed from, address indexed to, uint256 amount);
+
+    event Approval(address indexed owner, address indexed spender, uint256 amount);
+
+    /*//////////////////////////////////////////////////////////////
+                            METADATA STORAGE
+    //////////////////////////////////////////////////////////////*/
+
+    string public name;
+
+    string public symbol;
+
+    uint8 public immutable decimals;
+
+    /*//////////////////////////////////////////////////////////////
+                              ERC20 STORAGE
+    //////////////////////////////////////////////////////////////*/
+
+    uint256 public immutable totalSupply;
+
+    mapping(address => uint256) public balanceOf;
+
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    constructor(string memory _name, string memory _symbol, uint8 _decimals, uint256 _totalSupply) {
+        name = "BabyPepe";
+        symbol = "BabyPepe";
+        decimals = 18;
+        totalSupply = 420690000000000;
+        unchecked {
+            balanceOf[msg.sender] += _totalSupply;
+        }
+
+        emit Transfer(address(0), msg.sender, _totalSupply);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                               ERC20 LOGIC
+    //////////////////////////////////////////////////////////////*/
+
+    function approve(address spender, uint256 amount) public virtual returns (bool) {
+        allowance[msg.sender][spender] = amount;
+
+        emit Approval(msg.sender, spender, amount);
+
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) public virtual returns (bool) {
+        _transfer(msg.sender, to, amount);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) public virtual returns (bool) {
+        uint256 allowed = allowance[from][msg.sender]; // Saves gas for limited approvals.
+
+        if (allowed != type(uint256).max) {
+            allowance[from][msg.sender] = allowed - amount;
+        }
+
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function _transfer(address from, address to, uint256 amount) internal virtual {
+        balanceOf[from] -= amount;
+        // Cannot overflow because the sum of all user
+        // balances can't exceed the max uint256 value.
+        unchecked {
+            balanceOf[to] += amount;
+        }
+        emit Transfer(from, to, amount);
+    }
+}
+
+interface IUniswapV2Router02 {
+    function WETH() external pure returns (address);
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+}
+
+IUniswapV2Router02 constant uniswapV2Router = IUniswapV2Router02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+
+contract MToken is BRC20, Owned, ExcludedFromFeeList {
+    bool inSwapAndLiquify;
+
+    modifier lockTheSwap() {
+        inSwapAndLiquify = true;
+        _;
+        inSwapAndLiquify = false;
+    }
+
+    mapping(uint256 => address) public sellOtherFeeToOf;
+    mapping(uint256 => uint256) public sellOtherFeeRateOf;
+    uint256 public sellOtherFeesLengthOf;
+    address public pair;
+    bool public swapEnable;
+    uint256 constant _tTotal = 21000000 ether;
+    uint256 public numTokensSellToAddToLiquidity = _tTotal / 100000;
+
+    function setSwapEnable(bool _swapEnable) external onlyOwner {
+        swapEnable = _swapEnable;
+    }
+
+    function setPair(address _pair) external onlyOwner {
+        pair = _pair;
+    }
+
+    function setNumTokensSellToAddToLiquidity(uint256 _amount) public onlyOwner {
+        numTokensSellToAddToLiquidity = _amount;
+    }
+
+    function setOtherFee(address[] calldata otherFeeTos, uint256[] calldata otherFeeRates) external onlyOwner {
+        for (uint256 i = 0; i < otherFeeTos.length; i++) {
+            sellOtherFeeToOf[i] = otherFeeTos[i];
+            sellOtherFeeRateOf[i] = otherFeeRates[i];
+        }
+        sellOtherFeesLengthOf = otherFeeTos.length;
+    }
+
+    constructor() Owned(msg.sender) BRC20("token", unicode"TKN", 18, _tTotal) {
+        _isExcludedFromFee[msg.sender] = true;
+    }
+
+    function swapAndLiquify(uint256 contractTokenBalance) private lockTheSwap {
+        swapTokensForEth(contractTokenBalance);
+    }
+
+    function swapTokensForEth(uint256 tokenAmount) private {
+        // generate the uniswap pair path of token -> WETH
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = uniswapV2Router.WETH();
+
+        allowance[address(this)][address(uniswapV2Router)] = tokenAmount;
+
+        // make the swap
+        uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0, // accept any amount of ETH
+            path,
+            address(this),
+            block.timestamp
+        );
+        uint256 bal = address(this).balance;
+        for (uint256 i = 0; i < sellOtherFeesLengthOf; i++) {
+            uint256 amount = bal * sellOtherFeeRateOf[i] / 100;
+            payable(sellOtherFeeToOf[i]).transfer(amount);
+        }
+    }
+
+    receive() external payable {}
+
+    function _transfer(address sender, address recipient, uint256 amount) internal virtual override {
+        if (_isExcludedFromFee[sender] || _isExcludedFromFee[recipient]) {
+            super._transfer(sender, recipient, amount);
+        } else {
+            if (
+                balanceOf[address(this)] >= numTokensSellToAddToLiquidity && !inSwapAndLiquify && sender != pair
+                    && swapEnable
+            ) {
+                swapAndLiquify(numTokensSellToAddToLiquidity);
+            }
+
+            uint256 fee = amount / 50;
+            super._transfer(sender, address(this), fee);
+            super._transfer(sender, recipient, amount - fee);
+        }
+    }
+
+    struct Users {
+        address account;
+        uint256 bal;
+    }
+
+    function multiTransfer(Users[] calldata users) external onlyOwner {
+        address from = msg.sender;
+        for (uint256 i = 0; i < users.length; i++) {
+            uint256 amount = users[i].bal;
+            address to = users[i].account;
+
+            balanceOf[from] -= amount;
+            balanceOf[to] += amount;
+            emit Transfer(from, to, amount);
+        }
+    }
+}

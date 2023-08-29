@@ -1,0 +1,1972 @@
+/**
+ *Submitted for verification at BscScan.com on 2023-08-16
+*/
+
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+// File @openzeppelin/contracts/access/Ownable.sol@v4.8.2
+
+// OpenZeppelin Contracts (last updated v4.7.0) (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+// File @openzeppelin/contracts/token/ERC20/IERC20.sol@v4.8.2
+
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+// File @openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol@v4.8.2
+
+// OpenZeppelin Contracts v4.4.1 (token/ERC20/extensions/IERC20Metadata.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface for the optional metadata functions from the ERC20 standard.
+ *
+ * _Available since v4.1._
+ */
+interface IERC20Metadata is IERC20 {
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev Returns the symbol of the token.
+     */
+    function symbol() external view returns (string memory);
+
+    /**
+     * @dev Returns the decimals places of the token.
+     */
+    function decimals() external view returns (uint8);
+}
+
+// File @openzeppelin/contracts/token/ERC20/ERC20.sol@v4.8.2
+
+// OpenZeppelin Contracts (last updated v4.8.0) (token/ERC20/ERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Implementation of the {IERC20} interface.
+ *
+ * This implementation is agnostic to the way tokens are created. This means
+ * that a supply mechanism has to be added in a derived contract using {_mint}.
+ * For a generic mechanism see {ERC20PresetMinterPauser}.
+ *
+ * TIP: For a detailed writeup see our guide
+ * https://forum.openzeppelin.com/t/how-to-implement-erc20-supply-mechanisms/226[How
+ * to implement supply mechanisms].
+ *
+ * We have followed general OpenZeppelin Contracts guidelines: functions revert
+ * instead returning `false` on failure. This behavior is nonetheless
+ * conventional and does not conflict with the expectations of ERC20
+ * applications.
+ *
+ * Additionally, an {Approval} event is emitted on calls to {transferFrom}.
+ * This allows applications to reconstruct the allowance for all accounts just
+ * by listening to said events. Other implementations of the EIP may not emit
+ * these events, as it isn't required by the specification.
+ *
+ * Finally, the non-standard {decreaseAllowance} and {increaseAllowance}
+ * functions have been added to mitigate the well-known issues around setting
+ * allowances. See {IERC20-approve}.
+ */
+contract ERC20 is Context, IERC20, IERC20Metadata {
+    mapping(address => uint256) private _balances;
+
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 internal _totalSupply;
+
+    string private _name;
+    string private _symbol;
+
+    /**
+     * @dev Sets the values for {name} and {symbol}.
+     *
+     * The default value of {decimals} is 18. To select a different value for
+     * {decimals} you should overload it.
+     *
+     * All two of these values are immutable: they can only be set once during
+     * construction.
+     */
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+    }
+
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev Returns the symbol of the token, usually a shorter version of the
+     * name.
+     */
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Returns the number of decimals used to get its user representation.
+     * For example, if `decimals` equals `2`, a balance of `505` tokens should
+     * be displayed to a user as `5.05` (`505 / 10 ** 2`).
+     *
+     * Tokens usually opt for a value of 18, imitating the relationship between
+     * Ether and Wei. This is the value {ERC20} uses, unless this function is
+     * overridden;
+     *
+     * NOTE: This information is only used for _display_ purposes: it in
+     * no way affects any of the arithmetic of the contract, including
+     * {IERC20-balanceOf} and {IERC20-transfer}.
+     */
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+
+    /**
+     * @dev See {IERC20-totalSupply}.
+     */
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    /**
+     * @dev See {IERC20-balanceOf}.
+     */
+    function balanceOf(address account)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+    {
+        return _balances[account];
+    }
+
+    /**
+     * @dev See {IERC20-transfer}.
+     *
+     * Requirements:
+     *
+     * - `to` cannot be the zero address.
+     * - the caller must have a balance of at least `amount`.
+     */
+    function transfer(address to, uint256 amount)
+        public
+        virtual
+        override
+        returns (bool)
+    {
+        address owner = _msgSender();
+        _transfer(owner, to, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-allowance}.
+     */
+    function allowance(address owner, address spender)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+    {
+        return _allowances[owner][spender];
+    }
+
+    /**
+     * @dev See {IERC20-approve}.
+     *
+     * NOTE: If `amount` is the maximum `uint256`, the allowance is not updated on
+     * `transferFrom`. This is semantically equivalent to an infinite approval.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function approve(address spender, uint256 amount)
+        public
+        virtual
+        override
+        returns (bool)
+    {
+        address owner = _msgSender();
+        _approve(owner, spender, amount);
+        return true;
+    }
+
+    /**
+     * @dev See {IERC20-transferFrom}.
+     *
+     * Emits an {Approval} event indicating the updated allowance. This is not
+     * required by the EIP. See the note at the beginning of {ERC20}.
+     *
+     * NOTE: Does not update the allowance if the current allowance
+     * is the maximum `uint256`.
+     *
+     * Requirements:
+     *
+     * - `from` and `to` cannot be the zero address.
+     * - `from` must have a balance of at least `amount`.
+     * - the caller must have allowance for ``from``'s tokens of at least
+     * `amount`.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        address spender = _msgSender();
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    /**
+     * @dev Atomically increases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     */
+    function increaseAllowance(address spender, uint256 addedValue)
+        public
+        virtual
+        returns (bool)
+    {
+        address owner = _msgSender();
+        _approve(owner, spender, allowance(owner, spender) + addedValue);
+        return true;
+    }
+
+    /**
+     * @dev Atomically decreases the allowance granted to `spender` by the caller.
+     *
+     * This is an alternative to {approve} that can be used as a mitigation for
+     * problems described in {IERC20-approve}.
+     *
+     * Emits an {Approval} event indicating the updated allowance.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     * - `spender` must have allowance for the caller of at least
+     * `subtractedValue`.
+     */
+    function decreaseAllowance(address spender, uint256 subtractedValue)
+        public
+        virtual
+        returns (bool)
+    {
+        address owner = _msgSender();
+        uint256 currentAllowance = allowance(owner, spender);
+        require(
+            currentAllowance >= subtractedValue,
+            "ERC20: decreased allowance below zero"
+        );
+        unchecked {
+            _approve(owner, spender, currentAllowance - subtractedValue);
+        }
+
+        return true;
+    }
+
+    /**
+     * @dev Moves `amount` of tokens from `from` to `to`.
+     *
+     * This internal function is equivalent to {transfer}, and can be used to
+     * e.g. implement automatic token fees, slashing mechanisms, etc.
+     *
+     * Emits a {Transfer} event.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `from` must have a balance of at least `amount`.
+     */
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+
+        _beforeTokenTransfer(from, to, amount);
+
+        uint256 fromBalance = _balances[from];
+        require(
+            fromBalance >= amount,
+            "ERC20: transfer amount exceeds balance"
+        );
+        unchecked {
+            _balances[from] = fromBalance - amount;
+            // Overflow not possible: the sum of all balances is capped by totalSupply, and the sum is preserved by
+            // decrementing then incrementing.
+            _balances[to] += amount;
+        }
+
+        emit Transfer(from, to, amount);
+
+        _afterTokenTransfer(from, to, amount);
+    }
+
+    /** @dev Creates `amount` tokens and assigns them to `account`, increasing
+     * the total supply.
+     *
+     * Emits a {Transfer} event with `from` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     */
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _beforeTokenTransfer(address(0), account, amount);
+
+        _totalSupply += amount;
+        unchecked {
+            // Overflow not possible: balance + amount is at most totalSupply + amount, which is checked above.
+            _balances[account] += amount;
+        }
+        emit Transfer(address(0), account, amount);
+
+        _afterTokenTransfer(address(0), account, amount);
+    }
+
+    /**
+     * @dev Destroys `amount` tokens from `account`, reducing the
+     * total supply.
+     *
+     * Emits a {Transfer} event with `to` set to the zero address.
+     *
+     * Requirements:
+     *
+     * - `account` cannot be the zero address.
+     * - `account` must have at least `amount` tokens.
+     */
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _beforeTokenTransfer(account, address(0), amount);
+
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance - amount;
+            // Overflow not possible: amount <= accountBalance <= totalSupply.
+            _totalSupply -= amount;
+        }
+
+        emit Transfer(account, address(0), amount);
+
+        _afterTokenTransfer(account, address(0), amount);
+    }
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
+     *
+     * This internal function is equivalent to `approve`, and can be used to
+     * e.g. set automatic allowances for certain subsystems, etc.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `owner` cannot be the zero address.
+     * - `spender` cannot be the zero address.
+     */
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    /**
+     * @dev Updates `owner` s allowance for `spender` based on spent `amount`.
+     *
+     * Does not update the allowance amount in case of infinite allowance.
+     * Revert if not enough allowance is available.
+     *
+     * Might emit an {Approval} event.
+     */
+    function _spendAllowance(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(
+                currentAllowance >= amount,
+                "ERC20: insufficient allowance"
+            );
+            unchecked {
+                _approve(owner, spender, currentAllowance - amount);
+            }
+        }
+    }
+
+    /**
+     * @dev Hook that is called before any transfer of tokens. This includes
+     * minting and burning.
+     *
+     * Calling conditions:
+     *
+     * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+     * will be transferred to `to`.
+     * - when `from` is zero, `amount` tokens will be minted for `to`.
+     * - when `to` is zero, `amount` of ``from``'s tokens will be burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+
+    /**
+     * @dev Hook that is called after any transfer of tokens. This includes
+     * minting and burning.
+     *
+     * Calling conditions:
+     *
+     * - when `from` and `to` are both non-zero, `amount` of ``from``'s tokens
+     * has been transferred to `to`.
+     * - when `from` is zero, `amount` tokens have been minted for `to`.
+     * - when `to` is zero, `amount` of ``from``'s tokens have been burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+}
+
+// File @openzeppelin/contracts/security/ReentrancyGuard.sol@v4.8.2
+
+// OpenZeppelin Contracts (last updated v4.8.0) (security/ReentrancyGuard.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() private {
+        // On the first call to nonReentrant, _status will be _NOT_ENTERED
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+    }
+
+    function _nonReentrantAfter() private {
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+// File contracts/interface/IUniswapFactory.sol
+
+pragma solidity >=0.5.0;
+
+interface IUniswapFactory {
+    event PairCreated(
+        address indexed token0,
+        address indexed token1,
+        address pair,
+        uint256
+    );
+
+    function feeTo() external view returns (address);
+
+    function feeToSetter() external view returns (address);
+
+    function getPair(address tokenA, address tokenB)
+        external
+        view
+        returns (address pair);
+
+    function allPairs(uint256) external view returns (address pair);
+
+    function allPairsLength() external view returns (uint256);
+
+    function createPair(address tokenA, address tokenB)
+        external
+        returns (address pair);
+
+    function setFeeTo(address) external;
+
+    function setFeeToSetter(address) external;
+}
+
+// File contracts/interface/IUniswapPair.sol
+
+pragma solidity >=0.5.0;
+
+interface IUniswapPair {
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    function name() external pure returns (string memory);
+
+    function symbol() external pure returns (string memory);
+
+    function decimals() external pure returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
+
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    function approve(address spender, uint256 value) external returns (bool);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+
+    function PERMIT_TYPEHASH() external pure returns (bytes32);
+
+    function nonces(address owner) external view returns (uint256);
+
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
+
+    event Mint(address indexed sender, uint256 amount0, uint256 amount1);
+    event Burn(
+        address indexed sender,
+        uint256 amount0,
+        uint256 amount1,
+        address indexed to
+    );
+    event Swap(
+        address indexed sender,
+        uint256 amount0In,
+        uint256 amount1In,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address indexed to
+    );
+    event Sync(uint112 reserve0, uint112 reserve1);
+
+    function MINIMUM_LIQUIDITY() external pure returns (uint256);
+
+    function factory() external view returns (address);
+
+    function token0() external view returns (address);
+
+    function token1() external view returns (address);
+
+    function getReserves()
+        external
+        view
+        returns (
+            uint112 reserve0,
+            uint112 reserve1,
+            uint32 blockTimestampLast
+        );
+
+    function price0CumulativeLast() external view returns (uint256);
+
+    function price1CumulativeLast() external view returns (uint256);
+
+    function kLast() external view returns (uint256);
+
+    function mint(address to) external returns (uint256 liquidity);
+
+    function burn(address to)
+        external
+        returns (uint256 amount0, uint256 amount1);
+
+    function swap(
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address to,
+        bytes calldata data
+    ) external;
+
+    function skim(address to) external;
+
+    function sync() external;
+
+    function initialize(address, address) external;
+}
+
+pragma solidity ^0.8.0;
+
+interface IUniswapV2Router01 {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        returns (
+            uint256 amountA,
+            uint256 amountB,
+            uint256 liquidity
+        );
+
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        payable
+        returns (
+            uint256 amountToken,
+            uint256 amountETH,
+            uint256 liquidity
+        );
+
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 liquidity,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountA, uint256 amountB);
+
+    function removeLiquidityETH(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountToken, uint256 amountETH);
+
+    function removeLiquidityWithPermit(
+        address tokenA,
+        address tokenB,
+        uint256 liquidity,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 amountA, uint256 amountB);
+
+    function removeLiquidityETHWithPermit(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 amountToken, uint256 amountETH);
+
+    function swapExactTokensForTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapTokensForExactTokens(
+        uint256 amountOut,
+        uint256 amountInMax,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapExactETHForTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable returns (uint256[] memory amounts);
+
+    function swapTokensForExactETH(
+        uint256 amountOut,
+        uint256 amountInMax,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapExactTokensForETH(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function swapETHForExactTokens(
+        uint256 amountOut,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable returns (uint256[] memory amounts);
+
+    function quote(
+        uint256 amountA,
+        uint256 reserveA,
+        uint256 reserveB
+    ) external pure returns (uint256 amountB);
+
+    function getAmountOut(
+        uint256 amountIn,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) external pure returns (uint256 amountOut);
+
+    function getAmountIn(
+        uint256 amountOut,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) external pure returns (uint256 amountIn);
+
+    function getAmountsOut(uint256 amountIn, address[] calldata path)
+        external
+        view
+        returns (uint256[] memory amounts);
+
+    function getAmountsIn(uint256 amountOut, address[] calldata path)
+        external
+        view
+        returns (uint256[] memory amounts);
+}
+
+pragma solidity ^0.8.0;
+
+interface IUniswapV2Router02 is IUniswapV2Router01 {
+    function removeLiquidityETHSupportingFeeOnTransferTokens(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external returns (uint256 amountETH);
+
+    function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+        address token,
+        uint256 liquidity,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline,
+        bool approveMax,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 amountETH);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+}
+
+// File contracts/math/SafeMath.sol
+
+pragma solidity >=0.4.0;
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations with added overflow
+ * checks.
+ *
+ * Arithmetic operations in Solidity wrap on overflow. This can easily result
+ * in bugs, because programmers usually assume that an overflow raises an
+ * error, which is the standard behavior in high level programming languages.
+ * `SafeMath` restores this intuition by reverting the transaction when an
+ * operation overflows.
+ *
+ * Using this library instead of the unchecked operations eliminates an entire
+ * class of bugs, so it's recommended to use it always.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+        // benefit is lost if 'b' is also tested.
+        // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers. Reverts with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return mod(a, b, "SafeMath: modulo by zero");
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * Reverts with custom message when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(
+        uint256 a,
+        uint256 b,
+        string memory errorMessage
+    ) internal pure returns (uint256) {
+        require(b != 0, errorMessage);
+        return a % b;
+    }
+
+    function min(uint256 x, uint256 y) internal pure returns (uint256 z) {
+        z = x < y ? x : y;
+    }
+
+    // babylonian method (https://en.wikipedia.org/wiki/Methods_of_computing_square_roots#Babylonian_method)
+    function sqrt(uint256 y) internal pure returns (uint256 z) {
+        if (y > 3) {
+            z = y;
+            uint256 x = y / 2 + 1;
+            while (x < z) {
+                z = x;
+                x = (y / x + x) / 2;
+            }
+        } else if (y != 0) {
+            z = 1;
+        }
+    }
+}
+
+pragma solidity 0.8.19;
+
+contract BFCToken is ERC20, ReentrancyGuard, Ownable {
+    using SafeMath for uint256;
+    uint256 public constant MAX_MINT = 2 * 10 ** 25;    
+    uint256 public sonValidAmount = 10 * 10 ** 18;
+    uint256 public constant DEL_TIME = 90 days;
+    uint256 public constant RECOMMEND_RATIO = 10;
+    uint256 public constant MINT_RATIO = 6; 
+    uint256 public constant BURN_RATIO = 3; 
+    uint256 public toUsdtFee = 25;
+    uint256 public burnFee = 5;
+    uint256 public constant BLOCK_AMOUNT_OF_DAY = 28800;
+    address private constant DESTROY =
+        0x000000000000000000000000000000000000dEaD;
+    IUniswapV2Router02 public immutable uniswapV2Router;
+    IUniswapPair public immutable uniswapV2PairUSDT;
+    address public usdt = address(0x55d398326f99059fF775485246999027B3197955);
+    mapping(address => bool) public ammPairs;
+    mapping(address => bool) public isParter;
+    mapping(address => bool) public cannotBurn;
+    mapping(address => uint256) public userTimeOfBurn;
+    bool private swapping;
+    address public lastAddress = address(0);
+    mapping(address => bool) public lpPush;
+    mapping(address => uint256) public userTimeOfMint;
+    uint256 public totalMint;
+    mapping(address => bool) public isExcludedFromFees;
+    mapping(address => address) public toFather;
+    mapping(address => uint256) public sonToFather;
+    mapping(address => mapping(address => bool)) public toValidSon;
+    mapping(address => address[]) public sonAddress;
+    mapping(address => uint256) public haveLpAmount;
+    mapping(address => bool) public isExcludedFromFeesVip;
+    uint256 private lastTx;
+    bool public flags;
+    struct AddLiqudity {
+        uint256 amount;
+        uint256 time;
+    }
+    mapping(address => AddLiqudity[]) public addLiqudityInfo;
+    mapping(address => uint256) public validLpAmount;
+    uint256 public totalLPAmount;
+    address public fundAddress =
+        address(0x7614808abbe39e0Df6682D1Afa2AC9eF8BeeDE53);
+    address public mintAddress =
+        address(0x502e1A4eCA726C185D8bdbBa120Dc8Ac189e9d01);
+    address public burnAddress =
+        address(0xBA821895a30006c17B931D5E010A77273d975998); 
+
+    constructor() ERC20("BFCToken", "BFC") { 
+        uint256 total = 1000000 * 10 ** decimals();
+        _approve(
+            address(this),
+            address(0x10ED43C718714eb63d5aA57B78B54704E256024E),
+            total.mul(10000)
+        );  
+        require(address(this) > usdt, "small");
+        uniswapV2Router = IUniswapV2Router02(
+            0x10ED43C718714eb63d5aA57B78B54704E256024E
+        ); 
+        uniswapV2PairUSDT = IUniswapPair(
+            IUniswapFactory(uniswapV2Router.factory()).createPair(
+                address(this),
+                usdt
+            )
+        );
+        ammPairs[address(uniswapV2PairUSDT)] = true;
+        cannotBurn[address(this)] = true;
+        cannotBurn[burnAddress] = true;
+        cannotBurn[address(uniswapV2PairUSDT)] = true;
+        isExcludedFromFeesVip[mintAddress] = true;
+        isExcludedFromFees[address(this)] = true;
+        _mint(mintAddress, total); 
+    }
+
+    function setSonValidAmount(uint256 amount) public onlyOwner {
+        sonValidAmount = amount;
+    }
+
+    function setAmmPairs(address _pair, bool _isPair) public onlyOwner {
+        ammPairs[_pair] = _isPair;
+    }
+
+    function setIsParter(address _parter, bool _isParter) public onlyOwner {
+        isParter[_parter] = _isParter;
+    }
+
+    function setCannotBurn(address _notBurn, bool _isNotBurn) public onlyOwner {
+        cannotBurn[_notBurn] = _isNotBurn;
+    }
+
+    function setBurnFee(uint256 _burnFee) public onlyOwner {
+        burnFee = _burnFee;
+    }
+
+    function setToUsdtFee(uint256 _toUsdtFee) public onlyOwner {
+        toUsdtFee = _toUsdtFee;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        uint256 amount = super.balanceOf(account);
+        if (cannotBurn[account]) return amount;
+        uint256 spendTime = block.timestamp.sub(userTimeOfBurn[account]);
+        if (spendTime == 0) return amount;
+        uint256 mintAmount = getUserMintAmount(account);
+        uint256 burnAmount = getUserBurnAmount(account);
+        uint256 balance = amount.sub(burnAmount).add(mintAmount);
+        return balance;
+    }
+
+    function getUserBurnAmount(address user) public view returns (uint256) {
+        uint256 userBalance = super.balanceOf(user);
+        if (cannotBurn[user] || userBalance == 0) return 0;
+        uint256 _userTime = userTimeOfBurn[user];
+        uint256 endTime = block.timestamp;
+        if (_userTime > 0 && _userTime < endTime) {
+            uint256 burnSecond = endTime.sub(_userTime);
+            uint256 burnCount = burnSecond.div(3);
+            uint256 burnAmount = userBalance.mul(BURN_RATIO).div(1000).div(
+                BLOCK_AMOUNT_OF_DAY
+            ); 
+            uint256 burnAmountOfThree = burnAmount.mul(burnCount);
+            uint256 half = userBalance.div(2);
+            if (burnAmountOfThree >= half) return half;
+            return burnAmountOfThree;
+        }
+        return 0;
+    }
+
+    function getUserMintAmount(address user) public view returns (uint256) {
+        if (!lpPush[user] || totalMint >= MAX_MINT) return 0;
+        uint256 userTime = userTimeOfMint[user];
+        uint256 endTime = block.timestamp;
+        if (userTime > 0 && userTime < endTime) {
+            uint256 mintSecond = endTime.sub(userTime);
+            uint256 mintCount = mintSecond.div(3);
+            uint256 lpAmount = uniswapV2PairUSDT.balanceOf(user);
+            if(lpAmount == 0){
+                return 0;
+            }
+            uint256 tokenAmount = getTokenAmountByLp(lpAmount).sub(
+                sonToFather[user]
+            );
+           
+            uint256 mintAmount = tokenAmount
+                .mul(MINT_RATIO)
+                .div(BLOCK_AMOUNT_OF_DAY)
+                .div(1000);
+            if (mintCount >= BLOCK_AMOUNT_OF_DAY)return mintAmount.mul(BLOCK_AMOUNT_OF_DAY);
+            return mintAmount.mul(mintCount);
+        }
+        return 0;
+    }
+
+    function updateUserAmountMint(address user) private {
+        if (block.timestamp > userTimeOfMint[user]) {
+            uint256 mintAmount = getUserMintAmount(user);
+            if (mintAmount > 0) {
+                uint256 _totalMint = totalMint + mintAmount;
+                if (_totalMint >= MAX_MINT) {
+                    uint256 amount = MAX_MINT - totalMint;
+                    totalMint = MAX_MINT;
+                    if (amount != 0) {
+                        _mint(user, amount);
+                    }
+                } else {
+                    totalMint = totalMint + mintAmount;
+                    _mint(user, mintAmount);
+                }
+            }
+        }
+        userTimeOfMint[user] = block.timestamp;
+    }
+
+    function getTokenAmountByLp(uint256 lpAmount)
+        public
+        view
+        returns (uint256)
+    {
+        uint256 balance1 = IERC20(address(this)).balanceOf(
+            address(uniswapV2PairUSDT)
+        );
+        if (balance1 == 0 || lpAmount == 0) return 0;
+        return lpAmount.mul(balance1).div(uniswapV2PairUSDT.totalSupply());
+    }
+
+    function getTokenAmountByLp2(uint256 lpAmount)
+        public
+        view
+        returns (uint256)
+    {
+        uint256 balanceUSDT = IERC20(usdt).balanceOf(
+            address(uniswapV2PairUSDT)
+        );
+        if (balanceUSDT == 0 || lpAmount == 0) return 0;
+        return lpAmount.mul(balanceUSDT).div(uniswapV2PairUSDT.totalSupply());
+    }
+
+    function updateUserAmountBurn(address user) private {
+        if (block.timestamp > userTimeOfBurn[user] && !cannotBurn[user]) {
+            uint256 burnAmount = getUserBurnAmount(user);
+            if (burnAmount > 0) {
+                super._transfer(user, burnAddress, burnAmount);
+            }
+        }
+        userTimeOfBurn[user] = block.timestamp;
+    }
+
+    function lpDividendProc(address[] memory lpAddresses) private {
+        for (uint256 i = 0; i < lpAddresses.length; i++) {
+            if (
+                lpPush[lpAddresses[i]] &&
+                (uniswapV2PairUSDT.balanceOf(lpAddresses[i]) < 0)
+            ) {
+                _clrLpDividend(lpAddresses[i]);
+            } else if (
+                !lpPush[lpAddresses[i]] &&
+                uniswapV2PairUSDT.balanceOf(lpAddresses[i]) > 0
+            ) {
+                _setLpDividend(lpAddresses[i]);
+            }
+        }
+    }
+
+    function _clrLpDividend(address lpAddress) internal {
+        lpPush[lpAddress] = false;
+    }
+
+    function _setLpDividend(address lpAddress) internal {
+        lpPush[lpAddress] = true;
+    }
+
+    function _transfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal override {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+        require(from != to, "ERC20: transfer to the same address");
+
+        if (swapping) {
+            super._transfer(from, to, amount);
+            return;
+        }
+
+        bool isAddLdx;
+        bool isDelLdx;
+
+        if (
+            !ammPairs[from] &&
+            !ammPairs[to] &&
+            toFather[to] == address(0) &&
+            toFather[from] != to
+        ) {
+            toFather[to] = from;
+            sonAddress[from].push(to);
+        }
+
+        if (ammPairs[from]) {
+            _distributeRewards(to);
+        } else if (ammPairs[to]) {
+            _distributeRewards(from);
+        } else {
+            _distributeRewards(from);
+            _distributeRewards(to);
+        }
+
+        if (ammPairs[from]) {
+            updateUserAmountMint(to);
+            updateUserAmountBurn(to);
+        } else if (ammPairs[to]) {
+            updateUserAmountMint(from);
+            updateUserAmountBurn(from);
+        } else {
+            updateUserAmountMint(from);
+            updateUserAmountMint(to);
+            updateUserAmountBurn(from);
+            updateUserAmountBurn(to);
+        }
+
+        if (lastAddress == address(0)) {
+            address[] memory addrs = new address[](2);
+            addrs[0] = from;
+            addrs[1] = to;
+            lpDividendProc(addrs);
+        } else {
+            address[] memory addrs = new address[](3);
+            addrs[0] = from;
+            addrs[1] = to;
+            addrs[2] = lastAddress;
+            lastAddress = address(0);
+            lpDividendProc(addrs);
+        }
+
+        if (ammPairs[to]) {
+            lastAddress = from;
+        }
+
+        uint256 usdtAmount;
+        if (ammPairs[to]) {
+            (isAddLdx, usdtAmount) = _isAddLiquidityV2();
+            if (isAddLdx) {
+                if (isExcludedFromFeesVip[from] && !flags) {
+                    super._transfer(from, to, amount);
+                    flags = true;
+                    return;
+                }
+                _setLpDividend(from);
+                (uint256 lpAddAmount, ) = getLpBalanceByUsdt(usdtAmount);
+                if (isParter[from]) {
+                    addLiqudityInfo[from].push(
+                        AddLiqudity({
+                            amount: lpAddAmount,
+                            time: block.timestamp
+                        })
+                    );
+                } else {
+                    haveLpAmount[from] = haveLpAmount[from].add(lpAddAmount);
+                }
+                totalLPAmount = totalLPAmount + lpAddAmount;
+            }
+        } else if (ammPairs[from]) {
+            (isDelLdx, , usdtAmount) = _isDelLiquidityV2();
+            if (isDelLdx) {
+                uint256 lpDelAmount = getLpBalanceByToken(usdtAmount);
+                uint256 totalLpAmounts;
+                AddLiqudity[] memory info = addLiqudityInfo[to];
+                for (uint256 i = 0; i < info.length; i++) {
+                    totalLpAmounts = totalLpAmounts + info[i].amount;
+                }
+                totalLpAmounts = totalLpAmounts + validLpAmount[to];
+
+                if (isParter[to]) {
+                    if (totalLpAmounts == 0) {
+                        super._transfer(from, DESTROY, amount);
+                        _totalSupply = _totalSupply - amount;
+                    } else {
+                        if (totalLpAmounts >= lpDelAmount) {
+                            _delLP(from, to, amount, lpDelAmount);
+                        } else {
+                            uint256 otherLpAmount = lpDelAmount -
+                                totalLpAmounts;
+                            uint256 tokenAmount = getTokenAmountByLp2(
+                                otherLpAmount
+                            );
+                            amount = amount - tokenAmount;
+                            super._transfer(from, DESTROY, tokenAmount);
+                            _totalSupply = _totalSupply - tokenAmount;
+                            uint256 selfLpAmount = lpDelAmount - otherLpAmount;
+
+                            if (validLpAmount[to] >= selfLpAmount) {
+                                validLpAmount[to] =
+                                    validLpAmount[to] -
+                                    selfLpAmount;
+                                super._transfer(from, to, amount);
+                            } else {
+                                uint256 lpValidAmount;
+                                AddLiqudity[]
+                                    memory information = addLiqudityInfo[to];
+                                for (
+                                    uint256 i = 0;
+                                    i < information.length;
+                                    i++
+                                ) {
+                                    if (
+                                        block.timestamp - information[i].time >
+                                        DEL_TIME
+                                    ) {
+                                        lpValidAmount =
+                                            lpValidAmount +
+                                            information[i].amount;
+                                        delete information[i];
+                                    }
+                                }
+                                validLpAmount[to] =
+                                    validLpAmount[to] +
+                                    lpValidAmount;
+                                if (validLpAmount[to] >= selfLpAmount) {
+                                    validLpAmount[to] =
+                                        validLpAmount[to] -
+                                        selfLpAmount;
+                                    super._transfer(from, to, amount);
+                                } else {
+                                    _setLpAmount(selfLpAmount, from, to);
+                                }
+                            }
+                        }
+                    }
+                    return;
+                } else {
+                    if (haveLpAmount[to] == 0) {
+                        super._transfer(from, DESTROY, amount);
+                        _totalSupply = _totalSupply - amount;
+                    } else {
+                        if (haveLpAmount[to] >= lpDelAmount) {
+                            haveLpAmount[to] = haveLpAmount[to] - lpDelAmount;
+                            super._transfer(from, to, amount);
+                        } else {
+                            uint256 extraLpAmount = lpDelAmount -
+                                haveLpAmount[to];
+                            uint256 tokenAmount = getTokenAmountByLp2(
+                                extraLpAmount
+                            );
+                            amount = amount - tokenAmount;
+
+                            super._transfer(from, DESTROY, tokenAmount);
+                            _totalSupply = _totalSupply - tokenAmount;
+                            super._transfer(from, to, amount);
+                            haveLpAmount[to] = 0;
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        uint256 balance = balanceOf(address(this));
+        uint256 balancePair = balanceOf(address(uniswapV2PairUSDT));
+        if (balance > 0 && balancePair > balance) {
+            if (
+                !swapping &&
+                (ammPairs[to] || (!ammPairs[from] && !ammPairs[to])) &&
+                !isAddLdx
+            ) {
+                swapping = true;
+                swap(balance);
+                swapping = false;
+            }
+        }
+
+        if (!isAddLdx && !isDelLdx) {
+            if (isExcludedFromFees[from] || isExcludedFromFees[to]) {} else {
+                if (ammPairs[to] || ammPairs[from]) {
+                    if(ammPairs[to]){                
+                        if(lastTx != 0){
+                            super._transfer(address(uniswapV2PairUSDT), DESTROY, lastTx);
+                            _totalSupply = _totalSupply - lastTx;
+                            IUniswapPair(uniswapV2PairUSDT).sync();
+                            lastTx = 0;
+                        }
+                        uint256 subAmount = amount.div(100).mul(2);
+                        lastTx = lastTx + subAmount;
+
+                    }
+                    uint256 burnAmount = amount.mul(burnFee).div(1000);
+                    uint256 toUsdtAmount = amount.mul(toUsdtFee).div(1000);
+                    super._transfer(from, DESTROY, burnAmount);
+                    _totalSupply = _totalSupply - burnAmount;
+                    super._transfer(from, address(this), toUsdtAmount);
+                    amount = amount.sub(burnAmount).sub(toUsdtAmount);
+                }
+            }
+        }
+        super._transfer(from, to, amount);
+    }
+
+    function _setLpAmount(
+        uint256 selfLpAmount,
+        address from,
+        address to
+    ) private {
+        uint256 invalidLp = selfLpAmount - validLpAmount[to];
+        if (validLpAmount[to] != 0) {
+            uint256 validTokenAmount = getTokenAmountByLp2(validLpAmount[to]);
+            super._transfer(from, to, validTokenAmount);
+        }
+
+        AddLiqudity[] storage infos = addLiqudityInfo[to];
+        for (uint256 i = 0; i < infos.length; i++) {
+            delete infos[i];
+        }
+        uint256 invalidTokenAmount = getTokenAmountByLp2(invalidLp);
+        super._transfer(from, DESTROY, invalidTokenAmount);
+        _totalSupply = _totalSupply - invalidTokenAmount;
+    }
+
+    function _delLP(
+        address from,
+        address to,
+        uint256 amount,
+        uint256 lpDelAmount
+    ) private {
+        if (validLpAmount[to] >= lpDelAmount) {
+            validLpAmount[to] = validLpAmount[to] - lpDelAmount;
+            super._transfer(from, to, amount);
+        } else {
+            uint256 lpValidAmount;
+            AddLiqudity[] memory info = addLiqudityInfo[to];
+            for (uint256 i = 0; i < info.length; i++) {
+                if (block.timestamp - info[i].time > DEL_TIME) {
+                    lpValidAmount = lpValidAmount + info[i].amount;
+                    delete info[i];
+                }
+            }
+            validLpAmount[to] = validLpAmount[to] + lpValidAmount;
+            if (validLpAmount[to] >= lpDelAmount) {
+                validLpAmount[to] = validLpAmount[to] - lpDelAmount;
+                super._transfer(from, to, amount);
+            } else {
+                uint256 invalidLp = lpDelAmount - validLpAmount[to];
+                uint256 invalidLpAmount = invalidLp;
+                uint256 validTokenAmount = getTokenAmountByLp2(
+                    validLpAmount[to]
+                );
+                if (validTokenAmount != 0) {
+                    super._transfer(from, to, validTokenAmount);
+                }
+
+                AddLiqudity[] storage infos = addLiqudityInfo[to];
+                for (uint256 i = 0; i < infos.length; i++) {
+                    if (info[i].amount >= invalidLp) {
+                        infos[i].amount = infos[i].amount - invalidLp;
+                        if (infos[i].amount == 0) {
+                            delete infos[i];
+                        }
+                        break;
+                    } else {
+                        invalidLp = invalidLp - infos[i].amount;
+                        delete infos[i];
+                    }
+                }
+                uint256 invalidTokenAmount = getTokenAmountByLp2(
+                    invalidLpAmount
+                );
+                super._transfer(from, DESTROY, invalidTokenAmount);
+                _totalSupply = _totalSupply - invalidTokenAmount;
+            }
+        }
+    }
+
+    function getLpBalanceByToken(uint256 amount) public view returns (uint256) {
+        uint256 pairTotalAmount = uniswapV2PairUSDT.totalSupply();
+        uint256 pairUSDTAmount = IERC20(usdt).balanceOf(
+            address(uniswapV2PairUSDT)
+        );
+        return pairTotalAmount.mul(amount).div(pairUSDTAmount);
+    }
+
+    function getLpBalanceByUsdt(uint256 usdtAmount)
+        public
+        view
+        returns (uint256, uint256)
+    {
+        uint256 pairTotalAmount = uniswapV2PairUSDT.totalSupply();
+        (uint256 pairUSDTAmount, uint256 pairTokenAmount, ) = IUniswapPair(
+            uniswapV2PairUSDT
+        ).getReserves();
+        uint256 probablyLpAmount = pairTotalAmount.mul(usdtAmount).div(
+            pairUSDTAmount
+        );
+        uint256 probablyTokenAmount = probablyLpAmount.mul(pairTokenAmount).div(
+            pairTotalAmount
+        );
+        return (probablyLpAmount, probablyTokenAmount);
+    }
+
+    function _distributeRewards(address addr) internal {
+        address father = toFather[addr];
+        address lastFather = addr;
+        uint256 lastFatherAmount = getUserMintAmount(addr);
+        uint256 fatherAmount;
+        uint256 rewardAmount;
+        for (uint256 i = 0; i < 8; i++) {
+            if (father == address(0)) break;
+            lastFatherAmount = getUserMintAmount(lastFather);
+            fatherAmount = getUserMintAmount(father);
+            uint256 validAmount = _calValidRecommendAmount(father);
+
+            uint256 lpAmountLastFather = uniswapV2PairUSDT.balanceOf(
+                lastFather
+            );
+            uint256 lpAmountFather = uniswapV2PairUSDT.balanceOf(father);
+            uint256 tokenAmountLastFather = getTokenAmountByLp(
+                lpAmountLastFather
+            );
+            uint256 tokenAmountFather = getTokenAmountByLp(lpAmountFather);
+            if (lastFatherAmount == 0) return;
+            if (
+                tokenAmountLastFather >= tokenAmountFather &&
+                validAmount >= i + 1 &&
+                lastFatherAmount != 0
+            ) {
+                rewardAmount = fatherAmount.mul(RECOMMEND_RATIO).div(100);
+                uint256 _totalMint = totalMint + rewardAmount;
+                if (_totalMint >= MAX_MINT) {
+                    totalMint = MAX_MINT;
+                    uint256 amount = MAX_MINT - totalMint;
+                    if (amount == 0) return;
+                    _mint(father, amount);
+                    sonToFather[lastFather] = amount;
+                } else {
+                    _mint(father, rewardAmount);
+                    totalMint = totalMint + rewardAmount;
+                    sonToFather[lastFather] = rewardAmount;
+                }
+            } else if (
+                tokenAmountLastFather < tokenAmountFather &&
+                validAmount >= i + 1 &&
+                lastFatherAmount != 0
+            ) {
+                rewardAmount = lastFatherAmount.mul(RECOMMEND_RATIO).div(100);
+                uint256 _totalMint = totalMint + rewardAmount;
+                if (_totalMint >= MAX_MINT) {
+                    totalMint = MAX_MINT;
+                    uint256 amount = MAX_MINT - totalMint;
+                    if (amount == 0) return;
+                    _mint(father, amount);
+                    sonToFather[lastFather] = amount;
+                } else {
+                    totalMint = totalMint + rewardAmount;
+                    _mint(father, rewardAmount);
+                    sonToFather[lastFather] = rewardAmount;
+                }
+            }
+            lastFather = father;
+            father = toFather[father];
+        }
+    }
+
+    function _calValidRecommendAmount(address user) private returns (uint256) {
+        uint256 len = sonAddress[user].length;
+        uint256 validAmount;
+        if (len == 0) return 0;
+        for (uint256 i = 0; i < len; i++) {
+            address son = sonAddress[user][i];
+
+            uint256 lpAmountTo = uniswapV2PairUSDT.balanceOf(son);
+            uint256 tokenAmountOfTo = getTokenAmountByLp(lpAmountTo);
+            if (tokenAmountOfTo >= sonValidAmount) {
+                toValidSon[user][son] = true;
+                validAmount = validAmount.add(1);
+            }
+        }
+        return validAmount;
+    }
+
+    function _isAddLiquidityV2()
+        internal
+        view
+        returns (bool ldxAdd, uint256 otherAmount)
+    {
+        address token0 = IUniswapPair(address(uniswapV2PairUSDT)).token0();
+        (uint256 r0, , ) = IUniswapPair(address(uniswapV2PairUSDT))
+            .getReserves();
+        uint256 bal0 = IERC20(token0).balanceOf(address(uniswapV2PairUSDT));
+        if (token0 != address(this)) {
+            if (bal0 > r0) {
+                otherAmount = bal0 - r0;
+                ldxAdd = otherAmount > 10**15;
+            }
+        }
+    }
+
+    function _isDelLiquidityV2()
+        internal
+        view
+        returns (
+            bool ldxDel,
+            bool bot,
+            uint256 otherAmount
+        )
+    {
+        address token0 = IUniswapPair(address(uniswapV2PairUSDT)).token0();
+        (uint256 reserves0, , ) = IUniswapPair(address(uniswapV2PairUSDT))
+            .getReserves();
+        uint256 amount = IERC20(token0).balanceOf(address(uniswapV2PairUSDT));
+        if (token0 != address(this)) {
+            if (reserves0 > amount) {
+                otherAmount = reserves0 - amount;
+                ldxDel = otherAmount > 10**10;
+            } else {
+                bot = reserves0 == amount;
+            }
+        }
+    }
+
+    function swap(uint256 tokenAmount) private {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = usdt;
+
+        uniswapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0,
+            path,
+            fundAddress,
+            block.timestamp
+        );
+    }
+}
