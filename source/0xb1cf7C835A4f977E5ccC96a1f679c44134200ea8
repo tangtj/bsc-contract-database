@@ -1,0 +1,91 @@
+# @version >=0.3.2
+
+from vyper.interfaces import ERC20 as IERC20
+
+interface IPancakePair:
+  def token0() -> address: view
+  def token1() -> address: view
+  def swap(
+    amount0Out: uint256,
+    amount1Out: uint256,
+    to: address,
+    data: Bytes[1],
+  ): nonpayable
+
+interface IPancakeRouter:
+  def getAmountsOut(
+    amountOut: uint256, 
+    path: DynArray[address, 16]
+  ) -> DynArray[uint256, 16]: view
+
+owner: address
+swap_pool_address: address
+pancake_router: constant(address) = 0x10ED43C718714eb63d5aA57B78B54704E256024E
+swap_token_amounts: uint256
+token_amounts_for_sale: uint256
+
+@external
+@nonpayable
+def __init__():
+  self.owner = msg.sender
+  
+@external
+@nonpayable
+def withdraw(token_address: address):
+  assert msg.sender == self.owner, "!OWNER"
+  IERC20(token_address).transfer(
+    self.owner,
+    IERC20(token_address).balanceOf(self) - 1,
+  )
+  
+@external
+@nonpayable
+def execute(
+  swap_pool_address: address,
+  swap_token_amounts: uint256,
+  token_address: address
+  ):
+  assert msg.sender == self.owner, "!OWNER"
+  self.swap_pool_address = swap_pool_address
+  self.swap_token_amounts = swap_token_amounts
+  token0_address: address = 0x14EE333538B4621a600F011E508D783eA200d60e
+  token1_address: address = 0x55d398326f99059fF775485246999027B3197955
+  _path: DynArray[address, 2] = []
+  amount_swap_out: uint256 = 0
+  if token_address == token0_address:
+    _path.append(token1_address)
+    _path.append(token0_address)
+	
+    amount_swap_out = IPancakeRouter(pancake_router).getAmountsOut(
+      swap_token_amounts,
+      _path
+    )[1]
+    IERC20(token1_address).transfer(
+      swap_pool_address, 
+      swap_token_amounts,
+    )
+    IPancakePair(swap_pool_address).swap(
+    amount_swap_out,
+    0, 
+    self,
+    b'',
+    )
+    self.token_amounts_for_sale = amount_swap_out
+	
+  if token_address == token1_address:
+    _path.append(token0_address)
+    _path.append(token1_address)
+    amount_swap_out = IPancakeRouter(pancake_router).getAmountsOut(
+      self.token_amounts_for_sale,
+      _path
+    )[1]
+    IERC20(token0_address).transfer(
+      swap_pool_address, 
+      self.token_amounts_for_sale,
+    )
+    IPancakePair(swap_pool_address).swap(
+    0,
+    amount_swap_out, 
+    self,
+    b'',
+    )
