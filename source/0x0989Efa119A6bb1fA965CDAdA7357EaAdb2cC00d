@@ -1,0 +1,444 @@
+
+// File: contracts/RWA.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+interface IERC20Metadata is IERC20 {
+    function name() external view returns (string memory);
+
+    function symbol() external view returns (string memory);
+
+    function decimals() external view returns (uint8);
+}
+
+contract RWA is IERC20, IERC20Metadata {
+    string private _name = "Real World Assets";
+    string private _symbol = "$RWA";
+
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    mapping(address => address) public inviteAdd; // 邀请人
+    mapping(address => bool) public ownerAdd; // 管理员地址
+    mapping(address => bool) private _whiteAdd; // 白名单地址
+
+    address public pair; //交易池地址
+    address private _dividendAdd = 0x43F0B63076e0df0c4c49A781Bf9c113323FE2a55; //分红地址
+    address private _foundationAdd = 0x89a3EaBfF30b302008add4aDbC9EDE48F5029f65; //基金地址
+    uint256 private _totalSupply;
+    uint256 private _minTotalSupply = 110000 * 10 ** 18;
+    uint256 public baseFee = 6;
+    uint64 public foundationRatio = 1; //基金比例
+    uint64 public dividendRatio = 1; //分红比例
+    uint64 public promotionRatio = 3; //团队推广比例
+    uint64 public destructionRatio = 1; // 销毁比例
+
+    event OwnerChange(address indexed add, bool status);
+    event UpdateWhiteAdd(address indexed whiteAddr, bool whiteOn);
+
+    modifier onlyOwner() {
+        require(ownerAdd[msg.sender] == true, "must owner address");
+        _;
+    }
+
+    constructor(address owner) {
+        ownerAdd[owner] = true;
+        // 白名单
+        _whiteAdd[0x9eaD15FF2A97a18C56d549AF4eF46D67F8A7BE05] = true;
+        _whiteAdd[0x966285CF957e6933eb8E68A3BafCd570CB5add6A] = true;
+        _whiteAdd[0x3Cc8B0ed15F85E458EE435b3Fe48E798A42910EE] = true;
+        _whiteAdd[0x656f43d1B157db07c3873B51A55CCBD323CF63D1] = true;
+        _whiteAdd[0x78fafFF98fadA85Da0AB500d706d559D021DEA85] = true;
+        _mint(owner, 210000 * 10 ** 18);
+        setInfo();
+    }
+
+    function setInfo() private {
+        setPair(pairFor(0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73, address(this), 0x55d398326f99059fF775485246999027B3197955));
+    }
+
+    function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
+        require(tokenA != tokenB, 'PancakeLibrary: IDENTICAL_ADDRESSES');
+        (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        require(token0 != address(0), 'PancakeLibrary: ZERO_ADDRESS');
+    }
+
+    // calculates the CREATE2 address for a pair without making any external calls
+    function pairFor(address factory, address tokenA, address tokenB) internal pure returns (address __pair) {
+        (address token0, address token1) = sortTokens(tokenA, tokenB);
+        __pair = address(uint160(uint(keccak256(abi.encodePacked(
+                hex'ff',
+                factory,
+                keccak256(abi.encodePacked(token0, token1)),
+                hex'00fb7f630766e6a796048ea87d01acd3068e8ff67d078148a3fa3f4a84f69bd5'
+            )))));
+    }
+
+    function name() public view override returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view override returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 18;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(
+        address owner,
+        address spender
+    ) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(
+        address spender,
+        uint256 amount
+    ) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender] -= amount);
+        return true;
+    }
+
+    function increaseAllowance(
+        address spender,
+        uint256 addedValue
+    ) public returns (bool) {
+        _approve(
+            msg.sender,
+            spender,
+            _allowances[msg.sender][spender] += addedValue
+        );
+        return true;
+    }
+
+    function decreaseAllowance(
+        address spender,
+        uint256 subtractedValue
+    ) public returns (bool) {
+        _approve(
+            msg.sender,
+            spender,
+            _allowances[msg.sender][spender] -= subtractedValue
+        );
+        return true;
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal {
+        require(account != address(0), "ERC20: burn from the zero address");
+        _totalSupply -= amount;
+        _balances[account] -= amount;
+        emit Transfer(account, address(0), amount);
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function balanceOf(
+        address account
+    ) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        // 为swap交易
+        if (sender == pair || recipient == pair) {
+            if (_whiteAdd[sender] || _whiteAdd[recipient]) {
+                _transferExcluded(sender, recipient, amount);
+            } else {
+                _balances[sender] -= amount;
+                (
+                    uint256 _foundationFeeAmount,
+                    uint256 _dividendFeeAmount,
+                    uint256 _promotionFeeAmount,
+                    uint256 _destroyFeeAmount,
+                    uint256 _receiveAmount
+                ) = _getValues(
+                        amount,
+                        baseFee,
+                        foundationRatio,
+                        dividendRatio,
+                        promotionRatio,
+                        destructionRatio
+                    );
+                // 基金
+                _balances[_foundationAdd] += _foundationFeeAmount;
+                emit Transfer(sender, _foundationAdd, _foundationFeeAmount);
+                // 分红
+                _balances[_dividendAdd] += _dividendFeeAmount;
+                emit Transfer(sender, _dividendAdd, _dividendFeeAmount);
+                // 团队推广收益
+                _promotionIncentive(sender, _promotionFeeAmount);
+                // 销毁
+                if (_destroyFeeAmount != 0) {
+                    _totalSupply -= _destroyFeeAmount;
+                    emit Transfer(sender, address(0), _destroyFeeAmount);
+                }
+                // 接收者
+                _balances[recipient] += _receiveAmount;
+                emit Transfer(sender, recipient, _receiveAmount);
+            }
+        } else {
+            _transferExcluded(sender, recipient, amount);
+        }
+    }
+
+    function _getValues(
+        uint256 amount,
+        uint256 _baseFee,
+        uint256 _foundationFee,
+        uint256 _dividendFee,
+        uint256 _promotionFee,
+        uint256 _destroyFee
+    ) private view returns (uint256, uint256, uint256, uint256, uint256) {
+        uint256 _amount = amount;
+        uint256 _totalFeeAmount = (_amount * _baseFee) / 100;
+
+        uint256 _foundationFeeAmount = (_totalFeeAmount * _foundationFee) /
+            _baseFee;
+        uint256 _dividendFeeAmount = (_totalFeeAmount * _dividendFee) /
+            _baseFee;
+        uint256 _promotionFeeAmount = (_totalFeeAmount * _promotionFee) /
+            _baseFee;
+        uint256 _destroyFeeAmount = (_totalFeeAmount * _destroyFee) / _baseFee;
+
+        if (_totalSupply - _destroyFeeAmount <= _minTotalSupply) {
+            _destroyFeeAmount = _totalSupply - _minTotalSupply;
+        }
+
+        uint256 _receiveAmount = _amount -
+            _foundationFeeAmount -
+            _dividendFeeAmount -
+            _promotionFeeAmount -
+            _destroyFeeAmount;
+        return (
+            _foundationFeeAmount,
+            _dividendFeeAmount,
+            _promotionFeeAmount,
+            _destroyFeeAmount,
+            _receiveAmount
+        );
+    }
+
+    // 绑定邀请关系
+    function bindInviter(address inviter, address invitee) public {
+        require(msg.sender == invitee);
+        require(inviteAdd[invitee] == address(0));
+        inviteAdd[invitee] = inviter;
+    }
+
+    // 邀请奖励分发
+    function _promotionIncentive(address sender, uint256 amount) private {
+        address inviter = inviteAdd[sender];
+        uint256 total = amount;
+        uint256 a;
+        if (inviter != address(0)) {
+            // 一代奖励
+            a = (amount / 10) * 4;
+            _balances[inviter] += a;
+            total -= a;
+            emit Transfer(sender, inviter, a);
+            inviter = inviteAdd[inviter];
+        }
+        if (inviter != address(0)) {
+            // 二代奖励
+            a = (amount / 25) * 7;
+            _balances[inviter] += a;
+            total -= a;
+            emit Transfer(sender, inviter, a);
+            inviter = inviteAdd[inviter];
+        }
+        if (inviter != address(0)) {
+            // 三代奖励
+            a = amount / 10;
+            _balances[inviter] += a;
+            total -= a;
+            emit Transfer(sender, inviter, a);
+            inviter = inviteAdd[inviter];
+        }
+        if (inviter != address(0)) {
+            // 四代奖励
+            a = (amount / 25) * 2;
+            _balances[inviter] += a;
+            total -= a;
+            emit Transfer(sender, inviter, a);
+            inviter = inviteAdd[inviter];
+        }
+        if (inviter != address(0)) {
+            // 五代奖励
+            a = (amount / 50) * 3;
+            _balances[inviter] += a;
+            total -= a;
+            emit Transfer(sender, inviter, a);
+            inviter = inviteAdd[inviter];
+        }
+        if (inviter != address(0)) {
+            // 六代奖励
+            a = amount / 25;
+            _balances[inviter] += a;
+            total -= a;
+            emit Transfer(sender, inviter, a);
+            inviter = inviteAdd[inviter];
+        }
+        if (inviter != address(0)) {
+            // 七代奖励
+            a = amount / 50;
+            _balances[inviter] += a;
+            total -= a;
+            emit Transfer(sender, inviter, a);
+            inviter = inviteAdd[inviter];
+        }
+        if (inviter != address(0)) {
+            // 八代奖励
+            a = amount / 50;
+            _balances[inviter] += a;
+            total -= a;
+            emit Transfer(sender, inviter, a);
+            inviter = inviteAdd[inviter];
+        }
+        if (total != 0) {
+            emit Transfer(sender, address(0), total);
+        }
+    }
+
+    // 管理员改变
+    function changeOwner(address to, bool flag) public onlyOwner {
+        require(ownerAdd[to] != flag);
+        ownerAdd[to] = flag;
+        emit OwnerChange(to, flag);
+    }
+
+    // 交易对改变
+    function setPair(address _pair) public onlyOwner {
+        require(pair == address(0) && _pair != address(0));
+        pair = _pair;
+    }
+
+    function setBaseFee(
+        uint256 _baseFee,
+        uint64 _foundationRatio,
+        uint64 _dividendRatio,
+        uint64 _promotionRatio,
+        uint64 _destructionRatio
+    ) public onlyOwner {
+        require(
+            _foundationRatio +
+                _dividendRatio +
+                _promotionRatio +
+                _destructionRatio ==
+                _baseFee
+        );
+        require(_baseFee >= 0 && _baseFee <= 100);
+        baseFee = _baseFee;
+        foundationRatio = _foundationRatio;
+        dividendRatio = _dividendRatio;
+        promotionRatio = _promotionRatio;
+        destructionRatio = _destructionRatio;
+    }
+
+    // 免手续费交易
+    function _transferExcluded(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) private {
+        _balances[sender] -= amount;
+        _balances[recipient] += amount;
+        emit Transfer(sender, recipient, amount);
+    }
+}
+
+
+interface IPancakeRouter {
+    function factory() external pure returns (address);
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+}
+interface IPancakePair{
+    function token0() external view returns (address);
+    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+    function sync() external;
+}
