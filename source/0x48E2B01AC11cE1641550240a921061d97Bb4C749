@@ -1,0 +1,617 @@
+
+// File: contracts/HnrFinanceTokens.sol
+//SPDX-License-Identifier: MIT
+pragma solidity =0.6.12;
+
+import "./ozeppelin/Ownable.sol";
+import "./ozeppelin/SafeMath.sol";
+import "./interfaces/IERC20.sol";
+import "./interfaces/IHonorTreasure.sol";
+import "./interfaces/IWETH.sol";
+
+contract HnrFinanceTokens is Ownable {
+
+    using SafeMath for uint256;
+
+    IHonorTreasure public _honorTreasure;
+    address public _honorToken;
+    address public _wethToken;
+    
+    uint256 public _awardInterest;
+
+    struct TokenFinance 
+    {
+        uint256 maxAmountPerUser;
+        uint256 maxTotalAmount;
+        uint256 totalAmount;
+        uint256 interest;
+    }
+
+    struct UserBalance {
+        uint start_time;
+        uint duration;
+        uint interest_rate;
+        uint amount;    
+        uint256 busdValue;   
+    }
+
+    mapping(address=>TokenFinance) public _tokenFinances;
+    mapping(address=>mapping(address=>UserBalance)) public _userBalances; // _userBalance[account][token]
+
+
+    event Deposit(address indexed _from,address indexed _token,uint256 _amount,uint256 duration);
+    event Widthdraw(address indexed _from,address indexed _token,uint256 _amount,uint256 duration);
+
+    constructor(address honorToken,address wethToken,address treasure) public
+    {
+        _honorToken=honorToken;
+        _wethToken=wethToken;
+        _honorTreasure=IHonorTreasure(treasure);
+        _awardInterest=2;
+        IERC20(_honorToken).approve(treasure, type(uint256).max);
+        IERC20(_wethToken).approve(treasure, type(uint256).max);
+    }
+
+    function isDeposited(address token,address account) public view returns(bool)
+    {
+        UserBalance memory balance = _userBalances[account][token];
+        if(balance.amount==0)
+        {
+            return false;
+        }
+        return true;
+    }
+
+    function addToken(address token,uint256 maxAmountUser,uint256 maxTotalAmount,uint256 interest) public onlyOwner {
+        TokenFinance storage finance=_tokenFinances[token];
+        finance.maxAmountPerUser=maxAmountUser;
+        finance.maxTotalAmount=maxTotalAmount;
+        finance.interest=interest;
+        IERC20(token).approve(address(_honorTreasure), type(uint256).max);
+    }
+
+    function setInterestRates(address token,uint256 _interest) public onlyOwner {
+        TokenFinance storage finance=_tokenFinances[token];
+        finance.interest=_interest;
+    }
+
+    function setAwardInterest(uint256 interest) public onlyOwner {
+        _awardInterest=interest;
+    }
+
+    function setMaxCaps(address token,uint256 maxPerUser,uint256 maxAmount) public onlyOwner {
+        TokenFinance storage finance=_tokenFinances[token];
+        finance.maxAmountPerUser=maxPerUser;
+        finance.maxTotalAmount=maxAmount;
+    }
+
+    function getInterestRate(uint duration,address token,uint256 amount) public view returns(uint256) {
+        if(duration<2592000)
+            return 0;
+
+        TokenFinance memory finance=_tokenFinances[token];
+       
+
+        if(amount>=(finance.maxAmountPerUser/2))
+        {
+            if(duration>=31536000)
+                return finance.interest * 2090 / 1000;
+            if(duration>=15552000)
+                return finance.interest * 1803 / 1000;
+            if(duration>=7776000)
+                return finance.interest * 1580 / 1000;
+            if(duration>=2592000)
+                return finance.interest * 1377 / 1000;
+        }
+        if(amount>=(finance.maxAmountPerUser/10))
+        {
+            if(duration>=31536000)
+                return finance.interest * 1881 / 1000;
+            if(duration>=15552000)
+                return finance.interest * 1610 / 1000;
+            if(duration>=7776000)
+                return finance.interest * 1392 / 1000;
+            if(duration>=2592000)
+                return finance.interest * 1190 / 1000;
+        }
+        if(amount>=(finance.maxAmountPerUser/100))
+        {
+            if(duration>=31536000)
+                return finance.interest * 1463 / 1000;
+            if(duration>=15552000)
+                return finance.interest * 1317 / 1000;
+            if(duration>=7776000)
+                return finance.interest * 1201 / 1000;
+            if(duration>=2592000)
+                return finance.interest * 1095 / 1000;
+        }
+        
+        
+        if(duration>=31536000)
+            return finance.interest * 1358 / 1000;
+        if(duration>=15552000)
+            return finance.interest * 1218 / 1000;
+        if(duration>=7776000)
+           return finance.interest * 1105 / 1000;
+        if(duration>=2592000)
+           return finance.interest ;
+
+        return 0;
+    }
+    
+    function depositToken(address token,uint256 amount,uint duration) public {
+
+        IERC20(token).transferFrom(msg.sender,address(this),amount);
+
+        if(token==_wethToken)
+        {
+            _honorTreasure.depositWBNB(amount);
+        }
+        else
+        {
+            _honorTreasure.depositToken(token,amount);
+        }
+        
+        _depositToken(msg.sender,token,amount,duration);
+
+        emit Deposit(msg.sender,token,amount,duration);
+    }
+    function _depositToken(address user,address token,uint256 amount,uint duration) private {
+        TokenFinance storage finance=_tokenFinances[token];
+        require(finance.maxAmountPerUser>=amount && finance.maxAmountPerUser>0,"AMOUNT ERROR");
+
+        uint interest=getInterestRate(duration,token,amount);
+        require(interest>0,"ERROR DURATION");
+
+        finance.totalAmount += amount;
+
+        require(finance.totalAmount<=finance.maxTotalAmount,"TOTAL AMOUNT ERROR");
+
+        UserBalance storage balance=_userBalances[user][token];
+
+        require(balance.start_time==0,"Current Deposited");
+
+        balance.start_time=block.timestamp;
+        balance.interest_rate=interest;
+        balance.duration=duration;
+        balance.amount=amount;
+    }
+
+    function depositHonor(uint256 amount,uint duration) public {
+        require(amount>0,"Error Amount");
+        IERC20(_honorToken).transferFrom(msg.sender,address(this),amount);
+
+        _honorTreasure.depositHonor(amount);
+
+        _depositHonor(msg.sender, amount, duration);
+
+        emit Deposit(msg.sender, _honorToken, amount, duration);
+    }
+    
+    function _depositHonor(address user,uint256 amount,uint duration) private {
+        
+        TokenFinance storage finance=_tokenFinances[_honorToken];
+        require(finance.maxAmountPerUser>=amount ,"AMOUNT ERROR");
+
+        uint interest=getInterestRate(duration,_honorToken,amount);
+        require(interest>0,"ERROR DURATION");
+
+        finance.totalAmount += amount;
+
+        require(finance.totalAmount<=finance.maxTotalAmount,"TOTAL AMOUNT ERROR");
+
+        UserBalance storage balance=_userBalances[user][_honorToken];
+
+        require(balance.start_time==0,"Current Deposited");
+
+        balance.start_time=block.timestamp;
+        balance.interest_rate=interest;
+        balance.duration=duration;
+        balance.amount=amount;
+        balance.busdValue=_honorTreasure.getHonorBUSDValue(amount);
+    }
+
+    function depositWBNB(uint256 duration) public payable {
+        uint256 amount=msg.value;
+
+        if(amount!=0)
+        {
+            IWETH(_wethToken).deposit{ value: amount }();
+        }
+
+        require(IERC20(_wethToken).balanceOf(address(this))>=amount,"Not Deposit WETH");
+
+        _depositToken(msg.sender,_wethToken,amount,duration);
+
+        _honorTreasure.depositWBNB(amount);
+
+        emit Deposit(msg.sender,_wethToken,amount,duration);
+    }
+
+    function changeTimeToken(address token,uint256 addAmount,uint duration) public {
+        UserBalance storage balance = _userBalances[msg.sender][token];
+        require(balance.start_time>0,"NOT START");
+
+        uint elapsedTime=block.timestamp - balance.start_time;
+
+        uint remainTime=balance.duration - elapsedTime;
+
+        require(duration>remainTime,"ERROR REMAINING TIME");
+
+        balance.start_time=0;
+
+        TokenFinance storage finance=_tokenFinances[token];
+        finance.totalAmount -=balance.amount;
+
+        uint256 income=getIncome(balance.amount, elapsedTime, balance.interest_rate);
+
+        uint256 amount=income + balance.amount;
+        if(addAmount>0)
+        {
+            IERC20(token).transferFrom(msg.sender, address(this), addAmount);
+            amount=amount.add(addAmount);
+            if(token==_wethToken)
+            {
+                _honorTreasure.depositWBNB(addAmount);
+            }
+            else
+            {
+                _honorTreasure.depositToken(token,addAmount);
+            }
+        }
+        
+        _depositToken(msg.sender, token, amount, duration);
+
+        emit Deposit(msg.sender,token,amount,duration);
+
+    }
+
+    function changeTimeHonor(uint256 addAmount,uint duration) public {
+        UserBalance storage balance = _userBalances[msg.sender][_honorToken];
+        require(balance.start_time>0,"NOT START");
+
+        uint elapsedTime=block.timestamp - balance.start_time;
+
+        uint remainTime=balance.duration - elapsedTime;
+
+        require(duration>remainTime,"ERROR REMAINING TIME");
+
+        balance.start_time=0;
+
+        TokenFinance storage finance=_tokenFinances[_honorToken];
+        finance.totalAmount -=balance.amount;
+
+        uint256 income=getIncome(balance.busdValue, elapsedTime, balance.interest_rate);
+
+        uint256 amount=_honorTreasure.getBUSDHonorValue(income + balance.busdValue);
+        if(addAmount>0)
+        {
+            IERC20(_honorToken).transferFrom(msg.sender, address(this), addAmount);
+            amount=amount.add(addAmount);
+
+            _honorTreasure.depositHonor(addAmount);
+        }
+        
+        _depositHonor(msg.sender, amount, duration);
+
+        emit Deposit(msg.sender,_honorToken,addAmount,duration);
+
+    }
+
+    function getIncome(uint256 amount,uint256 duration,uint256 rate) public pure returns(uint256) {
+        return amount.mul(duration).div(10**18).mul(rate);
+    }
+
+    function getCurrentBalance(address user,address token) public view returns(uint256) {
+        UserBalance memory balance=_userBalances[user][token];
+        uint256 duration=block.timestamp - balance.start_time;
+        uint256 income=getIncome(balance.amount,duration,balance.interest_rate);
+        uint256 lastBalance=balance.amount.add(income);
+        return lastBalance;
+    }
+
+    function widthdraw(address token) public {
+        UserBalance storage balance=_userBalances[msg.sender][token];
+        require(balance.start_time>0,"Not Deposited");
+        
+        uint endtime=balance.start_time + balance.duration;
+        require(endtime<=block.timestamp,"Not Time");
+
+        uint256 duration=balance.duration;
+
+        uint256 income=getIncome(balance.amount,duration,balance.interest_rate);
+        uint256 lastBalance=balance.amount.add(income);
+        
+        TokenFinance storage finance=_tokenFinances[token];
+        finance.totalAmount=finance.totalAmount.sub(balance.amount);
+
+        balance.amount=0;
+        balance.duration=0;
+        balance.start_time=0;
+        balance.interest_rate=0;
+        
+
+        if(token==_wethToken)
+        {
+            if(_honorTreasure.getWETHReserve()>=lastBalance)
+            {
+                _honorTreasure.widthdrawWETH(lastBalance,msg.sender);
+            }
+            else
+            {
+                uint256 count=getAwardHonorCount(_wethToken, lastBalance, income);
+                
+                _honorTreasure.widthdrawHonor(count,msg.sender);
+                //Mint Honor
+            }
+        }
+        else 
+        {
+            if(_honorTreasure.getTokenReserve(token)>=lastBalance)
+            {
+                _honorTreasure.widthdrawToken(token,lastBalance,msg.sender);
+            }
+            else
+            {
+                uint256 count=getAwardHonorCount(token, lastBalance, income);
+                
+                _honorTreasure.widthdrawHonor(count,msg.sender);
+                //Mint Honor
+            }
+            
+        }
+
+        emit Widthdraw(msg.sender,token, lastBalance, duration);
+        
+    }
+
+    function widthdrawHonor() public {
+        UserBalance storage balance=_userBalances[msg.sender][_honorToken];
+        require(balance.start_time>0,"NOT DEPOSITED");
+
+        uint endtime=balance.start_time + balance.duration;
+        require(endtime<=block.timestamp,"Not Time");
+
+       
+        uint duration = balance.duration;
+
+        uint256 income=getIncome(balance.busdValue,duration,balance.interest_rate);
+        uint256 lastBalance=balance.busdValue.add(income);
+        uint256 count=_honorTreasure.getBUSDHonorValue(lastBalance);
+        
+
+        TokenFinance storage finance=_tokenFinances[_honorToken];
+        finance.totalAmount=finance.totalAmount.sub(balance.amount);
+        balance.amount=0;
+        balance.duration=0;
+        balance.start_time=0;
+        balance.interest_rate=0;
+        balance.busdValue=0;
+
+        _honorTreasure.widthdrawHonor(count,msg.sender);
+        
+        emit Widthdraw(msg.sender,_honorToken, count, duration);
+    }
+
+    function getAwardHonorCount(address token,uint256 amount,uint256 income) public view returns(uint256) {
+        uint256 incomeLast=income.mul((100+_awardInterest)).div(100);
+        uint256 amountLast=amount.sub(income).add(incomeLast);
+        (uint256 tokenRes,uint256 honorRes) = _honorTreasure.getPairAllReserve(token, _honorToken);
+        return amountLast.mul(honorRes).div(tokenRes);
+    }
+
+    function emergencyWidthdrawToken(address token) public {
+        UserBalance storage balance=_userBalances[msg.sender][token];
+        require(balance.start_time>0,"Not Deposited");
+        (uint256 tokenRes,uint256 honorRes) = _honorTreasure.getPairAllReserve(token, _honorToken);
+        uint256 amount=balance.amount.mul(honorRes).div(tokenRes);
+        amount=amount.mul(95).div(100);
+        _honorTreasure.widthdrawHonor(amount, msg.sender);
+
+        balance.start_time=0;
+        balance.amount=0;
+        balance.interest_rate=0;
+        balance.duration=0;
+        emit Widthdraw(msg.sender,token,balance.amount,0);
+    }
+    function emergencyWidthdrawHonor() public {
+        UserBalance storage balance=_userBalances[msg.sender][_honorToken];
+        require(balance.start_time>0,"Not Deposited");
+
+        uint256 amount=balance.busdValue.mul(95).div(100);
+
+        uint256 honorAmount=_honorTreasure.getBUSDHonorValue(amount);
+
+        _honorTreasure.widthdrawHonor(honorAmount, msg.sender);
+
+        balance.start_time=0;
+        balance.amount=0;
+        balance.interest_rate=0;
+        balance.duration=0;
+        balance.busdValue=0;
+
+        emit Widthdraw(msg.sender,_honorToken,honorAmount,0);   
+        }
+}
+
+// File: contracts/interfaces/IERC20.sol
+//SPDX-License-Identifier: MIT
+pragma solidity =0.6.12;
+
+
+interface IERC20 {
+ 
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+
+    function totalSupply() external view returns (uint256);
+
+
+    function balanceOf(address account) external view returns (uint256);
+
+
+    function transfer(address to, uint256 amount) external returns (bool);
+
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+// File: contracts/interfaces/IHonorTreasure.sol
+//SPDX-License-Identifier: MIT
+pragma solidity =0.6.12;
+
+interface IHonorTreasure {
+    function depositToken(address token,uint256 amount) external;
+    function depositWBNB(uint256 amount) external;
+    function depositHonor(uint256 amount) external;
+    function widthdrawToken(address token,uint256 amount,address _to) external;
+    function widthdrawWETH(uint256 amount,address _to) external;
+    function widthdrawHonor(uint256 amount,address _to) external;
+    function getTokenReserve(address token) external view returns(uint256);
+    function getWETHReserve() external view returns(uint256);
+    function getPairAllReserve(address token0,address token1) external view returns(uint112 ,uint112 );
+    function getHonorBUSDValue(uint256 amount) external view returns(uint256); 
+    function getBUSDHonorValue(uint256 amount) external view returns(uint256); 
+}
+
+// File: contracts/interfaces/IWETH.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity =0.6.12;
+
+interface IWETH {
+    function deposit() external payable;
+    function transfer(address to, uint value) external returns (bool);
+    function withdraw(uint) external;
+}
+
+// File: contracts/ozeppelin/Context.sol
+// SPDX-License-Identifier: MIT
+
+
+pragma solidity =0.6.12;
+
+
+contract Context {
+
+    constructor()  public {}
+
+    function _msgSender() internal view returns (address payable) {
+        return payable(msg.sender);
+    }
+
+    function _msgData() internal view returns (bytes memory) {
+        this; // silence state mutability warning without generating bytecode - see https://github.com/ethereum/solidity/issues/2691
+        return msg.data;
+    }
+}
+
+// File: contracts/ozeppelin/Ownable.sol
+// SPDX-License-Identifier: MIT
+
+
+pragma solidity =0.6.12;
+
+import  "./Context.sol";
+
+
+
+contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() internal {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(_owner == _msgSender(), 'Ownable: caller is not the owner');
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        _transferOwnership(newOwner);
+    }
+
+
+    function _transferOwnership(address newOwner) internal {
+        require(newOwner != address(0), 'Ownable: new owner is the zero address');
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+// File: contracts/ozeppelin/SafeMath.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity =0.6.12;
+
+
+
+library SafeMath {
+
+
+  function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+    if (a == 0) {
+      return 0;
+    }
+    c = a * b;
+    assert(c / a == b);
+    return c;
+  }
+
+
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    return a / b;
+  }
+
+
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    assert(b <= a);
+    return a - b;
+  }
+
+
+  function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+    c = a + b;
+    assert(c >= a);
+    return c;
+  }
+}
