@@ -1,0 +1,1647 @@
+/**
+ *Submitted for verification at BscScan.com on 2023-07-04
+*/
+
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.0;
+/**
+ * @dev Interface of the ERC165 standard, as defined in the
+ * https://eips.ethereum.org/EIPS/eip-165[EIP].
+ *
+ * Implementers can declare support of contract interfaces, which can then be
+ * queried by others ({ERC165Checker}).
+ *
+ * For an implementation, see {ERC165}.
+ */
+interface IERC165 {
+    /**
+     * @dev Returns true if this contract implements the interface defined by
+     * `interfaceId`. See the corresponding
+     * https://eips.ethereum.org/EIPS/eip-165#how-interfaces-are-identified[EIP section]
+     * to learn more about how these ids are created.
+     *
+     * This function call must use less than 30 000 gas.
+     */
+    function supportsInterface(bytes4 interfaceId) external view returns (bool);
+
+}
+interface IERC721 is IERC165 {
+    /**
+     * @dev Emitted when `tokenId` token is transferred from `from` to `to`.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+
+    /**
+     * @dev Emitted when `owner` enables `approved` to manage the `tokenId` token.
+     */
+    event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+
+    /**
+     * @dev Emitted when `owner` enables or disables (`approved`) `operator` to manage all of its assets.
+     */
+    event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+
+    /**
+     * @dev Returns the number of tokens in ``owner``'s account.
+     */
+    function balanceOf(address owner) external view returns (uint256 balance);
+
+    /**
+     * @dev Returns the owner of the `tokenId` token.
+     *
+     * Requirements:
+     *
+     * - `tokenId` must exist.
+     */
+    function ownerOf(uint256 tokenId) external view returns (address owner);
+    /**
+     * @dev Safely transfers `tokenId` token from `from` to `to`, checking first that contract recipients
+     * are aware of the ERC721 protocol to prevent tokens from being forever locked.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `tokenId` token must exist and be owned by `from`.
+     * - If the caller is not `from`, it must be have been allowed to move this token by either {approve} or {setApprovalForAll}.
+     * - If `to` refers to a smart contract, it must implement {IERC721Receiver-onERC721Received}, which is called upon a safe transfer.
+     *
+     * Emits a {Transfer} event.
+     */
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) external;
+
+    /**
+     * @dev Transfers `tokenId` token from `from` to `to`.
+     *
+     * WARNING: Usage of this method is discouraged, use {safeTransferFrom} whenever possible.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `tokenId` token must be owned by `from`.
+     * - If the caller is not `from`, it must be approved to move this token by either {approve} or {setApprovalForAll}.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) external;
+
+    /**
+     * @dev Gives permission to `to` to transfer `tokenId` token to another account.
+     * The approval is cleared when the token is transferred.
+     *
+     * Only a single account can be approved at a time, so approving the zero address clears previous approvals.
+     *
+     * Requirements:
+     *
+     * - The caller must own the token or be an approved operator.
+     * - `tokenId` must exist.
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address to, uint256 tokenId) external;
+
+    /**
+     * @dev Returns the account approved for `tokenId` token.
+     *
+     * Requirements:
+     *
+     * - `tokenId` must exist.
+     */
+    function getApproved(uint256 tokenId) external view returns (address operator);
+
+    /**
+     * @dev Approve or remove `operator` as an operator for the caller.
+     * Operators can call {transferFrom} or {safeTransferFrom} for any token owned by the caller.
+     *
+     * Requirements:
+     *
+     * - The `operator` cannot be the caller.
+     *
+     * Emits an {ApprovalForAll} event.
+     */
+    function setApprovalForAll(address operator, bool _approved) external;
+
+    /**
+     * @dev Returns if the `operator` is allowed to manage all of the assets of `owner`.
+     *
+     * See {setApprovalForAll}
+     */
+    function isApprovedForAll(address owner, address operator) external view returns (bool);
+
+    /**
+     * @dev Safely transfers `tokenId` token from `from` to `to`.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `tokenId` token must exist and be owned by `from`.
+     * - If the caller is not `from`, it must be approved to move this token by either {approve} or {setApprovalForAll}.
+     * - If `to` refers to a smart contract, it must implement {IERC721Receiver-onERC721Received}, which is called upon a safe transfer.
+     *
+     * Emits a {Transfer} event.
+     */
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId,
+        bytes calldata data
+    ) external;
+
+}
+
+interface IERC721Enumerable is IERC721 {
+    /**
+     * @dev Returns the total amount of tokens stored by the contract.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns a token ID owned by `owner` at a given `index` of its token list.
+     * Use along with {balanceOf} to enumerate all of ``owner``'s tokens.
+     */
+    function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256 tokenId);
+
+    /**
+     * @dev Returns a token ID at a given `index` of all the tokens stored by the contract.
+     * Use along with {totalSupply} to enumerate all tokens.
+     */
+    function tokenByIndex(uint256 index) external view returns (uint256);
+}
+
+abstract contract ERC165 is IERC165 {
+    /**
+     * @dev See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return interfaceId == type(IERC165).interfaceId;
+    }
+}
+
+library Strings {
+    bytes16 private constant _HEX_SYMBOLS = "0123456789abcdef";
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` decimal representation.
+     */
+    function toString(uint256 value) internal pure returns (string memory) {
+        // Inspired by OraclizeAPI's implementation - MIT licence
+        // https://github.com/oraclize/ethereum-api/blob/b42146b063c7d6ee1358846c198246239e9360e8/oraclizeAPI_0.4.25.sol
+
+        if (value == 0) {
+            return "0";
+        }
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
+        }
+        return string(buffer);
+    }
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation.
+     */
+    function toHexString(uint256 value) internal pure returns (string memory) {
+        if (value == 0) {
+            return "0x00";
+        }
+        uint256 temp = value;
+        uint256 length = 0;
+        while (temp != 0) {
+            length++;
+            temp >>= 8;
+        }
+        return toHexString(value, length);
+    }
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation with fixed length.
+     */
+    function toHexString(uint256 value, uint256 length) internal pure returns (string memory) {
+        bytes memory buffer = new bytes(2 * length + 2);
+        buffer[0] = "0";
+        buffer[1] = "x";
+        for (uint256 i = 2 * length + 1; i > 1; --i) {
+            buffer[i] = _HEX_SYMBOLS[value & 0xf];
+            value >>= 4;
+        }
+        require(value == 0, "Strings: hex length insufficient");
+        return string(buffer);
+    }
+}
+
+library Address {
+    /**
+     * @dev Returns true if `account` is a contract.
+     *
+     * [IMPORTANT]
+     * ====
+     * It is unsafe to assume that an address for which this function returns
+     * false is an externally-owned account (EOA) and not a contract.
+     *
+     * Among others, `isContract` will return false for the following
+     * types of addresses:
+     *
+     *  - an externally-owned account
+     *  - a contract in construction
+     *  - an address where a contract will be created
+     *  - an address where a contract lived, but was destroyed
+     * ====
+     */
+    function isContract(address account) internal view returns (bool) {
+        // This method relies on extcodesize, which returns 0 for contracts in
+        // construction, since the code is only stored at the end of the
+        // constructor execution.
+
+        uint256 size;
+        assembly {
+            size := extcodesize(account)
+        }
+        return size > 0;
+    }
+
+    /**
+     * @dev Replacement for Solidity's `transfer`: sends `amount` wei to
+     * `recipient`, forwarding all available gas and reverting on errors.
+     *
+     * https://eips.ethereum.org/EIPS/eip-1884[EIP1884] increases the gas cost
+     * of certain opcodes, possibly making contracts go over the 2300 gas limit
+     * imposed by `transfer`, making them unable to receive funds via
+     * `transfer`. {sendValue} removes this limitation.
+     *
+     * https://diligence.consensys.net/posts/2019/09/stop-using-soliditys-transfer-now/[Learn more].
+     *
+     * IMPORTANT: because control is transferred to `recipient`, care must be
+     * taken to not create reentrancy vulnerabilities. Consider using
+     * {ReentrancyGuard} or the
+     * https://solidity.readthedocs.io/en/v0.5.11/security-considerations.html#use-the-checks-effects-interactions-pattern[checks-effects-interactions pattern].
+     */
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+
+        (bool success, ) = recipient.call{value: amount}("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+
+    /**
+     * @dev Performs a Solidity function call using a low level `call`. A
+     * plain `call` is an unsafe replacement for a function call: use this
+     * function instead.
+     *
+     * If `target` reverts with a revert reason, it is bubbled up by this
+     * function (like regular Solidity function calls).
+     *
+     * Returns the raw returned data. To convert to the expected return value,
+     * use https://solidity.readthedocs.io/en/latest/units-and-global-variables.html?highlight=abi.decode#abi-encoding-and-decoding-functions[`abi.decode`].
+     *
+     * Requirements:
+     *
+     * - `target` must be a contract.
+     * - calling `target` with `data` must not revert.
+     *
+     * _Available since v3.1._
+     */
+    function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+        return functionCall(target, data, "Address: low-level call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`], but with
+     * `errorMessage` as a fallback revert reason when `target` reverts.
+     *
+     * _Available since v3.1._
+     */
+    function functionCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but also transferring `value` wei to `target`.
+     *
+     * Requirements:
+     *
+     * - the calling contract must have an ETH balance of at least `value`.
+     * - the called Solidity function must be `payable`.
+     *
+     * _Available since v3.1._
+     */
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value
+    ) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCallWithValue-address-bytes-uint256-}[`functionCallWithValue`], but
+     * with `errorMessage` as a fallback revert reason when `target` reverts.
+     *
+     * _Available since v3.1._
+     */
+    function functionCallWithValue(
+        address target,
+        bytes memory data,
+        uint256 value,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        require(isContract(target), "Address: call to non-contract");
+
+        (bool success, bytes memory returndata) = target.call{value: value}(data);
+        return verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but performing a static call.
+     *
+     * _Available since v3.3._
+     */
+    function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+        return functionStaticCall(target, data, "Address: low-level static call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],
+     * but performing a static call.
+     *
+     * _Available since v3.3._
+     */
+    function functionStaticCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal view returns (bytes memory) {
+        require(isContract(target), "Address: static call to non-contract");
+
+        (bool success, bytes memory returndata) = target.staticcall(data);
+        return verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but performing a delegate call.
+     *
+     * _Available since v3.4._
+     */
+    function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+        return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],
+     * but performing a delegate call.
+     *
+     * _Available since v3.4._
+     */
+    function functionDelegateCall(
+        address target,
+        bytes memory data,
+        string memory errorMessage
+    ) internal returns (bytes memory) {
+        require(isContract(target), "Address: delegate call to non-contract");
+
+        (bool success, bytes memory returndata) = target.delegatecall(data);
+        return verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Tool to verifies that a low level call was successful, and revert if it wasn't, either by bubbling the
+     * revert reason using the provided one.
+     *
+     * _Available since v4.3._
+     */
+    function verifyCallResult(
+        bool success,
+        bytes memory returndata,
+        string memory errorMessage
+    ) internal pure returns (bytes memory) {
+        if (success) {
+            return returndata;
+        } else {
+            // Look for revert reason and bubble it up if present
+            if (returndata.length > 0) {
+                // The easiest way to bubble the revert reason is using memory via assembly
+
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+interface IERC721Metadata is IERC721 {
+    /**
+     * @dev Returns the token collection name.
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev Returns the token collection symbol.
+     */
+    function symbol() external view returns (string memory);
+
+    /**
+     * @dev Returns the Uniform Resource Identifier (URI) for `tokenId` token.
+     */
+    function tokenURI(uint256 tokenId) external view returns (string memory);
+}
+
+interface IERC721Receiver {
+    /**
+     * @dev Whenever an {IERC721} `tokenId` token is transferred to this contract via {IERC721-safeTransferFrom}
+     * by `operator` from `from`, this function is called.
+     *
+     * It must return its Solidity selector to confirm the token transfer.
+     * If any other value is returned or the interface is not implemented by the recipient, the transfer will be reverted.
+     *
+     * The selector can be obtained in Solidity with `IERC721.onERC721Received.selector`.
+     */
+    function onERC721Received(
+        address operator,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external returns (bytes4);
+}
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+contract ERC721 is Context, ERC165, IERC721, IERC721Metadata {
+    using Address for address;
+    using Strings for uint256;
+
+    uint256 public maxSupply = 1000;
+    
+
+    // Token name
+    string private _name;
+
+    // Token symbol
+    string private _symbol;
+
+    string public baseExtension = ".json";
+
+    // Mapping from token ID to owner address
+    mapping(uint256 => address) private _owners;
+
+    // Mapping owner address to token count
+    mapping(address => uint256) private _balances;
+
+    // Mapping from token ID to approved address
+    mapping(uint256 => address) private _tokenApprovals;
+
+    // Mapping from owner to operator approvals
+    mapping(address => mapping(address => bool)) private _operatorApprovals;
+
+
+    /**
+     * @dev Initializes the contract by setting a `name` and a `symbol` to the token collection.
+     */
+    constructor(string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+    }
+
+    /**
+     * @dev See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, IERC165) returns (bool) {
+        return
+            interfaceId == type(IERC721).interfaceId ||
+            interfaceId == type(IERC721Metadata).interfaceId ||
+            super.supportsInterface(interfaceId);
+    }
+
+    function tokenURI(uint256 tokenId)
+    public
+    view
+    virtual
+    override
+    returns (string memory)
+  {
+    require(_exists(tokenId) || tokenId <= maxSupply || maxSupply == 0, "ERC721Metadata: URI query for nonexistent token");
+
+    string memory currentBaseURI = _baseURI();
+    return bytes(currentBaseURI).length > 0
+        ? string(abi.encodePacked(currentBaseURI, tokenId.toString(), baseExtension))
+        : "";
+  }
+
+    /**
+     * @dev See {IERC721-balanceOf}.
+     */
+    function balanceOf(address owner) public view virtual override returns (uint256) {
+        require(owner != address(0), "ERC721: balance query for the zero address");
+        return _balances[owner];
+    }
+
+    /**
+     * @dev See {IERC721-ownerOf}.
+     */
+    function ownerOf(uint256 tokenId) public view virtual override returns (address) {
+        address owner = _owners[tokenId];
+        require(owner != address(0), "ERC721: owner query for nonexistent token");
+        return owner;
+    }
+
+    /**
+     * @dev See {IERC721Metadata-name}.
+     */
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    /**
+     * @dev See {IERC721Metadata-symbol}.
+     */
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    /**
+     * @dev Base URI for computing {tokenURI}. If set, the resulting URI for each
+     * token will be the concatenation of the `baseURI` and the `tokenId`. Empty
+     * by default, can be overriden in child contracts.
+     */
+    function _baseURI() internal view virtual returns (string memory) {
+        return "";
+    }
+
+    /**
+     * @dev See {IERC721-approve}.
+     */
+    function approve(address to, uint256 tokenId) public virtual override {
+        address owner = ERC721.ownerOf(tokenId);
+        require(to != owner, "ERC721: approval to current owner");
+
+        require(
+            _msgSender() == owner || isApprovedForAll(owner, _msgSender()),
+            "ERC721: approve caller is not owner nor approved for all"
+        );
+
+        _approve(to, tokenId);
+    }
+
+    /**
+     * @dev See {IERC721-getApproved}.
+     */
+    function getApproved(uint256 tokenId) public view virtual override returns (address) {
+        require(_exists(tokenId), "ERC721: approved query for nonexistent token");
+
+        return _tokenApprovals[tokenId];
+    }
+
+    /**
+     * @dev See {IERC721-setApprovalForAll}.
+     */
+    function setApprovalForAll(address operator, bool approved) public virtual override {
+        require(operator != _msgSender(), "ERC721: approve to caller");
+
+        _operatorApprovals[_msgSender()][operator] = approved;
+        emit ApprovalForAll(_msgSender(), operator, approved);
+    }
+
+    /**
+     * @dev See {IERC721-isApprovedForAll}.
+     */
+    function isApprovedForAll(address owner, address operator) public view virtual override returns (bool) {
+        return _operatorApprovals[owner][operator];
+    }
+
+    /**
+     * @dev See {IERC721-transferFrom}.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) public virtual override {
+        //solhint-disable-next-line max-line-length
+        require(_isApprovedOrOwner(_msgSender(), tokenId), "ERC721: transfer caller is not owner nor approved");
+
+        _transfer(from, to, tokenId);
+    }
+
+    /**
+     * @dev See {IERC721-safeTransferFrom}.
+     */
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId
+    ) public virtual override {
+        safeTransferFrom(from, to, tokenId, "");
+    }
+
+    /**
+     * @dev See {IERC721-safeTransferFrom}.
+     */
+    function safeTransferFrom(
+        address from,
+        address to,
+        uint256 tokenId,
+        bytes memory _data
+    ) public virtual override {
+        require(_isApprovedOrOwner(_msgSender(), tokenId), "ERC721: transfer caller is not owner nor approved");
+        _safeTransfer(from, to, tokenId, _data);
+    }
+
+    /**
+     * @dev Safely transfers `tokenId` token from `from` to `to`, checking first that contract recipients
+     * are aware of the ERC721 protocol to prevent tokens from being forever locked.
+     *
+     * `_data` is additional data, it has no specified format and it is sent in call to `to`.
+     *
+     * This internal function is equivalent to {safeTransferFrom}, and can be used to e.g.
+     * implement alternative mechanisms to perform token transfer, such as signature-based.
+     *
+     * Requirements:
+     *
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     * - `tokenId` token must exist and be owned by `from`.
+     * - If `to` refers to a smart contract, it must implement {IERC721Receiver-onERC721Received}, which is called upon a safe transfer.
+     *
+     * Emits a {Transfer} event.
+     */
+    function _safeTransfer(
+        address from,
+        address to,
+        uint256 tokenId,
+        bytes memory _data
+    ) internal virtual {
+        _transfer(from, to, tokenId);
+        require(_checkOnERC721Received(from, to, tokenId, _data), "ERC721: transfer to non ERC721Receiver implementer");
+    }
+
+    /**
+     * @dev Returns whether `tokenId` exists.
+     *
+     * Tokens can be managed by their owner or approved accounts via {approve} or {setApprovalForAll}.
+     *
+     * Tokens start existing when they are minted (`_mint`),
+     * and stop existing when they are burned (`_burn`).
+     */
+    function _exists(uint256 tokenId) internal view virtual returns (bool) {
+        return _owners[tokenId] != address(0);
+    }
+
+    /**
+     * @dev Returns whether `spender` is allowed to manage `tokenId`.
+     *
+     * Requirements:
+     *
+     * - `tokenId` must exist.
+     */
+    function _isApprovedOrOwner(address spender, uint256 tokenId) internal view virtual returns (bool) {
+        require(_exists(tokenId), "ERC721: operator query for nonexistent token");
+        address owner = ERC721.ownerOf(tokenId);
+        return (spender == owner || getApproved(tokenId) == spender || isApprovedForAll(owner, spender));
+    }
+
+    /**
+     * @dev Safely mints `tokenId` and transfers it to `to`.
+     *
+     * Requirements:
+     *
+     * - `tokenId` must not exist.
+     * - If `to` refers to a smart contract, it must implement {IERC721Receiver-onERC721Received}, which is called upon a safe transfer.
+     *
+     * Emits a {Transfer} event.
+     */
+    function _safeMint(address to, uint256 tokenId) internal virtual {
+        _safeMint(to, tokenId, "");
+    }
+
+    /**
+     * @dev Same as {xref-ERC721-_safeMint-address-uint256-}[`_safeMint`], with an additional `data` parameter which is
+     * forwarded in {IERC721Receiver-onERC721Received} to contract recipients.
+     */
+    function _safeMint(
+        address to,
+        uint256 tokenId,
+        bytes memory _data
+    ) internal virtual {
+        _mint(to, tokenId);
+        require(
+            _checkOnERC721Received(address(0), to, tokenId, _data),
+            "ERC721: transfer to non ERC721Receiver implementer"
+        );
+    }
+
+    /**
+     * @dev Mints `tokenId` and transfers it to `to`.
+     *
+     * WARNING: Usage of this method is discouraged, use {_safeMint} whenever possible
+     *
+     * Requirements:
+     *
+     * - `tokenId` must not exist.
+     * - `to` cannot be the zero address.
+     *
+     * Emits a {Transfer} event.
+     */
+    function _mint(address to, uint256 tokenId) internal virtual {
+        require(to != address(0), "ERC721: mint to the zero address");
+        require(!_exists(tokenId), "ERC721: token already minted");
+
+        _beforeTokenTransfer(address(0), to, tokenId);
+
+        _balances[to] += 1;
+        _owners[tokenId] = to;
+
+        emit Transfer(address(0), to, tokenId);
+    }
+
+    /**
+     * @dev Destroys `tokenId`.
+     * The approval is cleared when the token is burned.
+     *
+     * Requirements:
+     *
+     * - `tokenId` must exist.
+     *
+     * Emits a {Transfer} event.
+     */
+    function _burn(uint256 tokenId) internal virtual {
+        address owner = ERC721.ownerOf(tokenId);
+
+        _beforeTokenTransfer(owner, address(0), tokenId);
+
+        // Clear approvals
+        _approve(address(0), tokenId);
+
+        _balances[owner] -= 1;
+        delete _owners[tokenId];
+
+        emit Transfer(owner, address(0), tokenId);
+    }
+
+    /**
+     * @dev Transfers `tokenId` from `from` to `to`.
+     *  As opposed to {transferFrom}, this imposes no restrictions on msg.sender.
+     *
+     * Requirements:
+     *
+     * - `to` cannot be the zero address.
+     * - `tokenId` token must be owned by `from`.
+     *
+     * Emits a {Transfer} event.
+     */
+    function _transfer(
+        address from,
+        address to,
+        uint256 tokenId
+    ) internal virtual {
+        require(ERC721.ownerOf(tokenId) == from, "ERC721: transfer of token that is not own");
+        require(to != address(0), "ERC721: transfer to the zero address");
+
+        _beforeTokenTransfer(from, to, tokenId);
+
+        // Clear approvals from the previous owner
+        _approve(address(0), tokenId);
+
+        _balances[from] -= 1;
+        _balances[to] += 1;
+        _owners[tokenId] = to;
+
+        emit Transfer(from, to, tokenId);
+    }
+
+    /**
+     * @dev Approve `to` to operate on `tokenId`
+     *
+     * Emits a {Approval} event.
+     */
+    function _approve(address to, uint256 tokenId) internal virtual {
+        _tokenApprovals[tokenId] = to;
+        emit Approval(ERC721.ownerOf(tokenId), to, tokenId);
+    }
+
+    /**
+     * @dev Internal function to invoke {IERC721Receiver-onERC721Received} on a target address.
+     * The call is not executed if the target address is not a contract.
+     *
+     * @param from address representing the previous owner of the given token ID
+     * @param to target address that will receive the tokens
+     * @param tokenId uint256 ID of the token to be transferred
+     * @param _data bytes optional data to send along with the call
+     * @return bool whether the call correctly returned the expected magic value
+     */
+    function _checkOnERC721Received(
+        address from,
+        address to,
+        uint256 tokenId,
+        bytes memory _data
+    ) private returns (bool) {
+        if (to.isContract()) {
+            try IERC721Receiver(to).onERC721Received(_msgSender(), from, tokenId, _data) returns (bytes4 retval) {
+                return retval == IERC721Receiver.onERC721Received.selector;
+            } catch (bytes memory reason) {
+                if (reason.length == 0) {
+                    revert("ERC721: transfer to non ERC721Receiver implementer");
+                } else {
+                    assembly {
+                        revert(add(32, reason), mload(reason))
+                    }
+                }
+            }
+        } else {
+            return true;
+        }
+    }
+
+    /**
+     * @dev Hook that is called before any token transfer. This includes minting
+     * and burning.
+     *
+     * Calling conditions:
+     *
+     * - When `from` and `to` are both non-zero, ``from``'s `tokenId` will be
+     * transferred to `to`.
+     * - When `from` is zero, `tokenId` will be minted for `to`.
+     * - When `to` is zero, ``from``'s `tokenId` will be burned.
+     * - `from` and `to` are never both zero.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 tokenId
+    ) internal virtual {}
+}
+
+abstract contract ERC721Enumerable is ERC721, IERC721Enumerable {
+    // Mapping from owner to list of owned token IDs
+    mapping(address => mapping(uint256 => uint256)) private _ownedTokens;
+
+    // Mapping from token ID to index of the owner tokens list
+    mapping(uint256 => uint256) private _ownedTokensIndex;
+
+    // Array with all token ids, used for enumeration
+    uint256[] private _allTokens;
+
+    // Mapping from token id to position in the allTokens array
+    mapping(uint256 => uint256) private _allTokensIndex;
+
+    /**
+     * @dev See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override(IERC165, ERC721) returns (bool) {
+        return interfaceId == type(IERC721Enumerable).interfaceId || super.supportsInterface(interfaceId);
+    }
+
+    /**
+     * @dev See {IERC721Enumerable-tokenOfOwnerByIndex}.
+     */
+    function tokenOfOwnerByIndex(address owner, uint256 index) public view virtual override returns (uint256) {
+        require(index < ERC721.balanceOf(owner), "ERC721Enumerable: owner index out of bounds");
+        return _ownedTokens[owner][index];
+    }
+
+    /**
+     * @dev See {IERC721Enumerable-totalSupply}.
+     */
+    function totalSupply() public view virtual override returns (uint256) {
+        return _allTokens.length;
+    }
+
+    /**
+     * @dev See {IERC721Enumerable-tokenByIndex}.
+     */
+    function tokenByIndex(uint256 index) public view virtual override returns (uint256) {
+        require(index < ERC721Enumerable.totalSupply(), "ERC721Enumerable: global index out of bounds");
+        return _allTokens[index];
+    }
+
+    /**
+     * @dev Hook that is called before any token transfer. This includes minting
+     * and burning.
+     *
+     * Calling conditions:
+     *
+     * - When `from` and `to` are both non-zero, ``from``'s `tokenId` will be
+     * transferred to `to`.
+     * - When `from` is zero, `tokenId` will be minted for `to`.
+     * - When `to` is zero, ``from``'s `tokenId` will be burned.
+     * - `from` cannot be the zero address.
+     * - `to` cannot be the zero address.
+     *
+     * To learn more about hooks, head to xref:ROOT:extending-contracts.adoc#using-hooks[Using Hooks].
+     */
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 tokenId
+    ) internal virtual override {
+        super._beforeTokenTransfer(from, to, tokenId);
+
+        if (from == address(0)) {
+            _addTokenToAllTokensEnumeration(tokenId);
+        } else if (from != to) {
+            _removeTokenFromOwnerEnumeration(from, tokenId);
+        }
+        if (to == address(0)) {
+            _removeTokenFromAllTokensEnumeration(tokenId);
+        } else if (to != from) {
+            _addTokenToOwnerEnumeration(to, tokenId);
+        }
+    }
+
+    /**
+     * @dev Private function to add a token to this extension's ownership-tracking data structures.
+     * @param to address representing the new owner of the given token ID
+     * @param tokenId uint256 ID of the token to be added to the tokens list of the given address
+     */
+    function _addTokenToOwnerEnumeration(address to, uint256 tokenId) private {
+        uint256 length = ERC721.balanceOf(to);
+        _ownedTokens[to][length] = tokenId;
+        _ownedTokensIndex[tokenId] = length;
+    }
+
+    /**
+     * @dev Private function to add a token to this extension's token tracking data structures.
+     * @param tokenId uint256 ID of the token to be added to the tokens list
+     */
+    function _addTokenToAllTokensEnumeration(uint256 tokenId) private {
+        _allTokensIndex[tokenId] = _allTokens.length;
+        _allTokens.push(tokenId);
+    }
+
+    /**
+     * @dev Private function to remove a token from this extension's ownership-tracking data structures. Note that
+     * while the token is not assigned a new owner, the `_ownedTokensIndex` mapping is _not_ updated: this allows for
+     * gas optimizations e.g. when performing a transfer operation (avoiding double writes).
+     * This has O(1) time complexity, but alters the order of the _ownedTokens array.
+     * @param from address representing the previous owner of the given token ID
+     * @param tokenId uint256 ID of the token to be removed from the tokens list of the given address
+     */
+    function _removeTokenFromOwnerEnumeration(address from, uint256 tokenId) private {
+        // To prevent a gap in from's tokens array, we store the last token in the index of the token to delete, and
+        // then delete the last slot (swap and pop).
+
+        uint256 lastTokenIndex = ERC721.balanceOf(from) - 1;
+        uint256 tokenIndex = _ownedTokensIndex[tokenId];
+
+        // When the token to delete is the last token, the swap operation is unnecessary
+        if (tokenIndex != lastTokenIndex) {
+            uint256 lastTokenId = _ownedTokens[from][lastTokenIndex];
+
+            _ownedTokens[from][tokenIndex] = lastTokenId; // Move the last token to the slot of the to-delete token
+            _ownedTokensIndex[lastTokenId] = tokenIndex; // Update the moved token's index
+        }
+
+        // This also deletes the contents at the last position of the array
+        delete _ownedTokensIndex[tokenId];
+        delete _ownedTokens[from][lastTokenIndex];
+    }
+
+    /**
+     * @dev Private function to remove a token from this extension's token tracking data structures.
+     * This has O(1) time complexity, but alters the order of the _allTokens array.
+     * @param tokenId uint256 ID of the token to be removed from the tokens list
+     */
+    function _removeTokenFromAllTokensEnumeration(uint256 tokenId) private {
+        // To prevent a gap in the tokens array, we store the last token in the index of the token to delete, and
+        // then delete the last slot (swap and pop).
+
+        uint256 lastTokenIndex = _allTokens.length - 1;
+        uint256 tokenIndex = _allTokensIndex[tokenId];
+
+        // When the token to delete is the last token, the swap operation is unnecessary. However, since this occurs so
+        // rarely (when the last minted token is burnt) that we still do the swap here to avoid the gas cost of adding
+        // an 'if' statement (like in _removeTokenFromOwnerEnumeration)
+        uint256 lastTokenId = _allTokens[lastTokenIndex];
+
+        _allTokens[tokenIndex] = lastTokenId; // Move the last token to the slot of the to-delete token
+        _allTokensIndex[lastTokenId] = tokenIndex; // Update the moved token's index
+
+        // This also deletes the contents at the last position of the array
+        delete _allTokensIndex[tokenId];
+        _allTokens.pop();
+    }
+}
+
+
+// File: @openzeppelin/contracts/access/Ownable.sol
+//pragma solidity ^0.8.0;
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _setOwner(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _setOwner(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _setOwner(newOwner);
+    }
+
+    function _setOwner(address newOwner) private {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+interface IBEP20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the token decimals.
+     */
+    function decimals() external view returns (uint8);
+
+    /**
+     * @dev Returns the token symbol.
+     */
+    function symbol() external view returns (string memory);
+
+    /**
+     * @dev Returns the token name.
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev Returns the bep token owner.
+     */
+    function getOwner() external view returns (address);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address _owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+contract TestingNFT is ERC721Enumerable, Ownable, ReentrancyGuard{
+  using Strings for uint256;
+  IBEP20 public BUSD;
+  IBEP20 public token;
+  string public baseURI;
+  uint256 public maxMintAmount = 10000;
+  uint256[] public nftLine = [250, 500, 750, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 5000, 6000, 7000, 8000, 9000];
+  uint256 public totalBusdClaimed = 0;
+  uint256 public totalAlphaClaimed = 0;
+  uint256 public totalDistribute = 0; //100 * 10**18;
+  uint256 public  totalForSell = 0;
+  uint256 public totalForTaxes = 0;
+  address public teamWallet;
+  uint256 public totalNFTSell = 0;
+  uint256 public lastTokenDistributed = 0; //100 * 10**18;
+  uint256 public lastDistributedTime = 0;
+  uint256 public tradingBonus = 0;
+  uint256 public countDividend = 0;
+  uint256 public claimSeconds = 600;
+  bool public pauseReward = true;
+  
+  bool public paused = false;
+  mapping(address => bool) public whitelisted;
+    mapping(uint256=>uint256) public nftBUSDBonus;
+    mapping(uint256=>uint256) public nftBUSDClaimed;
+    mapping (uint256=>uint256) public nftPriceBought;
+    mapping (address=>uint256) public nftLineBought;
+    mapping (address=>uint256) public sellRequest;
+    mapping (uint256=>uint256) public lastClaim;
+    mapping (uint256 => uint256) public dividendNum;
+    mapping (uint256 => uint256) public dividendSellValue;
+    mapping (uint256 => uint256) public claimNum;
+    mapping (address => uint) public userSell;
+    mapping (uint => address) public nftOwner;
+    
+
+    event sellInfo(uint indexed _tid, address _user, uint amt);
+    event DistributeBusdReward(uint indexed _tokenIds, uint _amountToSell, address _ownerOfNft);
+    event ListApprove(uint indexed _tokenIds,uint _amountToSell, bool _soldstatus,address _owner);
+    constructor() ERC721("Testing NFT", "TNFT") {
+        setBaseURI("https://");    
+        BUSD = IBEP20(0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d);//0xaB1a4d4f1D656d2450692D237fdD6C7f9146e814 //0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d
+        token = IBEP20(0xFC5D11A38de1C83D0Ca604e3De4f8d316299f804);//
+        teamWallet = 0xB7B7fdffd5B4c0905db7b53fF910Ff27A19Dd92b;//bnb:0xF423860A73FD17DeF9a3029F84a79E7b226121a7, 0x7A8ecf4b873484408a662e681250BD0D0CDA7B06
+        lastDistributedTime = block.timestamp + (claimSeconds);
+        dividendNum[0] = 0;
+        dividendSellValue[0] = 0;    
+    }
+
+  // internal
+  function _baseURI() internal view virtual override returns (string memory) {
+    return baseURI;
+  }
+
+  // public
+  function mint(address _to, uint256 line) public {
+    uint256 supply = totalSupply();
+    require(!paused);
+    require(supply + 1 <= maxSupply);
+    require(balanceOf(_to) < 1,"You can't mint more than 1 nft!");
+    uint256 totalCost = (nftLine[line] * 10 ** 18);
+    uint256 taxes = ((10 * totalCost) / 100);
+    
+          BUSD.transferFrom(msg.sender, address(this), taxes); 
+          BUSD.transferFrom(msg.sender, teamWallet, (totalCost-taxes)); 
+       
+    totalForTaxes += taxes;
+    totalForSell += totalCost;
+    //for (uint256 i = 1; i <= _mintAmount; i++) {
+    if(nftLineBought[_to] < 1){
+    nftLineBought[_to] = 1;
+    }
+    nftPriceBought[supply + 1] = totalCost;
+    _safeMint(_to, supply + 1);
+    lastClaim[supply + 1] = block.timestamp + (claimSeconds);
+    nftBUSDBonus[supply + 1] = 0;
+    nftBUSDClaimed[supply + 1] = 0;
+    if(countDividend==0){
+    claimNum[supply + 1] = countDividend;
+    }
+    else{
+    claimNum[supply + 1] = countDividend;    
+    }
+    nftOwner[supply + 1] = _to;
+  }
+
+  function updateNFTLine(uint _nftid, uint256 _mintAmount) public {
+      require(_mintAmount > 0, "mintAmount is low!");
+      if(countDividend > 0){
+      (uint cAmount, uint cDividend) = getTodayProfit(_nftid);
+      if(cAmount > 0){
+      claimNum[_nftid] = cDividend; //countDividend;
+      address owner = nftOwner[_nftid];
+      
+        BUSD.transfer(owner, cAmount);  
+        totalBusdClaimed += cAmount;
+      }
+      }
+            
+
+      uint256 taxes = ((10 * _mintAmount) / 100);
+      BUSD.transferFrom(msg.sender, address(this), taxes);
+      BUSD.transferFrom(msg.sender, teamWallet, (_mintAmount-taxes));
+      totalForTaxes += taxes;
+      totalForSell += _mintAmount;
+      nftPriceBought[_nftid] += _mintAmount;
+      uint newAmount = nftPriceBought[_nftid] / (1*10**18);
+      
+          if(newAmount >= nftLine[0] && newAmount < nftLine[1]){
+          nftLineBought[msg.sender] = 1;
+          }
+          else if(newAmount >= nftLine[1] && newAmount < nftLine[2]){
+          nftLineBought[msg.sender] = 2;
+          }
+          else if(newAmount >= nftLine[2] && newAmount < nftLine[3]){
+          nftLineBought[msg.sender] = 3;
+          }
+          else if(newAmount >= nftLine[3] && newAmount < nftLine[4]){
+          nftLineBought[msg.sender] = 4;
+          }
+          else if(newAmount >= nftLine[4] && newAmount < nftLine[5]){
+          nftLineBought[msg.sender] = 5;
+          }
+          else if(newAmount >= nftLine[5] && newAmount < nftLine[6]){
+          nftLineBought[msg.sender] = 6;
+          }
+          else if(newAmount >= nftLine[6] && newAmount < nftLine[7]){
+          nftLineBought[msg.sender] = 7;
+          }
+          else if(newAmount >= nftLine[7] && newAmount < nftLine[8]){
+          nftLineBought[msg.sender] = 8;
+          }
+          else if(newAmount >= nftLine[8] && newAmount < nftLine[9]){
+          nftLineBought[msg.sender] = 9;
+          }
+          else if(newAmount >= nftLine[9] && newAmount < nftLine[10]){
+          nftLineBought[msg.sender] = 10;
+          }
+          else if(newAmount >= nftLine[10] && newAmount < nftLine[11]){
+          nftLineBought[msg.sender] = 11;
+          }
+          else if(newAmount >= nftLine[11] && newAmount < nftLine[12]){
+          nftLineBought[msg.sender] = 12;
+          }
+          else if(newAmount >= nftLine[12] && newAmount < nftLine[13]){
+          nftLineBought[msg.sender] = 13;
+          }
+          else if(newAmount >= nftLine[13] && newAmount < nftLine[14]){
+          nftLineBought[msg.sender] = 14;
+          }
+          else if(newAmount >= nftLine[14]){
+          nftLineBought[msg.sender] = 15;
+          }
+          else{
+              nftLineBought[msg.sender] = 1;
+          }
+        
+  }
+
+  function walletOfOwner(address _owner)
+    public
+    view
+    returns (uint256[] memory)
+  {
+    uint256 ownerTokenCount = balanceOf(_owner);
+    uint256[] memory tokenIds = new uint256[](ownerTokenCount);
+    for (uint256 i; i < ownerTokenCount; i++) {
+      tokenIds[i] = tokenOfOwnerByIndex(_owner, i);
+    }
+    return tokenIds;
+  }
+
+  //only owner
+  function setPauseReward(bool _flag, uint256 _claimSeconds) public onlyOwner() {
+    pauseReward = _flag;
+    claimSeconds = _claimSeconds;
+  }
+  
+  function setmaxMintAmount(uint256 _newmaxMintAmount) public onlyOwner() {
+    maxMintAmount = _newmaxMintAmount;
+  }
+
+  function setBaseURI(string memory _newBaseURI) public onlyOwner {
+    baseURI = _newBaseURI;
+  }
+
+  function setBaseExtension(string memory _newBaseExtension) public onlyOwner {
+    baseExtension = _newBaseExtension;
+  }
+
+  function pause(bool _state) public onlyOwner {
+    paused = _state;
+  }
+ 
+ function whitelistUser(address _user) public onlyOwner {
+    whitelisted[_user] = true;
+  }
+
+ function getLines(address _addr) external view returns(uint256){
+     return nftLineBought[_addr];
+ }
+ function getAmountSold(address _addr) external view returns (uint){
+     return userSell[_addr];
+ }
+  function removeWhitelistUser(address _user) public onlyOwner {
+    whitelisted[_user] = false;
+  }
+ 
+  function withdraw() public payable onlyOwner {
+    require(payable(msg.sender).send(address(this).balance));
+  }
+
+  function withdrawBusd() public payable onlyOwner {
+    BUSD.transfer(teamWallet, BUSD.balanceOf(address(this)));
+  }
+  
+  function sellNFTTOAdmin(uint _id) public {
+      claimBusdBonus(_id);
+      uint amountPaid = nftPriceBought[_id];
+      uint amountEarned = nftBUSDClaimed[_id];
+      uint taxRemovePaid = amountPaid - ( (10 * amountPaid) / 100);
+      require(amountEarned < taxRemovePaid, "Your earning has exceed your spending, you can't sell nft again, bro");
+      address owner = nftOwner[_id];
+      require(owner == msg.sender, "You can't sell what doesn't belong to you!");
+      uint amountToTransfer = taxRemovePaid - amountEarned;
+      amountToTransfer = amountToTransfer - ( (10 * amountToTransfer) / 100);
+      
+      sellRequest[owner] = amountToTransfer;
+      nftLineBought[owner] = 0;
+      nftPriceBought[_id] = 0;
+      totalForSell -= amountPaid;
+      userSell[owner] = amountToTransfer;
+      
+      emit sellInfo(_id, owner, amountToTransfer);
+  }
+
+  function adminAprroveSell(address _addr, uint _amount) public  onlyOwner{
+      BUSD.transferFrom(msg.sender, address(this), _amount);
+      BUSD.transfer(_addr, sellRequest[_addr]);
+  }
+
+  function multisendNft(uint256[] calldata _tokenIds, address[] calldata recipient) external onlyOwner{
+        for (uint256 i; i < recipient.length; ++i) {                                               
+            transferFrom(msg.sender, recipient[i], _tokenIds[i]);                                                   
+        }
+    }
+
+ function distributedUSDCShares() public {
+     uint ctime = block.timestamp;
+     require(pauseReward,"you can't distribute now");
+        require(lastDistributedTime < ctime, " You can't distribute share now!");
+        uint256 amount = BUSD.balanceOf(address(this));
+
+        require(totalDistribute <= totalBusdClaimed + amount, "Nothing left to distribute");
+        uint amountToShare = ((amount - totalDistribute) / 1000) * 25;
+        totalDistribute +=amountToShare;
+        lastTokenDistributed = amountToShare;
+        lastDistributedTime = ctime + (claimSeconds);
+        countDividend++;
+        dividendNum[countDividend] = amountToShare;
+        dividendSellValue[countDividend] = totalForSell;
+      
+    }  
+
+    function getShareBalance() public view returns(uint){
+        uint256 amount = BUSD.balanceOf(address(this));
+        uint256 total = ((amount - totalDistribute) / 1000) * 25; 
+        return total;
+    }
+
+    function getTodayProfit(uint _nid) public  view returns (uint, uint){
+        uint percentageOwn = (nftPriceBought[_nid] * 1000000) / dividendSellValue[countDividend] ;
+        uint lastNumClaim = claimNum[_nid];
+        uint dividentAmount = 0;
+        if(lastNumClaim == 0 && countDividend==1){
+           dividentAmount = lastTokenDistributed;
+           return (((dividentAmount * percentageOwn) / 1000000), countDividend);
+        }
+        else if(lastNumClaim < countDividend){
+            uint result =0;
+            uint lastDividendCount= 0;
+            uint count = 0;
+            for(uint i= (lastNumClaim+1); i <= countDividend; i++){
+             dividentAmount = dividendNum[i]; // - dividendNum[lastNumClaim];
+             if(dividentAmount > 0){
+             percentageOwn = (nftPriceBought[_nid] * 1000000) / dividendSellValue[i];
+             result += ((dividentAmount * percentageOwn) / 1000000);
+             lastDividendCount = i;
+             count++;
+             if(count >= 100){
+                 break;
+             }
+             }
+            }
+            return (result , lastDividendCount);
+           
+         }
+           
+         else{
+             return (0,countDividend) ;
+         }
+        
+    }
+
+    function claimBusdBonus(uint _id) public {
+        uint ctime = block.timestamp;
+        require(lastClaim[_id] < ctime, "You can't claim again today!");
+        (uint cAmount, uint cDividend) = getTodayProfit(_id);
+        claimNum[_id] = cDividend; //countDividend;
+        address owner = nftOwner[_id];
+        require(owner==msg.sender,"you're not the owner of the nft");
+        BUSD.transfer(owner, cAmount);  
+        totalBusdClaimed += cAmount;    
+        lastClaim[_id] = ctime + (claimSeconds);
+        //nftBUSDBonus[_id] += cAmount;
+        nftBUSDClaimed[_id] += cAmount;
+        if(totalDistribute >= cAmount){
+        totalDistribute = totalDistribute - cAmount;
+        }
+        
+    }
+
+
+  function ownerMint(address _to, uint line) public onlyOwner{
+    require(totalSupply() < maxSupply);
+    require(balanceOf(_to) < 1,"You can't mint more than 1 nft!");
+    
+    uint256 supply = totalSupply();
+    uint256 totalCost = (nftLine[line] * 10 ** 18);
+    uint256 taxes = ((10 * totalCost) / 100);
+    
+    totalForTaxes += taxes;
+    totalForSell += totalCost;
+    //for (uint256 i = 1; i <= _mintAmount; i++) {
+    if(nftLineBought[_to] < 1){
+    nftLineBought[_to] = line + 1;
+    }
+    
+    nftPriceBought[supply + 1] = totalCost;
+    _safeMint(_to, supply + 1);
+    lastClaim[supply + 1] = block.timestamp + (claimSeconds);
+    nftBUSDBonus[supply + 1] = 0;
+    nftBUSDClaimed[supply + 1] = 0;
+    if(countDividend==0){
+    claimNum[supply + 1] = countDividend;
+    }
+    else{
+    claimNum[supply + 1] = countDividend;    
+    }
+    nftOwner[supply + 1] = _to;
+  }
+    
+    function setRewardContract( address _BUSD) public onlyOwner{
+        BUSD = IBEP20(_BUSD);
+    }
+
+    function setTeamWallet(address _teamWallet) public onlyOwner{
+        teamWallet = _teamWallet;
+    }
+
+    function depositTradingBonus(uint256 amt) public onlyOwner{
+        BUSD.transferFrom(msg.sender, address(this), amt);
+        tradingBonus += amt;
+    }
+
+
+  function lastDistributionInfo() public view returns(uint, uint, uint, uint, uint, uint, uint, uint, uint){
+      return (lastDistributedTime, lastTokenDistributed, totalNFTSell, totalForSell, totalForTaxes, totalBusdClaimed, tradingBonus, countDividend, dividendSellValue[countDividend]);
+  }
+
+  function getRewarsBUSD(uint _id) public view returns(uint, uint, uint, uint){
+        return(nftBUSDClaimed[_id], nftBUSDBonus[_id], nftPriceBought[_id], lastClaim[_id]);
+  }
+
+
+  function getCurrentTime() public view returns (uint256) {
+        return block.timestamp;
+  }
+
+}

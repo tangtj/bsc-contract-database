@@ -1,0 +1,304 @@
+
+// File: src/Deposit.sol
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.18;
+
+
+import {IERC20} from "../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {Ownable} from "../lib/openzeppelin-contracts/contracts/access/Ownable.sol";
+import {IDepositData,Order} from "./interface/IDepositData.sol";
+import {IDeposit} from "./interface/IDeposit.sol";
+
+
+
+
+contract Deposit is IDeposit, Ownable{
+
+    IDepositData public depositData;
+
+    constructor(IDepositData _depositData){
+        depositData = _depositData;
+    }
+
+    function changeDepositData(address _newDepositData)external onlyOwner{
+        depositData = IDepositData(_newDepositData);
+        emit ChangeDepositData(_newDepositData);
+    }
+
+    function deposit(address _token,uint256 _amount,uint256 _orderNo,uint256 _dataType)external{
+        bool success = IERC20(_token).transferFrom(msg.sender, address(this), _amount);
+        if(!success) revert TransferFail();
+
+        Order memory order = Order(
+            _orderNo,
+            _dataType,
+            _token,
+            _msgSender(),
+            address(this),
+            _amount,
+            block.number,
+            block.timestamp
+        );
+        IDepositData(depositData).saveOrder(order);
+    }
+
+    function withdrawToken(address _token,uint256 _amount,address _to) external onlyOwner {
+        IERC20(_token).transfer(_to, _amount);
+    }
+
+    function withdrawTokenToArr(address token, address[] calldata tos) external onlyOwner {
+        if(tos.length == 0) revert ReceiveAddressIsZero();
+        IERC20 token20 = IERC20(token);
+
+        uint256 amount = token20.balanceOf(address(this)) / tos.length;
+        if(amount == 0) revert NoBalance();
+        for (uint i=0; i < tos.length; i++) {
+            token20.transfer(tos[i], amount);
+        }
+    }
+
+
+}
+
+// File: lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.9.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+
+// File: lib/openzeppelin-contracts/contracts/access/Ownable.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.9.0) (access/Ownable.sol)
+
+pragma solidity ^0.8.0;
+
+import "../utils/Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby disabling any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: src/interface/IDepositData.sol
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.9;
+
+struct Order {
+    uint256 orderNo;
+    uint256 dataType;
+    address token;
+    address from;
+    address to;
+    uint256 amount;
+    uint256 blockNumber;
+    uint256 timestamp;
+}
+
+interface IDepositData {
+
+    error OrderExist();
+    error Unsupported();
+
+
+    event Deposit(address indexed from,address indexed to,uint256 orderNo,uint256 amount);
+
+
+
+    function saveOrder(Order calldata _order)external;
+    function getOrder(uint256 _orderNo)external view returns(Order memory _order);
+
+}
+
+// File: src/interface/IDeposit.sol
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.9;
+
+interface  IDeposit {
+    error TransferFail();
+    error ReceiveAddressIsZero();
+    error NoBalance();
+
+    event ChangeDepositData(address newDepositData);
+
+
+
+    function changeDepositData(address _newDepositData)external;
+
+    function deposit(address _token,uint256 _amount,uint256 _orderNo,uint256 _dataType)external;
+    function withdrawToken(address _token,uint256 _amount,address _to) external;
+}
+
+// File: lib/openzeppelin-contracts/contracts/utils/Context.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+

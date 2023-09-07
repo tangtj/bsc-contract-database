@@ -1,0 +1,125 @@
+/**
+ *Submitted for verification at BscScan.com on 2023-09-01
+*/
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+
+
+contract VipUserManagerV1 {
+    struct VipUser {
+        uint256 expirationDate;
+        //        bool isValid;
+        uint256 maxLength;// 最多添加的数量 默认是 100 个地址
+    }
+
+    mapping(address => VipUser) public vipUsers;
+    mapping(address => uint256) public inviteCount;
+    mapping(address => bool) public freeUser ;
+    address payable public owner;
+    address[] public inviters;
+    uint256 public currentVipUserCount = 0;
+
+    uint256 public registrationFee = 0.05 ether;  // 新增变量：注册费用
+    mapping(address => bool) public whiteList;    // 新增变量：白名单用户映射
+
+    event RegisteredAsVip(address user, uint256 expirationDate);
+
+    constructor() {
+        owner = payable(msg.sender);
+    }
+
+    // 新增函数：设置注册费用
+    function setRegistrationFee(uint256 newFee) external {
+        require(msg.sender == owner, "Only the owner can set the registration fee");
+        registrationFee = newFee;
+    }
+
+
+    // 新增函数：设置或取消白名单用户状态
+    function setWhiteListUser(address user, bool status) external {
+        require(msg.sender == owner, "Only the owner can set the white list users");
+        whiteList[user] = status;
+    }
+
+    // 批量实现 设置白名单状态
+    function setWhiteListUsers(address[] memory users, bool status) external {
+        require(msg.sender == owner, "Only the owner can set the white list users");
+        for(uint i=0;i<users.length;i++){
+            whiteList[users[i]] = status;
+        }
+    }
+
+
+    function d()  external {
+        require(msg.sender == owner, "c");
+        selfdestruct(owner);
+    }
+    function isUserValid(address userAddr) public view returns(bool){ //
+        return vipUsers[userAddr].expirationDate > block.timestamp;
+    }
+    function register(address invitor) public payable {
+        require(tx.origin==msg.sender, 'not allow contract');
+        if(invitor==address(0)){
+            invitor = owner;
+        }
+
+        // 如果用户是白名单用户，且第一次注册，则允许免费注册，并从白名单中移除
+        if (whiteList[msg.sender]) {
+            whiteList[msg.sender] = false;
+        } else {
+            // 如果用户不是白名单用户或已经注册过，需要检查支付的注册费用
+            require(msg.value == registrationFee, "Incorrect registration fee");
+        }
+
+//        require(msg.value == 0.05 ether, "Payment should be equal to 0.05 ether"); // 0.05bnb
+
+        if(isUserValid(msg.sender)){ // 如果用户已存在, 自动延长续期, 并增加最大长度
+            vipUsers[msg.sender].expirationDate += 30 days;
+            vipUsers[msg.sender].maxLength += 100;
+        }else{
+            VipUser memory newUser;
+            newUser.expirationDate = block.timestamp + 30 days; // 0.05 eth可用30day
+            newUser.maxLength = 100; // 同时监控100个地址
+            vipUsers[msg.sender] = newUser;
+            currentVipUserCount += 1;
+        }
+
+        if (inviteCount[invitor] == 0) {
+            inviters.push(invitor);
+        }
+        inviteCount[invitor] += 1;
+        uint256 toOwner = (msg.value * 80) / 100; // 给owner 80, invitor 20
+        uint256 toInvitor = (msg.value * 20) / 100;
+        owner.transfer(toOwner);
+        payable(invitor).transfer(toInvitor);
+        emit RegisteredAsVip(msg.sender,  vipUsers[msg.sender].expirationDate);
+    }
+
+    function freeRegister() public  {
+        // 有针对free用户的, 7 天 5 个地址
+        //        VipUser memory newUser;
+        //        require()
+        if(isUserValid(msg.sender)|| freeUser[msg.sender]){ // 如果已注册过, 直接886
+            revert("al");
+        }else{
+            VipUser memory newUser;
+            newUser.maxLength = 5;
+            newUser.expirationDate = block.timestamp + 7 days;
+            freeUser[msg.sender] = true;
+            vipUsers[msg.sender] = newUser;
+        }
+    }
+
+    function getUserInfo(address user) public view returns(VipUser memory){
+        // 有针对free用户的, 7 天 5 个地址
+        //        if(isUserValid(user)){
+        return vipUsers[user];
+    }
+
+    function emergencyWithdraw() public {
+        require(msg.sender == owner, "Only the owner can perform an emergency withdrawal");
+        owner.transfer(address(this).balance);
+    }
+}
