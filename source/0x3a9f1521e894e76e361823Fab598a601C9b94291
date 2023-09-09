@@ -1,0 +1,335 @@
+
+// File: contracts/Presale.sol
+//SPDX-License-Identifier: UNLICENSED
+
+pragma solidity 0.8.18;
+
+interface IToken {
+    function name() external view returns (string memory);
+
+    function symbol() external view returns (string memory);
+
+    function decimals() external view returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address owner) external view returns (uint256);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 value) external;
+
+    function transfer(address to, uint256 value) external;
+
+    function transferFrom(address from, address to, uint256 value) external;
+
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+    event Transfer(address indexed from, address indexed to, uint256 value);
+}
+
+interface AggregatorV3Interface {
+    function decimals() external view returns (uint8);
+
+    function description() external view returns (string memory);
+
+    function version() external view returns (uint256);
+
+    function getRoundData(
+        uint80 _roundId
+    )
+        external
+        view
+        returns (
+            uint80 roundId,
+            int256 answer,
+            uint256 startedAt,
+            uint256 updatedAt,
+            uint80 answeredInRound
+        );
+
+    function latestRoundData()
+        external
+        view
+        returns (
+            uint80 roundId,
+            int256 answer,
+            uint256 startedAt,
+            uint256 updatedAt,
+            uint80 answeredInRound
+        );
+}
+
+// External Access Controlled Aggregator Proxy
+// - 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419 eth/usd mainnet
+// - 0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE bnb/usd mainnet
+// - 0x694AA1769357215DE4FAC081bf1f309aDC325306 eth/usd sepolia testnet
+// - 0xD4a33860578De61DBAbDc8BFdb98FD742fA7028e eth/usd goerli tesnet
+// - 0x2514895c72f50D8bd4B4F9b1110F0D6bD2c97526 bnb/usd bsc testnet
+
+// Tokens
+// - 0xdAC17F958D2ee523a2206206994597C13D831ec7 usdt mainnet ETH
+// - 0x55d398326f99059fF775485246999027B3197955 usdt bsc network
+// - 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56 busd bsc network
+// - 0x9331b55D9830EF609A2aBCfAc0FBCE050A52fdEa busd bsc testnet
+// - 0xBD79ef478C6C11e92D0e99fe87C97243cC425D3a BCONG mainnet
+
+contract Presale {
+    IToken public BDINU = IToken(0xBD79ef478C6C11e92D0e99fe87C97243cC425D3a); // Pre Sale token
+    IToken public USDT = IToken(0x55d398326f99059fF775485246999027B3197955);
+    IToken public BUSD = IToken(0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56);
+    AggregatorV3Interface public priceFeedEth;
+
+    address payable public owner;
+
+    uint256 public tokenPerUsd = 5000000000000000000; // 5 tokens for $1
+    uint256 public preSaleStartTime;
+    uint256 public soldToken;
+    uint256 public totalSupply = 50000000 ether; // presale tokens
+    uint256 public amountRaisedEth;
+    uint256 public amountRaisedUSDT;
+    uint256 public amountRaisedBUSD;
+    uint256 public minimumDollar = 20 * 10 ** USDT.decimals(); // min buy usdt
+    uint256 public minimumETH = 0.10 ether; // min buy eth
+    uint256 public constant divider = 100;
+
+    bool public presaleStatus;
+
+    struct user {
+        uint256 Bnb_balance;
+        uint256 busd_balance;
+        uint256 usdt_balance;
+        uint256 token_balance;
+    }
+
+    mapping(address => user) public users;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "PRESALE: Not an owner");
+        _;
+    }
+
+    event BuyTokenBnb(address indexed user, uint256 indexed amount);
+    event BuyTokenUSDT(address indexed user, uint256 indexed amount);
+    event BuyTokenBUSD(address indexed user, uint256 indexed amount);
+    event ClaimTokens(address indexed user, uint256 indexed amount);
+
+    constructor() {
+        owner = payable(0xcDAC1Cf4C12160Af469F124D07Af8E670230dE33);
+        priceFeedEth = AggregatorV3Interface(
+            0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE
+        );
+        preSaleStartTime = block.timestamp;
+        presaleStatus = true;
+    }
+
+    receive() external payable {}
+
+    // to get real time price of Eth
+    function getLatestPriceEth() public view returns (uint256) {
+        (, int256 price, , , ) = priceFeedEth.latestRoundData();
+        return uint256(price);
+    }
+
+    // to buy token during preSale time with Eth => for web3 use
+
+    function buyTokenBnb() public payable {
+        require(presaleStatus == true, "Presale : Presale is finished");
+        require(msg.value >= minimumETH, "Presale : Unsuitable Amount");
+        require(soldToken <= totalSupply, "All Sold");
+
+        uint256 numberOfTokens;
+        numberOfTokens = EthToToken(msg.value);
+        owner.transfer(msg.value);
+
+        soldToken = soldToken + (numberOfTokens);
+        amountRaisedEth = amountRaisedEth + (msg.value);
+        users[msg.sender].Bnb_balance =
+            users[msg.sender].Bnb_balance +
+            (msg.value);
+        users[msg.sender].token_balance =
+            users[msg.sender].token_balance +
+            (numberOfTokens);
+        emit BuyTokenBnb(msg.sender, msg.value);
+    }
+
+    // to buy token during preSale time with USDT => for web3 use
+    function buyTokenUSDT(uint256 amount) public {
+        require(presaleStatus == true, "Presale : Presale is finished");
+        require(amount >= minimumDollar, "Minimum Amount is $100");
+        require(soldToken <= totalSupply, "All Sold");
+        uint256 numberOfTokens;
+        numberOfTokens = usdtToToken(amount);
+        USDT.transferFrom(msg.sender, owner, amount);
+        soldToken = soldToken + (numberOfTokens);
+        amountRaisedUSDT = amountRaisedUSDT + (amount);
+        users[msg.sender].usdt_balance =
+            users[msg.sender].usdt_balance +
+            (amount);
+        users[msg.sender].token_balance =
+            users[msg.sender].token_balance +
+            (numberOfTokens);
+        emit BuyTokenUSDT(msg.sender, amount);
+    }
+
+    // to buy token during preSale time with USDT => for web3 use
+    function buyTokenBUSD(uint256 amount) public {
+        require(presaleStatus == true, "Presale : Presale is finished");
+        require(amount >= minimumDollar, "Minimum Amount is $100");
+        require(soldToken <= totalSupply, "All Sold");
+        uint256 numberOfTokens;
+        numberOfTokens = busdToToken(amount);
+        BUSD.transferFrom(msg.sender, owner, amount);
+        soldToken = soldToken + (numberOfTokens);
+        amountRaisedBUSD = amountRaisedBUSD + (amount);
+        users[msg.sender].busd_balance =
+            users[msg.sender].busd_balance +
+            (amount);
+        users[msg.sender].token_balance =
+            users[msg.sender].token_balance +
+            (numberOfTokens);
+        emit BuyTokenBUSD(msg.sender, amount);
+    }
+
+    function claimTokens() external {
+        require(!presaleStatus, "Presale not over yet");
+        require(
+            users[msg.sender].token_balance > 0,
+            "Not enough tokens balance"
+        );
+        uint256 numberOfTokens = users[msg.sender].token_balance;
+        BDINU.transfer(msg.sender, numberOfTokens);
+        users[msg.sender].token_balance = 0;
+        emit ClaimTokens(msg.sender, numberOfTokens);
+    }
+
+    // to check percentage of token sold
+    function getProgress() external view returns (uint256 _percent) {
+        uint256 remaining = totalSupply -
+            (soldToken / (10 ** (BDINU.decimals())));
+        remaining = (remaining * (divider)) / (totalSupply);
+        uint256 hundred = 100;
+        return hundred - (remaining);
+    }
+
+    function stopPresale(bool state) external onlyOwner {
+        presaleStatus = state;
+    }
+
+    // to check number of token for given Eth
+    function EthToToken(uint256 _amount) public view returns (uint256) {
+        uint256 EthToUsd = (_amount * (getLatestPriceEth())) / (1 ether);
+        uint256 numberOfTokens = (EthToUsd * (tokenPerUsd)) / (1e8);
+        return numberOfTokens;
+    }
+
+    // to check number of token for given usdt
+    function usdtToToken(uint256 _amount) public view returns (uint256) {
+        uint256 numberOfTokens = (_amount * (tokenPerUsd)) /
+            10 ** (USDT.decimals());
+        return numberOfTokens;
+    }
+
+    // to check number of token for given busd
+    function busdToToken(uint256 _amount) public view returns (uint256) {
+        uint256 numberOfTokens = (_amount * (tokenPerUsd)) /
+            10 ** (BUSD.decimals());
+        return numberOfTokens;
+    }
+
+    // to change Price of the token
+    function changePrice(uint256 _price) external onlyOwner {
+        tokenPerUsd = _price;
+    }
+
+    // to change preSale time duration
+    function setPreSaleTime(uint256 _startTime) external onlyOwner {
+        preSaleStartTime = _startTime + block.timestamp;
+    }
+
+    // transfer ownership
+    function changeOwner(address payable _newOwner) external onlyOwner {
+        owner = _newOwner;
+    }
+
+    // change tokens
+    function changeToken(address _token) external onlyOwner {
+        BDINU = IToken(_token);
+    }
+
+    // change minimum buy
+    function changeMinimumLimits(
+        uint256 _inDollar,
+        uint256 _inEth
+    ) external onlyOwner {
+        minimumDollar = _inDollar;
+        minimumETH = _inEth;
+    }
+
+    // change supply
+    function changeTotalSupply(uint256 _total) external onlyOwner {
+        totalSupply = _total;
+    }
+
+    // change USDT
+    function changeUSDT(address _USDT) external onlyOwner {
+        USDT = IToken(_USDT);
+    }
+
+    // change BUSD
+    function changeBUSD(address _BUSD) external onlyOwner {
+        BUSD = IToken(_BUSD);
+    }
+
+    // to draw funds for liquidity
+    function transferFundsBnb(uint256 _value) external onlyOwner {
+        require(address(this).balance > 0, "Not enough bnb");
+        owner.transfer(_value);
+    }
+
+    // to draw out tokens
+    function transferTokens(IToken token, uint256 _value) external onlyOwner {
+        require(
+            token.balanceOf(address(this)) > 0,
+            "Not enough tokens to withdraw"
+        );
+        token.transfer(msg.sender, _value);
+    }
+
+    // to get current UTC time
+    function getCurrentTime() external view returns (uint256) {
+        return block.timestamp;
+    }
+
+    // to get contract Eth balance
+    function contractBalanceEth() external view returns (uint256) {
+        return address(this).balance;
+    }
+
+    // to get contract USDT balance
+    function contractBalanceUSDT() external view returns (uint256) {
+        return USDT.balanceOf(address(this));
+    }
+
+    // to get contract BUSD balance
+    function contractBalanceBUSD() external view returns (uint256) {
+        return BUSD.balanceOf(address(this));
+    }
+
+    // to get contract token balance
+    function contractBalanceBDINU() external view returns (uint256) {
+        return BDINU.balanceOf(address(this));
+    }
+
+    // to get contract token approval
+    function getContractTokenApproval() external view returns (uint256) {
+        return BDINU.allowance(owner, address(this));
+    }
+}
+
