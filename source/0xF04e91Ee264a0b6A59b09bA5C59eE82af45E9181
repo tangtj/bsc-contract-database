@@ -1,0 +1,463 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.16;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        _checkOwner();
+        _;
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if the sender is not the owner.
+     */
+    function _checkOwner() internal view virtual {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby disabling any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+     */
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+interface IERC20{
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+}
+
+
+library TransferHelper {
+    function safeApprove(
+        address token,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('approve(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "TransferHelper: APPROVE_FAILED");
+    }
+
+    function safeTransfer(
+        address token,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transfer(address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "TransferHelper: TRANSFER_FAILED");
+    }
+
+    function safeTransferFrom(
+        address token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));
+        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+        require(success && (data.length == 0 || abi.decode(data, (bool))), "TransferHelper: TRANSFER_FROM_FAILED");
+    }
+}
+interface IPancakePair {
+    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+}
+
+contract CoreContract  is Ownable{
+    address public tokenAddress;
+    address public usdtAddress;
+    address public pairAddress;
+    address public burnAddress = 0x000000000000000000000000000000000000dEaD;
+    address public marketingWallet;
+
+    struct Reward {
+        uint256 total;
+        uint256 withdrawn;
+        uint256 notWithdrawn;
+    }
+
+    struct Investment {
+        uint256 amount;
+        uint256 at;
+        uint256 invType; // 0 token买，usdt买
+    }
+
+    mapping(address => Reward) public staticRewards;
+    mapping(address => Investment[]) public userInvestments;
+    mapping(address => Reward) public rewards;
+
+    mapping(address => uint256) public referralAmounts;
+    address[30] public topReferrers;
+
+    mapping(address => bool) public admins;
+    address[] public investors;
+    mapping(address => bool) public isInvestor;
+    address[] public referrers;  // 所有有推荐金额的用户地址列表
+    mapping(address => mapping(uint256 => uint256)) public dailyReferralAmounts; // 地址 => 日期 => 推荐金额
+    uint256 public currentDay = 0;
+
+
+
+    modifier onlyAdmin() {
+        require(admins[msg.sender], "Pancake: ONLY_ADMIN");
+        _;
+    }
+
+
+    constructor(address _pair, address _marketingWallet) {
+        pairAddress = _pair;
+        tokenAddress =IPancakePair(_pair).token1();
+        usdtAddress = IPancakePair(_pair).token0();
+        marketingWallet = _marketingWallet; // 0x3Cea1144Aa19f3b7C81F12Aca4d9188141E4a378
+        admins[msg.sender] = true;
+    }
+
+
+    function setUserInvestmentsBatch(address[] memory users, uint256[] memory investments) public onlyAdmin {
+        require(users.length == investments.length, "Mismatched arrays");
+    
+        for (uint256 i = 0; i < users.length; i++) {
+            if (userInvestments[users[i]].length == 0) {
+                userInvestments[users[i]].push(Investment(0, 0, 0));  // Push a new Investment
+            }
+            userInvestments[users[i]][0].invType = 0;
+            userInvestments[users[i]][0].at = block.timestamp;
+            userInvestments[users[i]][0].amount = investments[i];
+        }
+
+    }
+    
+
+    function setMarketingWallet(address _marketingWallet) public onlyOwner{
+        marketingWallet = _marketingWallet;
+    }
+
+    function setPair(address _pair) public onlyOwner{
+        pairAddress = _pair;
+        tokenAddress =IPancakePair(_pair).token1();
+        usdtAddress = IPancakePair(_pair).token0();
+    }
+
+
+    // Function to set multiple user rewards at once
+    function setRewards(address[] memory users, uint256[] memory totals, uint256[] memory withdrawn, uint256[] memory notWithdrawn) public onlyAdmin{
+        require(users.length == totals.length && users.length == withdrawn.length && users.length == notWithdrawn.length, "Mismatch in input lengths");
+
+        for (uint i = 0; i < users.length; i++) {
+            Reward storage reward = rewards[users[i]];
+            reward.total = totals[i];
+            reward.withdrawn = withdrawn[i];
+            reward.notWithdrawn = notWithdrawn[i];
+        }
+    }
+
+    // Function to get multiple user rewards at once
+    function getRewards(address[] memory users) public view returns (uint256[] memory totals, uint256[] memory withdrawn, uint256[] memory notWithdrawn) {
+        totals = new uint256[](users.length);
+        withdrawn = new uint256[](users.length);
+        notWithdrawn = new uint256[](users.length);
+
+        for (uint i = 0; i < users.length; i++) {
+            Reward storage reward = rewards[users[i]];
+            totals[i] = reward.total;
+            withdrawn[i] = reward.withdrawn;
+            notWithdrawn[i] = reward.notWithdrawn;
+        }
+        return (totals, withdrawn, notWithdrawn);
+    }
+
+    function stakeWithUSDT(uint256 usdtAmount, address beneficiary,address ref) public {
+        require(beneficiary != address(0), "Beneficiary cannot be zero address");
+
+        // Transfer USDT from sender to this contract
+        IERC20(usdtAddress).transferFrom(msg.sender, address(this), usdtAmount);
+
+        // Using the swapUSDTForTG function to perform the swap
+        uint256 tokenAmount = swapUSDTForTG(usdtAmount);
+        IERC20(tokenAddress).transfer(burnAddress, tokenAmount);
+        _stake(tokenAmount,beneficiary,ref,1);
+    }
+
+    function stakeWithToken(uint256 tokenAmount, address beneficiary,address ref) public {
+        require(beneficiary != address(0), "Beneficiary cannot be zero address");
+
+        // Transfer token from sender to burn address
+        IERC20(tokenAddress).transferFrom(msg.sender, burnAddress, tokenAmount);
+        _stake(tokenAmount,beneficiary,ref,0);
+    }
+
+    function _stake(uint256 tokenAmount,address beneficiary,address ref,uint type1) internal {
+        // Record the staking to the beneficiary instead of msg.sender
+        userInvestments[beneficiary].push(Investment({
+        amount: tokenAmount,
+        at: block.timestamp,
+        invType : type1
+        }));
+
+        if (ref != address(0) && ref!=beneficiary) {
+            _addReferralAmount(ref, tokenAmount);
+        }
+        // Check and record investor
+        if (!isInvestor[beneficiary]) {
+            investors.push(beneficiary);
+            isInvestor[beneficiary] = true;
+        }
+    }
+
+    function sell(uint256 tokenAmount) public {
+        uint256 marketingAmount = tokenAmount / 20;  // 5%
+        uint256 userAmount = tokenAmount - marketingAmount;
+
+        IERC20(tokenAddress).transferFrom(msg.sender, address(this), tokenAmount);
+        IERC20(tokenAddress).transfer(marketingWallet, marketingAmount);
+        sellUSDT(userAmount);
+    }
+
+    function sellUSDT(uint256 userAmount) public {
+        uint256 amount =swapTGForUSDT(userAmount);
+        IERC20(usdtAddress).transfer(msg.sender, amount);
+    }
+
+    function getAllInvestors() public view returns (address[] memory) {
+        return investors;
+    }
+
+
+    function getAllReferrers() public view returns (address[] memory) {
+        return referrers;
+    }
+
+    function withdrawStatic() public {
+        uint256 amountToWithdraw = staticRewards[msg.sender].notWithdrawn;
+
+        uint256 marketingFee = amountToWithdraw / 20;  // 5%
+        amountToWithdraw -= marketingFee;
+        staticRewards[msg.sender].withdrawn += amountToWithdraw;
+        IERC20(tokenAddress).transfer(msg.sender, amountToWithdraw);
+        IERC20(tokenAddress).transfer(marketingWallet, marketingFee);
+    }
+    function withdrawDyna() public {
+        uint256 amountToWithdraw = rewards[msg.sender].notWithdrawn;
+        rewards[msg.sender].withdrawn += amountToWithdraw;
+        IERC20(tokenAddress).transfer(msg.sender, amountToWithdraw);
+    }
+
+    function _addReferralAmount(address referrer, uint256 amount) private {
+        referralAmounts[referrer] += amount;
+
+        // 获取今天的日期
+        uint256 today = block.timestamp / 1 days;
+
+        // 更新今天的推荐金额
+        dailyReferralAmounts[referrer][today] += amount;
+
+        if(referralAmounts[referrer]>0) referrers.push(referrer);
+        _updateTopReferrers(referrer);
+    }
+
+
+    function getTodayReferralAmount(address user) external view returns (uint256) {
+        uint256 today = block.timestamp / 1 days;
+        return dailyReferralAmounts[user][today];
+    }
+
+
+    function _updateTopReferrers(address referrer) private {
+        uint256 refAmount = referralAmounts[referrer];
+        for(uint8 i = 0; i < 30; i++) {
+            if(topReferrers[i] == address(0) || referralAmounts[topReferrers[i]] < refAmount) {
+                for(uint8 j = 29; j > i; j--) {
+                    topReferrers[j] = topReferrers[j - 1];
+                }
+                topReferrers[i] = referrer;
+                break;
+            }
+        }
+    }
+
+    function getEquivalentTokenAmount(uint256 usdtAmount) private view returns (uint256) {
+        (uint112 reserve0, uint112 reserve1, ) = IPancakePair(pairAddress).getReserves();
+
+        address token0 = IPancakePair(pairAddress).token0();
+        if (token0 == usdtAddress) {
+            return (uint256(reserve1) * usdtAmount) / reserve0;
+        } else {
+            return (uint256(reserve0) * usdtAmount) / reserve1;
+        }
+    }
+
+    function swapUSDTForTG(uint256 amount) public returns (uint256){
+        IPancakePair  pair = IPancakePair(pairAddress);
+        IERC20 usdt = IERC20(usdtAddress);
+
+        // Perform the swap
+        address token0 = pair.token0();
+
+        // Calculate the amount of TG tokens you'll get for the specified amount of USDT
+        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
+        uint112 rUSDT = reserve0;
+        uint112 rTG = reserve1;
+        if(address(usdt)!=token0){
+            (rUSDT, rTG) = (reserve1, reserve0);
+        }
+        uint256 amountOut = getAmountOut(amount, rUSDT, rTG);
+
+        // Transfer USDT to pair contract
+        usdt.transfer(pairAddress, amount);
+
+
+        pair.swap(address(usdt) == token0 ? 0 : amountOut, address(usdt) == token0 ? amountOut : 0, address(this), "");
+
+        return amountOut;
+    }
+
+    function swapTGForUSDT(uint256 amount) public returns (uint256) {
+        IPancakePair pair = IPancakePair(pairAddress);
+        IERC20 tg = IERC20(tokenAddress);
+
+        // Get the reserves
+        address token0 = pair.token0();
+        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
+        uint112 rTG = reserve0;
+        uint112 rUSDT = reserve1;
+        if (address(tg) != token0) {
+            (rTG, rUSDT) = (reserve1, reserve0);
+        }
+
+        // Calculate the amount of USDT you'll get for the specified amount of TG
+        uint256 amountOut = getAmountOut(amount, rTG, rUSDT);
+
+        // Transfer TG to pair contract
+        tg.transfer(pairAddress, amount);
+
+        // Perform the swap
+        pair.swap(address(tg) == token0 ? 0 : amountOut, address(tg) == token0 ? amountOut : 0, address(this), "");
+
+        return amountOut;
+    }
+
+
+    function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut) internal pure returns (uint256 amountOut) {
+        require(amountIn > 0, 'UniswapV2Library: INSUFFICIENT_INPUT_AMOUNT');
+        require(reserveIn > 0 && reserveOut > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+        uint256 amountInWithFee = amountIn * 997;
+        uint256 numerator = amountInWithFee * reserveOut;
+        uint256 denominator = reserveIn * 1000 + amountInWithFee;
+        amountOut = numerator / denominator;
+    }
+
+    function addAdmin(address admin) external onlyOwner {
+        require(admin != address(0), "Pancake: INVALID_ADDRESS");
+        require(!admins[admin], "Pancake: ADMIN_ALREADY_EXISTS");
+        admins[admin] = true;
+    }
+
+    function removeAdmin(address admin) external onlyOwner {
+        require(admins[admin], "Pancake: ADMIN_NOT_FOUND");
+        delete admins[admin];
+    }
+
+    function getTopReferrersAndAmounts() external view returns (address[30] memory, uint256[30] memory) {
+        address[30] memory referrers;
+        uint256[30] memory amounts;
+
+        for (uint256 i = 0; i < topReferrers.length; i++) {
+            referrers[i] = topReferrers[i];
+            amounts[i] = referralAmounts[topReferrers[i]];
+        }
+
+        return (referrers, amounts);
+    }
+
+
+    function getUserInvestments(address userAddress) external view returns (Investment[] memory) {
+        return userInvestments[userAddress];
+    }
+
+    // Function to set multiple user static rewards at once
+    function setStaticRewards(address[] memory users, uint256[] memory totals, uint256[] memory withdrawn, uint256[] memory notWithdrawn) public onlyAdmin {
+        require(users.length == totals.length && users.length == withdrawn.length && users.length == notWithdrawn.length, "Mismatch in input lengths");
+
+        for (uint i = 0; i < users.length; i++) {
+            Reward storage staticReward = staticRewards[users[i]];
+            staticReward.total = totals[i];
+            staticReward.withdrawn = withdrawn[i];
+            staticReward.notWithdrawn = notWithdrawn[i];
+        }
+    }
+
+
+    function withdrawToken(address token, uint256 amountOut) external onlyOwner {
+        TransferHelper.safeTransfer(token, msg.sender, amountOut);
+    }
+}
