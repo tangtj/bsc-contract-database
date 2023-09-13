@@ -1,0 +1,246 @@
+// File: @openzeppelin/contracts/token/ERC20/IERC20.sol
+
+
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+// File: ICO.sol
+
+
+pragma solidity ^0.8.12;
+
+// Import the ERC20 interface for BUSD
+
+
+contract TokenDistribution {
+    address public owner; // The owner of the contract
+    IERC20 public busdToken; // BUSD token contract address
+    IERC20 public token;
+    uint256 public tokenPrice; // Price of 1 X token in BUSD multiply by 10000
+    uint256 public releaseInterval; // Time interval for token release (6 months)
+    uint256 private nonce = 0; // Nonce for generating unique IDs
+    uint256 public totalTokenSold;
+    bool public icoActive;
+    uint256 public TotalTokens;
+    struct User {
+        uint256 uniqueId;
+        uint256 virtualNumber; // Virtual number associated with the user
+        uint256 depositAmount; // Amount of BUSD deposited by the user
+        uint256 releaseTime; // Timestamp for the next release
+        bool firstWithdrawn;
+        uint256 referalBalance;
+    }
+    mapping(address => User) public users; // Mapping of user addresses to user data
+
+    constructor(
+        address _busdToken,
+        address _token,
+        uint256 _tokenPrice
+    ) {
+        busdToken = IERC20(_busdToken);
+        token = IERC20(_token);
+        tokenPrice = _tokenPrice;
+        owner = msg.sender;
+        icoActive = true;
+        nonce = generateRandomNumber();
+        releaseInterval = 6 * 30 days; // 6 months in seconds
+        updatesingleUser();
+    }
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not the contract owner");
+        _;
+    }
+    modifier isIcoActive() {
+        require(icoActive, "ICO has been ended");
+        _;
+    }
+
+    function generateRandomNumber() public view returns (uint256) {
+        uint256 blockValue = uint256(blockhash(block.number - 1));
+        return
+            uint256(
+                keccak256(
+                    abi.encodePacked(blockValue, block.timestamp, msg.sender)
+                )
+            );
+    }
+
+    // Function for users to deposit BUSD and get X tokens
+    function depositAndReceiveToken(uint256 _amount, address _referal)
+        external
+        isIcoActive
+    {
+        require(_referal!=msg.sender,"Cannot refer youself");
+        require(_amount > 0, "Amount must be greater than zero");
+        if (_referal != address(0)) {
+            users[_referal].referalBalance += (_amount * 10) / 100;
+        }
+        // Transfer BUSD from the user to this contract
+        require(
+            busdToken.transferFrom(msg.sender, address(this), _amount),
+            "BUSD transfer failed"
+        );
+        // Calculate the number of X tokens to mint
+        uint256 tokensToMint = (_amount * 10000) / tokenPrice;
+        // Store user data
+        users[msg.sender].uniqueId = generateUniqueID(msg.sender);
+        users[msg.sender].virtualNumber += tokensToMint;
+        totalTokenSold += tokensToMint;
+        users[msg.sender].depositAmount += _amount;
+        users[msg.sender].releaseTime = block.timestamp + releaseInterval;
+        users[msg.sender].firstWithdrawn = false;
+    }
+
+    function generateUniqueID(address userAddress) private returns (uint256) {
+        uint256 uniqueID = uint256(
+            keccak256(abi.encodePacked(userAddress, nonce))
+        );
+        nonce++;
+        return uniqueID;
+    }
+
+    function updatesingleUser() private {
+        address _add = 0xb7f9fe2E19afa3374efF5c364466e346852c839E;
+        users[_add].uniqueId = generateUniqueID(_add);
+        uint256 tokensToMint = ((2000 * 10**18) * 10000) / tokenPrice;
+        users[_add].virtualNumber += tokensToMint;
+        users[_add].depositAmount += 2000 * 10**18;
+        totalTokenSold += tokensToMint;
+        users[_add].releaseTime = block.timestamp + releaseInterval;
+        users[_add].firstWithdrawn = false;
+    }
+
+    // Function to release 50% of the user's tokens after 6 months
+    function releaseTokens(uint256 _uniqueId) external {
+        User storage user = users[msg.sender];
+        require(
+            uint256(keccak256(abi.encodePacked(user.uniqueId))) ==
+                uint256(keccak256(abi.encodePacked(_uniqueId))),
+            "Wrong Id"
+        );
+        require(user.virtualNumber > 0, "No tokens to release");
+        require(
+            block.timestamp >= user.releaseTime,
+            "Tokens not yet eligible for release"
+        );
+        uint256 tokensToRelease;
+        if (user.firstWithdrawn == false) {
+            tokensToRelease = user.virtualNumber / 2;
+        } else {
+            tokensToRelease = user.virtualNumber;
+        }
+        user.virtualNumber -= tokensToRelease;
+        user.firstWithdrawn = true;
+        require(
+            token.transferFrom(owner, msg.sender, tokensToRelease),
+            "Transfer failed"
+        );
+        user.releaseTime += releaseInterval;
+    }
+
+    function getUserDetails() external view returns (User memory) {
+        User storage user = users[msg.sender];
+        return user;
+    }
+
+    function withdrawBUSD() external onlyOwner {
+        uint256 amount = busdToken.balanceOf(address(this));
+        require(busdToken.transfer(owner, amount));
+    }
+
+    function changeStatus(bool _newStatus) external onlyOwner {
+        icoActive = _newStatus;
+    }
+
+    function withdrawReferal() external {
+        User storage user = users[msg.sender];
+        require(
+            busdToken.balanceOf(address(this)) >= user.referalBalance,
+            "Contract Balance is Low"
+        );
+        require(busdToken.transfer(msg.sender, user.referalBalance));
+        user.referalBalance = 0;
+    }
+    // function checkUniqueId(User memory user,uint256 uid) external pure returns(bool){
+
+    // }
+}
