@@ -1,0 +1,1791 @@
+
+// File: GummyPotV3.sol
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+import "Ownable.sol";
+import "ReentrancyGuard.sol";
+import "IERC20Gummy.sol";
+import "Arrays.sol";
+import "VRFConsumerBase.sol";
+import "Pausable.sol";
+import "IPancakeRouter02.sol";
+
+/**
+ * @title Gummy Pot V3.
+ */
+contract GummyPotV3 is Ownable, Pausable, ReentrancyGuard, VRFConsumerBase {
+
+    struct Round {
+        uint40 startedOnDay;                             // day (since Unix epoch) on which the round started
+        bool closingRequested;                           // has the closing of the round been requested?
+        bool isClosed;                                   // is the round closed?
+        uint256 totalAmount;                             // total amount betted during the round
+        uint256 totalAmountWithBonuses;                  // total amount betted with bonus factored in
+        uint256 amountAtClosingRequest;                  // amount of GUMMY in the contract at the time the closing
+                                                         // request was made
+        address winner;                                  // address of winner
+        uint256[] tickets;                               // lottery tickets (cumulative sum)
+        address[] participants;                          // addresses of participants
+        mapping(address => uint256) amounts;             // maps each address to the number of tickets purchased
+        mapping(address => uint256) amountsWithBonuses;  // maps each address to the number of tickets purchased taking
+    }                                                    // into account the bonuses
+
+    struct Bonus {
+        uint256[] times;      // minute since round beginning at which bonus value transitions
+        uint256[] values;     // bonus numerator (e.g. 1500 for 15%) applied during the corresponding bonus time
+    }
+
+    struct Pair {
+        address router;       // router to use (should be IPancakeRouter02 compliant)
+        address[] route;      // swapping route
+    }
+
+    uint256 SECONDS_IN_ONE_DAY = 24 * 60 * 60;
+    uint256 MINUTES_IN_ONE_DAY = 24 * 60;
+    uint256 GUMMY_POT_NUMERATOR = 300;
+    uint256 GUMMY_TOTAL_FEE = 500;
+
+    IERC20Gummy immutable public gummyToken;
+    address public winnerWallet;                // wallet of the lottery winner
+    bool private _genesisRoundLaunched;         // was the initial round launched?
+    uint256 public treasuryNumerator;           // of each ticket purchased, how much should go to treasury?
+    uint256 public burnNumerator;               // of each ticket purchased post treasury, how much should be burnt?
+    uint256 public spamNumerator;               // of each ticket purchased post treasury, how much should spam previous winner?
+
+    address[] internal _sponsoredGames;            // addresses of games to sponsor
+    uint256[] internal _sponsoredNumerators;       // of each ticket purchased post treasury, how much should be used for each sponsored game?
+
+    uint256 public burnPartnerNumerator;        // of the tokens burnt, how much should be burnt in the form of the
+                                                // partner token?
+    uint256 constant public MAX_TREASURY_NUMERATOR = 1000;
+    uint256 constant public DENOMINATOR = 10000;
+    address constant public BURN_ADDRESS_PARTNER = 0x000000000000000000000000000000000000dEaD;
+
+    uint256 public currentRound;
+    mapping(uint256 => Round) public rounds;
+    mapping(bytes32 => uint256) public requestIdToRound;
+    Bonus internal _bonus;
+
+    uint40 public utcOffset;
+
+    address constant public partnerRouter = 0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7;        // router used for buy-back burn the partner token
+    address constant public partnerToken = 0x603c7f932ED1fc6575303D8Fb018fDCBb0f39a95;         // token to buy-back and burn
+    mapping(address => Pair) internal _routes;     // routes of tokens allowed to be played with and their swapping routes
+
+    // PRNG
+    bytes32 internal keyHash;
+    uint256 internal fee;
+
+    event ClosingRequested(uint256 indexed round);
+    event ClosedRound(uint256 indexed round, address winner, uint256 random);
+    event TreasuryNumeratorUpdated(uint256 indexed newTreasuryNumerator);
+    event BurnNumeratorUpdated(uint256 indexed newBurnNumerator);
+    event SpamNumeratorUpdated(uint256 indexed newSpamNumerator);
+    event SponsoredGamesUpdated(address[] indexed newSponsoredGames, uint256[] indexed newSponsorNumerators);
+    event BonusUpdated(uint256[] indexed newTimes, uint256[] indexed newValues);
+    event BurnPartnerNumeratorUpdated(uint256 indexed newBurnPartnerNumerator);
+    event UTCOffsetUpdated(uint40 indexed newUtcOffset);
+
+
+    constructor (IERC20Gummy _gummyToken,
+                 uint256 _treasuryNumerator,
+                 uint256 _burnNumerator,
+                 uint256 _spamNumerator,
+                 uint40 _utcOffset,
+                 uint256 _burnPartnerNumerator,
+                 address _VRFCoordinator,
+                 address _LINKToken,
+                 bytes32 _keyHash,
+                 uint256 _fee) VRFConsumerBase(
+        _VRFCoordinator,
+        _LINKToken
+    ) {
+        gummyToken = _gummyToken;
+        setTreasuryNumerator(_treasuryNumerator);
+        setBurnNumerator(_burnNumerator);
+        setSpamNumerator(_spamNumerator);
+        setUtcOffset(_utcOffset);
+        burnPartnerNumerator = _burnPartnerNumerator;
+        keyHash = _keyHash;
+        fee = _fee;
+
+        // approve GUMMY spending by partner router once and for all
+        _gummyToken.approve(partnerRouter, type(uint256).max);
+        _pause();
+    }
+
+    /**
+     * @dev Checks if the different numerators are valid (sum of the numerators
+     * is lower or equal to 100%.)
+     */
+    modifier checkNumeratorsValidity() {
+        _;
+        uint256 _totalNumerator = burnNumerator + spamNumerator;
+        for(uint256 i=0; i < _sponsoredNumerators.length; i++){
+            _totalNumerator += _sponsoredNumerators[i];
+        }
+        require(_totalNumerator <= DENOMINATOR, "invalid combination of numerators");
+    }
+
+    receive() external payable{}
+
+    /**
+     * @dev Sets the treasury percentage.
+     *
+     * @param _newTreasuryNumerator = new treasury numerator.
+     */
+    function setTreasuryNumerator(uint256 _newTreasuryNumerator) public onlyOwner {
+        require(_newTreasuryNumerator <= MAX_TREASURY_NUMERATOR, "exceeds max possible treasury percentage");
+        treasuryNumerator = _newTreasuryNumerator;
+        emit TreasuryNumeratorUpdated(treasuryNumerator);
+    }
+
+    /**
+     * @dev Sets the burn percentage.
+     *
+     * @param _newBurnNumerator = new burn numerator.
+     */
+    function setBurnNumerator(uint256 _newBurnNumerator) public onlyOwner checkNumeratorsValidity {
+        burnNumerator = _newBurnNumerator;
+        emit BurnNumeratorUpdated(burnNumerator);
+    }
+
+    /**
+     * @dev Sets the spam percentage.
+     *
+     * @param _newSpamNumerator = new spam numerator.
+     */
+    function setSpamNumerator(uint256 _newSpamNumerator) public onlyOwner checkNumeratorsValidity {
+        spamNumerator = _newSpamNumerator;
+        emit SpamNumeratorUpdated(spamNumerator);
+    }
+
+    /**
+     * @dev Sets the sponsored games addresses and percentages.
+     *
+     * @param __sponsoredGames = addresses of sponsored games.
+     * @param __sponsoredNumerators = numerators defining the percentage to use
+     * to sponsor each game. Values should be strictly positive and not exceed
+     * the maximum percentage threshold.
+     */
+    function setSponsoredGames(address[] memory __sponsoredGames, uint256[] memory __sponsoredNumerators)
+            public onlyOwner checkNumeratorsValidity {
+        require(__sponsoredGames.length == __sponsoredNumerators.length, "arrays must have same length");
+
+        delete _sponsoredGames;
+        delete _sponsoredNumerators;
+
+        for(uint256 i=0; i<__sponsoredGames.length; i++){
+            require(__sponsoredGames[i] != address(0), "cannot be the zero address");
+            require(__sponsoredNumerators[i] > 0, "must be greater than 0");
+            _sponsoredGames.push(__sponsoredGames[i]);
+            _sponsoredNumerators.push(__sponsoredNumerators[i]);
+        }
+
+        emit SponsoredGamesUpdated(_sponsoredGames, _sponsoredNumerators);
+    }
+
+    /**
+     * @dev Adds a new token route for playing the lottery.
+     *
+     * @param _router = router to use for the new route.
+     * @param _route = path of the swapping route.
+     */
+    function addNewRoute(address _router, address[] calldata _route) external onlyOwner {
+        require(_router != address(0), "router cannot be the zero address");
+        require(_route[0] != address(0), "token cannot be the zero address");
+        _routes[_route[0]].router = _router;
+        _routes[_route[0]].route = _route;
+
+        // Approves the router for spending once and for all
+        IERC20(_route[0]).approve(_router, type(uint256).max);
+    }
+
+    /**
+     * @dev Removes a token route.
+     *
+     * @param _token = removes a route.
+     */
+    function removeRoute(address _token) external onlyOwner {
+        require(_routes[_token].router != address(0), "route does not exist");
+        // Revoke the router approval.
+        IERC20(_token).approve(_routes[_token].router, 0);
+        delete _routes[_token];
+    }
+
+    /**
+     * @dev Sets the bonus.
+     *
+     * @param _bonusTimes = minutes at which bonus transitions, e.g. [300, 660, 1020] means that
+     *  the bonus value will change at the end of the 300th, 660th and 1020th minutes. The array should be
+     *  sorted in ascending order and its greatest element should be lower or equal to 1440 (24 * 60).
+     * @param _bonusValues = values of the bonus. Should have the same length as _bonusTimes.
+     * For instance, if `_bonusValues=[1500, 1000, 500]` and  `_bonusTimes = [300, 660, 1020]` would
+     * mean a bonus of 15% for the first time bracket, 10% for the second time bracket, 5% for the third
+     * time bracket, and no bonus for the (implicit) last time bracket.
+     */
+    function setBonus(uint256[] calldata _bonusTimes, uint256[] calldata _bonusValues) external onlyOwner {
+        require(_bonusTimes.length == _bonusValues.length, "arrays have different length");
+
+        delete _bonus;
+
+        if(_bonusTimes.length == 0){
+            return;
+        }
+
+        require(_bonusTimes[0] < MINUTES_IN_ONE_DAY, "invalid bonus time: exceeds maximum value");
+        for(uint256 i=1; i < _bonusTimes.length; i++){
+            require(_bonusTimes[i] < MINUTES_IN_ONE_DAY, "invalid bonus time: exceeds maximum value");
+            require(_bonusTimes[i - 1] < _bonusTimes[i], "invalid bonus time: should be increasing");
+        }
+        _bonus.times = _bonusTimes;
+        _bonus.values = _bonusValues;
+        emit BonusUpdated(_bonusTimes, _bonusValues);
+    }
+
+    /**
+     * @dev Defines the time zone for time-dependent functionalities of the contract.
+     *
+     * @param _newUtcOffset = duration, in seconds, that should be added to the UTC time.
+                E.g, if `_newUtcOffset` is set to `7200`, the time zone will be UTC+2.
+     */
+    function setUtcOffset(uint40 _newUtcOffset) public onlyOwner {
+        require(_newUtcOffset <= (3600 * 24 - 1), "invalid offset");
+        utcOffset = (24 * 3600 - _newUtcOffset);
+        emit UTCOffsetUpdated(utcOffset);
+    }
+
+    /**
+     * @dev Sets the percentage of the burn that should take place in the partner token.
+     *
+     * @param _newBurnPartnerNumerator = the new burn numerator for the partner token.
+     */
+    function setBurnPartnerNumerator(uint256 _newBurnPartnerNumerator) external onlyOwner {
+        require(_newBurnPartnerNumerator <= DENOMINATOR, "too large");
+        burnPartnerNumerator = _newBurnPartnerNumerator;
+        emit BurnPartnerNumeratorUpdated(burnPartnerNumerator);
+    }
+
+    /**
+     * @dev Returns the lottery tickets at a given round. Helper function for front end.
+     *
+     * @param round = which round to consider.
+     */
+    function getTicketsAtRound(uint256 round) external view returns(uint256[] memory){
+        return rounds[round].tickets;
+    }
+
+    /**
+     * @dev Returns the addresses of the lottery participants. Helper function for front end.
+     *
+     * @param round = which round to consider.
+     */
+    function getParticipantsAtRound(uint256 round) external view returns(address[] memory){
+        return rounds[round].participants;
+    }
+
+    /**
+     * @dev Returns the number of lottery tickets purchased by a specific user at a given round.
+     * Helper function for front end.
+     *
+     * @param round = which round to consider.
+     * @param account = which account to consider.
+     */
+    function getAmountOfAtRound(uint256 round, address account) external view returns(uint256){
+        return rounds[round].amounts[account];
+    }
+
+    /**
+     * @dev Returns the number of lottery tickets purchased by a specific user at a given round
+     * when taking into account the bonuses. Helper function for front end.
+     *
+     * @param round = which round to consider.
+     * @param account = which account to consider.
+     */
+    function getAmountWithBonusesOfAtRound(uint256 round, address account) external view returns(uint256){
+        return rounds[round].amountsWithBonuses[account];
+    }
+
+    /**
+     * @dev Returns bonus times and values.
+     */
+    function getBonusTimesAndValues() external view returns(uint256[] memory, uint256[] memory){
+        return (_bonus.times, _bonus.values);
+    }
+
+    /**
+     * @dev Returns the addresses and numerators of the sponsored games.
+     */
+    function getSponsoredGames() external view returns(address[] memory, uint256[] memory){
+        return (_sponsoredGames, _sponsoredNumerators);
+    }
+
+    function timeInUtcOffset() private view returns(uint40) {
+        return uint40(block.timestamp) + utcOffset;
+    }
+
+    /**
+     * @dev Returns the current day since Unix epoch in UTC+`n` format where `n` depends on
+     * the value of `utcOffset`.
+     */
+    function today() public view returns (uint40) {
+        return (timeInUtcOffset()) / uint40(SECONDS_IN_ONE_DAY);
+    }
+
+    /**
+     * @dev Returns current bonus.
+     *
+     * @return currentBonus = current bonus.
+     */
+    function getCurrentBonus() public view returns(uint256 currentBonus){
+        // TODO: check if special case required here
+        if(_bonus.times.length == 0){
+            return 0;
+        }
+
+        uint256 _minute = (uint256(timeInUtcOffset()) - uint256(today()) * SECONDS_IN_ONE_DAY) / 60;
+        uint256 _idx = ArraysModified.findUpperBound(_bonus.times, _minute, 1);
+        if(_idx < _bonus.values.length){
+            return _bonus.values[_idx];
+        }else{
+            return 0;
+        }
+    }
+
+    /**
+     * @dev This function is used to participate in the lottery. When calling this
+     * function after a lottery round has ended, it automatically requests the closing
+     * of the previous round if it hasn't been requested and starts a new round.
+     * Lottery tickets can be purchased directly in GUMMY tokens, in BNB, or in any token
+     * in `route`. Buying lottery tickets with a token and with BNB are exclusive.
+     *
+     * @param token = address of token to bet with.
+     * @param amountInToken = amount of `token` to bet.
+     */
+    function iWantToGetSpammed(address token, uint256 amountInToken) external payable nonReentrant whenNotPaused {
+        require((amountInToken > 0) != (msg.value > 0), "msg.value and amount are exclusive");
+
+        // *********************************************
+        // ********* 1. Swap tokens for GUMMY **********
+        // *********************************************
+
+        uint256 amountInGUMMYPostTreasury;
+        uint256 amountGUMMYToTreasury;
+        if(amountInToken > 0){
+            // If token different from GUMMY, transfer to contract `amount` and apply treasury
+            // When playing with GUMMY, transfers and treasury are applied later on for
+            // optimisation purposes.
+            if (token != address(gummyToken)){
+                require(_routes[token].router != address(0), "token not supported");
+
+                uint256 _balanceBefore = IERC20(token).balanceOf(address(this));
+                IERC20(token).transferFrom(msg.sender, address(this), amountInToken);
+                amountInToken = IERC20(token).balanceOf(address(this)) - _balanceBefore;
+
+                uint256 amountInTokenPostTreasury = (amountInToken * (DENOMINATOR - treasuryNumerator)) / DENOMINATOR;
+                amountInGUMMYPostTreasury = _swapTokensForGUMMY(token, amountInTokenPostTreasury);
+            } else {
+                amountGUMMYToTreasury = (amountInToken * treasuryNumerator) / DENOMINATOR;
+                amountInGUMMYPostTreasury = amountInToken - amountGUMMYToTreasury;
+            }
+        } else { // Playing with BNB
+            token = address(0);
+            amountInGUMMYPostTreasury =  _swapBNBForGUMMYAndApplyTreasury();
+        }
+        // *********************************************
+        // *********************************************
+
+
+        // *********************************************
+        // ************** 2. Close round ***************
+        // *********************************************
+
+        // Close current round if the daily lottery is finished
+        if(rounds[currentRound].startedOnDay != today()){
+            // Check if there was at least one participant (only useful for genesis round)
+            if(!rounds[currentRound].closingRequested && rounds[currentRound].totalAmount > 0){
+                _requestToCloseCurrentRound();
+            }
+            currentRound++;
+            rounds[currentRound].startedOnDay = today();
+        }
+        // *********************************************
+        // *********************************************
+
+
+        // *********************************************
+        // ************* 3. Handle tickets *************
+        // *********************************************
+
+        uint256 _currentBonus = getCurrentBonus();
+        uint256 _amountInGUMMYPostTreasuryWithBonus = amountInGUMMYPostTreasury + (_currentBonus * amountInGUMMYPostTreasury) / DENOMINATOR;
+
+        // Limiting maximum volume to 2^128 in order to upper bound the rejection sampling probability
+        // by 2.93 * 10^(-39).
+        require((rounds[currentRound].totalAmount + _amountInGUMMYPostTreasuryWithBonus) < 2 ** 128, "Maximum volume attained");
+
+        // Calculate the cumulative sum of the tickets because the cumulative sum
+        // is used to randomly sample a winner
+        uint256 _numParticipants = rounds[currentRound].tickets.length;
+        uint256 _cumsum  = _amountInGUMMYPostTreasuryWithBonus;
+        if(_numParticipants > 0){
+            _cumsum += rounds[currentRound].tickets[_numParticipants - 1];
+        }
+
+        rounds[currentRound].tickets.push(_cumsum);
+        rounds[currentRound].participants.push(msg.sender);
+        rounds[currentRound].totalAmount += amountInGUMMYPostTreasury;
+        rounds[currentRound].totalAmountWithBonuses += _amountInGUMMYPostTreasuryWithBonus;
+        rounds[currentRound].amounts[msg.sender] += amountInGUMMYPostTreasury;
+        rounds[currentRound].amountsWithBonuses[msg.sender] += _amountInGUMMYPostTreasuryWithBonus;
+
+        // *********************************************
+        // *********************************************
+
+
+        // *********************************************
+        // ********** 4. Spam current winner ***********
+        // *********************************************
+
+        // Transfer part of the tickets to the current lottery winner
+        bool success;
+        uint256 gummyAlreadyTransferred;
+        if(spamNumerator > 0){
+            uint256 amountToSpam = (amountInGUMMYPostTreasury * spamNumerator) / DENOMINATOR;
+            if(token == address(gummyToken)){
+                success = gummyToken.transferFrom(msg.sender, winnerWallet, amountToSpam);
+            }else{
+                success = gummyToken.transfer(winnerWallet, amountToSpam);
+            }
+            require(success, "Transfer was not successful");
+            gummyAlreadyTransferred += amountToSpam;
+        }
+        // *********************************************
+        // *********************************************
+
+
+        // *********************************************
+        // ************ 5. Sponsored games *************
+        // *********************************************
+
+        // Transfer GUMMY to sponsored games
+        uint256 amountToSponsoredGameI;
+        for(uint256 i=0; i<_sponsoredGames.length; i++){
+            amountToSponsoredGameI = (amountInGUMMYPostTreasury * _sponsoredNumerators[i]) / DENOMINATOR;
+            if(token == address(gummyToken)){
+                success = gummyToken.transferFrom(msg.sender, _sponsoredGames[i], amountToSponsoredGameI);
+            }else{
+                success = gummyToken.transfer(_sponsoredGames[i], amountToSponsoredGameI);
+            }
+            require(success, "Transfer was not successful");
+            gummyAlreadyTransferred += amountToSponsoredGameI;
+        }
+        // *********************************************
+        // *********************************************
+
+
+        // *********************************************
+        // **************** 6. Burning *****************
+        // *********************************************
+
+        uint256 amountToBurn = amountInGUMMYPostTreasury * burnNumerator / DENOMINATOR;
+        // If playing with GUMMY, transfer here all that needs to be transfered to this
+        // contract in one transfer and apply treasury
+        if(token == address(gummyToken)){
+            uint256 _totalGUMMYToTransferToContract = amountInToken - gummyAlreadyTransferred;
+            success = gummyToken.transferFrom(msg.sender, address(this), _totalGUMMYToTransferToContract);
+            require(success, "Transfer was not successful");
+            (amountGUMMYToTreasury,,,) = gummyToken.applyFees(amountGUMMYToTreasury);
+            (amountToBurn,,,) = gummyToken.applyFees(amountToBurn);
+            _swapGUMMYForBNB(amountGUMMYToTreasury);
+        }
+
+        if(amountToBurn > 0){
+            // Part of the burn consists in our partner token buy-back and burn
+            if(burnPartnerNumerator > 0){
+                uint256 _amountPartnerBuyBack = (burnPartnerNumerator * amountToBurn) / DENOMINATOR;
+                amountToBurn -= _amountPartnerBuyBack;
+                _partnerBuyBackAndBurn(_amountPartnerBuyBack);
+            }
+            // The rest of the burn takes place in GUMMY
+            if(amountToBurn > 0){
+                gummyToken.burn(amountToBurn);
+            }
+        }
+        // *********************************************
+        // *********************************************
+    }
+
+    /**
+     * @dev Initiates the lottery for the first time by setting the first winner wallet
+     * and starting the first round of the lottery.
+     */
+    function startGenesisRound(address genesisWinnerWallet) external onlyOwner {
+        require(!_genesisRoundLaunched, "Genesis round already started");
+        rounds[currentRound].startedOnDay = today();
+        _genesisRoundLaunched = true;
+        _setWinnerWallet(genesisWinnerWallet);
+        _unpause();
+    }
+
+    /**
+     * @dev Requests randomness.
+     */
+    function _requestRandomNumber() virtual internal returns (bytes32 requestId) {
+        require(LINK.balanceOf(address(this)) >= fee, "Not enough LINK - fill contract with faucet");
+        return requestRandomness(keyHash, fee);
+    }
+
+     /**
+     * @dev Callback function used by VRF Coordinator.
+     */
+    function fulfillRandomness(bytes32 requestId, uint256 randomness) internal override {
+        _closeCurrentRound(requestId, randomness);
+    }
+
+    /**
+     * @dev Withdrawing tokens from contract (except GUMMY tokens).
+     * @param _token: token address
+     */
+    function withdrawTokens(address _token) external onlyOwner {
+        require(_token != address(gummyToken), "Cannot withdraw GUMMY");
+
+        uint256 amount = IERC20(_token).balanceOf(address(this));
+        require(amount > 0, "Balance is 0");
+
+        // Not checking return value on purpose.
+        IERC20(_token).transfer(owner(), amount);
+    }
+
+    /**
+     * @dev Withdrawing BNB from contract.
+     */
+    function withdrawBNB() external payable onlyOwner {
+        uint256 balance = address(this).balance;
+        require(balance > 0, "Balance is 0");
+        (bool success, ) = payable(owner()).call{value: balance}("");
+        require(success, "Transfer failed");
+    }
+
+    /**
+     * @dev Pauses functions modified with `whenNotPaused`.
+     */
+    function pause() external virtual whenNotPaused onlyOwner {
+        _pause();
+    }
+
+    /**
+     * @dev Unpauses functions modified with `whenNotPaused`.
+     */
+    function unpause() external virtual whenPaused onlyOwner {
+        require(_genesisRoundLaunched, "Genesis round should be started first");
+        _unpause();
+    }
+
+    /**
+     * @dev Sets the winner wallet of the lottery.
+     *
+     * @param _newWinnerWallet = address of the new winner.
+     */
+    function _setWinnerWallet(address _newWinnerWallet) private {
+        winnerWallet = _newWinnerWallet;
+    }
+
+    /**
+     * @dev Requests to close the current round. If the request is successful (i.e. the round is
+     * finished and closing has not been requested yet), a request to chain.link VRF is made
+     * to obtain a pseudo-random number. The contract should be provisioned in LINK tokens prior
+     * to making a request.
+     */
+    function _requestToCloseCurrentRound() private {
+        require(rounds[currentRound].startedOnDay != today(), "Round is not finished");
+        require(!rounds[currentRound].closingRequested, "Closing already requested");
+        bytes32 requestId = _requestRandomNumber();
+        requestIdToRound[requestId] = currentRound;
+        rounds[currentRound].closingRequested = true;
+        rounds[currentRound].amountAtClosingRequest = gummyToken.balanceOf(address(this));
+        emit ClosingRequested(currentRound);
+    }
+
+    /**
+     * @dev Function called by chain.link's VRF callback to fullfill the PRNG request.
+     * This function gets a pseudo-random number and designates a winner.
+     *
+     * @param requestId = ID of the PRNG request made to chain.link's VRF.
+     * @param randomNumber = pseudo-random number returned by chain.link's VRF.
+     */
+    function _closeCurrentRound(bytes32 requestId, uint256 randomNumber) private {
+        uint256 _roundId = requestIdToRound[requestId];
+        require(rounds[_roundId].closingRequested, "Closing should be requested");
+        require(!rounds[_roundId].isClosed, "Round already closed");
+
+        // Due to they way `_drawWinner` is implemented, we expect that there will be
+        // no winner once every 67 millions of billions of billions of the age of the universe,
+        // on average, assuming one draw per day. Thus, we do not bother to address it further
+        // than this comment because we won't be alive to see this, probably.
+        uint256 _winnerId = _drawWinner(_roundId, randomNumber);
+
+        address _winner = rounds[_roundId].participants[_winnerId];
+        _setWinnerWallet(_winner);
+        rounds[_roundId].winner = _winner;  // store winner for frontend
+
+        rounds[_roundId].isClosed = true;
+        bool success = gummyToken.transfer(winnerWallet, rounds[_roundId].amountAtClosingRequest);
+        require(success, "Transfer was not successful");
+
+        emit ClosedRound(_roundId, _winner, randomNumber);
+    }
+
+    /**
+     * @dev Given a round identifier and a pseudo-random number, picks the lottery winner
+     * for the specified round.
+     *
+     * @param round = which round to consider.
+     * @param randomNumber = pseudo-random number returned by chain.link's VRF.
+     *
+     * Due to they way `_drawWinningFlavor` is implemented, we expect that there will be
+     * no winner once every 67 millions of billions of billions of the age of the universe,
+     * on average, assuming one draw per day. Thus, we do not bother to address it further
+     * than this comment because we won't be alive to see this, probably.
+     */
+    function _drawWinner(uint256 round, uint256 randomNumber) internal view returns(uint256) {
+        require(rounds[round].tickets.length > 0, "no participants");
+        uint256[] storage _tickets = rounds[round].tickets;
+        uint256 _factor = type(uint256).max  / _tickets[_tickets.length - 1];
+        uint256 _winnerId = ArraysModified.findUpperBound(_tickets, randomNumber, _factor);
+        return _winnerId;
+    }
+
+    /**
+     * @dev Buys back some tokens of our partner before burning them.
+     *
+     * @param amountPartnerToBurn = amount of GUMMY to use to buy back the
+     * our partner token.
+     */
+    function _partnerBuyBackAndBurn(uint256 amountPartnerToBurn) private {
+        if(amountPartnerToBurn > 0){
+            address[] memory _path = new address[](3);
+
+            _path[0] = address(gummyToken);
+            _path[1] = IPancakeRouter02(partnerRouter).WETH();
+            _path[2] = partnerToken;
+
+            IPancakeRouter02(partnerRouter).swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                amountPartnerToBurn,
+                0,
+                _path,
+                BURN_ADDRESS_PARTNER,
+                block.timestamp + 600
+            );
+        }
+    }
+
+    /**
+     * @dev When transferring GUMMY to Gummy Pot, 98% is received (95% + 3%). This function
+     * subtracts the amount that is owed to the Gummy Pot and returns the correct amount (95%
+     * of the originally transferred amount).
+     *
+     * @return amount = amount transferred to Gummy Pot.
+     */
+    function _removeWhatIsOwedToGummyPotWhenTransferToGummyPot(uint256 amount) internal view returns(uint256){
+        return (amount * (DENOMINATOR - GUMMY_TOTAL_FEE)) / (DENOMINATOR - GUMMY_TOTAL_FEE + GUMMY_POT_NUMERATOR);
+    }
+
+    /**
+     * @dev Buys some GUMMY with BNB.
+     *
+     * @return purchased = amount GUMMY purchased.
+     */
+    function _swapBNBForGUMMYAndApplyTreasury() private returns(uint256 purchased) {
+        // Apply treasury
+        uint256 _amountIn = (msg.value * (DENOMINATOR - treasuryNumerator)) / DENOMINATOR;
+        address[] memory _path = new address[](2);
+        _path[0] = IPancakeRouter02(partnerRouter).WETH();
+        _path[1] = address(gummyToken);
+
+        purchased = gummyToken.balanceOf(address(this));
+        IPancakeRouter02(partnerRouter).swapExactETHForTokensSupportingFeeOnTransferTokens{value: _amountIn}(
+                0,
+                _path,
+                address(this),
+                block.timestamp + 600
+            );
+        purchased = gummyToken.balanceOf(address(this)) - purchased;
+        purchased = _removeWhatIsOwedToGummyPotWhenTransferToGummyPot(purchased);
+    }
+
+    /**
+     * @dev Swaps some GUMMY for BNB.
+     *
+     * @param amount = amount of GUMMY to swap.
+     */
+    function _swapGUMMYForBNB(uint256 amount) private {
+        require(amount > 0, "amount should be positive");
+        address[] memory _path = new address[](2);
+
+        _path[0] = address(gummyToken);
+        _path[1] = IPancakeRouter02(partnerRouter).WETH();
+
+        IPancakeRouter02(partnerRouter).swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amount,
+            0,
+            _path,
+            address(this),
+            block.timestamp + 600
+        );
+    }
+
+    /**
+     * @dev Swaps some token for GUMMY.
+     *
+     * @param token = address of input token.
+     * @param amount = amount of `token` to swap.
+     * @return purchased = amount GUMMY purchased.
+     */
+    function _swapTokensForGUMMY(address token, uint256 amount) private returns(uint256 purchased) {
+        Pair memory _pair = _routes[token];
+        IPancakeRouter02 _router = IPancakeRouter02(_pair.router);
+        address[] memory _route = _pair.route;
+
+        purchased = gummyToken.balanceOf(address(this));
+        _router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                amount,
+                0,
+                _route,
+                address(this),
+                block.timestamp + 600
+            );
+        purchased = gummyToken.balanceOf(address(this)) - purchased;
+        purchased = _removeWhatIsOwedToGummyPotWhenTransferToGummyPot(purchased);
+    }
+}
+
+
+// File: Ownable.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "Context.sol";
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _setOwner(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _setOwner(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _setOwner(newOwner);
+    }
+
+    function _setOwner(address newOwner) private {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+
+// File: Context.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/*
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+
+// File: ReentrancyGuard.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and make it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+}
+
+
+// File: IERC20Gummy.sol
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.0;
+
+import "IERC20.sol";
+
+
+interface IERC20Gummy is IERC20 {
+    function burn(uint256 amount) external;
+    function applyFees(uint256 amountIn) external pure  returns(uint256, uint256, uint256, uint256);
+    function removeFromWhiteList(address account) external;
+    function setTeamWallet(address _newTeamWallet) external;
+    function setGummyPot(address _newGummyPot) external;
+}
+
+// File: IERC20.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+// File: Arrays.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "Math.sol";
+
+/**
+ * @dev Collection of functions related to array types.
+ */
+library ArraysModified {
+    /**
+     * @dev Searches a sorted `array` and returns the first index that contains
+     * a value greater or equal to `element`. If no such index exists (i.e. all
+     * values in the array are strictly less than `element`), the array length is
+     * returned. Time complexity O(log n).
+     * Same as Open Zeppelin implementation with the only difference that a `factor`
+     * parameter has been added.
+     *
+     * `array` is expected to be sorted in ascending order, and to contain no
+     * repeated elements.
+     */
+    function findUpperBound(uint256[] storage array, uint256 element, uint256 factor) internal view returns (uint256) {
+        require(factor > 0, "factor should be positive");
+        if (array.length == 0) {
+            return 0;
+        }
+
+        uint256 low = 0;
+        uint256 high = array.length;
+
+        uint256 arrayMidScaled;
+
+        while (low < high) {
+            uint256 mid = Math.average(low, high);
+
+            // Note that mid will always be strictly less than high (i.e. it will be a valid array index)
+            // because Math.average rounds down (it does integer division with truncation).
+
+            arrayMidScaled = array[mid] * factor;
+            if (arrayMidScaled > element) {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+
+        // At this point `low` is the exclusive upper bound. We will return the inclusive upper bound.
+        if (low > 0 && array[low - 1] * factor == element) {
+            return low - 1;
+        } else {
+            return low;
+        }
+    }
+
+
+    /**
+     * @dev Exactly the same as `findUpperBound` except that `array` is in memory rather than
+     * storage.
+     */
+    function findUpperBoundMemory(uint256[] memory array, uint256 element, uint256 factor) internal pure returns (uint256) {
+        require(factor > 0, "factor should be positive");
+        if (array.length == 0) {
+            return 0;
+        }
+
+        uint256 low = 0;
+        uint256 high = array.length;
+
+        uint256 arrayMidScaled;
+
+        while (low < high) {
+            uint256 mid = Math.average(low, high);
+
+            // Note that mid will always be strictly less than high (i.e. it will be a valid array index)
+            // because Math.average rounds down (it does integer division with truncation).
+
+            arrayMidScaled = array[mid] * factor;
+            if (arrayMidScaled > element) {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+
+        // At this point `low` is the exclusive upper bound. We will return the inclusive upper bound.
+        if (low > 0 && array[low - 1] * factor == element) {
+            return low - 1;
+        } else {
+            return low;
+        }
+    }
+}
+
+// File: Math.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Standard math utilities missing in the Solidity language.
+ */
+library Math {
+    /**
+     * @dev Returns the largest of two numbers.
+     */
+    function max(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a >= b ? a : b;
+    }
+
+    /**
+     * @dev Returns the smallest of two numbers.
+     */
+    function min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+    /**
+     * @dev Returns the average of two numbers. The result is rounded towards
+     * zero.
+     */
+    function average(uint256 a, uint256 b) internal pure returns (uint256) {
+        // (a + b) / 2 can overflow, so we distribute.
+        return (a / 2) + (b / 2) + (((a % 2) + (b % 2)) / 2);
+    }
+
+    /**
+     * @dev Returns the ceiling of the division of two numbers.
+     *
+     * This differs from standard division with `/` in that it rounds up instead
+     * of rounding down.
+     */
+    function ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+        // (a + b - 1) / b can overflow on addition, so we distribute.
+        return a / b + (a % b == 0 ? 0 : 1);
+    }
+}
+
+
+// File: VRFConsumerBase.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "LinkTokenInterface.sol";
+
+import "VRFRequestIDBase.sol";
+
+/** ****************************************************************************
+ * @notice Interface for contracts using VRF randomness
+ * *****************************************************************************
+ * @dev PURPOSE
+ *
+ * @dev Reggie the Random Oracle (not his real job) wants to provide randomness
+ * @dev to Vera the verifier in such a way that Vera can be sure he's not
+ * @dev making his output up to suit himself. Reggie provides Vera a public key
+ * @dev to which he knows the secret key. Each time Vera provides a seed to
+ * @dev Reggie, he gives back a value which is computed completely
+ * @dev deterministically from the seed and the secret key.
+ *
+ * @dev Reggie provides a proof by which Vera can verify that the output was
+ * @dev correctly computed once Reggie tells it to her, but without that proof,
+ * @dev the output is indistinguishable to her from a uniform random sample
+ * @dev from the output space.
+ *
+ * @dev The purpose of this contract is to make it easy for unrelated contracts
+ * @dev to talk to Vera the verifier about the work Reggie is doing, to provide
+ * @dev simple access to a verifiable source of randomness.
+ * *****************************************************************************
+ * @dev USAGE
+ *
+ * @dev Calling contracts must inherit from VRFConsumerBase, and can
+ * @dev initialize VRFConsumerBase's attributes in their constructor as
+ * @dev shown:
+ *
+ * @dev   contract VRFConsumer {
+ * @dev     constuctor(<other arguments>, address _vrfCoordinator, address _link)
+ * @dev       VRFConsumerBase(_vrfCoordinator, _link) public {
+ * @dev         <initialization with other arguments goes here>
+ * @dev       }
+ * @dev   }
+ *
+ * @dev The oracle will have given you an ID for the VRF keypair they have
+ * @dev committed to (let's call it keyHash), and have told you the minimum LINK
+ * @dev price for VRF service. Make sure your contract has sufficient LINK, and
+ * @dev call requestRandomness(keyHash, fee, seed), where seed is the input you
+ * @dev want to generate randomness from.
+ *
+ * @dev Once the VRFCoordinator has received and validated the oracle's response
+ * @dev to your request, it will call your contract's fulfillRandomness method.
+ *
+ * @dev The randomness argument to fulfillRandomness is the actual random value
+ * @dev generated from your seed.
+ *
+ * @dev The requestId argument is generated from the keyHash and the seed by
+ * @dev makeRequestId(keyHash, seed). If your contract could have concurrent
+ * @dev requests open, you can use the requestId to track which seed is
+ * @dev associated with which randomness. See VRFRequestIDBase.sol for more
+ * @dev details. (See "SECURITY CONSIDERATIONS" for principles to keep in mind,
+ * @dev if your contract could have multiple requests in flight simultaneously.)
+ *
+ * @dev Colliding `requestId`s are cryptographically impossible as long as seeds
+ * @dev differ. (Which is critical to making unpredictable randomness! See the
+ * @dev next section.)
+ *
+ * *****************************************************************************
+ * @dev SECURITY CONSIDERATIONS
+ *
+ * @dev A method with the ability to call your fulfillRandomness method directly
+ * @dev could spoof a VRF response with any random value, so it's critical that
+ * @dev it cannot be directly called by anything other than this base contract
+ * @dev (specifically, by the VRFConsumerBase.rawFulfillRandomness method).
+ *
+ * @dev For your users to trust that your contract's random behavior is free
+ * @dev from malicious interference, it's best if you can write it so that all
+ * @dev behaviors implied by a VRF response are executed *during* your
+ * @dev fulfillRandomness method. If your contract must store the response (or
+ * @dev anything derived from it) and use it later, you must ensure that any
+ * @dev user-significant behavior which depends on that stored value cannot be
+ * @dev manipulated by a subsequent VRF request.
+ *
+ * @dev Similarly, both miners and the VRF oracle itself have some influence
+ * @dev over the order in which VRF responses appear on the blockchain, so if
+ * @dev your contract could have multiple VRF requests in flight simultaneously,
+ * @dev you must ensure that the order in which the VRF responses arrive cannot
+ * @dev be used to manipulate your contract's user-significant behavior.
+ *
+ * @dev Since the ultimate input to the VRF is mixed with the block hash of the
+ * @dev block in which the request is made, user-provided seeds have no impact
+ * @dev on its economic security properties. They are only included for API
+ * @dev compatability with previous versions of this contract.
+ *
+ * @dev Since the block hash of the block which contains the requestRandomness
+ * @dev call is mixed into the input to the VRF *last*, a sufficiently powerful
+ * @dev miner could, in principle, fork the blockchain to evict the block
+ * @dev containing the request, forcing the request to be included in a
+ * @dev different block with a different hash, and therefore a different input
+ * @dev to the VRF. However, such an attack would incur a substantial economic
+ * @dev cost. This cost scales with the number of blocks the VRF oracle waits
+ * @dev until it calls responds to a request.
+ */
+abstract contract VRFConsumerBase is VRFRequestIDBase {
+
+  /**
+   * @notice fulfillRandomness handles the VRF response. Your contract must
+   * @notice implement it. See "SECURITY CONSIDERATIONS" above for important
+   * @notice principles to keep in mind when implementing your fulfillRandomness
+   * @notice method.
+   *
+   * @dev VRFConsumerBase expects its subcontracts to have a method with this
+   * @dev signature, and will call it once it has verified the proof
+   * @dev associated with the randomness. (It is triggered via a call to
+   * @dev rawFulfillRandomness, below.)
+   *
+   * @param requestId The Id initially returned by requestRandomness
+   * @param randomness the VRF output
+   */
+  function fulfillRandomness(
+    bytes32 requestId,
+    uint256 randomness
+  )
+    internal
+    virtual;
+
+  /**
+   * @dev In order to keep backwards compatibility we have kept the user
+   * seed field around. We remove the use of it because given that the blockhash
+   * enters later, it overrides whatever randomness the used seed provides.
+   * Given that it adds no security, and can easily lead to misunderstandings,
+   * we have removed it from usage and can now provide a simpler API.
+   */
+  uint256 constant private USER_SEED_PLACEHOLDER = 0;
+
+  /**
+   * @notice requestRandomness initiates a request for VRF output given _seed
+   *
+   * @dev The fulfillRandomness method receives the output, once it's provided
+   * @dev by the Oracle, and verified by the vrfCoordinator.
+   *
+   * @dev The _keyHash must already be registered with the VRFCoordinator, and
+   * @dev the _fee must exceed the fee specified during registration of the
+   * @dev _keyHash.
+   *
+   * @dev The _seed parameter is vestigial, and is kept only for API
+   * @dev compatibility with older versions. It can't *hurt* to mix in some of
+   * @dev your own randomness, here, but it's not necessary because the VRF
+   * @dev oracle will mix the hash of the block containing your request into the
+   * @dev VRF seed it ultimately uses.
+   *
+   * @param _keyHash ID of public key against which randomness is generated
+   * @param _fee The amount of LINK to send with the request
+   *
+   * @return requestId unique ID for this request
+   *
+   * @dev The returned requestId can be used to distinguish responses to
+   * @dev concurrent requests. It is passed as the first argument to
+   * @dev fulfillRandomness.
+   */
+  function requestRandomness(
+    bytes32 _keyHash,
+    uint256 _fee
+  )
+    internal
+    returns (
+      bytes32 requestId
+    )
+  {
+    LINK.transferAndCall(vrfCoordinator, _fee, abi.encode(_keyHash, USER_SEED_PLACEHOLDER));
+    // This is the seed passed to VRFCoordinator. The oracle will mix this with
+    // the hash of the block containing this request to obtain the seed/input
+    // which is finally passed to the VRF cryptographic machinery.
+    uint256 vRFSeed  = makeVRFInputSeed(_keyHash, USER_SEED_PLACEHOLDER, address(this), nonces[_keyHash]);
+    // nonces[_keyHash] must stay in sync with
+    // VRFCoordinator.nonces[_keyHash][this], which was incremented by the above
+    // successful LINK.transferAndCall (in VRFCoordinator.randomnessRequest).
+    // This provides protection against the user repeating their input seed,
+    // which would result in a predictable/duplicate output, if multiple such
+    // requests appeared in the same block.
+    nonces[_keyHash] = nonces[_keyHash] + 1;
+    return makeRequestId(_keyHash, vRFSeed);
+  }
+
+  LinkTokenInterface immutable internal LINK;
+  address immutable private vrfCoordinator;
+
+  // Nonces for each VRF key from which randomness has been requested.
+  //
+  // Must stay in sync with VRFCoordinator[_keyHash][this]
+  mapping(bytes32 /* keyHash */ => uint256 /* nonce */) private nonces;
+
+  /**
+   * @param _vrfCoordinator address of VRFCoordinator contract
+   * @param _link address of LINK token contract
+   *
+   * @dev https://docs.chain.link/docs/link-token-contracts
+   */
+  constructor(
+    address _vrfCoordinator,
+    address _link
+  ) {
+    vrfCoordinator = _vrfCoordinator;
+    LINK = LinkTokenInterface(_link);
+  }
+
+  // rawFulfillRandomness is called by VRFCoordinator when it receives a valid VRF
+  // proof. rawFulfillRandomness then calls fulfillRandomness, after validating
+  // the origin of the call
+  function rawFulfillRandomness(
+    bytes32 requestId,
+    uint256 randomness
+  )
+    external
+  {
+    require(msg.sender == vrfCoordinator, "Only VRFCoordinator can fulfill");
+    fulfillRandomness(requestId, randomness);
+  }
+}
+
+
+// File: LinkTokenInterface.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface LinkTokenInterface {
+
+  function allowance(
+    address owner,
+    address spender
+  )
+    external
+    view
+    returns (
+      uint256 remaining
+    );
+
+  function approve(
+    address spender,
+    uint256 value
+  )
+    external
+    returns (
+      bool success
+    );
+
+  function balanceOf(
+    address owner
+  )
+    external
+    view
+    returns (
+      uint256 balance
+    );
+
+  function decimals()
+    external
+    view
+    returns (
+      uint8 decimalPlaces
+    );
+
+  function decreaseApproval(
+    address spender,
+    uint256 addedValue
+  )
+    external
+    returns (
+      bool success
+    );
+
+  function increaseApproval(
+    address spender,
+    uint256 subtractedValue
+  ) external;
+
+  function name()
+    external
+    view
+    returns (
+      string memory tokenName
+    );
+
+  function symbol()
+    external
+    view
+    returns (
+      string memory tokenSymbol
+    );
+
+  function totalSupply()
+    external
+    view
+    returns (
+      uint256 totalTokensIssued
+    );
+
+  function transfer(
+    address to,
+    uint256 value
+  )
+    external
+    returns (
+      bool success
+    );
+
+  function transferAndCall(
+    address to,
+    uint256 value,
+    bytes calldata data
+  )
+    external
+    returns (
+      bool success
+    );
+
+  function transferFrom(
+    address from,
+    address to,
+    uint256 value
+  )
+    external
+    returns (
+      bool success
+    );
+
+}
+
+
+// File: VRFRequestIDBase.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract VRFRequestIDBase {
+
+  /**
+   * @notice returns the seed which is actually input to the VRF coordinator
+   *
+   * @dev To prevent repetition of VRF output due to repetition of the
+   * @dev user-supplied seed, that seed is combined in a hash with the
+   * @dev user-specific nonce, and the address of the consuming contract. The
+   * @dev risk of repetition is mostly mitigated by inclusion of a blockhash in
+   * @dev the final seed, but the nonce does protect against repetition in
+   * @dev requests which are included in a single block.
+   *
+   * @param _userSeed VRF seed input provided by user
+   * @param _requester Address of the requesting contract
+   * @param _nonce User-specific nonce at the time of the request
+   */
+  function makeVRFInputSeed(
+    bytes32 _keyHash,
+    uint256 _userSeed,
+    address _requester,
+    uint256 _nonce
+  )
+    internal
+    pure
+    returns (
+      uint256
+    )
+  {
+    return uint256(keccak256(abi.encode(_keyHash, _userSeed, _requester, _nonce)));
+  }
+
+  /**
+   * @notice Returns the id for this request
+   * @param _keyHash The serviceAgreement ID to be used for this request
+   * @param _vRFInputSeed The seed to be passed directly to the VRF
+   * @return The id for this request
+   *
+   * @dev Note that _vRFInputSeed is not the seed passed by the consuming
+   * @dev contract, but the one generated by makeVRFInputSeed
+   */
+  function makeRequestId(
+    bytes32 _keyHash,
+    uint256 _vRFInputSeed
+  )
+    internal
+    pure
+    returns (
+      bytes32
+    )
+  {
+    return keccak256(abi.encodePacked(_keyHash, _vRFInputSeed));
+  }
+}
+
+// File: Pausable.sol
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.0;
+
+import "Context.sol";
+
+/**
+ * @dev Contract module which allows children to implement an emergency stop
+ * mechanism that can be triggered by an authorized account.
+ *
+ * This module is used through inheritance. It will make available the
+ * modifiers `whenNotPaused` and `whenPaused`, which can be applied to
+ * the functions of your contract. Note that they will not be pausable by
+ * simply including this module, only once the modifiers are put in place.
+ */
+abstract contract Pausable is Context {
+    /**
+     * @dev Emitted when the pause is triggered by `account`.
+     */
+    event Paused(address account);
+
+    /**
+     * @dev Emitted when the pause is lifted by `account`.
+     */
+    event Unpaused(address account);
+
+    bool private _paused;
+
+    /**
+     * @dev Initializes the contract in unpaused state.
+     */
+    constructor() {
+        _paused = false;
+    }
+
+    /**
+     * @dev Returns true if the contract is paused, and false otherwise.
+     */
+    function paused() public view virtual returns (bool) {
+        return _paused;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is not paused.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    modifier whenNotPaused() {
+        require(!paused(), "Pausable: paused");
+        _;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is paused.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    modifier whenPaused() {
+        require(paused(), "Pausable: not paused");
+        _;
+    }
+
+    /**
+     * @dev Triggers stopped state.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    function _pause() internal virtual whenNotPaused {
+        _paused = true;
+        emit Paused(_msgSender());
+    }
+
+    /**
+     * @dev Returns to normal state.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    function _unpause() internal virtual whenPaused {
+        _paused = false;
+        emit Unpaused(_msgSender());
+    }
+}
+
+
+// File: IPancakeRouter02.sol
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity >=0.6.2;
+
+import "IPancakeRouter01.sol";
+
+interface IPancakeRouter02 is IPancakeRouter01 {
+    function removeLiquidityETHSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountETH);
+    function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountETH);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+}
+
+
+// File: IPancakeRouter01.sol
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity >=0.6.2;
+
+interface IPancakeRouter01 {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETH(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountToken, uint amountETH);
+    function removeLiquidityWithPermit(
+        address tokenA,
+        address tokenB,
+        uint liquidity,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountA, uint amountB);
+    function removeLiquidityETHWithPermit(
+        address token,
+        uint liquidity,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline,
+        bool approveMax, uint8 v, bytes32 r, bytes32 s
+    ) external returns (uint amountToken, uint amountETH);
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapTokensForExactTokens(
+        uint amountOut,
+        uint amountInMax,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+    function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+    function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+
+    function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+    function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+    function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+    function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+}
+
