@@ -1,0 +1,343 @@
+
+// File: contracts/IclickSales.sol
+/**
+ * SPDX-License-Identifier: Unlicensed
+ **/
+
+pragma solidity 0.8.19;
+
+/**
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
+ */
+
+contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    /**
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and make it call a
+     * `private` function that does the actual work.
+     */
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+
+    modifier isHuman() {
+        require(tx.origin == msg.sender, "sorry humans only");
+        _;
+    }
+}
+
+
+contract IclickSales is ReentrancyGuard {
+    using SafeERC20 for IERC20;
+    using Address for address;
+    IERC20 internal immutable _usdToken;
+    // IERC20 internal immutable _usdToken2;
+    IERC20 private _wbnb;
+    IERC20 private token;
+    IUniswapV2Router01 public immutable uniswapV2Router;
+
+    struct User {
+        uint _id;
+        address _sponsor;
+        uint _spent; // Total spent in USDT
+        uint _total; // Total Token Purchased
+        uint _commBNB; // Total commission earned
+        uint _commUSDT; // Total commission earned
+    }
+
+    struct Systemlog {
+        uint lastUserid;
+        uint totalUSDTVolume; // total USDT spent [includes bnb spents valued in usdt]
+        uint totalUSDTreceived; // total usdt received
+        uint totalBNBreceived; // total bnb received
+        uint totalTokenSold; // total token sold
+        uint totalCommBNB; // total Commissions earned bnb
+        uint totalCommUSDT; // total Commissions earned usdt
+    }
+
+    // Program Settings
+    uint internal constant DECIMAL = 1e18;
+    uint internal constant DIVIDER = 10000;
+    uint[] internal BONUS_ROUNDS = [1500, 1000, 500, 200];
+    uint[] public ROUND_DATES = [7 days, 15 days, 22 days, 31 days];
+    // uint[] public ROUND_DATES = [1 minutes, 3 minutes, 5 minutes, 7 minutes];
+    uint public MINIMUM_USDT_PUR = 10 ether; // 10$ minimum purchase
+
+    uint internal immutable LISTINGPRICE = 0.00000001510 ether; // starting price
+
+    uint internal constant COMMISSION = 500; // 5% affiliate commissions
+
+    uint internal immutable DATESTARTED = block.timestamp;
+    // Global Records
+    bool public isSalesOpen;
+    // Operations
+    address private constant systemOps = 0x1d8132d7fA0F52d2E1c2eE215162f456ba33eb75;
+
+    address internal immutable dev;
+
+    mapping(address => User) public users;
+    Systemlog public systemlog;
+
+    constructor() {
+        dev = msg.sender;
+        _usdToken = IERC20(address(0x55d398326f99059fF775485246999027B3197955)); // testnet 0xC6Efc0f7AF6e0B3e413d8FdD339FAf4d9a6e2D8F 0xaB1a4d4f1D656d2450692D237fdD6C7f9146e814 // mainnet 0x55d398326f99059fF775485246999027B3197955
+        // _usdToken2 = IERC20(address(0x337610d27c682E347C9cD60BD4b3b107C9d34dDd)); // testnet 0x337610d27c682E347C9cD60BD4b3b107C9d34dDd 0xaB1a4d4f1D656d2450692D237fdD6C7f9146e814 // mainnet 0x55d398326f99059fF775485246999027B3197955
+        token = IERC20(address(0xc8C06a58E4ad7c01b9bb5Af6C76a7a1CfEBd0319)); // testnet 0x80247A78b06bac28B2086D0eb0012feCD0442B66 // mainnet 0xc8C06a58E4ad7c01b9bb5Af6C76a7a1CfEBd0319
+        _wbnb = IERC20(address(0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c)); // testnet 0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd // mainnet 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c
+        IUniswapV2Router01 _uniswapV2Router = IUniswapV2Router01(0x10ED43C718714eb63d5aA57B78B54704E256024E); // testnet 0xD99D1c33F9fC3444f8101754aBC46c52416550D1 // mainnet 0x10ED43C718714eb63d5aA57B78B54704E256024E
+        uniswapV2Router = _uniswapV2Router;
+    }
+
+    function registerMember(address _sponsor, address _user) private {
+        systemlog.lastUserid++;
+        users[_user]._id = systemlog.lastUserid;
+        if(_sponsor == _user || _sponsor == address(0) || users[_sponsor]._id < 0) _sponsor = dev;
+        users[_user]._sponsor = _sponsor;
+    }
+
+    function getTokenPlusBonus(uint _amount) private view returns(uint){
+        uint bonus;
+        for(uint8 i; i < 4; i++){
+            if(DATESTARTED + ROUND_DATES[i] <= block.timestamp){
+                bonus = BONUS_ROUNDS[i];
+            }
+        }
+        if(bonus > 0) _amount += _amount * bonus / DIVIDER;
+        return _amount;
+    }
+
+    function dispatchOrder(address _user, uint _amount, uint _usdtVal, bool _usdt) private{
+        require(isSalesOpen, 'SalesClosed!');
+        address _sponsor = users[_user]._sponsor;
+        uint comm = COMMISSION * _amount / DIVIDER;
+        systemlog.totalUSDTVolume += _usdtVal;
+        // record the purchase
+        uint getTokenUSDTValue = _getTokenRate(1 ether, address(token), address(_usdToken));
+        uint tokenAmount = _usdtVal / getTokenUSDTValue * DECIMAL;
+        // credit bonus
+        uint totalTokens = getTokenPlusBonus(tokenAmount);
+        users[_user]._spent += _usdtVal;
+        users[_user]._total += totalTokens;
+        systemlog.totalTokenSold += totalTokens;
+
+        if(_usdt){
+            // send tokens owner and to aff
+            systemlog.totalUSDTreceived += _amount;
+            systemlog.totalCommUSDT += comm;
+            users[_sponsor]._commUSDT += comm;
+            // send remaining to the ops
+            _usdToken.safeTransfer(systemOps, (_amount - comm));
+            // send affiliate commissions
+            _usdToken.safeTransfer(_sponsor, comm);
+        }
+        else{
+            systemlog.totalBNBreceived += _amount;
+            systemlog.totalCommBNB += comm;
+            users[_sponsor]._commBNB += comm;
+            // send remaining to the ops
+            payable(systemOps).transfer(_amount - comm);
+            // send affiliate commissions
+            payable(_sponsor).transfer(comm);
+        }
+    }
+
+    function buyTokenBNB(address _sponsor) payable public {
+        require(!address(msg.sender).isContract(), "NotAllowed");
+        address _user = msg.sender;
+        if(users[_user]._id < 1) registerMember(_sponsor, _user);
+        // minimum purchase $10
+        uint amount = msg.value;
+        uint oneBNBtoUSDT = _getTokenRate(1 ether, address(_wbnb), address(_usdToken));
+        uint _usdtvalue = amount * oneBNBtoUSDT;
+        require(_usdtvalue >= MINIMUM_USDT_PUR, 'req10USDT');
+        dispatchOrder(_user, amount, _usdtvalue, false);
+    }
+
+    function buyTokenUSDT(address _sponsor, uint _amount) public{
+        require(!address(msg.sender).isContract(), "NotAllowed");
+        address _user = msg.sender;
+        if(users[_user]._id < 1) registerMember(_sponsor, _user);
+        require(_amount >= MINIMUM_USDT_PUR, 'req10USDT');
+        require(_usdToken.transferFrom(_user, address(this), _amount));
+        dispatchOrder(_user, _amount, _amount, true);
+    }
+
+    function getTokenAmount(
+        address _tokenA,
+        address _tokenB,
+        uint _amountIn
+    ) private view returns (uint[] memory amounts) {
+        address[] memory path = new address[](2);
+        path[0] = _tokenA;
+        path[1] = _tokenB;
+        amounts = uniswapV2Router.getAmountsOut(_amountIn, path);
+        return amounts;
+    }
+
+    function _getTokenRate(
+        uint256 _amount,
+        address _base,
+        address _secondary
+    ) private view returns (uint256 _tokens) {
+        uint[] memory _estimates = getTokenAmount(
+            address(_base),
+            address(_secondary),
+            _amount
+        );
+        return _estimates[1];
+    }
+
+    function enDisSales() public {
+        require(msg.sender == systemOps, 'NotAllowed!');
+        isSalesOpen = !isSalesOpen;
+    }
+
+    function getIclickInuRate() public view returns(uint _value){
+        _value = _getTokenRate(1 ether, address(token), address(_usdToken)); 
+        // fecthes from price panackageswap
+    }
+}
+
+library Address {
+    function isContract(address account) internal view returns (bool) {
+        bytes32 codehash;
+        bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+        assembly {
+            codehash := extcodehash(account)
+        }
+        return (codehash != 0x0 && codehash != accountHash);
+    }
+}
+
+library SafeERC20 {
+    using Address for address;
+
+    function safeTransferFrom(
+        IERC20 token,
+        address from,
+        address to,
+        uint256 value
+    ) internal {
+        callOptionalReturn(
+            token,
+            abi.encodeWithSelector(token.transferFrom.selector, from, to, value)
+        );
+    }
+
+    function safeTransfer(IERC20 token, address to, uint256 value) internal {
+        callOptionalReturn(
+            token,
+            abi.encodeWithSelector(token.transfer.selector, to, value)
+        );
+    }
+
+    /**
+     * @dev Imitates a Solidity high-level call (i.e. a regular function call to a contract), relaxing the requirement
+     * on the return value: the return value is optional (but if data is returned, it must not be false).
+     * @param token The token targeted by the call.
+     * @param data The call data (encoded using abi.encode or one of its variants).
+     */
+    function callOptionalReturn(IERC20 token, bytes memory data) private {
+        // We need to perform a low level call here, to bypass Solidity's return data size checking mechanism, since
+        // we're implementing it ourselves.
+
+        // A Solidity high level call has three parts:
+        //  1. The target address is checked to verify it contains contract code
+        //  2. The call itself is made, and success asserted
+        //  3. The return value is decoded, which in turn checks the size of the returned data.
+        // solhint-disable-next-line max-line-length
+        require(address(token).isContract(), "SafeERC20: call to non-contract");
+
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory returndata) = address(token).call(data);
+        require(success, "SafeERC20: low-level call failed");
+
+        if (returndata.length > 0) {
+            // Return data is optional
+            // solhint-disable-next-line max-line-length
+            require(
+                abi.decode(returndata, (bool)),
+                "SafeERC20: ERC20 operation did not succeed"
+            );
+        }
+    }
+}
+
+interface IERC20 {
+    function balanceOf(address owner) external view returns (uint256);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 value) external returns (bool);
+
+    function transfer(address to, uint256 value) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) external returns (bool);
+
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+    event Transfer(address indexed from, address indexed to, uint256 value);
+}
+
+interface IUniswapV2Router01 {
+    function WETH() external pure returns (address);
+    function getAmountsOut(
+        uint amountIn,
+        address[] calldata path
+    ) external view returns (uint[] memory amounts);
+}

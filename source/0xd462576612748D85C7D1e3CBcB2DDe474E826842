@@ -1,0 +1,268 @@
+
+// File: src/IDO.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.13;
+
+import "solmate/auth/Owned.sol";
+import {IERC20} from "./interfaces/IERC20.sol";
+
+contract IDO is Owned {
+    event Deposit(address indexed sender, uint256 amount, uint256 timestamp);
+    event Relation(address indexed from, address parent, uint256 timestamp);
+
+    bool private initialized;
+    IERC20 public USDT;
+    address public manager;
+    mapping(address => bool) public smallIsBuy;
+    mapping(address => bool) public bigIsBuy;
+    mapping(address => bool) public superisBuy; //超级节点
+    uint256 public v1Count; //小节点数量
+    uint256 public v2Count; //大节点数量
+    uint256 public smallAmount = 100 ether; //小节点金额
+    uint256 public bigAmount = 1000 ether; //大节点金额
+
+    mapping(address => address) public parentOf; // 我的邀请者是谁
+    mapping(address => address[]) public junior; //我邀请了谁
+    mapping(address => bool) public isHolder; //是否是合格的邀请人
+    mapping(address => uint256) public num; //我的邀请人数
+    mapping(address => uint256) public nchuang; //我的邀请创世节点人数
+
+    constructor() Owned(msg.sender) {}
+
+    function addRelation(address _parent) external {
+        require(_parent != address(0), "p");
+        require(parentOf[msg.sender] == address(0), "bind");
+        address up = parentOf[_parent];
+        while (up != address(0)) {
+            require(up != msg.sender, "loop");
+            up = parentOf[up];
+        }
+
+        parentOf[msg.sender] = _parent;
+        isHolder[msg.sender] = true;
+
+        emit Relation(msg.sender, _parent, block.timestamp);
+    }
+
+    function initialize(address _usdt) public {
+        require(!initialized, "Contract instance has already been initialized");
+        initialized = true;
+        USDT = IERC20(_usdt);
+        owner = msg.sender;
+        manager = 0x6CdCcB66ede37Df0e49EA73D41CAe6a145b0BEdf;
+        smallAmount = 100 ether;
+        bigAmount = 1000 ether;
+    }
+
+    function presale(uint8 _level) external {
+        require(_level > 0, ">0");
+        require(_level < 3, "<3");
+
+        uint256 amount;
+        if (_level == 1) {
+            require(!smallIsBuy[msg.sender], "sbuy");
+            amount = smallAmount;
+            v1Count++;
+            smallIsBuy[msg.sender] = true;
+        } else {
+            require(!bigIsBuy[msg.sender], "bbuy");
+            amount = bigAmount;
+            v2Count++;
+            bigIsBuy[msg.sender] = true;
+        }
+        USDT.transferFrom(msg.sender, address(this), amount);
+        emit Deposit(msg.sender, amount, block.timestamp);
+
+        address inviter = parentOf[msg.sender];
+        address parent = parentOf[msg.sender];
+
+        uint256 smallFee = amount * 5 / 100;
+        uint256 bigFee = smallFee * 2;
+        bool hasSmallPart = false;
+
+        while (inviter != address(0)) {
+            if (bigIsBuy[inviter]) {
+                if (hasSmallPart) {
+                    amount = amount - smallFee;
+                    USDT.transfer(inviter, smallFee);
+                } else {
+                    amount = amount - bigFee;
+                    USDT.transfer(inviter, bigFee);
+                }
+                break;
+            }
+            if (smallIsBuy[inviter] && !hasSmallPart) {
+                amount = amount - smallFee;
+                USDT.transfer(inviter, smallFee);
+                hasSmallPart = true;
+            }
+            inviter = parentOf[inviter];
+        }
+
+        USDT.transfer(manager, amount);
+
+        if (parent != address(0)) {
+            num[parent]++;
+            if (num[parent] >= 10 && smallIsBuy[parent]) {
+                bigIsBuy[parent] = true;
+            }
+            if (bigIsBuy[msg.sender]) {
+                nchuang[parent]++;
+                if (nchuang[parent] >= 10 && bigIsBuy[parent]) {
+                    superisBuy[parent] = true;
+                }
+            }
+        }
+    }
+
+    function getLevel(address _user) external view returns (uint256) {
+        if (superisBuy[_user]) return 3;
+        if (bigIsBuy[_user]) return 2;
+        if (smallIsBuy[_user]) return 1;
+        return 0;
+    }
+
+    function setManager(address _manager) external onlyOwner {
+        manager = _manager;
+    }
+
+    function setSmallAmount(uint256 _smallAmount) external onlyOwner {
+        smallAmount = _smallAmount;
+    }
+
+    function setBigAmount(uint256 _bigAmount) external onlyOwner {
+        bigAmount = _bigAmount;
+    }
+
+    function withdrawToken(IERC20 token, uint256 _amount) external onlyOwner {
+        token.transfer(msg.sender, _amount);
+    }
+
+    function setHolder(address _account, bool _status) external onlyOwner {
+        isHolder[_account] = _status;
+    }
+}
+
+
+// File: lib/solmate/src/auth/Owned.sol
+// SPDX-License-Identifier: AGPL-3.0-only
+pragma solidity >=0.8.0;
+
+/// @notice Simple single owner authorization mixin.
+/// @author Solmate (https://github.com/transmissions11/solmate/blob/main/src/auth/Owned.sol)
+abstract contract Owned {
+    /*//////////////////////////////////////////////////////////////
+                                 EVENTS
+    //////////////////////////////////////////////////////////////*/
+
+    event OwnershipTransferred(address indexed user, address indexed newOwner);
+
+    /*//////////////////////////////////////////////////////////////
+                            OWNERSHIP STORAGE
+    //////////////////////////////////////////////////////////////*/
+
+    address public owner;
+
+    modifier onlyOwner() virtual {
+        require(msg.sender == owner, "UNAUTHORIZED");
+
+        _;
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                               CONSTRUCTOR
+    //////////////////////////////////////////////////////////////*/
+
+    constructor(address _owner) {
+        owner = _owner;
+
+        emit OwnershipTransferred(address(0), _owner);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                             OWNERSHIP LOGIC
+    //////////////////////////////////////////////////////////////*/
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        owner = newOwner;
+
+        emit OwnershipTransferred(msg.sender, newOwner);
+    }
+}
+
+
+// File: src/interfaces/IERC20.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+

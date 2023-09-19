@@ -1,0 +1,890 @@
+
+// File: /contracts/shard_warriors_game.sol
+//SPDX-License-Identifier: UNLICENSED
+
+pragma solidity 0.8.17;
+
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "./shard_warriors_lib.sol";
+
+interface IShardWarriors {
+  struct Building {
+    bool active; // flag indicating the activity of the building
+    uint256 startTs; // time the construction started
+    uint256 endTs; // time the construction ended
+    uint256 collectTs; // time for resource collection
+  }
+
+  struct Warrior {
+    uint256 faction; // user's faction
+    uint256 shard; // shards = 100 gold
+    uint256 sphere; // spheres = 1000 gold
+    uint256 gold; // gold only
+    uint256 regTs; // registration timestamp
+    uint256 referals; // number of referrals
+    address refL1; // L1 referral 3%
+    address refL2; // L2 referral 2%
+    address refL3; // L3 referral 1%
+    Building[24] myBuildings; // user's buildings
+    uint256 myHero; // user's hero
+    //uint256 withdrawTs; // last timestamp of gold withdrawal
+    uint256 battleId;
+  }
+
+  function isRegistered(address user) external view returns (bool);
+  function getHeroId(address user) external view returns(uint256);
+
+}
+
+
+contract ShardWarriorsGame {
+  using SafeMath for uint256;
+  using ShardWarriorsLibrary for *;
+  IShardWarriors private shardWarriors;
+  address shardWarriorsAddress;
+
+  event GameOver(uint256 battleId, address player, uint256 battleCost);
+
+  struct Profile {
+    string name;
+    uint256 battles;
+    uint256 wins;
+    uint256 looses;
+    uint256 draws;
+  }
+
+  struct HeroBattle {
+    uint256 id;
+    address player1;
+    address player2;
+    uint256 battleCost;
+    uint256 result;
+    heroStats p1;
+    heroStats p2;
+    uint256 turnP1;
+    uint256 turnP2;
+    uint256 timestampP1;
+    uint256 timestampP2;
+    uint256 randomTurnP1;
+    uint256 randomTurnP2;
+    uint256 p1HeroId;
+    uint256 p2HeroId;
+    uint256 p1faction;
+    uint256 p2faction;
+  }
+
+  struct heroStats {
+    uint256 hp; // health
+    uint256 mana; // mana
+    uint256 attack; // attack
+    uint256 def; // defense
+    uint256 magic; // magic
+    uint256 level; // level
+    bool isDead; // killed?
+  }
+
+  struct Army {
+    heroStats[20] stat; // heroes stats
+  }
+
+  HeroBattle[] private battles;
+
+  mapping(address => Army) private armies; //
+  mapping(address => Profile) private profiles; //
+  
+  modifier onlyUser() {
+    require(msg.sender == tx.origin, "Function can only be called by a user account.");
+    require(msg.sender != address(0), "Null address");
+    _;
+  }
+  modifier onlyAllowedContract() {
+    require(msg.sender == shardWarriorsAddress, "Access denied");
+    _;
+  }
+
+  constructor() {
+    heroStats memory heroStats0;
+    battles.push(HeroBattle(
+      1337,
+      address(0),
+      address(0),
+      0,
+      0,
+      heroStats0,
+      heroStats0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ));
+  }
+
+  function setMainContractAddress(address _shardWarriorsAddress)
+  external {
+    require(shardWarriorsAddress == address(0), "Only once");
+    shardWarriors = IShardWarriors(_shardWarriorsAddress);
+    shardWarriorsAddress = _shardWarriorsAddress;
+  }
+
+  function getProfile()
+  external view onlyUser returns(Profile memory) {
+    return profiles[msg.sender];
+  }
+
+  function setProfileName(string memory profileName)
+  external onlyUser {
+    string memory newName = ShardWarriorsLibrary.cleanUsername(profileName);
+    require(bytes(newName).length > 0, "Empty name");
+    profiles[msg.sender].name = newName;
+  }
+
+
+  function getArmy()
+  external view onlyUser returns(Army memory) {
+    return armies[msg.sender];
+  }
+
+  function getHeroBattle(uint256 battleId)
+  external view returns (HeroBattle memory) {
+    require(battles[battleId].id == battleId, "No such battle");
+    HeroBattle memory battleInfo = battles[battleId];
+    // clear turns info and set if turn has been made
+    if (battleInfo.turnP1 > 0)
+      battleInfo.turnP1 = 1;
+    else
+      battleInfo.turnP1 = 0;
+    if (battleInfo.turnP2 > 0)
+      battleInfo.turnP2 = 1;
+    else
+      battleInfo.turnP2 = 0;
+    battleInfo.randomTurnP1 = 0;
+    battleInfo.randomTurnP2 = 0;
+    return battleInfo;
+  }
+
+  function isHeroDead(address user, uint256 heroId)
+  external view returns(bool) {
+    //require(armies[user].stat[heroId].level > 0);
+    return armies[user].stat[heroId].isDead;
+  }
+
+  function getHeroLevel(address user, uint256 heroId)
+  external view returns(uint256) {
+    require(armies[user].stat[heroId].level > 0);
+    return armies[user].stat[heroId].level;
+  }
+
+  function setHeroLevel(address user, uint256 heroId)
+  external onlyAllowedContract returns(bool) {
+    // inc hero lvl
+    armies[user].stat[heroId].level = 1;
+    return true;
+  }
+
+  function setUpgradeHeroLevel(address user, uint256 heroId, uint256 statIndex)
+  external onlyAllowedContract returns(bool) {
+    require(armies[user].stat[heroId].level > 0);
+    // inc hero lvl
+    armies[user].stat[heroId].level += 1;
+    // inc choosen hero stat by 10
+    if (statIndex == 0)
+      armies[user].stat[heroId].hp += 10;
+    if (statIndex == 1)
+      armies[user].stat[heroId].mana += 10;
+    if (statIndex == 2)
+      armies[user].stat[heroId].attack += 10;
+    if (statIndex == 3)
+      armies[user].stat[heroId].def += 10;
+    if (statIndex == 4)
+      armies[user].stat[heroId].magic += 10;
+    return true;
+  }
+
+  function setHeroDead(address user, uint256 heroId)
+  external onlyAllowedContract returns(bool) {
+    require(armies[user].stat[heroId].level > 0);
+    require(armies[user].stat[heroId].isDead == false, "Hero already dead");
+    // kills hero
+    armies[user].stat[heroId].isDead = true;
+    return true;
+  }
+
+  function fillHeroesStats(address user, uint256 faction)
+  external onlyAllowedContract returns(bool) {
+    for (uint256 i = 0; i < 20; i++) {
+      armies[user].stat[i].level = 0;
+      armies[user].stat[i].hp = 100;
+      armies[user].stat[i].mana = 30;
+      // sets pseuforandom starting hero stats values
+      armies[user].stat[i].attack = ShardWarriorsLibrary._randomNumber(10, 30, i);
+      armies[user].stat[i].def = ShardWarriorsLibrary._randomNumber(10, 40, armies[user].stat[i].attack);
+      armies[user].stat[i].magic = ShardWarriorsLibrary._randomNumber(20, 50, armies[user].stat[i].def);
+
+      // inc for each faction their unique stats
+      if (faction == 0) {
+        armies[user].stat[i].hp += 10;
+        armies[user].stat[i].magic += 10;
+      }
+      if (faction == 1) {
+        armies[user].stat[i].attack += 10;
+        armies[user].stat[i].mana += 10;
+      }
+      if (faction == 2) {
+        armies[user].stat[i].magic += 10;
+        armies[user].stat[i].def += 10;
+      }
+      if (faction == 3) {
+        armies[user].stat[i].hp += 10;
+        armies[user].stat[i].def += 10;
+      }
+    }
+    return true;
+  }
+
+  function fightCreateOrJoin(address user, uint256 cost, uint256 heroId, uint256 faction)
+  external onlyAllowedContract returns(uint256) {
+
+    heroStats memory myHero = armies[user].stat[heroId];
+    require(cost <= myHero.level.div(5), "Wrong cost");
+    uint256 battleCost = cost.add(1).mul(1000);
+
+    for (uint i = 0; i < battles.length; i++) {
+      // search for battle
+      if (battles[i].result == 0 && battles[i].battleCost == battleCost && battles[i].player2 == address(0)) {
+        // if battle not ended and battle cost equails
+        // and there is no second player
+        // cheack hero levels
+        // must differ no more than 1
+        //uint256 player1HeroId = shardWarriors.getHeroId(battles[i].player1);
+        //require(player1HeroId > 0, "Error");
+        uint256 player1Herolevel = armies[battles[i].player1].stat[battles[i].p1HeroId].level;
+        if (player1Herolevel.add(1) == myHero.level || player1Herolevel == myHero.level.add(1) || player1Herolevel == myHero.level) {
+          // battle found
+          battles[i].player2 = user;
+          // start battle
+          battles[i].timestampP1 = block.timestamp;
+          battles[i].timestampP2 = block.timestamp;
+          battles[i].p2 = myHero;
+          battles[i].p2HeroId = heroId;
+          battles[i].p2faction = faction;
+          return battles[i].id;
+        }
+      }
+    }
+    //battle not found, create it
+    heroStats memory heroStats0;
+    battles.push(HeroBattle(
+      battles.length,
+      user,
+      address(0),
+      battleCost,
+      0,
+      myHero,
+      heroStats0,
+      0,
+      0,
+      0, //block.timestamp,
+      0,
+      ShardWarriorsLibrary._randomNumber(1, 255, 0),
+      ShardWarriorsLibrary._randomNumber(1, 255, 0),
+      heroId,
+      0,
+      faction,
+      0
+    ));
+    return battles.length-1;
+  }
+
+  function fightTurn(address user, uint256 turn, uint256 battleId)
+  external onlyAllowedContract {
+
+    // check is battle is active
+    require(battles[battleId].result == 0, "Fight is over");
+    // check second player
+    require(battles[battleId].player2 != address(0), "No player2");
+    if (
+      block.timestamp >= battles[battleId].timestampP2+600 ||
+      block.timestamp >= battles[battleId].timestampP1+600) {
+      if (
+        battles[battleId].turnP1 == 0 ||
+        battles[battleId].turnP2 == 0) {
+        // if no one turns in 10 minutes
+        // wins player with more hp
+        uint256 hpP1 = battles[battleId].p1.hp;
+        uint256 hpP2 = battles[battleId].p2.hp;
+
+        if (hpP1 == hpP2) {
+          battles[battleId].result = 3;
+          emit GameOver(battleId, address(0), battles[battleId].battleCost);
+          // draw
+        } else {
+          if (hpP1 < hpP2) {
+            battles[battleId].result = 2;
+            emit GameOver(battleId, battles[battleId].player2, battles[battleId].battleCost);
+            //wins player2
+          }
+          if (hpP2 < hpP1) {
+            battles[battleId].result = 1;
+            emit GameOver(battleId, battles[battleId].player1, battles[battleId].battleCost);
+            //wins player1
+          }
+        }
+        return;
+      }
+    }
+    // we are player1 or player2?
+    if (battles[battleId].player1 == user) {
+      // we are player1
+      require(battles[battleId].turnP1 == 0, "You have already made your move");
+      if (block.timestamp < battles[battleId].timestampP1+600) {
+
+        battles[battleId].turnP1 = turn.sub(battles[battleId].randomTurnP1);
+        battles[battleId].randomTurnP1 = ShardWarriorsLibrary._randomNumber(1, 255, battles[battleId].randomTurnP1);
+        //battles[battleId].timestampP1 = block.timestamp;
+        checkWinner(battleId);
+      } else {
+        // no turns in 10 minutes- win player2
+        battles[battleId].result = 2;
+      }
+
+      //===================
+    } else {
+      // we are player2
+      require(battles[battleId].turnP2 == 0, "You have already made your move");
+      if (block.timestamp < battles[battleId].timestampP2+600) {
+        //require(battles[battleId].turnP2 == 0, "You have alreadymade your move");
+        battles[battleId].turnP2 = turn.sub(battles[battleId].randomTurnP2);
+        battles[battleId].randomTurnP2 = ShardWarriorsLibrary._randomNumber(1, 255, battles[battleId].randomTurnP2);
+        //battles[battleId].timestampP2 = block.timestamp;
+        checkWinner(battleId);
+      } else {
+        // no turns in 10 minutes- wins player1
+        battles[battleId].result = 1;
+      }
+    }
+
+    if (battles[battleId].result > 0) {
+      if (battles[battleId].result == 1) {
+        emit GameOver(battleId, battles[battleId].player1, battles[battleId].battleCost);
+      }
+      if (battles[battleId].result == 2) {
+        emit GameOver(battleId, battles[battleId].player2, battles[battleId].battleCost);
+      }
+      if (battles[battleId].result == 3) {
+        emit GameOver(battleId, address(0), battles[battleId].battleCost);
+      }
+    }
+  }
+
+  function checkWinner(uint256 battleId)
+  internal {
+    require(battles[battleId].result == 0, "Battle finished");
+    if (battles[battleId].turnP1 > 0 && battles[battleId].turnP2 > 0) {
+      // both players turns. decrypting turns
+      uint256 defP1 = battles[battleId].turnP1.div(10);
+      uint256 atkP1 = battles[battleId].turnP1.sub(defP1.mul(10));
+      uint256 defP2 = battles[battleId].turnP2.div(10);
+      uint256 atkP2 = battles[battleId].turnP2.sub(defP2.mul(10));
+      require(defP1 > 0 && defP1 <= 4, "err in p1 def");
+      require(atkP1 > 0 && atkP1 <= 4, "err in p1 atk");
+      require(defP2 > 0 && defP2 <= 4, "err in p2 def");
+      require(atkP2 > 0 && atkP2 <= 4, "err in p2 atk");
+
+      if (atkP1 == 4)
+        require(battles[battleId].p1.mana > 0, "Need more mana");
+      if (atkP2 == 4)
+        require(battles[battleId].p2.mana > 0, "Need more mana");
+      //def
+      if (defP1 != atkP2) {
+        //hit!
+        //magic hit- minus magic damage
+        if (atkP2 == 4) {
+          if (battles[battleId].p1.hp > battles[battleId].p2.magic)
+            battles[battleId].p1.hp = battles[battleId].p1.hp.sub(battles[battleId].p2.magic);
+          else battles[battleId].p1.hp = 0;
+          battles[battleId].p2.mana = battles[battleId].p2.mana.sub(10);
+        }
+        if (atkP2 > 0 && atkP2 < 4) {
+          if (battles[battleId].p1.hp > battles[battleId].p2.attack)
+            battles[battleId].p1.hp = battles[battleId].p1.hp.sub(battles[battleId].p2.attack);
+          else battles[battleId].p1.hp = 0;
+        }
+      } else {
+        //defended
+        //if not magic- damage=attack-def
+        //if def magic - not damage , just minus mana
+        if (atkP2 > 0 && atkP2 < 4) {
+          if (battles[battleId].p2.attack > battles[battleId].p1.def) {
+            if (battles[battleId].p1.hp > battles[battleId].p2.attack.sub(battles[battleId].p1.def))
+              battles[battleId].p1.hp = battles[battleId].p1.hp.sub(battles[battleId].p2.attack.sub(battles[battleId].p1.def));
+            else battles[battleId].p1.hp = 0;
+          }
+        }
+        if (atkP2 == 4)
+          battles[battleId].p2.mana = battles[battleId].p2.mana.sub(10);
+      }
+      if (defP2 != atkP1) {
+        //hit!
+        //if magic sub magic dmg
+        if (atkP1 == 4) {
+          if (battles[battleId].p2.hp > battles[battleId].p1.magic)
+            battles[battleId].p2.hp = battles[battleId].p2.hp.sub(battles[battleId].p1.magic);
+          else battles[battleId].p2.hp = 0;
+          battles[battleId].p1.mana = battles[battleId].p1.mana.sub(10);
+        }
+        if (atkP1 > 0 && atkP1 < 4) {
+          if (battles[battleId].p2.hp > battles[battleId].p1.attack)
+            battles[battleId].p2.hp = battles[battleId].p2.hp.sub(battles[battleId].p1.attack);
+          else battles[battleId].p2.hp = 0;
+        } else {
+          //defended
+          //if not magic- damage=attack-def
+          //if def magic - not damage , just minus mana
+          if (atkP1 > 0 && atkP1 < 4) {
+            if (battles[battleId].p1.attack > battles[battleId].p2.def) {
+              if (battles[battleId].p2.hp > battles[battleId].p1.attack.sub(battles[battleId].p2.def))
+                battles[battleId].p2.hp = battles[battleId].p2.hp.sub(battles[battleId].p1.attack.sub(battles[battleId].p2.def));
+              else battles[battleId].p2.hp = 0;
+            }
+          }
+          if (atkP1 == 4)
+            battles[battleId].p1.mana = battles[battleId].p1.mana.sub(10);
+        }
+      }
+
+      //check if tgere is a win or draw
+      uint256 hpP1 = battles[battleId].p1.hp;
+      uint256 hpP2 = battles[battleId].p2.hp;
+
+      if (hpP1 == 0 && hpP2 == 0) {
+        battles[battleId].result = 3;
+        emit GameOver(battleId, address(0), battles[battleId].battleCost);
+        // draw
+      } else {
+        if (hpP1 == 0) {
+          battles[battleId].result = 2;
+          emit GameOver(battleId, battles[battleId].player2, battles[battleId].battleCost);
+          //win 2
+        }
+        if (hpP2 == 0) {
+          battles[battleId].result = 1;
+          emit GameOver(battleId, battles[battleId].player1, battles[battleId].battleCost);
+          //win 1
+        }
+      }
+      battles[battleId].turnP1 = 0;
+      battles[battleId].turnP2 = 0;
+      battles[battleId].timestampP1 = block.timestamp;
+      battles[battleId].timestampP2 = block.timestamp;
+    }
+    // battle continues
+  }
+
+  function calcRewards(uint256 battleId)
+  external view onlyAllowedContract returns(uint256[3] memory) {
+    //[player1,player2,winner,reward,rtype,bnb]
+    HeroBattle memory checkBattle = battles[battleId];
+    require(checkBattle.result > 0, "Battle in progress");
+    address player1 = battles[battleId].player1;
+    address player2 = battles[battleId].player2;
+    require(player1 != address(0), "error");
+    require(player2 != address(0), "error");
+
+    uint256 usdt = checkBattle.battleCost.div(1200).mul(2);
+    uint256 rtype = 0;
+    uint256 reward = checkBattle.battleCost.mul(2).div(10).sub(checkBattle.battleCost.div(100));
+
+    if (checkBattle.result == 1) {
+      if (checkBattle.p1.level < 10) {
+        // 
+        rtype = 1;
+        reward = checkBattle.battleCost.mul(2).sub(checkBattle.battleCost.div(10).mul(2));
+      }
+    }
+    if (checkBattle.result == 2) {
+      if (checkBattle.p2.level < 10) {
+        // 
+        rtype = 1;
+        reward = checkBattle.battleCost.mul(2).sub(checkBattle.battleCost.div(10).mul(2));
+      }
+    }
+    if (checkBattle.result == 3) {
+      //draw
+      if (checkBattle.p1.level < 10) {
+        // refund minus comission
+        rtype = 1;
+        reward = checkBattle.battleCost.sub(checkBattle.battleCost.div(10));
+      } else {
+        reward = checkBattle.battleCost.div(10).sub(checkBattle.battleCost.div(100));
+      }
+
+    }
+    return [reward,
+      rtype,
+      usdt];
+  }
+
+  function getTurnRandom(uint256 battleId)
+  external view onlyUser
+  returns(uint256 result) {
+    require(battles[battleId].id == battleId, "No battle");
+    require(battles[battleId].result == 0, "battle is over");
+    address user = msg.sender;
+    if (battles[battleId].player1 == user)
+      return battles[battleId].randomTurnP1;
+    if (battles[battleId].player2 == user)
+      return battles[battleId].randomTurnP2;
+    revert();
+  }
+
+  function cancelBattle(uint256 battleId)
+  external onlyUser {
+    address user = msg.sender;
+    require(battles[battleId].id == battleId, "No battle");
+    require(battles[battleId].result == 0, "battle is over");
+    require(battles[battleId].player1 == user, "Error");
+    require(battles[battleId].player2 == address(0), "Error");
+    battles[battleId].result = 3;
+    battles[battleId].player2 = user;
+    battles[battleId].battleCost = battles[battleId].battleCost.div(2);
+  }
+
+}
+
+// File: /contracts/shard_warriors_lib.sol
+//SPDX-License-Identifier: UNLICENSED
+
+pragma solidity 0.8.17;
+
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+
+library ShardWarriorsLibrary {
+  using SafeMath for uint256;
+
+  // helper getPurchaseBuildingPrice returns building purchase cost
+  function getPurchaseBuildingPrice(uint256 buildingId)
+  external
+  pure
+  returns (uint256) {
+    // Check that the building identifier is less than 24
+    require(buildingId < 24, "No such building");
+    // If the building identifier is less than 12, return the price calculated based on the formula
+    if (buildingId < 12)
+      return buildingId.add(1).mul(2400);
+    // If the building identifier is greater than or equal to 12 and less than 24, return the price calculated based on the formula
+    if (buildingId >= 12 && buildingId < 24)
+      return buildingId.add(1).mul(240);
+    revert();
+  }
+
+  // helper getBuildingYield building yield
+  function getBuildingYield(uint256 buildingId)
+  public
+  pure
+  returns (uint256) {
+    // Check that the building identifier is less than 24
+    require(buildingId < 24, "No such building");
+    // The variable "percent" is calculated based on the formula
+    uint256 percent = 20 + buildingId.div(12)+ buildingId.div(14)+buildingId.div(16)+buildingId.div(18)+buildingId.div(20)+buildingId.div(22);
+    // Return the yield calculated based on the formula
+    return buildingId.add(1).mul(240).div(24).mul(percent);
+  }
+
+  // helper getUpgradeHeroPrice returns hero cost
+  function getUpgradeHeroPrice()
+  external pure returns (uint256) {
+    return 2400; //level.add(1).mul(2400);
+  }
+
+  // helper function  getUpgradeHeroPriceSphere returns upgrade hero cost in sphere
+  function getUpgradeHeroPriceSphere()
+  external pure returns (uint256) {
+    return 240; //level.sub(10).add(1).add(240);
+  }
+
+
+  // helper _randomNumber use to get pseudo random num
+  function _randomNumber(uint256 min, uint256 max, uint256 starthash)
+  internal view returns (uint8) {
+    // randomize hash
+    uint8 hashByte;
+    bytes32 transactionHash = keccak256(abi.encodePacked(tx.origin, tx.gasprice, block.timestamp, msg.data));
+    // pseudorandomize hash
+    for (uint j = 0; j < starthash % 10; j++) {
+      transactionHash = keccak256(abi.encodePacked(transactionHash));
+    }
+    // get random num from transactionHash
+    for (uint j = 0; j < 10; j++) {
+      for (uint i = 0; i < 32; i++) {
+        hashByte = uint8(uint8(bytes1(transactionHash[i])));
+
+        // check random in our range
+        if (hashByte >= min && hashByte <= max) {
+          return uint8(hashByte);
+        }
+      }
+      transactionHash = keccak256(abi.encodePacked(transactionHash));
+    }
+
+    // if random number not found - error
+    revert("Error. No suitable random number found");
+  }
+
+  function cleanUsername(string memory username)
+  external pure returns (string memory) {
+
+    bytes memory inputBytes = bytes(username);
+
+    if (inputBytes.length > 50) {
+      assembly {
+        mstore(inputBytes, 50)
+      }
+    }
+    uint256 resultLength = 0;
+    bytes memory resultBytes = new bytes(inputBytes.length);
+
+
+    for (uint256 i = 0; i < inputBytes.length; i++) {
+      bytes1 char = inputBytes[i];
+
+      if ((uint8(char) >= 48 && uint8(char) <= 57) || (uint8(char) >= 65 && uint8(char) <= 90) || (uint8(char) >= 97 && uint8(char) <= 122)) {
+        resultBytes[resultLength] = char;
+        resultLength++;
+      }
+    }
+
+    bytes memory finalResultBytes = new bytes(resultLength);
+    for (uint256 i = 0; i < resultLength; i++) {
+      finalResultBytes[i] = resultBytes[i];
+    }
+
+    return string(finalResultBytes);
+  }
+
+
+}
+
+// File: @openzeppelin/contracts/utils/math/SafeMath.sol
+// SPDX-License-Identifier: MIT
+// OpenZeppelin Contracts (last updated v4.9.0) (utils/math/SafeMath.sol)
+
+pragma solidity ^0.8.0;
+
+// CAUTION
+// This version of SafeMath should only be used with Solidity 0.8 or later,
+// because it relies on the compiler's built in overflow checks.
+
+/**
+ * @dev Wrappers over Solidity's arithmetic operations.
+ *
+ * NOTE: `SafeMath` is generally not needed starting with Solidity 0.8, since the compiler
+ * now has built in overflow checking.
+ */
+library SafeMath {
+    /**
+     * @dev Returns the addition of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, with an overflow flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            // Gas optimization: this is cheaper than requiring 'a' not being zero, but the
+            // benefit is lost if 'b' is also tested.
+            // See: https://github.com/OpenZeppelin/openzeppelin-contracts/pull/522
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    /**
+     * @dev Returns the division of two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers, with a division by zero flag.
+     *
+     * _Available since v3.4._
+     */
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+
+    /**
+     * @dev Returns the addition of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `+` operator.
+     *
+     * Requirements:
+     *
+     * - Addition cannot overflow.
+     */
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting on
+     * overflow (when the result is negative).
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a - b;
+    }
+
+    /**
+     * @dev Returns the multiplication of two unsigned integers, reverting on
+     * overflow.
+     *
+     * Counterpart to Solidity's `*` operator.
+     *
+     * Requirements:
+     *
+     * - Multiplication cannot overflow.
+     */
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a * b;
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator.
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a / b;
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting when dividing by zero.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a % b;
+    }
+
+    /**
+     * @dev Returns the subtraction of two unsigned integers, reverting with custom message on
+     * overflow (when the result is negative).
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {trySub}.
+     *
+     * Counterpart to Solidity's `-` operator.
+     *
+     * Requirements:
+     *
+     * - Subtraction cannot overflow.
+     */
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b <= a, errorMessage);
+            return a - b;
+        }
+    }
+
+    /**
+     * @dev Returns the integer division of two unsigned integers, reverting with custom message on
+     * division by zero. The result is rounded towards zero.
+     *
+     * Counterpart to Solidity's `/` operator. Note: this function uses a
+     * `revert` opcode (which leaves remaining gas untouched) while Solidity
+     * uses an invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a / b;
+        }
+    }
+
+    /**
+     * @dev Returns the remainder of dividing two unsigned integers. (unsigned integer modulo),
+     * reverting with custom message when dividing by zero.
+     *
+     * CAUTION: This function is deprecated because it requires allocating memory for the error
+     * message unnecessarily. For custom revert reasons use {tryMod}.
+     *
+     * Counterpart to Solidity's `%` operator. This function uses a `revert`
+     * opcode (which leaves remaining gas untouched) while Solidity uses an
+     * invalid opcode to revert (consuming all remaining gas).
+     *
+     * Requirements:
+     *
+     * - The divisor cannot be zero.
+     */
+    function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a % b;
+        }
+    }
+}
+
