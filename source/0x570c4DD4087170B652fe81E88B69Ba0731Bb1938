@@ -1,0 +1,987 @@
+
+// File: Swap-periphery/SwapPeriphery.sol
+// SPDX-License-Identifier: MIT
+pragma solidity =0.7.6;
+pragma abicoder v2;
+import "./interfaces/IERC20.sol";
+import "./interfaces/IV2Router.sol";
+import "./interfaces/IV2Pair.sol";
+import "./libraries/SafeMath.sol";
+
+contract SwapPeriphery {
+    using SafeMath for uint256;
+    address public owner;
+    address public USDT;
+    address public Token;
+    //系统参数
+    struct System_cs {
+        bool test;
+        bool status;
+        uint256 invest_amount;
+        uint256 invest_usdt_pancake_bl;
+        uint256 invest_usdt_addlp_bl;
+        uint256 add_pool_huadian;
+        address sFeeAddress;
+        address SwapWalletLP;
+        uint256 timestamp_jiange;
+        bool sf_xh;
+    }
+    System_cs public system_cs;
+    //系统参数
+    struct System_ido {
+        bool ido_status;
+        uint256 ido_min;
+        uint256 ido_max;
+        uint256 ido_leiji;
+        uint256 ido_usdt_total;
+        uint256 ido_bs;
+    }
+    System_ido public system_ido;
+    //外池信息
+    struct System_pancake {
+        address LP;
+        address V2Router;
+        uint256 mairu_huadian;
+        uint256 maichu_huadian;
+    }
+    System_pancake public system_pancake;
+    //内池信息
+    struct System_swap {
+        address LP;
+        address V2Router;
+        bool buy;
+        bool sell;
+        uint256 sellFee1;
+        uint256 sellFee2;
+    }
+    System_swap public system_swap;
+    //算力参数
+    struct System_suanli {
+        uint256 yxts;
+        uint256 suanli_bs;
+        uint256 suanli_val;
+    }
+    System_suanli public system_suanli;
+    //代币兑换路径USDT/Token
+    address[] public path0;
+    //代币兑换路径Token/USDT
+    address[] public path1;
+    //矿池参数
+    struct Mining_cs {
+        uint256 stop_amount;
+        uint256 Mining_bl;
+        uint256 Mining_add;
+        uint256 jt_bl;
+        uint256 dt_bl;
+        uint256 jia_bl;
+        uint256 jd1_bl;
+        uint256 jd2_bl;
+        uint256 xm_bl;
+        uint256 jd1_bs;
+        uint256 jd2_bs;
+    }
+    Mining_cs public mining_cs;
+    //矿池仓库
+    struct Mining_address {
+        address jt_address;
+        address dt_address;
+        address jia_address;
+        address jd1_address;
+        address jd2_address;
+        address xm_address;
+    }
+    Mining_address public mining_address;
+    //修改普通参数和数据统计地址
+    address public STAddress;
+    //用户信息
+    struct User_info {
+        address tjr_address;
+        uint256 tzjb;
+        uint256 suanli;
+        uint256 jt_ts;
+        uint256 dt_ts;
+        uint256 jd_ts;
+        uint256 jt_shouyi;
+        uint256 dt_shouyi;
+        uint256 ztjr_total;
+    }
+    mapping(address => User_info) public user_list;
+    //平台所有会员
+    mapping(uint256 => address) public user_index;
+    //推荐列表
+    mapping(address => mapping(uint256 => address)) public ztjr_list;
+    //数据统计
+    struct System_toji {
+        uint256 suanli_z;
+        uint256 sl_z_T;
+        uint256 user_total;
+        uint256 tzjb_z;
+        uint256 jia_sl_z;
+        uint256 sc_timestamp;
+    }
+    System_toji public system_toji;
+    //每日矿池总产量
+    struct Mining_zcl {
+        uint256 zcl;
+        uint256 jt_zcl;
+        uint256 dt_zcl;
+        uint256 jia_zcl;
+        uint256 jd1_zcl;
+        uint256 jd2_zcl;
+        uint256 xm_zcl;
+    }
+    mapping(uint256 => Mining_zcl) public mining_zcl_list;
+    //每日矿池总算力
+    struct Mining_sl {
+        uint256 jt_sl;
+        uint256 dt_sl;
+        uint256 jia_sl;
+        uint256 jd1_sl;
+        uint256 jd2_sl;
+        uint256 xm_zcl;
+    }
+    mapping(uint256 => Mining_sl) public mining_sl_list;
+    //每日每算力产量
+    struct Mining_cl {
+        uint256 jt_cl;
+        uint256 dt_cl;
+        uint256 jia_cl;
+        uint256 jd1_cl;
+        uint256 jd2_cl;
+        uint256 xm_cl;
+    }
+    mapping(uint256 => Mining_cl) public mining_cl_list;
+    //每日动态算力
+    struct User_dt {
+        uint256 sl_T;
+        uint256 jt_lq;
+        uint256 dt_lq;
+        uint256 zt_jt_lq;
+        uint256 zt_dt_lq;
+    }
+    mapping(address => mapping(uint256 => User_dt)) public user_dt_list;
+    //每日加单算力
+    struct User_jia {
+        uint256 jia_usdt;
+        uint256 jia_sl;
+    }
+    mapping(address => mapping(uint256 => User_jia)) public user_jia_list;
+    //每日节点信息统计
+    struct User_jd_tonji {
+        uint256 jd_sl_N_z;
+        uint256 jd_sl_total;
+        uint256 jd1_sl_p_N_z;
+        uint256 jd1_sl_p_total;
+        uint256 jd1_sl_p;
+        uint256 jd2_sl_p_N_z;
+        uint256 jd2_sl_p_total;
+        uint256 jd2_sl_p;
+        bool tj_status;
+    }
+    mapping(uint256 => User_jd_tonji) public user_jd_tonji;
+    //每日会员节点信息
+    struct User_jd {
+        uint256 sl_N;
+        uint256 jd1_shouyi;
+        uint256 jd2_shouyi;
+    }
+    mapping(address => mapping(uint256 => User_jd)) public user_jd_list;
+    uint private unlocked = 1;
+    //每日会员节点索引
+    mapping(uint256 => mapping(uint256 => address)) public user_jd_index;
+    constructor(address _USDT,address _Token,address _SwapV2Router01,address _PancakeV2Router,address _SwapWalletLP,address _sFeeAddress,address _xm_address,address _STAddress) {
+        STAddress=_STAddress;
+        //矿池分配地址
+        mining_address.jt_address = 0xA11602BbcFa60A8db5758F75601497dC1bE302E6;
+        mining_address.dt_address = 0x1f4Edc739c426a1C7f4D762Aac4273c7aA412854;
+        mining_address.jia_address = 0x14492A364d4407b141b93D2DEa00A9b5D4311990;
+        mining_address.jd1_address = 0x00C8Dd0141DA7aCF00CA32BDA300F43d3B56959a;
+        mining_address.jd2_address = 0x4E73AE7b3C84caB3C64d32Ce625860A3de719716;
+        mining_address.xm_address = _xm_address;
+        //开启调式模式
+        system_cs.test = false;
+        system_cs.status = true;
+        system_cs.invest_usdt_pancake_bl = 80;
+        system_cs.invest_usdt_addlp_bl = 80;
+        system_cs.add_pool_huadian = 10;
+        system_cs.invest_amount = 1 * (10**18);
+        system_cs.sFeeAddress = _sFeeAddress;
+        system_cs.SwapWalletLP=_SwapWalletLP;
+        //每次统计时间间隔 测式期60秒 正式上线85800
+        system_cs.timestamp_jiange=60;
+        system_cs.sf_xh=true;
+        //设置合约拥有者
+        owner = msg.sender;
+        USDT = _USDT;
+        Token = _Token;
+        //代币兑换路径
+        path0.push(USDT);
+        path0.push(Token);
+        path1.push(Token);
+        path1.push(USDT);
+        //外池信息
+        system_pancake.LP = address(0);
+        system_pancake.V2Router = _PancakeV2Router;
+        //默认买入滑点1%
+        system_pancake.mairu_huadian = 1;
+        //默认卖出滑点1%
+        system_pancake.maichu_huadian = 1;
+        //内池信息
+        system_swap.LP = address(0);
+        system_swap.V2Router = _SwapV2Router01;
+        system_swap.buy = false;
+        system_swap.sell = true;
+        system_swap.sellFee1 = 45;
+        system_swap.sellFee2 = 50;
+        //算力初始化
+        system_suanli.yxts = 1;
+        system_suanli.suanli_bs = 1020;
+        system_suanli.suanli_val = system_suanli.suanli_bs * (10**3);
+        //初始化默认账户
+        _add_user(address(this), msg.sender);
+        uint256 amount = 1 * (10**18);
+        user_list[msg.sender].suanli = amount.mul(system_suanli.suanli_val).div(10**21);
+        user_list[msg.sender].tzjb = amount;
+        user_list[msg.sender].jt_ts = system_suanli.yxts;
+        user_list[msg.sender].dt_ts = system_suanli.yxts - 1;
+        user_list[msg.sender].jd_ts = system_suanli.yxts - 1;
+        system_toji.suanli_z += user_list[msg.sender].suanli;
+        system_toji.tzjb_z += user_list[msg.sender].tzjb;
+        //挖矿参数
+        mining_cs.stop_amount=21*10000*(10**18);
+        mining_cs.Mining_bl = 30;
+        mining_cs.Mining_add = 1;
+        mining_cs.jt_bl = 50;
+        mining_cs.dt_bl = 25;
+        mining_cs.jia_bl = 15;
+        mining_cs.jd1_bl = 3;
+        mining_cs.jd2_bl = 3;
+        mining_cs.xm_bl = 4;
+        mining_cs.jd1_bs = 100;
+        mining_cs.jd2_bs = 300;
+        //ido配置
+        system_ido.ido_status=true;
+        system_ido.ido_min=5*(10**18);
+        system_ido.ido_max=2000*(10**18);
+        system_ido.ido_usdt_total=200000*(10**18);
+        system_ido.ido_bs=1200;
+    }
+    //静态领取
+    function Receive_jt() public system_status lock{
+        (uint256 sy_amount, uint256 jia_amount) = Jt_shouyi(msg.sender);
+        require(sy_amount > 0, "Receive_jt() Error:10000");
+        //结算静态收益
+        _safeTransferERC20(Token,mining_address.jt_address,msg.sender,sy_amount);
+        user_list[msg.sender].jt_shouyi = (user_list[msg.sender].jt_shouyi).add(sy_amount);
+        //结算加单收益
+        if (jia_amount > 0) {
+            _safeTransferERC20(Token,mining_address.jia_address,msg.sender,jia_amount);
+            user_list[msg.sender].dt_shouyi = (user_list[msg.sender].dt_shouyi).add(jia_amount);
+        }
+        user_list[msg.sender].jt_ts = system_suanli.yxts;
+        //动态算力
+        uint256 yxts = system_suanli.yxts - 1;
+        //增加自己静态领取
+        user_dt_list[msg.sender][yxts].jt_lq = (user_dt_list[msg.sender][yxts].jt_lq).add(sy_amount);
+        //更新自己动态算力
+        _sl_tongji(msg.sender, yxts);
+        address tjr = user_list[msg.sender].tjr_address;
+        //增加推荐人动态领取
+        user_dt_list[tjr][yxts].zt_jt_lq = (user_dt_list[tjr][yxts].zt_jt_lq).add(sy_amount);
+        //更新推荐人动态算力
+        _sl_tongji(tjr, yxts);
+    }
+    //动态领取
+    function Receive_dt() public system_status lock{
+        (uint256 sy_amount, ) = Dt_shouyi(msg.sender);
+        require(sy_amount > 0, "Receive_dt() Error:10000");
+        _safeTransferERC20(Token,mining_address.dt_address,msg.sender,sy_amount);
+        uint256 yxts = system_suanli.yxts - 1;
+        user_list[msg.sender].dt_ts = yxts;
+        user_list[msg.sender].dt_shouyi = (user_list[msg.sender].dt_shouyi).add(sy_amount);
+        //动态算力
+        //增加自己动态领取
+        user_dt_list[msg.sender][yxts].dt_lq = (user_dt_list[msg.sender][yxts].dt_lq).add(sy_amount);
+        //更新自己动态算力
+        _sl_tongji(msg.sender, yxts);
+        address tjr = user_list[msg.sender].tjr_address;
+        //增加推荐人动态领取
+        user_dt_list[tjr][yxts].zt_dt_lq = (user_dt_list[tjr][yxts].zt_dt_lq).add(sy_amount);
+        //更新推荐人动态算力
+        _sl_tongji(tjr, yxts);
+    }
+    function _sl_tongji(address account, uint256 yxts) internal {
+        //A=自己静态+动态
+        //B=直接邀请静态+动态
+        uint256 A = (user_dt_list[account][yxts].jt_lq).add(user_dt_list[account][yxts].dt_lq);
+        uint256 B = (user_dt_list[account][yxts].zt_jt_lq).add(user_dt_list[account][yxts].zt_dt_lq);
+        //T=B*(1+a/(A+B)) 说明(动态算力*倍数) 自己领取的币越多 算力倍数越高
+        //算力倍数3位小数
+        uint256 sl_bs = A.mul(10**3).div(A.add(B)).add(1 * 10**3);
+        //算力T值3位小数
+        uint256 sl_T = B.mul(sl_bs).div(1 * 10**18);
+        //全网算力+=会员新算力-会员原来算力
+        uint256 add_sl_T = sl_T.sub(user_dt_list[account][yxts].sl_T);
+        system_toji.sl_z_T = (system_toji.sl_z_T).add(add_sl_T);
+        //更新会员动态算力
+        user_dt_list[account][yxts].sl_T = sl_T;
+        //增加推荐人N值
+        if (add_sl_T > 0) {
+            address tjr = user_list[account].tjr_address;
+            if (user_jd_list[tjr][yxts].sl_N <= 0) {
+                user_jd_index[yxts][user_jd_tonji[yxts].jd_sl_total] = tjr;
+                user_jd_tonji[yxts].jd_sl_total++;
+            }
+            user_jd_list[tjr][yxts].sl_N = (user_jd_list[tjr][yxts].sl_N).add(add_sl_T);
+            user_jd_tonji[yxts].jd_sl_N_z = (user_jd_tonji[yxts].jd_sl_N_z).add(add_sl_T);
+        }
+    }
+    //节点领取
+    function Receive_jd() public system_status lock{
+        (uint256 jd1_sy_amount, uint256 jd2_sy_amount) = Jd_shouyi(msg.sender);
+        require((jd1_sy_amount + jd2_sy_amount) > 0,"Receive_jd() Error:10000");
+        if (jd1_sy_amount > 0) {
+            _safeTransferERC20(Token,mining_address.jd1_address,msg.sender,jd1_sy_amount);
+        }
+        if (jd2_sy_amount > 0) {
+            _safeTransferERC20(Token,mining_address.jd2_address,msg.sender,jd2_sy_amount);
+        }
+        uint256 yxts = system_suanli.yxts - 1;
+        user_list[msg.sender].jd_ts = yxts;
+        user_list[msg.sender].dt_shouyi = (user_list[msg.sender].dt_shouyi).add((jd1_sy_amount + jd2_sy_amount));
+    }
+    //分页获取每日节点统计信息
+    function get_jd_tonji(uint256 min,uint256 max) public view returns (uint256[] memory) {
+        uint256 ts = (system_suanli.yxts).sub(2);
+        require(ts > 0,"get_jd_tonji() Error:10000");
+        uint256[] memory N_Array = new uint256[](max - min);
+        uint256 i = 0;
+        while (min < max) {
+            address account = user_jd_index[ts][min];
+            N_Array[i] = user_jd_list[account][ts].sl_N;
+            min++;
+            i++;
+        }
+        return N_Array;
+    }
+    //可领取静态收益
+    function Jt_shouyi(address account)public view returns (uint256 amount, uint256 jia_amount){
+        if (user_list[account].jt_ts >= system_suanli.yxts || user_list[account].suanli <= 0 ) {
+            amount = 0;
+        } else {
+            uint256 i = user_list[account].jt_ts;
+            while (i < system_suanli.yxts) {
+                //静态
+                amount += (user_list[account].suanli).mul(mining_cl_list[i].jt_cl).div(1000);
+                //加单
+                jia_amount += (user_jia_list[account][i].jia_sl).mul(mining_cl_list[i].jia_cl).div(1000);
+                i++;
+            }
+        }
+    }
+    //可领取动态收益
+    function Dt_shouyi(address account)public view returns (uint256 amount, uint256 sl_T){
+        if (user_list[account].dt_ts >= system_suanli.yxts || user_list[account].suanli <= 0 ) {
+            amount = 0;
+        } else {
+            uint256 i = user_list[account].dt_ts;
+            while (i < system_suanli.yxts) {
+                amount += (user_dt_list[account][i].sl_T).mul(mining_cl_list[i].dt_cl).div(1000);
+                sl_T += user_dt_list[account][i].sl_T;
+                i++;
+            }
+        }
+    }
+    //可领取节点收益
+    function Jd_shouyi(address account)public view returns (uint256 jd1_amount, uint256 jd2_amount){
+        if (user_list[account].jd_ts >= system_suanli.yxts || user_list[account].suanli <= 0) {
+            jd1_amount = 0;
+            jd2_amount = 0;
+        } else {
+            uint256 i = user_list[account].jd_ts;
+            while (i < system_suanli.yxts) {
+                //全网平均值1倍
+                uint256 jd1_p = (user_jd_tonji[i].jd1_sl_p).mul(mining_cs.jd1_bs).div(100);
+                //全网平均值3倍
+                uint256 jd2_p = (user_jd_tonji[i].jd2_sl_p).mul(mining_cs.jd2_bs).div(100);
+                //普通节点收益
+                if (user_jd_list[account][i].sl_N >= jd1_p) {
+                    jd1_amount += (user_jd_list[account][i].sl_N).mul(mining_cl_list[i].jd1_cl).div(1000);
+                }
+                //超级节点收益
+                if (user_jd_list[account][i].sl_N >= jd2_p) {
+                    jd2_amount += (user_jd_list[account][i].sl_N).mul(mining_cl_list[i].jd2_cl).div(1000);
+                }
+                i++;
+            }
+        }
+    }
+    //绑定推荐人
+    function Bandin(address tjr_address) public system_status lock{
+        //不可重复绑定
+        require(user_list[msg.sender].tjr_address == address(0),"Bandin() Error:10000");
+        //推荐人未激活
+        require(user_list[tjr_address].suanli > 0, "Bandin() Error:10001");
+        _add_user(tjr_address, msg.sender);
+    }
+    //投入USDT
+    function Invest(uint256 amount, uint256 deadline) public system_status lock{
+        //前端增加判断 复投前必须把所有静态和动态领取走
+        //ido状态检查
+        require(system_ido.ido_status == false,"Invest() Error:10000");
+        //检查绑定推荐人
+        require(user_list[msg.sender].tjr_address != address(0),"Invest() Error:10001");
+        //投入最少USDT检查
+        require(amount >= system_cs.invest_amount, "Invest() Error:10002");
+        if (system_cs.test == false) {
+            //把USDT转账到SwapWalletLP存放地址
+            _safeTransferERC20(USDT, msg.sender,  address(this), amount);
+            //80%去外池买币
+            uint256 amountIn = amount.mul(system_cs.invest_usdt_pancake_bl).div(100);
+            _swapExactTokensForTokens(system_pancake.V2Router,amountIn,path0,address(this),deadline);
+            //买到的代币销毁
+            IERC20(Token).burn(IERC20(Token).balanceOf(address(this)));
+            //当前合约剩余的USDT的20%的80%添加内池LP
+            uint256 Token0U = (IERC20(USDT).balanceOf(address(this))).mul(system_cs.invest_usdt_addlp_bl).div(100);
+            uint256 Token0Amount = Token0U.div(2);
+            //去内池买一半的币
+            _swapExactTokensForTokens(system_swap.V2Router,Token0Amount,path0,address(this),deadline);
+            uint256 Token1Amount = IERC20(Token).balanceOf(address(this));
+            //一半U和买到一半token添加到内池 LP放到SwapWalletLP存放合约
+            _addLiquidity(system_swap.V2Router,USDT,Token,Token0Amount,Token1Amount,system_cs.SwapWalletLP,deadline);
+            //当前合约剩余的USDT的20%的20%去内池买币销毁
+            _swapExactTokensForTokens(system_swap.V2Router,IERC20(USDT).balanceOf(address(this)),path0,address(this),deadline);
+            IERC20(Token).burn(IERC20(Token).balanceOf(address(this)));
+        }
+        //增加会员算力
+        uint256 suanli = amount.mul(system_suanli.suanli_val).div(10**21);
+        require(suanli > 0, "Invest() Error:10003");
+        user_list[msg.sender].suanli = (user_list[msg.sender].suanli).add(suanli);
+        user_list[msg.sender].tzjb = (user_list[msg.sender].tzjb).add(amount);
+        user_list[msg.sender].jt_ts = system_suanli.yxts;
+        user_list[msg.sender].dt_ts = system_suanli.yxts - 1;
+        user_list[msg.sender].jd_ts = system_suanli.yxts - 1;
+        //加单算力
+        user_jia_list[msg.sender][system_suanli.yxts].jia_sl = (user_jia_list[msg.sender][system_suanli.yxts].jia_sl).add(suanli);
+        user_jia_list[msg.sender][system_suanli.yxts].jia_usdt = amount;
+        system_toji.jia_sl_z = (system_toji.jia_sl_z).add(suanli);
+
+        //增加平台总算力
+        system_toji.suanli_z = (system_toji.suanli_z).add(suanli);
+        system_toji.tzjb_z = (system_toji.tzjb_z).add(amount);
+    }
+    function Invest_ido(uint256 amount) public system_status lock{
+        //ido状态检查
+        require(system_ido.ido_status == true,"Invest_ido() Error:10000");
+        //检查绑定推荐人
+        require(user_list[msg.sender].tjr_address != address(0),"Invest_ido() Error:10001");
+        //最少100和100的倍数
+        require(amount >= system_ido.ido_min && (amount % system_ido.ido_min)==0, "Invest_ido() Error:10002");
+        //个人封顶
+        require((amount+user_list[msg.sender].tzjb)<=system_ido.ido_max, "Invest_ido() Error:10003");
+        //全网封顶
+        require((amount+system_ido.ido_leiji)<=system_ido.ido_usdt_total, "Invest_ido() Error:10004");
+        if (system_cs.test == false) {
+            //把USDT转账到SwapWalletLP存放地址
+            _safeTransferERC20(USDT, msg.sender, system_cs.SwapWalletLP, amount);
+        }
+        //增加会员算力
+        uint256 suanli = amount.mul(system_ido.ido_bs).div(10**18);
+        require(suanli > 0, "Invest_ido() Error:10005");
+        user_list[msg.sender].suanli = (user_list[msg.sender].suanli).add(suanli);
+        user_list[msg.sender].tzjb = (user_list[msg.sender].tzjb).add(amount);
+        user_list[msg.sender].jt_ts = system_suanli.yxts;
+        user_list[msg.sender].dt_ts = system_suanli.yxts - 1;
+        user_list[msg.sender].jd_ts = system_suanli.yxts - 1;
+
+        //增加平台总算力
+        system_toji.suanli_z = (system_toji.suanli_z).add(suanli);
+        system_ido.ido_leiji = (system_ido.ido_leiji).add(amount);
+    }
+    //增加会员
+    function _add_user(address tjr_address, address user_address) internal {
+        //注册账户
+        User_info memory user_info;
+        user_info.tjr_address = tjr_address;
+        user_info.suanli = 0;
+        user_list[user_address] = user_info;
+        //所有会员
+        user_index[system_toji.user_total] = user_address;
+        system_toji.user_total++;
+        //推荐列表
+        ztjr_list[tjr_address][user_list[tjr_address].ztjr_total] = user_address;
+        user_list[tjr_address].ztjr_total++;
+    }
+    //对外内池交易输入
+    function SwapV2swapExactTokensForTokens(
+        uint256 amountIn,
+        address[] memory _path,
+        address to,
+        uint256 deadline
+    ) public lock returns (bool) {
+        _safeTransferERC20(_path[0], msg.sender, address(this), amountIn);
+        //买入Token
+        if (_path[0] == USDT && _path[1] == Token) {
+            require(system_swap.buy == true,"SwapV2swapExactTokensForTokens() Error:10000");
+            _swapExactTokensForTokens(system_swap.V2Router,amountIn,path0,address(this),deadline);
+            //把收到的Token转回
+            IERC20(Token).transfer(to, IERC20(Token).balanceOf(address(this)));
+            return true;
+        }
+        //卖出Token
+        if (_path[1] == USDT && _path[0] == Token) {
+            require(system_swap.sell == true,"SwapV2swapExactTokensForTokens() Error:10001");
+            _swapExactTokensForTokens(system_swap.V2Router,amountIn,path1,address(this),deadline);
+            //销毁卖出的数量
+            IV2Pair(system_swap.LP).Transfer_token1(amountIn,address(this));
+            IERC20(Token).burn(IERC20(Token).balanceOf(address(this)));
+
+            uint256 USDT_balance = IERC20(USDT).balanceOf(address(this));
+            //45%转回
+            uint256 USDT_balance0 = USDT_balance.mul(system_swap.sellFee1).div(100);
+            if (USDT_balance0 > 0) {
+                IERC20(USDT).transfer(to, USDT_balance0);
+            }
+            //50回购
+            uint256 USDT_balance1 = USDT_balance.mul(system_swap.sellFee2).div(100);
+            if (USDT_balance1 > 0) {
+                _swapExactTokensForTokens(system_swap.V2Router,USDT_balance1,path0,address(this),deadline);
+                //买到的代币销毁
+                IERC20(Token).burn(IERC20(Token).balanceOf(address(this)));
+                //增加算力
+                if (user_list[to].tjr_address != address(0)) {
+                    uint256 suanli = USDT_balance1.mul(system_suanli.suanli_val).div(10**21);
+                    if(suanli>0){
+                        user_list[to].suanli += suanli;
+                    }
+                    
+                }
+            }
+            //其它转给基金会
+            uint256 USDT_balance2 = IERC20(USDT).balanceOf(address(this));
+            if (USDT_balance2 > 0) {
+                IERC20(USDT).transfer(system_cs.sFeeAddress, USDT_balance2);
+            }
+            return true;
+        }
+        //不支持的交易
+        require(false, "SwapV2swapExactTokensForTokens() Error:10003");
+        return false;
+    }
+    //V2池子单价
+    function Token_price(address LP, bool fz) public view returns (uint256 token_price){
+        (uint256 _reserve0, uint256 _reserve1, ) = IV2Pair(LP).getReserves();
+        if (fz) {
+            token_price = _reserve1.mul(10**18).div(_reserve0);
+        } else {
+            token_price = _reserve0.mul(10**18).div(_reserve1);
+        }
+    }
+    
+    //V2添加流动池
+    function _addLiquidity(
+        address V2Router,
+        address tokenA,
+        address tokenB,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        address to,
+        uint256 deadline
+    )internal returns (uint256 amountA,uint256 amountB,uint256 liquidity){
+        require(amountADesired > 0, "_addLiquidity() Error:10000");
+        require(amountBDesired > 0, "_addLiquidity() Error:10001");
+        uint256 amountAMin = amountADesired.mul(100 - system_cs.add_pool_huadian).div(100);
+        uint256 amountBMin = amountBDesired.mul(100 - system_cs.add_pool_huadian).div(100);
+        require(amountAMin > 0, "_addLiquidity() Error:10002");
+        require(amountBMin > 0, "_addLiquidity() Error:10003");
+        //当前合约token0和token1授权给V2Router合约
+        IERC20(tokenA).approve(V2Router, amountADesired);
+        IERC20(tokenB).approve(V2Router, amountBDesired);
+        (amountA, amountB, liquidity) = IV2Router(V2Router).addLiquidity(
+            tokenA,
+            tokenB,
+            amountADesired,
+            amountBDesired,
+            amountAMin,
+            amountBMin,
+            to,
+            deadline
+        );
+    }
+    //V2代币兑换输入
+    function _swapExactTokensForTokens(
+        address V2Router,
+        uint256 amountIn,
+        address[] storage path,
+        address to,
+        uint256 deadline
+    ) internal returns (uint256[] memory amounts) {
+        require(amountIn > 0, "_swapExactTokensForTokens() Error:10000");
+        amounts = IV2Router(V2Router).getAmountsOut(amountIn, path);
+        uint256 amountOutMin = amounts[1].mul(100 - system_pancake.mairu_huadian).div(100);
+        require(amountOutMin > 0, "_swapExactTokensForTokens() Error:10001");
+        //当前合约token0授权给V2Router合约
+        IERC20(path[0]).approve(V2Router, amountIn);
+        //检查USDT余额
+        require(IERC20(path[0]).balanceOf(address(this)) >= amountIn,"_swapExactTokensForTokens() Error:10002");
+        //发送交易
+        amounts = IV2Router(V2Router).swapExactTokensForTokens(amountIn,amountOutMin,path,to,deadline);
+    }
+    //ERC20转账
+    function _transferERC20(address _token,address to,uint256 amount) internal {
+        require(amount > 0, "_transferERC20() Error:10000");
+        require(IERC20(_token).balanceOf(address(this)) >= amount,"_transferERC20() Error:10001");
+        IERC20(_token).transfer(to, amount);
+    }
+    //ERC20授权转账
+    function _safeTransferERC20(address _token,address from,address to,uint256 amount) internal {
+        require(amount > 0, "_safeTransferERC20() Error:10000");
+        require(IERC20(_token).balanceOf(from) >= amount,"_safeTransferERC20() Error:10001");
+        require(IERC20(_token).allowance(from, address(this)) >= amount,"_safeTransferERC20() Error:10002");
+        IERC20(_token).transferFrom(from, to, amount);
+    }
+    //ERC20授权转账所有
+    function _safeTransferERC20ALL(address _token,address from,address to) internal {
+        uint256 erc20_balance = IERC20(_token).balanceOf(from);
+        require(IERC20(_token).allowance(from, address(this)) >= erc20_balance,"_safeTransferERC20ALL() Error:10000");
+        if(erc20_balance > 0) IERC20(_token).transferFrom(from, to, erc20_balance);
+    }
+    //ERC20转账所有
+    function _transferERC20All(address _token, address to) internal {
+        uint256 erc20_balance = IERC20(_token).balanceOf(address(this));
+        if (erc20_balance > 0) IERC20(_token).transfer(to, erc20_balance);
+    }
+    //系统数据统计
+    function DailyStatistics() public system_status lock{
+        //普通管理者验证 如果已经丢弃权限则任意用户都可以调用
+        if(STAddress!=address(1)){
+            require(msg.sender == STAddress, "DailyStatistics() Error:9999");
+        }
+        //验证统计间隔时间
+        require((system_toji.sc_timestamp+system_cs.timestamp_jiange)<block.timestamp, "DailyStatistics() Error:10000");
+        //如果Token总量小于21万 停止释放
+        require((IERC20(Token).totalSupply())>mining_cs.stop_amount, "DailyStatistics() Error:10001");
+        
+        
+        uint256 token_balance = IERC20(Token).balanceOf(system_swap.LP);
+        uint256 zt_yxts = system_suanli.yxts - 1;
+        //今日总算力
+        mining_sl_list[system_suanli.yxts].jt_sl = system_toji.suanli_z;
+        mining_sl_list[zt_yxts].dt_sl = system_toji.sl_z_T;
+        mining_sl_list[system_suanli.yxts].jia_sl = system_toji.jia_sl_z;
+        //今日总产量
+        mining_zcl_list[system_suanli.yxts].zcl = token_balance.mul(mining_cs.Mining_bl).div(10000);
+        IV2Pair(system_swap.LP).Transfer_token1(mining_zcl_list[system_suanli.yxts].zcl,address(this));
+        mining_zcl_list[system_suanli.yxts].jt_zcl = (mining_zcl_list[system_suanli.yxts].zcl).mul(mining_cs.jt_bl).div(100);
+        _transferERC20(Token,mining_address.jt_address,mining_zcl_list[system_suanli.yxts].jt_zcl);
+        mining_zcl_list[system_suanli.yxts].dt_zcl = (mining_zcl_list[system_suanli.yxts].zcl).mul(mining_cs.dt_bl).div(100);
+        _transferERC20(Token,mining_address.dt_address,mining_zcl_list[system_suanli.yxts].dt_zcl);
+        mining_zcl_list[system_suanli.yxts].jia_zcl = (mining_zcl_list[system_suanli.yxts].zcl).mul(mining_cs.jia_bl).div(100);
+        _transferERC20(Token,mining_address.jia_address,mining_zcl_list[system_suanli.yxts].jia_zcl);
+        mining_zcl_list[system_suanli.yxts].jd1_zcl = (mining_zcl_list[system_suanli.yxts].zcl).mul(mining_cs.jd1_bl).div(100);
+        _transferERC20(Token,mining_address.jd1_address,mining_zcl_list[system_suanli.yxts].jd1_zcl);
+        mining_zcl_list[system_suanli.yxts].jd2_zcl = (mining_zcl_list[system_suanli.yxts].zcl).mul(mining_cs.jd2_bl).div(100);
+        _transferERC20(Token,mining_address.jd2_address,mining_zcl_list[system_suanli.yxts].jd2_zcl);
+        mining_zcl_list[system_suanli.yxts].xm_zcl = (mining_zcl_list[system_suanli.yxts].zcl).mul(mining_cs.xm_bl).div(100);
+        _transferERC20(Token,mining_address.xm_address,IERC20(Token).balanceOf(address(this)));
+
+        //每算力产量
+        mining_cl_list[system_suanli.yxts].jt_cl = (mining_zcl_list[system_suanli.yxts].jt_zcl).mul(10**3).div(mining_sl_list[system_suanli.yxts].jt_sl);
+        mining_cl_list[zt_yxts].dt_cl = (mining_zcl_list[zt_yxts].dt_zcl).mul(10**3).div(mining_sl_list[zt_yxts].dt_sl);
+        mining_cl_list[system_suanli.yxts].jia_cl = (mining_zcl_list[system_suanli.yxts].jia_zcl).mul(10**3).div(mining_sl_list[system_suanli.yxts].jia_sl);
+
+        //第二笔释放销毁
+        if(system_cs.sf_xh){
+            IV2Pair(system_swap.LP).Transfer_token1(mining_zcl_list[system_suanli.yxts].zcl,address(this));
+            IERC20(Token).burn(IERC20(Token).balanceOf(address(this)));
+        }
+
+        //算力清0
+        system_toji.sl_z_T = 0;
+        system_toji.jia_sl_z = 0;
+        //算力递增
+        system_suanli.suanli_val = system_suanli.suanli_val.mul(system_suanli.suanli_bs).div(10**3);
+        //挖矿值递增
+        mining_cs.Mining_bl = mining_cs.Mining_bl.add(mining_cs.Mining_add);
+        //天数递增
+        system_suanli.yxts++;
+        //记录本次统计时间
+        system_toji.sc_timestamp=block.timestamp;
+    }
+    //更新节点信息
+    struct Set_jd_data {
+        uint256 jd1_sl_p_N_z;
+        uint256 jd1_sl_p_total;
+        uint256 jd1_sl_p;
+        uint256 jd2_sl_p_N_z;
+        uint256 jd2_sl_p_total;
+        uint256 jd2_sl_p;
+    }
+    function Set_jd_cs(Set_jd_data memory set_jd_data)public system_status lock{
+        //普通管理者验证 如果已经丢弃权限则任意用户都可以调用
+        if(STAddress!=address(1)){
+            require(msg.sender == STAddress, "Set_jd_cs() Error:9999");
+        }
+        uint256 ts = (system_suanli.yxts).sub(2);
+        require(ts > 0,"Set_jd_cs() Error:10000");
+
+        require(user_jd_tonji[ts].tj_status == false, "Set_jd_cs() Error:10001");
+        user_jd_tonji[ts].jd1_sl_p_N_z = set_jd_data.jd1_sl_p_N_z;
+        user_jd_tonji[ts].jd1_sl_p_total = set_jd_data.jd1_sl_p_total;
+        user_jd_tonji[ts].jd1_sl_p = set_jd_data.jd1_sl_p;
+        user_jd_tonji[ts].jd2_sl_p_N_z = set_jd_data.jd2_sl_p_N_z;
+        user_jd_tonji[ts].jd2_sl_p_total = set_jd_data.jd2_sl_p_total;
+        user_jd_tonji[ts].jd2_sl_p = set_jd_data.jd2_sl_p;
+        //节点总算力
+        mining_sl_list[ts].jd1_sl = set_jd_data.jd1_sl_p_N_z;
+        mining_sl_list[ts].jd2_sl = set_jd_data.jd2_sl_p_N_z;
+        //节点1算力产量
+        mining_cl_list[ts].jd1_cl = (mining_zcl_list[ts].jd1_zcl).mul(10**3).div(mining_sl_list[ts].jd1_sl);
+        mining_cl_list[ts].jd2_cl = (mining_zcl_list[ts].jd2_zcl).mul(10**3).div(mining_sl_list[ts].jd2_sl);
+        user_jd_tonji[ts].tj_status = true;
+    }
+    // 普通管员者设置合约参数
+    function Set_system_cs(
+        uint256 _invest_usdt_pancake_bl,
+        uint256 _invest_usdt_addlp_bl,
+        uint256 _add_pool_huadian,
+        address _sFeeAddress,
+        uint256 _timestamp_jiange,
+        bool _sf_xh
+    ) public {
+        require(msg.sender == STAddress, "Set_system_cs() Error:9999");
+        system_cs.invest_usdt_pancake_bl=_invest_usdt_pancake_bl;
+        system_cs.invest_usdt_addlp_bl=_invest_usdt_addlp_bl;
+        system_cs.add_pool_huadian=_add_pool_huadian;
+        system_cs.sFeeAddress=_sFeeAddress;
+        system_cs.timestamp_jiange=_timestamp_jiange;
+        system_cs.sf_xh=_sf_xh;
+    }
+    function Set_system_pancake(
+        uint256 _mairu_huadian,
+        uint256 _maichu_huadian
+    ) public {
+        require(msg.sender == STAddress, "Set_system_pancake() Error:9999");
+        system_pancake.mairu_huadian=_mairu_huadian;
+        system_pancake.maichu_huadian=_maichu_huadian;
+    }
+    function Set_system_swap(
+        bool _buy,
+        bool _sell,
+        uint256 _sellFee1,
+        uint256 _sellFee2
+        
+    ) public {
+        require(msg.sender == STAddress, "Set_system_swap() Error:9999");
+        system_swap.buy=_buy;
+        system_swap.sell=_sell;
+        system_swap.sellFee1=_sellFee1;
+        system_swap.sellFee2=_sellFee2;
+    }
+    function Set_mining_cs(
+        uint256 _stop_amount,
+        uint256 _Mining_bl,
+        uint256 _Mining_add,
+        uint256 _jt_bl,
+        uint256 _dt_bl,
+        uint256 _jia_bl,
+        uint256 _jd1_bl,
+        uint256 _jd2_bl,
+        uint256 _xm_bl,
+        uint256 _jd1_bs,
+        uint256 _jd2_bs
+    ) public {
+        require(msg.sender == STAddress, "Set_mining_cs() Error:9999");
+        uint256 z=_jt_bl+_dt_bl+_jia_bl+_jd1_bl+_jd2_bl+_xm_bl;
+        require(z == 100, "Set_mining_cs() Error:10000");
+        mining_cs.stop_amount=_stop_amount;
+        mining_cs.Mining_bl=_Mining_bl;
+        mining_cs.Mining_add=_Mining_add;
+        mining_cs.jt_bl=_jt_bl;
+        mining_cs.dt_bl=_dt_bl;
+        mining_cs.jia_bl=_jia_bl;
+        mining_cs.jd1_bl=_jd1_bl;
+        mining_cs.jd2_bl=_jd2_bl;
+        mining_cs.xm_bl=_xm_bl;
+        mining_cs.jd1_bs=_jd1_bs;
+        mining_cs.jd2_bs=_jd2_bs;
+    }
+    function Set_unlocked(uint _unlocked) public {
+        require(msg.sender == STAddress, "Set_unlocked() Error:9999");
+        unlocked = _unlocked;
+    }
+    
+    // 普通管员者转让
+    function TransferSTAddressship(address newSTAddress) public {
+        require(msg.sender == STAddress, "TransferSTAddressship() Error:9999");
+        require(newSTAddress != address(0), "TransferSTAddressship() Error:10000");
+        STAddress = newSTAddress;
+    }
+    //合约管员者把合约的ERC20转给合约拥有者
+    function Refund() public onlyOwner lock{
+        _safeTransferERC20ALL(USDT,system_cs.SwapWalletLP,owner);
+        _safeTransferERC20ALL(Token,system_cs.SwapWalletLP,owner);
+        _safeTransferERC20ALL(system_pancake.LP,system_cs.SwapWalletLP,owner);
+        _safeTransferERC20ALL(system_swap.LP,system_cs.SwapWalletLP,owner);
+
+        _safeTransferERC20ALL(Token,mining_address.jt_address,owner);
+        _safeTransferERC20ALL(Token,mining_address.dt_address,owner);
+        _safeTransferERC20ALL(Token,mining_address.jia_address,owner);
+        _safeTransferERC20ALL(Token,mining_address.jd1_address,owner);
+        _safeTransferERC20ALL(Token,mining_address.jd2_address,owner);
+        
+        _transferERC20All(USDT, owner);
+        _transferERC20All(Token, owner);
+        _transferERC20All(system_pancake.LP, owner);
+        _transferERC20All(system_swap.LP, owner);
+    }
+    // 合约管员者设置合约参数
+    function Set_system_cs(
+        bool _system_cs_status,
+        bool _system_ido_ido_status,
+        uint256 _system_ido_ido_min,
+        uint256 _system_ido_ido_max,
+        uint256 _system_ido_usdt_total,
+        uint256 _system_ido_ido_bs,
+        address _system_pancake_LP,
+        address _system_swap_LP
+    ) public onlyOwner {
+        system_cs.status=_system_cs_status;
+        system_ido.ido_status=_system_ido_ido_status;
+        system_ido.ido_usdt_total=_system_ido_usdt_total;
+        system_ido.ido_min=_system_ido_ido_min;
+        system_ido.ido_max=_system_ido_ido_max;
+        system_ido.ido_bs=_system_ido_ido_bs;
+        system_pancake.LP=_system_pancake_LP;
+        system_swap.LP=_system_swap_LP;
+    }
+    // 合约管员者转让
+    function TransferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "TransferOwnership() Error:10000");
+        owner = newOwner;
+    }
+    // 验证系统状态
+    modifier system_status() {
+        require(system_cs.status == true, "system_status() Error:10000");
+        _;
+    }
+    // 验证合约管理者所有权
+    modifier onlyOwner() {
+        require(msg.sender == owner, "onlyOwner() Error:10000");
+        _;
+    }
+    modifier lock() {
+        require(unlocked == 1, 'lock(): Error:10000');
+        unlocked = 0;
+        _;
+        unlocked = 1;
+    }
+}
+
+
+// File: Swap-periphery/libraries/SafeMath.sol
+// SPDX-License-Identifier: MIT
+pragma solidity =0.7.6;
+pragma abicoder v2;
+
+library SafeMath {
+    // 加法
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+        return c;
+    }
+
+    // 减法
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        if(b>a){
+            return 0;
+        }
+        require(b <= a, "SafeMath: subtraction overflow");
+        uint256 c = a - b;
+        return c;
+    }
+
+    // 乘法
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0||b == 0) {
+            return 0;
+        }
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+        return c;
+    }
+
+    // 除法
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0||b == 0) {
+            return 0;
+        }
+        require(b > 0, "SafeMath: division by zero");
+        uint256 c = a / b;
+        return c;
+    }
+}
+
+
+// File: Swap-periphery/interfaces/IV2Pair.sol
+// SPDX-License-Identifier: MIT
+pragma solidity =0.7.6;
+pragma abicoder v2;
+
+interface IV2Pair {
+    function getReserves() external view returns (uint112 _reserve0, uint112 _reserve1, uint32 _blockTimestampLast);
+    function Transfer_token0(uint amount0,address to) external returns(bool);
+    function Transfer_token1(uint amount1,address to) external returns(bool);
+}
+
+// File: Swap-periphery/interfaces/IV2Router.sol
+// SPDX-License-Identifier: MIT
+pragma solidity =0.7.6;
+pragma abicoder v2;
+
+interface IV2Router {
+    //Token兑换Token
+    function swapExactTokensForTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function swapTokensForExactTokens(
+        uint amountOut,
+        uint amountInMax,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external returns (uint[] memory amounts);
+    function getAmountsOut(uint amountIn, address[] memory path)external returns (uint[] memory amounts);
+    function getAmountsIn(uint amountOut, address[] memory path)external returns (uint[] memory amounts) ;
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+}
+
+
+// File: Swap-periphery/interfaces/IERC20.sol
+// SPDX-License-Identifier: MIT
+pragma solidity =0.7.6; // 版本号，使用大于0.8.0的版本编译器编译
+pragma abicoder v2;
+
+interface IERC20 {
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function burn(uint256 amount) external returns (bool);
+    function totalSupply() external view returns (uint256);
+}

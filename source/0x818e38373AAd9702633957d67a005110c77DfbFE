@@ -1,0 +1,487 @@
+/*===============================================================================
+ * CashBack Token (CBK) - Get Rewarded on every Transaction!
+ *===============================================================================
+ *	A uinque token where all users get REWARDED for using the token 
+ *	for regular transactions! 
+ *	Implements a uinique on-chain cashback system for all!
+ *===============================================================================
+ * FEATURES:
+ * ---------------
+ *	TOTAL TAX: {BUY: 4%} {SELL: 4%}
+ *----------------
+ * (*)	2% of TAX added to LIQUIDITY POOL
+ *  
+ * (*)	2% of TAX converted to BNB and added to REWARD POOL!
+ *		================
+ *		cashback rules:
+ *  	================
+ *		* Cashback starts after 10 initial trasactions
+ *		* Traded tokens value must be atleast (20000 CBK) to qualify.
+ *		* Sender and Reciever both get 10% of REWARD POOL amount!
+ *		Easy and simple. 
+ *		================
+ *		This way all transactions will be FREE (and in most cases you 
+ *		get back REWARDS more than you pay for transaction FEES)
+ *		Use the token for TRADING on DEX or sending/recieving with other users, 
+ *		every time you will be rewarded!
+ *		USE MORE, EARN MORE!
+ *===============================================================================
+ * The more you use the token, the more you will be rewarded!
+ * JOIN THE REVOLUTION!
+ *===============================================================================
+ * Telegram: https://t.me/CBK_cashbacktoken
+ *===============================================================================
+**/
+// SPDX-License-Identifier: unlicensed
+pragma solidity ^0.8.6;
+
+library Address {
+
+    function isContract(address account) internal view returns (bool) {
+        bytes32 codehash;
+        bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+        assembly {codehash := extcodehash(account)}
+        return (codehash != accountHash && codehash != 0x0);
+    }
+}
+
+library SafeMath {
+    function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            uint256 c = a + b;
+            if (c < a) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b > a) return (false, 0);
+            return (true, a - b);
+        }
+    }
+
+    function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (a == 0) return (true, 0);
+            uint256 c = a * b;
+            if (c / a != b) return (false, 0);
+            return (true, c);
+        }
+    }
+
+    function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a / b);
+        }
+    }
+
+    function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+        unchecked {
+            if (b == 0) return (false, 0);
+            return (true, a % b);
+        }
+    }
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) { return a + b; }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) { return a - b; }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) { return a * b; }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) { return a / b; }
+
+    function mod(uint256 a, uint256 b) internal pure returns (uint256) { return a % b; }
+
+    function sub( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+        unchecked {
+            require(b <= a, errorMessage);
+            return a - b;
+        }
+    }
+
+    function div( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a / b;
+        }
+    }
+
+    function mod(uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+        unchecked {
+            require(b > 0, errorMessage);
+            return a % b;
+        }
+    }
+}
+
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function decimals() external view returns (uint8);
+    function symbol() external view returns (string memory);
+    function name() external view returns (string memory);
+    function getOwner() external view returns (address);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address _owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+	
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address){ return msg.sender; }
+}
+
+abstract contract Auth is Context {
+    address internal owner;
+    mapping (address => bool) internal authorizations;
+
+    constructor(address _owner) {
+        owner = _owner;
+        authorizations[_owner] = true;
+    }
+
+    modifier onlyOwner(){ require(isOwner(_msgSender()), "NOT_OWNER"); _; }
+    modifier authorized(){ require(isAuthorized(_msgSender()), "UNAUTHORIZED"); _; }
+
+    function authorize(address adr) public onlyOwner{ authorizations[adr] = true; }
+    function unauthorize(address adr) public onlyOwner{ authorizations[adr] = false; }
+    function isOwner(address account) public view returns (bool){ return account == owner; }
+    function isAuthorized(address adr) public view returns (bool){ return authorizations[adr]; }
+
+    function transferOwnership(address payable adr) public onlyOwner {
+        owner = adr;
+        authorizations[adr] = true;
+        emit OwnershipTransferred(adr);
+    }
+
+    event OwnershipTransferred(address owner);
+}
+
+interface IDEXFactory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+interface IDEXRouter {
+    function factory() external pure returns (address);
+    function WETH() external pure returns (address);
+
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external payable;
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn,
+        uint amountOutMin,
+        address[] calldata path,
+        address to,
+        uint deadline
+    ) external;
+		
+	function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+}
+interface IUniswapV2Pair {
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+}
+
+interface ITokenBank{
+	function getfundlq() external view returns (uint256);
+	function getfundlqETH() external view returns (uint256);
+	function getfundtr() external view returns (uint256);
+}
+
+contract TokenBank is ITokenBank, Context {
+    using SafeMath for uint256;
+	using Address for address;
+	
+	address _token;
+    IBEP20 _tokenC;
+
+    address constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+	
+	address routerAddress;
+	IDEXRouter immutable router;
+	
+	modifier onlyToken() {
+        require(_msgSender() == _token); _;
+    }
+	
+	struct FUNDS{
+		uint256 lq;
+		uint256 lqETH;
+		uint256 trETH;
+	}
+	FUNDS fund;
+	
+	uint256 minLQ = 200000 * 10**18;
+	address autoLiquidityReceiver;
+	
+	uint256 public cbCt;
+	uint256 public cbTotal;
+	
+	constructor (address _router) {
+        routerAddress = _router != address(0) ? _router : 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+		router = IDEXRouter(routerAddress);
+        _token = _msgSender();
+		_tokenC = IBEP20(_token);
+    }
+	
+	event AutoLiquify(uint256 amountBNB, uint256 amountTokens);
+	event LogDeposit(address sender, uint256 amount);
+    receive() external payable { require(msg.value > 0); emit LogDeposit(_msgSender(), msg.value); }
+    fallback() external payable { require(msg.value > 0); emit LogDeposit(_msgSender(), msg.value); }
+	
+	function swapTokens(address tkn, uint256 tokenAmount, string memory swaptype) internal returns(uint256){
+		uint256 bal = address(this).balance;
+		if( keccak256(abi.encodePacked((swaptype))) == keccak256(abi.encodePacked(("BUY"))) ){
+			address[] memory path = new address[](2);
+			path[0] = router.WETH();
+			path[1] = tkn;
+			router.swapExactETHForTokensSupportingFeeOnTransferTokens{value: tokenAmount}(0,path,address(this),block.timestamp);
+			
+			return bal - address(this).balance;
+		} else if( keccak256(abi.encodePacked((swaptype))) == keccak256(abi.encodePacked(("SELL"))) ){
+			_tokenC.approve( address(router), type(uint256).max );
+			address[] memory path = new address[](2);
+			path[0] = tkn;
+			path[1] = router.WETH();
+			router.swapExactTokensForETHSupportingFeeOnTransferTokens(tokenAmount, 0, path,address(this),block.timestamp);
+			
+			return address(this).balance - bal;
+		}
+		return 0;
+    }
+	
+	function processTax(uint256 taxAmt) external onlyToken returns(bool){
+		if( taxAmt > 0 ){
+			FUNDS memory _fund = fund;
+			uint256 swapAmt = (taxAmt.div(4)).mul(3);
+			_fund.lq += taxAmt.sub(swapAmt);
+			
+			uint256 Tax = swapTokens(_token, (swapAmt), "SELL");
+			
+			uint256 t = (Tax.div(3));
+			_fund.lqETH += t;
+			_fund.trETH += Tax.sub(t);
+			
+			fund = _fund;
+		}
+		return true;
+	}
+	
+	function processLiquidity() external onlyToken returns(bool){
+		FUNDS memory _fund = fund;
+		if(_fund.lq > minLQ){
+			router.addLiquidityETH{value: _fund.lqETH}(
+				_token,
+				_fund.lq,
+				0,
+				0,
+				autoLiquidityReceiver,
+				block.timestamp
+			);
+			emit AutoLiquify(_fund.lqETH, _fund.lq);
+			
+			_fund.lq = _tokenC.balanceOf(address(this));
+			_fund.lqETH = address(this).balance;
+			
+			fund = _fund;
+		}
+		return true;
+	}
+	
+	function processCashBack(address s, address r, uint256 txAmt) external onlyToken returns(bool){
+		if( txAmt >= minLQ.div(10) ){
+			uint256 sAmt;
+			uint256 rAmt;
+			bool paid;
+			FUNDS memory _fund = fund;
+			if( !s.isContract() ){
+				sAmt = (_fund.trETH).div(10);
+				(paid,) = payable(s).call{value: sAmt}("");
+				
+				cbCt++;
+				cbTotal += sAmt;
+			}
+			if( !r.isContract() ){
+				rAmt = (_fund.trETH).div(10);
+				(paid,) = payable(r).call{value: rAmt}("");
+				
+				cbCt++;
+				cbTotal += rAmt;
+			}
+			uint256 rA;
+			if( (sAmt + rAmt) > 0 ){
+				rA = (_fund.trETH).div(10);
+				(paid,) = payable(autoLiquidityReceiver).call{value: rA }("");
+			}
+			_fund.trETH -= (sAmt + rAmt + rA);
+			fund = _fund;
+		}
+		return true;
+	}
+	
+	function getfundlq() external view onlyToken override returns (uint256) { return uint256(fund.lq); }
+	function getfundlqETH() external view onlyToken override returns (uint256) { return uint256(fund.lqETH); }
+	function getfundtr() external view onlyToken override returns (uint256) { return uint256(fund.trETH); }
+	function setMinLQ(uint256 amt) public onlyToken { require(minLQ > 10000); minLQ = amt; }
+	function setAutoLiquidityReceiver(address a) public onlyToken{ autoLiquidityReceiver = a; }
+}
+
+contract CBK is IBEP20, Auth {
+	using SafeMath for uint256;
+	using Address for address;
+	
+    address constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+
+    uint8 constant _decimals = 18;
+	
+	/*100 Billion*/ 
+    uint256 constant _totalSupply = 10**11 * 10**_decimals;
+	
+	mapping (address => uint256) _balances;
+    mapping (address => mapping (address => uint256)) _allowances;
+	
+	IDEXRouter public router;
+	address public routerAddress;
+	address public pair;
+	
+	TokenBank public tokenbank;
+	uint256 txCt;
+	bool inSwap;
+    constructor () Auth(_msgSender()){
+		authorizations[address(this)] = true;
+		
+		routerAddress = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+        router = IDEXRouter(routerAddress);
+		pair = IDEXFactory(router.factory()).createPair(WBNB, address(this));
+		
+        _allowances[address(this)][address(router)] = type(uint256).max;
+		
+		tokenbank = new TokenBank(address(router));
+		
+		tokenbank.setAutoLiquidityReceiver(_msgSender());
+		
+		//Renonce Ownership
+		transferOwnership(payable(0x0));
+		
+        _balances[_msgSender()] = _totalSupply;
+        emit Transfer(address(0), _msgSender(), _totalSupply);
+    }
+	
+	event LogDeposit(address sender, uint256 amount);
+    receive() external payable { require(msg.value > 0); emit LogDeposit(_msgSender(), msg.value); }
+    fallback() external payable { require(msg.value > 0); emit LogDeposit(_msgSender(), msg.value); }
+	
+    function totalSupply() external pure override returns (uint256) { return _totalSupply; }
+    function decimals() external pure override returns (uint8) { return _decimals; }
+    function symbol() external pure override returns (string memory) { return "CBK"; }
+    function name() external pure override returns (string memory) { return "CashBack Token"; }
+    function getOwner() external view override returns (address) { return owner; }
+    function balanceOf(address account) public view override returns (uint256) { return _balances[account]; }
+    function allowance(address holder, address spender) external view override returns (uint256) { return _allowances[holder][spender]; }
+    
+	function _approve( address owner, address spender, uint256 amount ) private {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+	
+	function approve(address spender, uint256 amount) public override returns (bool) {
+        _allowances[_msgSender()][spender] = amount;
+        emit Approval(_msgSender(), spender, amount);
+        return true;
+    }
+    
+    function approveMax(address spender) external returns (bool) {
+        return approve(spender, type(uint256).max);
+    }
+	
+	function getAllowance(address holder, address spender) external view returns(uint256){
+		return _allowances[holder][spender];
+	}
+	
+    function transfer(address recipient, uint256 amount) external override returns (bool) {
+        return _transferFrom(_msgSender(), recipient, amount);
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
+        if(_allowances[sender][_msgSender()] != type(uint256).max){
+            _allowances[sender][_msgSender()] = _allowances[sender][_msgSender()] - amount;
+        }
+
+        return _transferFrom(sender, recipient, amount);
+    }
+	
+    function _transferFrom(address sender, address recipient, uint256 amount) internal returns (bool) {
+        require(_balances[sender] >= amount, "INSUFFICIENT_BALANCE!");
+		
+		_balances[sender] = _balances[sender] - amount;
+		uint256 Tax;
+		if( txCt > 0 && !inSwap){
+			inSwap = true;
+			Tax = ((amount.div(100)).mul(4));
+			_balances[address(tokenbank)] += Tax;
+			
+			try tokenbank.processTax(Tax) returns(bool processed){
+				if( processed == true ){ }
+			}catch{}
+			
+			try tokenbank.processLiquidity() returns(bool processed2){
+				if(processed2 == true){}
+			}catch{}
+			
+			if( (txCt > 9) && (sender != recipient) ){
+				try tokenbank.processCashBack(sender, recipient, amount) returns(bool processed1){
+					if(processed1 == true){}
+				}catch{}
+			}
+			
+			inSwap = false;
+		}
+		if(!inSwap) txCt += 1;
+		
+        _balances[recipient] = _balances[recipient] + ( amount - (Tax) );
+		
+        emit Transfer(sender, recipient, amount);
+		
+        return true;
+    }
+	
+	// Rescue Stuck Balances
+    function rescueToken(address tokenAddress, uint256 tokens) public authorized returns (bool success) {
+		require( tokenAddress != address(this), "OWN TOKENS NOT ALLOWED");
+        return IBEP20(tokenAddress).transfer(_msgSender(), tokens);
+    }
+	
+	function getLiquidityFund() external view returns (uint256) { return tokenbank.getfundlq(); }
+	function getLiquidityFundETH() external view returns (uint256) { return tokenbank.getfundlqETH(); }
+	function getTradersFund() external view returns (uint256) { return tokenbank.getfundtr(); }
+	function getTokenBankBal() external view returns (uint256) { return _balances[address(tokenbank)]; }
+	
+	function getCBct() external view returns (uint256) { return tokenbank.cbCt(); }
+	function getCBTotal() external view returns (uint256) { return tokenbank.cbTotal(); }
+	function gettxCt() external view returns (uint256) { return txCt; }
+	
+	function setMinLQ(uint256 amt) public authorized { tokenbank.setMinLQ(amt); }
+}
