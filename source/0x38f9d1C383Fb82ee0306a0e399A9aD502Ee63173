@@ -1,0 +1,99 @@
+
+// File: Swap.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+interface IPancakeRouter {
+    function getAmountsOut(uint amountIn, address[] memory path) external view returns (uint[] memory amounts);
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts);
+    function WETH() external pure returns (address);
+}
+
+contract PancakeSwapTrader {
+    address public admin;
+    address private constant routerAddress = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
+    IPancakeRouter private router;
+    uint256 public tradingFee = 5; // 0.9%
+    uint256 private constant feeDivisor = 1000; // for 0.9% fee
+    mapping(address => uint256) public tokenFees;
+
+    event OwnershipTransferred(address indexed previousAdmin, address indexed newAdmin);
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "Only admin");
+        _;
+    }
+
+    constructor() {
+        router = IPancakeRouter(routerAddress);
+        admin = msg.sender;
+    }
+
+    function tradeTokenForBNB(address tokenAddress, uint256 amountIn, uint256 amountOutMin, uint256 deadline) external {
+        // Calculate trading fee and final amount
+        uint256 feeAmount = (amountIn * tradingFee) / feeDivisor;
+        uint256 finalAmountIn = amountIn - feeAmount;
+        tokenFees[tokenAddress] += feeAmount;
+
+        // Transfer tokens to this contract
+        IERC20(tokenAddress).transferFrom(msg.sender, address(this), amountIn);
+
+        // Approve the router to spend the tokens
+        IERC20(tokenAddress).approve(routerAddress, finalAmountIn);
+
+        address[] memory path = new address[](2);
+        path[0] = tokenAddress;
+        path[1] = router.WETH();
+
+        // Perform the swap
+        router.swapExactTokensForETH(finalAmountIn, amountOutMin, path, msg.sender, deadline);
+    }
+
+    function tradeBNBForToken(address tokenAddress, uint256 amountOutMin, uint256 deadline) external payable {
+        uint256 feeAmount = (msg.value * tradingFee) / feeDivisor;
+        uint256 finalAmountIn = msg.value - feeAmount;
+        tokenFees[router.WETH()] += feeAmount;
+
+        address[] memory path = new address[](2);
+        path[0] = router.WETH();
+        path[1] = tokenAddress;
+
+        // Perform the swap
+        router.swapExactETHForTokens{ value: finalAmountIn }(amountOutMin, path, msg.sender, deadline);
+    }
+
+    function withdrawFees(address tokenAddress) external onlyAdmin {
+        if (tokenAddress == router.WETH()) {
+            payable(admin).transfer(tokenFees[router.WETH()]);
+        } else {
+            IERC20(tokenAddress).transfer(admin, tokenFees[tokenAddress]);
+        }
+        tokenFees[tokenAddress] = 0;
+    }
+
+    function getTokenBalance(address  tokenAddress) public view onlyAdmin returns(uint) {
+        return tokenFees[tokenAddress];
+    }
+
+    function setFeesAmpount(uint256 _newAmount) public onlyAdmin {
+        require(_newAmount != tradingFee, "Trading fee is same");
+        require(_newAmount <= 20, "Trading fees cannot be morethan 2%");
+
+        tradingFee = _newAmount;
+    }
+
+    function transferOwnership(address newAdmin) external onlyAdmin {
+        require(newAdmin != address(0), "New admin is the zero address");
+        emit OwnershipTransferred(admin, newAdmin);
+        admin = newAdmin;
+    }
+}
+

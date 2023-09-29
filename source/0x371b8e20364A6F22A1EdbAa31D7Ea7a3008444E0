@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.7;
+
+contract ERC20Token {
+    string public name = "FKOPENZEPPELIN";
+    string public symbol = "FKZEPLIN";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 100000000 * 10**uint256(decimals);
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    uint256 public buyTaxRate = 1; // 1% tax on buys
+    uint256 public sellTaxRate = 7; // 7% tax on sells
+    address public taxReceiver = address(this);
+    address public owner;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Buy(address indexed buyer, uint256 amount, uint256 value);
+    event Sell(address indexed seller, uint256 amount, uint256 value);
+    event TaxRatesUpdated(uint256 newBuyTaxRate, uint256 newSellTaxRate);
+    event TaxReceiverUpdated(address newTaxReceiver);
+    event ContractOwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event ContractRenounced(address indexed previousOwner);
+
+    constructor() {
+        owner = msg.sender;
+        balanceOf[msg.sender] = totalSupply;
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only the owner can call this function");
+        _;
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        require(to != address(0), "Invalid address");
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+
+        uint256 taxedValue = applyBuyTax(msg.sender, to, value);
+
+        balanceOf[msg.sender] -= value;
+        balanceOf[to] += taxedValue;
+        emit Transfer(msg.sender, to, taxedValue);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(to != address(0), "Invalid address");
+        require(balanceOf[from] >= value, "Insufficient balance");
+        require(allowance[from][msg.sender] >= value, "Allowance exceeded");
+
+        uint256 taxedValue = applyBuyTax(from, to, value);
+
+        balanceOf[from] -= value;
+        balanceOf[to] += taxedValue;
+        allowance[from][msg.sender] -= value;
+        emit Transfer(from, to, taxedValue);
+        return true;
+    }
+
+    function buy(uint256 value) public returns (bool) {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+
+        uint256 taxedValue = applyBuyTax(msg.sender, address(this), value);
+
+        balanceOf[msg.sender] -= value;
+        balanceOf[address(this)] += taxedValue;
+        emit Buy(msg.sender, value, taxedValue);
+        return true;
+    }
+
+    function sell(uint256 value) public returns (bool) {
+        require(balanceOf[msg.sender] >= value, "Insufficient balance");
+
+        uint256 taxedValue = applySellTax(msg.sender, address(this), value);
+
+        balanceOf[msg.sender] -= value;
+        balanceOf[address(this)] += value - taxedValue;
+        emit Sell(msg.sender, value, taxedValue);
+        return true;
+    }
+
+    function updateTaxRates(uint256 newBuyTaxRate, uint256 newSellTaxRate) public onlyOwner {
+        require(newBuyTaxRate <= 100, "Invalid buy tax rate");
+        require(newSellTaxRate <= 100, "Invalid sell tax rate");
+
+        buyTaxRate = newBuyTaxRate;
+        sellTaxRate = newSellTaxRate;
+        emit TaxRatesUpdated(newBuyTaxRate, newSellTaxRate);
+    }
+
+    function updateTaxReceiver(address newTaxReceiver) public onlyOwner {
+        require(newTaxReceiver != address(0), "Invalid tax receiver address");
+        taxReceiver = newTaxReceiver;
+        emit TaxReceiverUpdated(newTaxReceiver);
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "Invalid new owner address");
+        emit ContractOwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+
+    function renounceContractOwnership() public onlyOwner {
+        emit ContractRenounced(owner);
+        owner = address(0);
+    }
+
+    function applyBuyTax(address from, address to, uint256 value) internal returns (uint256) {
+        uint256 tax = (value * buyTaxRate) / 100;
+        uint256 taxedValue = value - tax;
+
+        balanceOf[taxReceiver] += tax;
+        emit Transfer(from, taxReceiver, tax);
+        emit Transfer(from, to, taxedValue);
+
+        return taxedValue;
+    }
+
+    function applySellTax(address from, address to, uint256 value) internal returns (uint256) {
+        uint256 tax = (value * sellTaxRate) / 100;
+        uint256 taxedValue = value - tax;
+
+        balanceOf[taxReceiver] += tax;
+        emit Transfer(from, taxReceiver, tax);
+        emit Transfer(from, to, taxedValue);
+
+        return taxedValue;
+    }
+}
