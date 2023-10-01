@@ -1,0 +1,207 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface IPancakeRouter02 {
+    function swapExactETHForTokensSupportingFeeOnTransferTokens(
+        uint amountOutMin, 
+        address[] calldata path, 
+        address to, 
+        uint deadline
+    ) external payable returns (uint[] memory amounts);
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint amountIn, 
+        uint amountOutMin, 
+        address[] calldata path, 
+        address to, 
+        uint deadline
+    ) external returns (uint[] memory amounts);
+
+    function WETH() external returns (address);
+}
+
+contract DiziGoldCoin {
+    string public name = "DiziGoldCoin";
+    string public symbol = "DGC";
+    uint8 public decimals = 18;
+    uint256 public totalSupply = 11000000 * 10**uint256(decimals);
+    address public owner;
+    uint8 public buySellTaxPercentage = 5;
+    uint8 public burnPercentage = 20;
+    uint8 public rewardsPercentage = 80;  // 80% of tax is allocated to rewards
+
+    address[] public allHolders;
+
+    mapping(address => uint256) public balances;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public isExcludedFromRewards;
+    mapping(address => bool) public isExcludedFromFees;
+
+    IPancakeRouter02 public pancakeswapRouter;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Burn(address indexed burner, uint256 amount);
+    event IncludeInRewards(address indexed account, bool isExcluded);
+    event DexTrade(address indexed trader, uint256 amount, bool isBuy);
+    event RoleGranted(address indexed account, string role);
+    event RoleRevoked(address indexed account, string role);
+    event ExcludeFromRewards(address indexed account, bool isExcluded);
+    event ExcludeFromFees(address indexed account, bool isExcluded);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can call this function");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+        balances[msg.sender] = totalSupply;
+
+        // Initialize the PancakeSwap router
+        pancakeswapRouter = IPancakeRouter02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        allHolders.push(msg.sender);
+    }
+
+    function setBuySellTaxPercentage(uint8 _taxPercentage) external onlyOwner {
+        buySellTaxPercentage = _taxPercentage;
+    }
+    function excludeFromRewards(address account) external onlyOwner {
+        require(!isExcludedFromRewards[account], "Address is already excluded from rewards");
+        isExcludedFromRewards[account] = true;
+        emit ExcludeFromRewards(account, true);
+    }
+
+    function includeInRewards(address account) external onlyOwner {
+        require(isExcludedFromRewards[account], "Address is not excluded from rewards");
+        isExcludedFromRewards[account] = false;
+        emit IncludeInRewards(account, false);
+    }
+
+    function setBurnPercentage(uint8 _burnPercentage) external onlyOwner {
+        burnPercentage = _burnPercentage;
+    }
+
+    function setRewardsPercentage(uint8 _rewardsPercentage) external onlyOwner {
+        rewardsPercentage = _rewardsPercentage;
+    }
+
+    function handleTax(uint256 tax) internal {
+        uint256 rewardsAmount = (tax * rewardsPercentage) / 100;
+        uint256 burnAmount = tax - rewardsAmount;
+
+        // Burn tokens for the specified burn percentage
+        totalSupply -= burnAmount;
+        emit Burn(address(this), burnAmount);
+
+        // Distribute rewards among all holders
+        uint256 totalRewardsDistributed = 0;
+        for (uint256 i = 0; i < allHolders.length; i++) {
+            address holder = allHolders[i];
+            if (!isExcludedFromRewards[holder]) {
+                uint256 holderReward = (rewardsAmount * balances[holder]) / totalSupply;
+                balances[holder] += holderReward;
+                totalRewardsDistributed += holderReward;
+            }
+        }
+
+        // Handle any rounding issues by giving the remainder to one of the holders
+        if (totalRewardsDistributed < rewardsAmount) {
+            uint256 remainingReward = rewardsAmount - totalRewardsDistributed;
+            balances[allHolders[0]] += remainingReward;
+        }
+
+        // Emit a Transfer event for the total rewards distributed
+        emit Transfer(address(this), address(0), totalRewardsDistributed);
+    }
+
+    function transfer(address to, uint256 value) external returns (bool) {
+        require(to != address(0), "Invalid address");
+        require(value > 0, "Invalid amount");
+        require(value <= balances[msg.sender], "Insufficient balance");
+
+        // Calculate tax and handle tax (burn and distribute rewards)
+        uint256 tax = (value * buySellTaxPercentage) / 100;
+        if (tax > 0) {
+            handleTax(tax);
+        }
+
+        // Update balances
+        balances[msg.sender] -= value;
+        balances[to] += value;
+
+        if (!isExcludedFromFees[msg.sender] && !isExcludedFromFees[to]) {
+            uint256 fee = (value * buySellTaxPercentage) / 100;
+            value -= fee;
+            balances[address(this)] += fee;
+            allHolders.push(address(this));
+        }
+
+        // Emit transfer event for the actual transfer amount
+        emit Transfer(msg.sender, to, value);
+
+        return true;
+    }
+
+    function buyTokens(uint256 amountToBuy) external payable {
+        require(amountToBuy > 0, "Invalid amount");
+        require(msg.value >= amountToBuy, "Insufficient ETH sent");
+
+        // Calculate tax and handle tax (burn and distribute rewards)
+        uint256 tax = (amountToBuy * buySellTaxPercentage) / 100;
+        if (tax > 0) {
+            handleTax(tax);
+        }
+
+        // Swap BNB for tokens on PancakeSwap
+        address[] memory path = new address[](2);
+        path[0] = pancakeswapRouter.WETH();
+        path[1] = address(this);
+
+        // Make the swap
+        pancakeswapRouter.swapExactETHForTokensSupportingFeeOnTransferTokens{value: amountToBuy}(
+            amountToBuy - tax,
+            path,
+            msg.sender,
+            block.timestamp + 300 // 5 minutes from now
+        );
+
+        // Emit a DEX trade event
+        emit DexTrade(msg.sender, amountToBuy, true);
+    }
+
+    function sellTokens(uint256 amount) external {
+        require(amount > 0, "Invalid amount");
+
+        // Calculate tax and handle tax (burn and distribute rewards)
+        uint256 tax = (amount * buySellTaxPercentage) / 100;
+        if (tax > 0) {
+            handleTax(tax);
+        }
+
+        // Ensure the contract has enough balance to cover the sell
+        require(amount <= balances[msg.sender], "Insufficient balance");
+
+        // Transfer the tokens to the contract
+        balances[msg.sender] -= amount;
+        balances[address(this)] += amount;
+        allHolders.push(address(this));
+
+        // Swap tokens for BNB on PancakeSwap
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = pancakeswapRouter.WETH();
+
+        // Make the swap
+        pancakeswapRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amount,
+            0, // Accept any amount of ETH
+            path,
+            msg.sender,
+            block.timestamp + 300 // 5 minutes from now
+        );
+
+        // Emit a DEX trade event
+        emit DexTrade(msg.sender, amount, false);
+    }
+}
